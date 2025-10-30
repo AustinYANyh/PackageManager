@@ -1,0 +1,46 @@
+<Window x:Class="PackageManager.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:PackageManager"
+        xmlns:hw="clr-namespace:CustomControlLibrary.CustomControl.Controls.DataGrid;assembly=CustomControlLibrary"
+        mc:Ignorable="d"
+        Title="包管理器" Height="700" Width="1500" 
+        ResizeMode="NoResize" WindowStartupLocation="CenterScreen">
+    <Window.Resources>
+        <local:StatusToVisibilityConverter x:Key="StatusToVisibilityConverter"/>
+        <local:StatusToButtonVisibilityConverter x:Key="StatusToButtonVisibilityConverter"/>
+    </Window.Resources>
+    
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        
+        <!-- 标题栏 -->
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,20">
+            <TextBlock Text="产品包管理器" FontSize="24" FontWeight="Bold" VerticalAlignment="Center"/>
+            <Button Name="RefreshButton" Content="刷新列表" Margin="20,0,0,0" Padding="10,5" Click="RefreshButton_Click"/>
+        </StackPanel>
+        
+        <!-- 包列表 -->
+        <hw:HwDataGrid x:Name="PackageDataGrid" Grid.Row="1"
+                       EnableAutoTemplateSelection="True"
+                       TextAlignment="Left"
+                       ItemsSource="{Binding Packages}"
+                       AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False"
+                       SelectionMode="Single" GridLinesVisibility="All"
+                       HeadersVisibility="Column" Margin="10">
+        </hw:HwDataGrid>
+        
+        <!-- 状态栏 -->
+        <StatusBar Grid.Row="2" Margin="0,20,0,0">
+            <StatusBarItem>
+                <TextBlock Name="StatusText" Text="就绪"/>
+            </StatusBarItem>
+        </StatusBar>
+    </Grid>
+</Window>
