@@ -362,17 +362,7 @@ namespace PackageManager
                 }
             });
         }
-
-        /// <summary>
-        /// 更新按钮点击事件
-        /// </summary>
-        private async void UpdateButton_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is Button button && button.Tag is PackageInfo packageInfo)
-            {
-                
-            }
-        }
+        
 
         public event PropertyChangedEventHandler PropertyChanged;
 
