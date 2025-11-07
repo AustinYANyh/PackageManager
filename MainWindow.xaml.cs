@@ -265,12 +265,23 @@ namespace PackageManager
                 {
                     ProductName = "MaxiBIM（PMEP）Develop",
                     Version = string.Empty,
-                    FtpServerPath = "http://doc-dev.hongwa.cc:8001//MaxiBIM(PMEP)/",
+                    FtpServerPath = "http://doc-dev.hongwa.cc:8001/MaxiBIM(PMEP)/",
                     LocalPath = @"C:\红瓦科技\MaxiBIM（PMEP）Develop",
                     Status = PackageStatus.Ready,
                     StatusText = "就绪",
                     UploadPackageName = string.Empty,
                 },
+                new PackageInfo
+                {
+                    ProductName = "MaxiBIM（Duct）Develop",
+                    Version = string.Empty,
+                    FtpServerPath = "http://doc-dev.hongwa.cc:8001/HWMaxiBIMDUCT/",
+                    LocalPath = @"C:\红瓦科技\MaxiBIM（Duct）Develop",
+                    Status = PackageStatus.Ready,
+                    StatusText = "就绪",
+                    UploadPackageName = string.Empty,
+                },
+                
                 new PackageInfo
                 {
                     ProductName = "建模大师（CABE）Develop",

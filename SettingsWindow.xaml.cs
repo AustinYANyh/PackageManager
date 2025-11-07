@@ -15,12 +15,20 @@ namespace PackageManager
     {
         private readonly DataPersistenceService _dataPersistenceService;
         private string _addinPath;
+
+        private bool _programEntryWithG;
         private string _dataLocation;
 
         public string AddinPath
         {
             get => _addinPath;
             set => SetProperty(ref _addinPath, value);
+        }
+        
+        public bool ProgramEntryWithG
+        {
+            get => _programEntryWithG;
+            set => SetProperty(ref _programEntryWithG, value);
         }
 
         public string DataLocation
@@ -46,6 +54,8 @@ namespace PackageManager
             try
             {
                 var settings = _dataPersistenceService.LoadSettings();
+                
+                ProgramEntryWithG = settings?.ProgramEntryWithG ?? true;
                 AddinPath = settings?.AddinPath ?? @"C:\ProgramData\Autodesk\Revit\Addins";
                 DataLocation = _dataPersistenceService.GetDataFolderPath();
             }
@@ -193,7 +203,8 @@ namespace PackageManager
                 // 保存设置
                 var settings = new PackageManager.Services.AppSettings
                 {
-                    AddinPath = AddinPath.Trim()
+                    AddinPath = AddinPath.Trim(),
+                    ProgramEntryWithG =ProgramEntryWithG,
                 };
 
                 _dataPersistenceService.SaveSettings(settings);

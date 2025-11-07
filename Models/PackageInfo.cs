@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
+using System.Windows;
 using System.Windows.Input;
 using CustomControlLibrary.CustomControl.Attribute.DataGrid;
 using PackageManager.Services;
@@ -33,6 +34,20 @@ namespace PackageManager.Models
                 return settings.AddinPath;
             }
             return @"C:\ProgramData\Autodesk\Revit\Addins"; // 默认路径
+        }
+        
+        /// <summary>
+        /// 获取配置的Addin路径
+        /// </summary>
+        private static bool GetProgramEntryWithG()
+        {
+            if (DataPersistenceService != null)
+            {
+                var settings = DataPersistenceService.LoadSettings();
+                return settings.ProgramEntryWithG;
+            }
+
+            return true;
         }
 
         private string _productName;
@@ -210,7 +225,7 @@ namespace PackageManager.Models
         /// <summary>
         /// 包名
         /// </summary>
-        [DataGridComboBox(3, "包名","AvailablePackages", Width = "320", IsReadOnlyProperty = "IsReadOnly")]
+        [DataGridComboBox(3, "包名","AvailablePackages", Width = "320", IsReadOnlyProperty = "IsReadOnly", ContentAlign = HorizontalAlignment.Left)]
         public string UploadPackageName
         {
             get => uploadPackageName;
@@ -382,6 +397,12 @@ namespace PackageManager.Models
 
                         if (!string.IsNullOrEmpty(targetFiles))
                         {
+                            bool programEntryWithG = GetProgramEntryWithG();
+                            if (!programEntryWithG)
+                            {
+                                string replace = Path.GetFileName(targetFiles).Replace("G", string.Empty);
+                                targetFiles = Path.Combine(Path.GetDirectoryName(targetFiles) ?? string.Empty, replace);
+                            }
                             string addinFile = Directory.GetFiles(LocalPath, "*.addin").FirstOrDefault();
                             if (!string.IsNullOrEmpty(addinFile))
                             {

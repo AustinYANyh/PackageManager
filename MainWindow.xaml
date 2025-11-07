@@ -4,7 +4,7 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:local="clr-namespace:PackageManager"
-        xmlns:hw="clr-namespace:CustomControlLibrary.CustomControl.Controls.DataGrid;assembly=CustomControlLibrary"
+        xmlns:C="clr-namespace:CustomControlLibrary.CustomControl.Controls.DataGrid;assembly=CustomControlLibrary"
         mc:Ignorable="d"
         Title="包管理器" Height="700" Width="1750" 
         ResizeMode="NoResize" WindowStartupLocation="CenterScreen">
@@ -29,12 +29,12 @@
         </StackPanel>
         
         <!-- 包列表 -->
-        <hw:HwDataGrid x:Name="PackageDataGrid" Grid.Row="1"
+        <C:CDataGrid x:Name="PackageDataGrid" Grid.Row="1"
                        TextAlignment="Left"
                        EnableAutoTemplateSelection="True"
                        ItemsSource="{Binding Packages}"
                        Margin="10">
-        </hw:HwDataGrid>
+        </C:CDataGrid>
         
         <!-- 状态栏 -->
         <StatusBar Grid.Row="2" Margin="0,20,0,0">

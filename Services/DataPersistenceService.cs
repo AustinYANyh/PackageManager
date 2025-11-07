@@ -408,6 +408,8 @@ namespace PackageManager.Services
     /// </summary>
     public class AppSettings
     {
+        public bool ProgramEntryWithG { get; set; } = true;
+        
         public string AddinPath { get; set; } = @"C:\ProgramData\Autodesk\Revit\Addins";
     }
 }
