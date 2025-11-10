@@ -17,6 +17,7 @@ namespace PackageManager.Services
         public string UploadPackageName { get; set; }
         public string SelectedExecutableVersion { get; set; }
         public string ExecutablePath { get; set; }
+        public bool IsDebugMode { get; set; }
         
         public List<ApplicationVersion> AvailableExecutableVersions { get; set; } = new List<ApplicationVersion>();
     }
@@ -204,6 +205,7 @@ namespace PackageManager.Services
                         UploadPackageName = package.UploadPackageName,
                         SelectedExecutableVersion = package.SelectedExecutableVersion,
                         ExecutablePath = package.ExecutablePath,
+                        IsDebugMode = package.IsDebugMode,
                         AvailableExecutableVersions = package.AvailableExecutableVersions?.ToList() ?? new List<ApplicationVersion>()
                     };
                     stateData.Packages.Add(packageState);
@@ -263,6 +265,8 @@ namespace PackageManager.Services
             if (package == null || stateData == null) return;
 
             // 应用基本属性
+            // 先应用调试模式，再设置LocalPath以便配置文件优先生效
+            package.IsDebugMode = stateData.IsDebugMode;
             package.LocalPath = stateData.LocalPath;
             if (stateData.AvailableExecutableVersions?.Count > 0)
             {

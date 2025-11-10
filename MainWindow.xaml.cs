@@ -319,6 +319,7 @@ namespace PackageManager
                 package.UpdateRequested += OnPackageUpdateRequested;
                 package.VersionChanged += OnPackageVersionChanged;
                 package.DownloadRequested += OnPackageDownloadRequested;
+                package.DebugModeChanged += OnPackageDebugModeChanged;
             }
             
             if (_dataPersistenceService.HasMainWindowState())
@@ -372,6 +373,24 @@ namespace PackageManager
                     StatusText.Text = $"{packageInfo.ProductName} 更新失败";
                 }
             });
+        }
+        
+        /// <summary>
+        /// 处理调试模式切换事件，左下角状态栏写入当前模式
+        /// </summary>
+        private void OnPackageDebugModeChanged(PackageInfo package, bool isDebug)
+        {
+            try
+            {
+                StatusText.Text = $"{package.ProductName} 当前模式：{(isDebug ? "调试模式" : "正常模式")}";
+                
+                // 持久化到主界面状态（包含IsDebugMode）
+                SaveCurrentState();
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"更新状态栏失败: {ex.Message}");
+            }
         }
         
 
