@@ -122,8 +122,12 @@ namespace PackageManager.Services
                 await Task.Run(() =>
                 {
                     // 确保目标目录存在
-                    if (!Directory.Exists(extractPath))
-                        Directory.CreateDirectory(extractPath);
+                    if (Directory.Exists(extractPath))
+                    {
+                        Directory.Delete(extractPath, true);
+                    }
+                    
+                    Directory.CreateDirectory(extractPath);
 
                     using (var archive = ZipFile.OpenRead(zipFilePath))
                     {

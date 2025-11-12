@@ -16,6 +16,7 @@ namespace PackageManager
             if (value is PackageStatus status)
             {
                 return status == PackageStatus.Downloading || status == PackageStatus.Extracting 
+                    || status == PackageStatus.VerifyingSignature || status == PackageStatus.VerifyingEncryption
                     ? Visibility.Visible 
                     : Visibility.Collapsed;
             }

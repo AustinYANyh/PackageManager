@@ -38,6 +38,16 @@ namespace PackageManager.Models
         Extracting,
 
         /// <summary>
+        /// 校验签名中
+        /// </summary>
+        VerifyingSignature,
+
+        /// <summary>
+        /// 校验加密中
+        /// </summary>
+        VerifyingEncryption,
+
+        /// <summary>
         /// 完成
         /// </summary>
         Completed,
@@ -94,6 +104,11 @@ namespace PackageManager.Models
         private bool isReadOnly;
 
         private string time;
+
+        // 阶段进度聚合（按外部工具输出的 [STAGE]/[PROGRESS] 进行合并）
+        private readonly Dictionary<string, double> stageProgress = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        private readonly List<string> stageOrder = new List<string>();
+        private string currentStage;
 
         /// <summary>
         /// 更新请求事件
@@ -208,7 +223,7 @@ namespace PackageManager.Models
         /// <summary>
         /// 包状态
         /// </summary>
-        [DataGridColumn(6, DisplayName = "状态", Width = "100", IsReadOnly = true)]
+        [DataGridColumn(6, DisplayName = "状态", Width = "130", IsReadOnly = true)]
         public PackageStatus Status
         {
             get => status;
@@ -251,7 +266,7 @@ namespace PackageManager.Models
         [DataGridComboBox(9,
                           "可执行版本",
                           "AvailableExecutableVersions",
-                          Width = "150",
+                          Width = "135",
                           IsReadOnlyProperty = "IsReadOnly",
                           ComboBoxDisplayMemberPath = "DisPlayName",
                           ComboBoxSelectedValuePath = "DisPlayName")]
@@ -666,7 +681,7 @@ namespace PackageManager.Models
                     var psi = new ProcessStartInfo
                     {
                         FileName = exePath,
-                        Arguments = BuildEmbeddedToolArguments(resultPath),
+                        Arguments = BuildEmbeddedToolArguments(logPath,resultPath),
                         UseShellExecute = false,
                         CreateNoWindow = true,
                         WindowStyle = ProcessWindowStyle.Hidden,
@@ -677,30 +692,32 @@ namespace PackageManager.Models
                     
                     var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
 
-                    process.OutputDataReceived += (s, e) =>
-                    {
-                        if (!string.IsNullOrWhiteSpace(e.Data))
-                        {
-                            // 将输出写入日志文件，供状态栏实时追踪
-                            try { File.AppendAllText(logPath, e.Data + Environment.NewLine, Encoding.UTF8); } catch { }
-                            Application.Current.Dispatcher.BeginInvoke(new Action(() =>
-                            {
-                                StatusText = e.Data;
-                            }));
-                        }
-                    };
-                    process.ErrorDataReceived += (s, e) =>
-                    {
-                        if (!string.IsNullOrWhiteSpace(e.Data))
-                        {
-                            // 错误输出写入日志
-                            try { File.AppendAllText(logPath, "[ERROR] " + e.Data + Environment.NewLine, Encoding.UTF8); } catch { }
-                            Application.Current.Dispatcher.BeginInvoke(new Action(() =>
-                            {
-                                StatusText = $"工具错误：{e.Data}";
-                            }));
-                        }
-                    };
+                    // process.OutputDataReceived += (s, e) =>
+                    // {
+                    //     if (!string.IsNullOrWhiteSpace(e.Data))
+                    //     {
+                    //         // 将输出写入日志文件，供状态栏实时追踪
+                    //         try { File.AppendAllText(logPath, e.Data + Environment.NewLine, Encoding.UTF8); } catch { }
+                    //         Application.Current.Dispatcher.BeginInvoke(new Action(() =>
+                    //         {
+                    //             StatusText = e.Data;
+                    //             ParseToolOutputLine(e.Data);
+                    //         }));
+                    //     }
+                    // };
+                    // process.ErrorDataReceived += (s, e) =>
+                    // {
+                    //     if (!string.IsNullOrWhiteSpace(e.Data))
+                    //     {
+                    //         // 错误输出写入日志
+                    //         try { File.AppendAllText(logPath, "[ERROR] " + e.Data + Environment.NewLine, Encoding.UTF8); } catch { }
+                    //         Application.Current.Dispatcher.BeginInvoke(new Action(() =>
+                    //         {
+                    //             StatusText = $"工具错误：{e.Data}";
+                    //             ParseToolOutputLine(e.Data);
+                    //         }));
+                    //     }
+                    // };
                     process.Exited += (s, e) =>
                     {
                         try
@@ -709,6 +726,8 @@ namespace PackageManager.Models
                             Application.Current.Dispatcher.BeginInvoke(new Action(() =>
                             {
                                 StatusText = exitCode == 0 ? "外部工具运行完成" : $"外部工具运行失败（{exitCode}）";
+                                Progress = exitCode == 0 ? 100 : Progress; // 成功则满进度
+                                Status = exitCode == 0 ? PackageStatus.Completed : PackageStatus.Error;
                             }));
                         }
                         finally
@@ -728,6 +747,11 @@ namespace PackageManager.Models
                     Application.Current.Dispatcher.BeginInvoke(new Action(() =>
                     {
                         StatusText = $"正在运行外部工具：{ProductName}";
+                        Status = PackageStatus.Downloading;
+                        Progress = 0;
+                        stageProgress.Clear();
+                        stageOrder.Clear();
+                        currentStage = null;
                     }));
 
                     process.Start();
@@ -739,7 +763,9 @@ namespace PackageManager.Models
                     Application.Current.Dispatcher.BeginInvoke(new Action(() =>
                     {
                         StatusText = $"运行外部工具失败：{ex.Message}";
+                        Status = PackageStatus.Error;
                     }));
+                    IsReadOnly = false;
                 }
             });
         }
@@ -747,7 +773,7 @@ namespace PackageManager.Models
         /// <summary>
         /// 根据当前包信息构建外部工具的命令行参数
         /// </summary>
-        private string BuildEmbeddedToolArguments(string resultPath)
+        private string BuildEmbeddedToolArguments(string logPath, string resultPath)
         {
             // 根据对方工具的约定调整参数格式
             string downloadUrl = DownloadUrl;
@@ -755,7 +781,7 @@ namespace PackageManager.Models
             var args = $"-u \"{downloadUrl}\""; 
             args += $" --no-wait-close";
             args += $" -o \"{resultPath}\"";
-            
+            args += $" -p \"{logPath}\"";
             return args;
         }
 
@@ -824,6 +850,7 @@ namespace PackageManager.Models
                                     if (!string.IsNullOrWhiteSpace(captured))
                                     {
                                         StatusText = captured;
+                                        ParseToolOutputLine(captured);
                                     }
                                 }));
                             }
@@ -838,6 +865,144 @@ namespace PackageManager.Models
                     Thread.Sleep(250);
                 }
             }, token);
+        }
+
+        /// <summary>
+        /// 解析外部工具输出的阶段与进度：
+        /// 支持规范化行：[STAGE] {stage} {status} 与 [PROGRESS] {stage} {pct}%。
+        /// 将各阶段独立的1-100合并为总完成度显示到 order=8 的进度列。
+        /// </summary>
+        private void ParseToolOutputLine(string line)
+        {
+            if (string.IsNullOrWhiteSpace(line)) return;
+
+            try
+            {
+                // [STAGE] 阶段行
+                var stageMatch = Regex.Match(line, "^\\s*\\[STAGE\\]\\s+(.+?)\\s+(.+?)\\s*$");
+                if (stageMatch.Success)
+                {
+                    var stage = stageMatch.Groups[1].Value.Trim();
+                    var statusWord = stageMatch.Groups[2].Value.Trim();
+
+                    EnsureStage(stage);
+                    currentStage = stage;
+
+                    // 根据阶段名映射状态枚举（若包含签名/加密则进入相应验证状态）
+                    var mappedStatus = MapStatusForStage(stage);
+                    if (mappedStatus != Status)
+                    {
+                        Status = mappedStatus;
+                    }
+
+                    // 若阶段标记为结束/完成，则将该阶段设置为100%
+                    if (IsStageCompleteStatus(statusWord))
+                    {
+                        stageProgress[stage] = 100;
+                        UpdateOverallAggregatedProgress();
+                    }
+
+                    return;
+                }
+
+                // [PROGRESS] 进度行（按5%节流由外部工具产生，我们直接取最新值）
+                var progressMatch = Regex.Match(line, "^\\s*\\[PROGRESS\\]\\s+(.+?)\\s+(\\d{1,3})%\\s*$");
+                if (progressMatch.Success)
+                {
+                    var stage = progressMatch.Groups[1].Value.Trim();
+                    var pctStr = progressMatch.Groups[2].Value.Trim();
+                    if (!int.TryParse(pctStr, out var pct)) pct = 0;
+
+                    EnsureStage(stage);
+                    currentStage = stage;
+
+                    // 更新阶段进度
+                    stageProgress[stage] = Math.Max(0, Math.Min(100, pct));
+
+                    // 状态映射
+                    var mappedStatus = MapStatusForStage(stage);
+                    if (mappedStatus != Status)
+                    {
+                        Status = mappedStatus;
+                    }
+
+                    UpdateOverallAggregatedProgress();
+                }
+            }
+            catch
+            {
+                // 忽略解析异常
+            }
+        }
+
+        private void EnsureStage(string stage)
+        {
+            if (string.IsNullOrWhiteSpace(stage)) return;
+            if (!stageProgress.ContainsKey(stage))
+            {
+                stageProgress[stage] = 0;
+            }
+            if (!stageOrder.Contains(stage))
+            {
+                stageOrder.Add(stage);
+            }
+        }
+
+        private void UpdateOverallAggregatedProgress()
+        {
+            var total = Math.Max(stageOrder.Count, 1);
+            var completed = stageProgress.Values.Count(v => v >= 100);
+            double current = 0;
+            if (!string.IsNullOrEmpty(currentStage) && stageProgress.TryGetValue(currentStage, out var cp))
+            {
+                current = cp;
+            }
+
+            // 合并：完成阶段数 + 当前阶段百分比
+            var overall = ((completed + current / 100.0) / total) * 100.0;
+
+            // 保证单调不减
+            Progress = Math.Max(Progress, overall);
+
+            // 若所有阶段均完成则标记为完成
+            if (stageOrder.Count > 0 && stageOrder.All(st => stageProgress.TryGetValue(st, out var v) && v >= 100))
+            {
+                Status = PackageStatus.Completed;
+                Progress = Math.Max(Progress, 100);
+            }
+        }
+
+        private PackageStatus MapStatusForStage(string stage)
+        {
+            if (string.IsNullOrWhiteSpace(stage)) return Status;
+
+            // 关键词映射（中文优先）
+            if (Regex.IsMatch(stage, "签名", RegexOptions.IgnoreCase))
+            {
+                return PackageStatus.VerifyingSignature;
+            }
+            if (Regex.IsMatch(stage, "加密", RegexOptions.IgnoreCase))
+            {
+                return PackageStatus.VerifyingEncryption;
+            }
+            if (Regex.IsMatch(stage, "下载", RegexOptions.IgnoreCase))
+            {
+                return PackageStatus.Downloading;
+            }
+            if (Regex.IsMatch(stage, "解压", RegexOptions.IgnoreCase))
+            {
+                return PackageStatus.Extracting;
+            }
+
+            // 默认保持当前状态，以免频繁跳变
+            return Status;
+        }
+
+        private static bool IsStageCompleteStatus(string statusWord)
+        {
+            if (string.IsNullOrWhiteSpace(statusWord)) return false;
+            var s = statusWord.Trim().ToLowerInvariant();
+            return s == "end" || s == "done" || s == "finish" || s == "finished" || s == "success" || s == "completed" || s == "完成" || s == "结束" || s == "完毕";
         }
 
         /// <summary>
