@@ -27,7 +27,7 @@
             <Button Name="SettingsButton" Content="设置" Margin="10,0,0,0" Padding="10,5" Click="SettingsButton_Click"/>
             <Button Name="ClearDataButton" Content="清除数据" Margin="10,0,0,0" Padding="10,5" Click="ClearDataButton_Click"/>
             <Button Name="LocalPathSettingsButton" Content="路径设置" Margin="10,0,0,0" Padding="10,5" Click="LocalPathSettingsButton_Click"/>
-            <Button Name="OpenLogsButton" Content="打开日志目录" Margin="10,0,0,0" Padding="10,5" Click="OpenLogsButton_Click"/>
+            <Button Name="OpenLogViewerButton" Content="打开日志查看器" Margin="10,0,0,0" Padding="10,5" Click="OpenLogViewerButton_Click"/>
         </StackPanel>
         
         <!-- 包列表 -->

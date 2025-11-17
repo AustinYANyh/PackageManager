@@ -598,6 +598,21 @@ namespace PackageManager
             }
         }
 
+        private void OpenLogViewerButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var win = new LogViewerWindow();
+                win.Owner = this;
+                win.ShowDialog();
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, "打开日志查看器失败");
+                MessageBox.Show($"打开日志查看器失败：{ex.Message}", "日志", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
         
     }
 }

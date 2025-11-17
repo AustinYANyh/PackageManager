@@ -77,6 +77,10 @@
             <Generator>MSBuild:Compile</Generator>
             <SubType>Designer</SubType>
         </Page>
+        <Page Include="LogViewerWindow.xaml">
+            <Generator>MSBuild:Compile</Generator>
+            <SubType>Designer</SubType>
+        </Page>
         <Page Include="LocalPathSettingsWindow.xaml" />
         <Compile Include="App.xaml.cs">
             <DependentUpon>App.xaml</DependentUpon>
@@ -86,7 +90,12 @@
             <DependentUpon>MainWindow.xaml</DependentUpon>
             <SubType>Code</SubType>
         </Compile>
+        <Compile Include="LogViewerWindow.xaml.cs">
+            <DependentUpon>LogViewerWindow.xaml</DependentUpon>
+            <SubType>Code</SubType>
+        </Compile>
         <Compile Include="Models\PackageInfo.cs" />
+        <Compile Include="Models\LogEntry.cs" />
         <Compile Include="Models\LocalPathInfo.cs" />
         <Compile Include="Services\ApplicationFinderService.cs" />
         <Compile Include="Services\DataPersistenceService.cs" />

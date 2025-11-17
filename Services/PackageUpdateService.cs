@@ -175,10 +175,13 @@ namespace PackageManager.Services
                 LoggingService.LogInfo($"准备解压：{zipFilePath} -> {extractPath}");
                 await Task.Run(() =>
                 {
-                    // 确保目标目录存在
+                    // 清理目标目录（尽量安全删除，无法删除则改为覆盖写入）
                     if (Directory.Exists(extractPath))
                     {
-                        Directory.Delete(extractPath, true);
+                        if (!TrySafeDeleteDirectory(extractPath))
+                        {
+                            LoggingService.LogWarning($"无法完全删除目标目录，改为覆盖解压：{extractPath}");
+                        }
                     }
                     
                     Directory.CreateDirectory(extractPath);
@@ -201,7 +204,47 @@ namespace PackageManager.Services
                             // 解压文件
                             if (!string.IsNullOrEmpty(entry.Name))
                             {
-                                entry.ExtractToFile(destinationPath, true);
+                                // 如果目标已存在且为只读，先解除只读
+                                if (File.Exists(destinationPath))
+                                {
+                                    try
+                                    {
+                                        var attr = File.GetAttributes(destinationPath);
+                                        if ((attr & FileAttributes.ReadOnly) == FileAttributes.ReadOnly)
+                                        {
+                                            File.SetAttributes(destinationPath, attr & ~FileAttributes.ReadOnly);
+                                        }
+                                    }
+                                    catch { }
+                                }
+
+                                // 写入文件（失败则记录并重试一次）
+                                try
+                                {
+                                    entry.ExtractToFile(destinationPath, true);
+                                }
+                                catch (UnauthorizedAccessException uae)
+                                {
+                                    LoggingService.LogWarning($"写入受限，尝试重试：{destinationPath} | {uae.Message}");
+                                    try
+                                    {
+                                        // 再次尝试解除只读后写入
+                                        if (File.Exists(destinationPath))
+                                        {
+                                            try
+                                            {
+                                                var attr = File.GetAttributes(destinationPath);
+                                                File.SetAttributes(destinationPath, attr & ~FileAttributes.ReadOnly);
+                                            }
+                                            catch { }
+                                        }
+                                        entry.ExtractToFile(destinationPath, true);
+                                    }
+                                    catch (Exception ex2)
+                                    {
+                                        LoggingService.LogError(ex2, $"文件解压失败：{destinationPath}");
+                                    }
+                                }
                             }
 
                             processedEntries++;
@@ -222,6 +265,62 @@ namespace PackageManager.Services
             {
                 System.Diagnostics.Debug.WriteLine($"解压失败: {ex.Message}");
                 LoggingService.LogError(ex, $"解压失败：{zipFilePath} -> {extractPath}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 安全删除目录：去除只读属性，逐项删除，失败时返回false
+        /// </summary>
+        private static bool TrySafeDeleteDirectory(string path)
+        {
+            try
+            {
+                foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
+                {
+                    try
+                    {
+                        var attr = File.GetAttributes(file);
+                        if ((attr & FileAttributes.ReadOnly) == FileAttributes.ReadOnly)
+                        {
+                            File.SetAttributes(file, attr & ~FileAttributes.ReadOnly);
+                        }
+                    }
+                    catch { }
+                }
+
+                foreach (var dir in Directory.EnumerateDirectories(path, "*", SearchOption.AllDirectories))
+                {
+                    try
+                    {
+                        var attr = File.GetAttributes(dir);
+                        if ((attr & FileAttributes.ReadOnly) == FileAttributes.ReadOnly)
+                        {
+                            File.SetAttributes(dir, attr & ~FileAttributes.ReadOnly);
+                        }
+                    }
+                    catch { }
+                }
+
+                try
+                {
+                    Directory.Delete(path, true);
+                    return true;
+                }
+                catch (UnauthorizedAccessException uae)
+                {
+                    LoggingService.LogWarning($"删除目录权限不足：{path} | {uae.Message}");
+                    return false;
+                }
+                catch (IOException ioe)
+                {
+                    LoggingService.LogWarning($"删除目录IO异常：{path} | {ioe.Message}");
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogWarning($"删除目录失败：{path} | {ex.Message}");
                 return false;
             }
         }
