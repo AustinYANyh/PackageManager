@@ -42,6 +42,7 @@
         <Reference Include="System"/>
         <Reference Include="System.Core"/>
         <Reference Include="System.Data"/>
+        <Reference Include="System.Configuration"/>
         <Reference Include="System.Windows.Forms"/>
         <Reference Include="System.Xml"/>
         <Reference Include="System.Xaml">
@@ -69,6 +70,7 @@
         </ApplicationDefinition>
         <Compile Include="Services\LoggingService.cs" />
         <Compile Include="Services\ToastService.cs" />
+        <Compile Include="Services\AppUpdateService.cs" />
         <Compile Include="SettingsWindow.xaml.cs" />
         <Compile Include="LocalPathSettingsWindow.xaml.cs">
             <DependentUpon>LocalPathSettingsWindow.xaml</DependentUpon>

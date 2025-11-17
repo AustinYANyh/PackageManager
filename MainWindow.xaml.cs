@@ -57,6 +57,16 @@ namespace PackageManager
 
         private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
+            try
+            {
+                var appUpdater = new Services.AppUpdateService();
+                await appUpdater.CheckAndPromptUpdateAsync(this);
+            }
+            catch (Exception ex)
+            {
+                Services.LoggingService.LogError(ex, "启动更新检查失败");
+            }
+
             await LoadVersionsFromFtpAsync();
             
             // 加载可执行文件版本
