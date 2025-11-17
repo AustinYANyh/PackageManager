@@ -67,6 +67,7 @@
             <Generator>MSBuild:Compile</Generator>
             <SubType>Designer</SubType>
         </ApplicationDefinition>
+        <Compile Include="Services\LoggingService.cs" />
         <Compile Include="SettingsWindow.xaml.cs" />
         <Compile Include="LocalPathSettingsWindow.xaml.cs">
             <DependentUpon>LocalPathSettingsWindow.xaml</DependentUpon>

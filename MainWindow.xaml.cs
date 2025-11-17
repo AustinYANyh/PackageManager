@@ -8,6 +8,8 @@ using System;
 using System.Linq;
 using PackageManager.Models;
 using PackageManager.Services;
+using System.IO;
+using System.Diagnostics;
 
 namespace PackageManager
 {
@@ -563,6 +565,36 @@ namespace PackageManager
                 {
                     LatestActivePackage = pkg;
                 });
+            }
+        }
+
+        private void OpenLogsButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PackageManager", "logs");
+                if (!Directory.Exists(dir))
+                {
+                    Directory.CreateDirectory(dir);
+                }
+
+                try
+                {
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = dir,
+                        UseShellExecute = true
+                    });
+                }
+                catch
+                {
+                    Process.Start("explorer.exe", dir);
+                }
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, "打开日志目录失败");
+                MessageBox.Show($"打开日志目录失败：{ex.Message}", "日志", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
 
