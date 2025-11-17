@@ -11,7 +11,7 @@ namespace PackageManager.Models
         [DataGridColumn(2, DisplayName = "级别", Width = "100", IsReadOnly = true)]
         public string Level { get; set; }
 
-        [DataGridColumn(3, DisplayName = "消息", Width = "1190", IsReadOnly = true)]
+        [DataGridColumn(3, DisplayName = "消息", Width = "1150", IsReadOnly = true)]
         public string Message { get; set; }
 
         // [DataGridColumn(4, DisplayName = "详情", Width = "*", IsReadOnly = true)]

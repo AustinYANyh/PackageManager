@@ -762,6 +762,8 @@ namespace PackageManager.Models
                                 StatusText = exitCode == 0 ? "外部工具运行完成" : $"外部工具运行失败（{exitCode}）";
                                 Progress = exitCode == 0 ? 100 : Progress;
                                 Status = exitCode == 0 ? PackageStatus.Completed : PackageStatus.Error;
+                                // 触发桌面提示（签名/加密校验完成）
+                                PackageManager.Services.PackageUpdateService.NotifyVerificationCompleted(this, exitCode == 0, $"ExitCode={exitCode}");
                             }));
                         }
                         finally

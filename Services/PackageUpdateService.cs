@@ -3,6 +3,12 @@ using System.IO;
 using System.IO.Compression;
 using System.Net;
 using System.Threading.Tasks;
+using System.Linq;
+using System.Reflection;
+using System.Windows;
+using System.Windows.Media;
+using CustomControlLibrary.CustomControl.Controls.Notification;
+using CustomControlLibrary.CustomControl.Helper;
 using PackageManager.Models;
 
 namespace PackageManager.Services
@@ -12,6 +18,54 @@ namespace PackageManager.Services
     /// </summary>
     public class PackageUpdateService
     {
+        /// <summary>
+        /// 尝试使用 CustomControlLibrary 中的 ToastNotifier 弹出提示（反射实现，避免编译期耦合）。
+        /// 支持多种可能的签名：
+        /// 1) 静态 ShowSuccess/ShowInfo/ShowWarning/ShowError(string message)
+        /// 2) 静态/实例 Show(string message)、Show(string title, string message, string level, int durationMs)
+        /// 3) 可能包含所有者窗口参数：Show(Window owner, ...)
+        /// </summary>
+        private static void TryShowToast(string title, string message, string level = "Info", int durationMs = 3000)
+        {
+            try
+            {
+                var dispatcher = Application.Current?.Dispatcher;
+                if (dispatcher == null)
+                {
+                    return;
+                }
+
+                dispatcher.BeginInvoke(new Action(() =>
+                {
+                    try
+                    {
+                        ToastNotifier.Show(message, ToastPosition.BottomRight, 5000,new SolidColorBrush(Color.FromRgb(9,150,136)),true);
+                    }
+                    catch (Exception ex)
+                    {
+                        LoggingService.LogWarning($"ToastNotifier 显示失败：{ex.Message}");
+                    }
+                }));
+            }
+            catch (Exception exOuter)
+            {
+                LoggingService.LogWarning($"ToastNotifier 调用失败（外部）：{exOuter.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 对外暴露的校验完成提示入口（供签名/加密校验流程调用）。
+        /// </summary>
+        public static void NotifyVerificationCompleted(PackageInfo packageInfo, bool success, string detail = null)
+        {
+            var title = "校验完成";
+            var msg = $"{packageInfo?.ProductName ?? "包"} 签名/加密校验" + (success ? "成功" : "失败");
+            if (!string.IsNullOrWhiteSpace(detail))
+            {
+                msg += $"（{detail}）";
+            }
+            TryShowToast(title, msg, success ? "Success" : "Error");
+        }
         /// <summary>
         /// 下载并更新包
         /// </summary>
@@ -64,6 +118,7 @@ namespace PackageManager.Services
                 {
                     var size = new FileInfo(tempFilePath).Length;
                     LoggingService.LogInfo($"下载完成：{tempFilePath} | 大小={size} bytes");
+                    TryShowToast("下载完成", $"{packageInfo?.ProductName ?? "包"} 已下载完成", "Success");
                 }
                 catch { }
 
@@ -259,6 +314,7 @@ namespace PackageManager.Services
                     }
                 });
                 LoggingService.LogInfo($"解压完成：{zipFilePath} -> {extractPath}");
+                TryShowToast("解压完成", $"{Path.GetFileName(zipFilePath)} 已解压到目标目录", "Success");
                 return true;
             }
             catch (Exception ex)
