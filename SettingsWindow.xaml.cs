@@ -18,6 +18,7 @@ namespace PackageManager
 
         private bool _programEntryWithG;
         private string _dataLocation;
+        private string _appVersionText;
 
         public string AddinPath
         {
@@ -37,6 +38,12 @@ namespace PackageManager
             set => SetProperty(ref _dataLocation, value);
         }
 
+        public string AppVersionText
+        {
+            get => _appVersionText;
+            set => SetProperty(ref _appVersionText, value);
+        }
+
         public SettingsWindow(DataPersistenceService dataPersistenceService)
         {
             InitializeComponent();
@@ -44,6 +51,10 @@ namespace PackageManager
             
             DataContext = this;
             LoadSettings();
+
+            // 设置版本显示文本：从当前程序集版本读取
+            var current = GetCurrentVersion();
+            AppVersionText = $"版本：{current}";
         }
 
         /// <summary>
@@ -243,6 +254,18 @@ namespace PackageManager
             field = value;
             OnPropertyChanged(propertyName);
             return true;
+        }
+
+        private static Version GetCurrentVersion()
+        {
+            try
+            {
+                return System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
+            }
+            catch
+            {
+                return new Version(0,0,0,0);
+            }
         }
 
         #endregion
