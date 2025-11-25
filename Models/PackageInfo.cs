@@ -116,6 +116,8 @@ namespace PackageManager.Models
 
         public event Action<PackageInfo, bool> DebugModeChanged;
 
+        public event Action<PackageInfo> UnlockAndDownloadRequested;
+
         public event PropertyChangedEventHandler PropertyChanged;
 
         /// <summary>
@@ -397,6 +399,15 @@ namespace PackageManager.Models
             get => runEmbeddedToolCommand ?? (runEmbeddedToolCommand = new RelayCommand(ExecuteRunEmbeddedTool));
 
             set => SetProperty(ref runEmbeddedToolCommand, value);
+        }
+
+        private ICommand unlockAndDownloadCommand;
+
+        public ICommand UnlockAndDownloadCommand
+        {
+            get => unlockAndDownloadCommand ?? (unlockAndDownloadCommand = new RelayCommand(ExecuteUnlockAndDownload));
+
+            set => SetProperty(ref unlockAndDownloadCommand, value);
         }
 
         /// <summary>
@@ -688,6 +699,11 @@ namespace PackageManager.Models
         private void ExecuteRunEmbeddedTool()
         {
             new EmbeddedToolRunnerService(this).RunAsync();
+        }
+
+        private void ExecuteUnlockAndDownload()
+        {
+            UnlockAndDownloadRequested?.Invoke(this);
         }
         
         /// <summary>

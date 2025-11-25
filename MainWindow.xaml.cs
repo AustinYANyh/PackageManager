@@ -338,6 +338,7 @@ namespace PackageManager
                 package.UpdateRequested += OnPackageUpdateRequested;
                 package.VersionChanged += OnPackageVersionChanged;
                 package.DownloadRequested += OnPackageDownloadRequested;
+                package.UnlockAndDownloadRequested += OnUnlockAndDownloadRequested;
                 package.DebugModeChanged += OnPackageDebugModeChanged;
                 package.PropertyChanged += OnPackagePropertyChanged;
             }
@@ -384,6 +385,33 @@ namespace PackageManager
                 // 恢复可编辑状态
                 packageInfo.IsReadOnly = false;
                 
+                if (success)
+                {
+                    packageInfo.StatusText = $"{packageInfo.ProductName} 更新完成";
+                }
+                else
+                {
+                    packageInfo.StatusText = $"{packageInfo.ProductName} 更新失败";
+                }
+            });
+        }
+
+        private async void OnUnlockAndDownloadRequested(PackageInfo packageInfo)
+        {
+            packageInfo.StatusText = $"正在解锁并更新 {packageInfo.ProductName}...";
+            packageInfo.IsReadOnly = true;
+            var success = await _updateService.UpdatePackageAsync(packageInfo,
+                                                                  (progress, message) =>
+                                                                  {
+                                                                      Dispatcher.Invoke(() =>
+                                                                      {
+                                                                          packageInfo.StatusText = $"{packageInfo.ProductName}: {message}";
+                                                                      });
+                                                                  },
+                                                                  true);
+            Dispatcher.Invoke(() =>
+            {
+                packageInfo.IsReadOnly = false;
                 if (success)
                 {
                     packageInfo.StatusText = $"{packageInfo.ProductName} 更新完成";
