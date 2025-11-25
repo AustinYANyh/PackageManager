@@ -5,6 +5,7 @@
         xmlns:button="clr-namespace:CustomControlLibrary.CustomControl.Controls.Button;assembly=CustomControlLibrary"
         xmlns:models="clr-namespace:PackageManager.Models"
         xmlns:local="clr-namespace:PackageManager"
+        xmlns:navigation="clr-namespace:CustomControlLibrary.CustomControl.Controls.Navigation;assembly=CustomControlLibrary"
         Title="切换配置" Height="560" Width="1000"
         ResizeMode="CanResize" WindowStartupLocation="CenterOwner" Loaded="Window_Loaded">
     <Window.Resources>
@@ -68,9 +69,9 @@
                             </TextBlock>
                         </StackPanel>
                         <Border.ContextMenu>
-                            <ContextMenu>
-                                <MenuItem Header="删除此自定义配置" Click="DeletePresetMenuItem_Click"/>
-                            </ContextMenu>
+                            <navigation:CContextMenu>
+                                <navigation:CMenuItem Header="删除此自定义配置" Click="DeletePresetMenuItem_Click"/>
+                            </navigation:CContextMenu>
                         </Border.ContextMenu>
                     </Border>
                 </DataTemplate>

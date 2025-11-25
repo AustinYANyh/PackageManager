@@ -697,9 +697,15 @@ namespace PackageManager.Models
         {
             try
             {
-                if (string.IsNullOrWhiteSpace(LocalPath) || !Directory.Exists(LocalPath))
+                if (string.IsNullOrWhiteSpace(LocalPath))
                 {
                     MessageBox.Show("本地包路径无效，请先在路径设置中配置。", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+                
+                if (!Directory.Exists(LocalPath))
+                {
+                    MessageBox.Show("本地包不存在，请先进行更新。", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
                     return;
                 }
 
