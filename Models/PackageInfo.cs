@@ -761,7 +761,7 @@ namespace PackageManager.Models
                 }
 
                 var iniPath = Path.Combine(configDir, "ServerInfo.ini");
-                File.WriteAllText(iniPath, window.SelectedPresetContent, Encoding.UTF8);
+                File.WriteAllText(iniPath, window.SelectedPresetContent, new UTF8Encoding(false));
 
                 LoggingService.LogInfo($"已应用预设配置到: {iniPath}");
                 StatusText = "预设配置已应用，已写入 ServerInfo.ini";

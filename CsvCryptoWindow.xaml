@@ -1,0 +1,64 @@
+<Window x:Class="PackageManager.CsvCryptoWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:controls="clr-namespace:CustomControlLibrary.CustomControl.Controls;assembly=CustomControlLibrary"
+        xmlns:button="clr-namespace:CustomControlLibrary.CustomControl.Controls.Button;assembly=CustomControlLibrary"
+        mc:Ignorable="d"
+        Title="CSV 加解密" Height="640" Width="960" WindowStartupLocation="CenterOwner" AllowDrop="True"
+        PreviewDragOver="Window_PreviewDragOver" PreviewDrop="Window_PreviewDrop">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Orientation="Horizontal" Grid.Row="0" Margin="0,0,0,12">
+            <controls:CTextBlock Text="模式:" VerticalAlignment="Center" Margin="0,0,8,0"/>
+            <RadioButton Content="解密" GroupName="Mode" IsChecked="True" Checked="DecryptRadio_Checked" Margin="0,0,8,0" VerticalAlignment="Center"/>
+            <RadioButton Content="加密" GroupName="Mode" Checked="EncryptRadio_Checked"  VerticalAlignment="Center"/>
+            <controls:CTextBlock Text="输出目录:" VerticalAlignment="Center" Margin="24,0,8,0"/>
+            <controls:CTextBox x:Name="OutputDirTextBox" Width="360" IsReadOnly="True"/>
+            <button:CButton Content="选择输出目录" Width="110" Margin="8,0,0,0" Click="SelectOutputDirButton_Click"/>
+            <button:CButton Content="添加文件" Width="90" Margin="16,0,0,0" Click="AddFilesButton_Click"/>
+            <button:CButton Content="清空列表" Width="90" Margin="8,0,0,0" Click="ClearListButton_Click"/>
+        </StackPanel>
+
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <Border BorderBrush="#1F000000" BorderThickness="1" Background="#08000000" CornerRadius="4">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <ListView x:Name="FilesListView" Grid.Row="0" AllowDrop="True" Drop="FilesListView_Drop" PreviewDragOver="FilesListView_PreviewDragOver" DragOver="FilesListView_DragOver">
+                        <ListView.View>
+                            <GridView>
+                                <GridViewColumn Header="文件" Width="480" DisplayMemberBinding="{Binding FilePath}"/>
+                                <GridViewColumn Header="状态" Width="120" DisplayMemberBinding="{Binding Status}"/>
+                                <GridViewColumn Header="消息" Width="260" DisplayMemberBinding="{Binding Message}"/>
+                                <GridViewColumn Header="输出文件" Width="320" DisplayMemberBinding="{Binding OutputPath}"/>
+                            </GridView>
+                        </ListView.View>
+                    </ListView>
+                    <Grid  Grid.Row="1" Height="120" Margin="0,8,0,0"  Background="#08000000" 
+                           AllowDrop="True" Drop="DropArea_Drop" PreviewDragOver="DropArea_PreviewDragOver" DragOver="DropArea_DragOver" DragEnter="DropArea_DragEnter">
+                        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                            <controls:CTextBlock Text="将CSV文件拖拽到此区域，或使用上方按钮添加"/>
+                        </StackPanel>
+                    </Grid>
+                </Grid>
+            </Border>
+        </Grid>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <button:CButton Content="开始处理" Width="100" Click="StartButton_Click"/>
+            <button:CButton Content="关闭" Width="80" Margin="8,0,0,0" Click="CloseButton_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>

@@ -4,6 +4,7 @@
     <IncludeAssemblies>
       Newtonsoft.Json
       CustomControlLibrary
+      Endelib.v1.0.1
     </IncludeAssemblies>
     <Unmanaged32Assemblies />
     <Unmanaged64Assemblies />

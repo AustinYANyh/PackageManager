@@ -23,54 +23,42 @@ namespace PackageManager
             DispatcherUnhandledException += App_DispatcherUnhandledException;
             TaskScheduler.UnobservedTaskException += TaskScheduler_UnobservedTaskException;
 
-            TryElevateIfNotAdmin(e.Args);
-        }
-
-        private static bool IsRunningAsAdministrator()
-        {
-            try
-            {
-                var identity = WindowsIdentity.GetCurrent();
-                var principal = new WindowsPrincipal(identity);
-                return principal.IsInRole(WindowsBuiltInRole.Administrator);
-            }
-            catch
-            {
-                return false;
-            }
-        }
-
-        private void TryElevateIfNotAdmin(string[] args)
-        {
-            if (IsRunningAsAdministrator())
+            if (TryHandleAdminTask(e.Args))
             {
                 return;
             }
+        }
 
+        private bool TryHandleAdminTask(string[] args)
+        {
             try
             {
-                var exePath = Process.GetCurrentProcess().MainModule.FileName;
-                var psi = new ProcessStartInfo
+                if (args != null && args.Length >= 2 && string.Equals(args[0], "--pm-admin-update", StringComparison.OrdinalIgnoreCase))
                 {
-                    FileName = exePath,
-                    UseShellExecute = true,
-                    Verb = "runas",
-                    Arguments = string.Join(" ", args.Select(QuoteIfNeeded))
-                };
-                Process.Start(psi);
-                Shutdown(); // 退出当前非管理员实例
+                    var jsonPath = args[1];
+                    var text = System.IO.File.ReadAllText(jsonPath);
+                    var cfg = Newtonsoft.Json.JsonConvert.DeserializeObject<Services.AdminElevationService.AdminUpdateConfig>(text);
+                    var info = new Models.PackageInfo
+                    {
+                        ProductName = cfg.ProductName,
+                        // DownloadUrl = cfg.DownloadUrl,
+                        LocalPath = cfg.LocalPath,
+                        Status = Models.PackageStatus.Downloading,
+                        StatusText = "正在下载..."
+                    };
+                    var svc = new Services.PackageUpdateService();
+                    var ok = svc.UpdatePackageAsync(info, null, cfg.ForceUnlock).GetAwaiter().GetResult();
+                    Environment.Exit(ok ? 0 : 1);
+                    return true;
+                }
             }
             catch (Exception ex)
             {
-                LoggingService.LogError(ex, "管理员提权失败，继续以普通权限运行");
-                MessageBox.Show("未能获取管理员权限，部分操作可能失败。已记录错误日志。", "权限警告", MessageBoxButton.OK, MessageBoxImage.Warning);
+                Services.LoggingService.LogError(ex, "管理员任务执行失败");
+                try { Environment.Exit(1); } catch { }
+                return true;
             }
-        }
-
-        private static string QuoteIfNeeded(string arg)
-        {
-            if (string.IsNullOrEmpty(arg)) return "\"\"";
-            return arg.Contains(" ") ? $"\"{arg}\"" : arg;
+            return false;
         }
 
         private void App_DispatcherUnhandledException(object sender, System.Windows.Threading.DispatcherUnhandledExceptionEventArgs e)

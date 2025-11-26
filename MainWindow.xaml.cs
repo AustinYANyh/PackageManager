@@ -24,6 +24,7 @@ namespace PackageManager
         private readonly DataPersistenceService _dataPersistenceService;
         private ObservableCollection<PackageInfo> _packages;
         private PackageInfo _latestActivePackage;
+        
 
         public ObservableCollection<PackageInfo> Packages
         {
@@ -648,6 +649,21 @@ namespace PackageManager
             {
                 LoggingService.LogError(ex, "打开日志查看器失败");
                 MessageBox.Show($"打开日志查看器失败：{ex.Message}", "日志", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
+        private void OpenCsvCryptoWindowButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var win = new CsvCryptoWindow();
+                win.Owner = this;
+                win.Show();
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, "打开CSV加解密窗口失败");
+                MessageBox.Show($"打开CSV加解密窗口失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 

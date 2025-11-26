@@ -43,6 +43,13 @@ namespace PackageManager.Services
         {
             try
             {
+                if (!AdminElevationService.IsRunningAsAdministrator() && AdminElevationService.RequiresAdminForPath(packageInfo.LocalPath))
+                {
+                    packageInfo.Status = PackageStatus.Downloading;
+                    packageInfo.StatusText = "正在以管理员权限执行更新...";
+                    progressCallback?.Invoke(0, "请求管理员权限");
+                    var elevatedOk = await AdminElevationService.RunElevatedUpdateAsync(packageInfo, forceUnlock);
+                }
                 // 记录开始更新
                 LoggingService.LogInfo($"开始更新包：{packageInfo?.ProductName ?? "<unknown>"} | Url={packageInfo?.DownloadUrl} | Local={packageInfo?.LocalPath}");
 

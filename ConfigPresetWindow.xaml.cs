@@ -104,8 +104,8 @@ namespace PackageManager
             content.AppendLine("[ServerInfo]");
             content.AppendLine($"ServerDomain=\"{serverDomain}\"");
             content.AppendLine($"CommonServerDomain=\"{commonServerDomain}\"");
-            content.AppendLine("[LoginSetting]");
             content.AppendLine($"IEProxyAvailable=\"{ieProxyAvailable}\"");
+            content.AppendLine("[LoginSetting]");
             content.AppendLine($"requestTimeout={requestTimeout}");
             content.AppendLine($"responseTimeout={responseTimeout}");
             content.AppendLine($"requestRetryTimes={retryTimes}");

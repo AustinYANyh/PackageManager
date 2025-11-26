@@ -9,47 +9,45 @@
         xmlns:button="clr-namespace:CustomControlLibrary.CustomControl.Controls.Button;assembly=CustomControlLibrary"
         mc:Ignorable="d"
         Title="包管理器" Height="700" Width="1300" MinWidth="960"
-        ResizeMode="CanResize" WindowStartupLocation="CenterScreen">
+        ResizeMode="CanResize" WindowStartupLocation="CenterScreen" AllowDrop="True">
     <Window.Resources>
-        <local:StatusToVisibilityConverter x:Key="StatusToVisibilityConverter"/>
-        <local:StatusToButtonVisibilityConverter x:Key="StatusToButtonVisibilityConverter"/>
     </Window.Resources>
-    
+
     <Grid Margin="16">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
         <Grid Grid.Row="0" Margin="0,0,0,12">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="Auto"/>
-                <ColumnDefinition Width="260"/>
-                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="260" />
+                <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
-            <controls:CTextBlock Grid.Column="0" Text="产品包管理器" FontSize="20" FontWeight="Bold" VerticalAlignment="Center"/>
-            <TextBox Grid.Column="1" x:Name="SearchBox" Height="28" Margin="16,0,0,0" Visibility="Hidden"/>
+            <controls:CTextBlock Grid.Column="0" Text="产品包管理器" FontSize="20" FontWeight="Bold" VerticalAlignment="Center" />
+            <TextBox Grid.Column="1" x:Name="SearchBox" Height="28" Margin="16,0,0,0" Visibility="Hidden" />
             <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right">
-                <button:CButton Content="刷新" Margin="0,0,8,0" Padding="10,6" Click="RefreshButton_Click"/>
-                <button:CButton Content="设置" Margin="0,0,8,0" Padding="10,6" Click="SettingsButton_Click"/>
-                <button:CButton Content="路径" Margin="0,0,8,0" Padding="10,6" Click="LocalPathSettingsButton_Click"/>
-                <button:CButton Content="日志" Padding="10,6" Click="OpenLogViewerButton_Click"/>
+                <button:CButton Content="刷新" Margin="0,0,8,0" Padding="10,6" Click="RefreshButton_Click" />
+                <button:CButton Content="设置" Margin="0,0,8,0" Padding="10,6" Click="SettingsButton_Click" />
+                <button:CButton Content="路径" Margin="0,0,8,0" Padding="10,6" Click="LocalPathSettingsButton_Click" />
+                <button:CButton Content="日志" Padding="10,6" Click="OpenLogViewerButton_Click" />
             </StackPanel>
         </Grid>
 
         <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="6"/>
-                <ColumnDefinition Width="450"/>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="6" />
+                <ColumnDefinition Width="450" />
             </Grid.ColumnDefinitions>
 
             <C:CDataGrid x:Name="PackageDataGrid"
                          Grid.Column="0"
                          EnableAutoTemplateSelection="True"
                          ItemsSource="{Binding Packages}"
-                         SelectedItem="{Binding LatestActivePackage, Mode=TwoWay}"/>
+                         SelectedItem="{Binding LatestActivePackage, Mode=TwoWay}" />
 
             <GridSplitter Grid.Column="1"
                           Width="6"
@@ -59,44 +57,46 @@
 
             <Border Grid.Column="2" BorderBrush="#1F000000" BorderThickness="1" Padding="12">
                 <StackPanel>
-                    <controls:CTextBlock Text="{Binding LatestActivePackage.ProductName}" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                    <controls:CTextBlock Text="{Binding LatestActivePackage.ProductName}" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,8" />
                     <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                        <controls:CTextBlock Text="版本" Width="80" VerticalAlignment="Center"/>
+                        <controls:CTextBlock Text="版本" Width="80" VerticalAlignment="Center" />
                         <controls:CComboBox ItemsSource="{Binding LatestActivePackage.AvailableVersions}"
-                                  SelectedItem="{Binding LatestActivePackage.Version, Mode=TwoWay}" Width="320"/>
+                                            SelectedItem="{Binding LatestActivePackage.Version, Mode=TwoWay}" Width="320" />
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                        <controls:CTextBlock Text="包名" Width="80" VerticalAlignment="Center"/>
+                        <controls:CTextBlock Text="包名" Width="80" VerticalAlignment="Center" />
                         <controls:CComboBox ItemsSource="{Binding LatestActivePackage.AvailablePackages}"
-                                  SelectedItem="{Binding LatestActivePackage.UploadPackageName, Mode=TwoWay}" Width="320"/>
+                                            SelectedItem="{Binding LatestActivePackage.UploadPackageName, Mode=TwoWay}" Width="320" />
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                        <controls:CTextBlock Text="可执行版本" Width="80" VerticalAlignment="Center"/>
+                        <controls:CTextBlock Text="可执行版本" Width="80" VerticalAlignment="Center" />
                         <controls:CComboBox ItemsSource="{Binding LatestActivePackage.AvailableExecutableVersions}"
-                                  DisplayMemberPath="DisPlayName"
-                                  SelectedValuePath="DisPlayName"
-                                  SelectedValue="{Binding LatestActivePackage.SelectedExecutableVersion, Mode=TwoWay}" Width="320"/>
+                                            DisplayMemberPath="DisPlayName"
+                                            SelectedValuePath="DisPlayName"
+                                            SelectedValue="{Binding LatestActivePackage.SelectedExecutableVersion, Mode=TwoWay}" Width="320" />
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
-                        <button:CButton Content="解锁更新" Command="{Binding LatestActivePackage.UnlockAndDownloadCommand}" Width="80" Margin="0,0,8,0"/>
-                        <button:CButton Content="更新" Command="{Binding LatestActivePackage.UpdateCommand}" Width="80" Margin="0,0,8,0"/>
-                        <button:CButton Content="打开路径" Command="{Binding LatestActivePackage.OpenPathCommand}" Width="100" Margin="0,0,8,0"/>
-                        <button:CButton Content="切换配置" Command="{Binding LatestActivePackage.ChangeConfigPresetCommand}" Width="80"/>
+                        <button:CButton Content="解锁更新" Command="{Binding LatestActivePackage.UnlockAndDownloadCommand}" Width="80" Margin="0,0,8,0" />
+                        <button:CButton Content="更新" Command="{Binding LatestActivePackage.UpdateCommand}" Width="80" Margin="0,0,8,0" />
+                        <button:CButton Content="打开路径" Command="{Binding LatestActivePackage.OpenPathCommand}" Width="100" Margin="0,0,8,0" />
+                        <button:CButton Content="切换配置" Command="{Binding LatestActivePackage.ChangeConfigPresetCommand}" Width="80" />
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
-                        <button:CButton Content="参数目录" Command="{Binding LatestActivePackage.OpenParameterConfigCommand}" Width="80" Margin="0,0,8,0"/>
-                        <button:CButton Content="模式切换" Command="{Binding LatestActivePackage.ChangeModeToDebugCommand}" Width="80" Margin="0,0,8,0"/>
-                        <button:CButton Content="签名加密校验" Command="{Binding LatestActivePackage.RunEmbeddedToolCommand}" Width="120"/>
+                        <button:CButton Content="参数目录" Command="{Binding LatestActivePackage.OpenParameterConfigCommand}" Width="80" Margin="0,0,8,0" />
+                        <button:CButton Content="模式切换" Command="{Binding LatestActivePackage.ChangeModeToDebugCommand}" Width="80" Margin="0,0,8,0" />
+                        <button:CButton Content="签名加密校验" Command="{Binding LatestActivePackage.RunEmbeddedToolCommand}" Width="120" />
                     </StackPanel>
-                    <controls:CProgressBar Minimum="0" Maximum="100" Value="{Binding LatestActivePackage.Progress}" Height="16" Margin="0,16,0,0"/>
-                    <controls:CTextBlock Text="{Binding LatestActivePackage.StatusText}" Foreground="#6B6B6B" Margin="0,8,0,0"/>
+                    <controls:CProgressBar Minimum="0" Maximum="100" Value="{Binding LatestActivePackage.Progress}" Height="16" Margin="0,16,0,0" />
+                    <controls:CTextBlock Text="{Binding LatestActivePackage.StatusText}" Foreground="#6B6B6B" Margin="0,8,0,0" />
+
+                    <button:CButton Content="CSV加解密" Width="100" Margin="0,16,0,0" Click="OpenCsvCryptoWindowButton_Click"/>
                 </StackPanel>
             </Border>
         </Grid>
 
         <StatusBar Grid.Row="2" Margin="0,12,0,0">
             <StatusBarItem>
-                <controls:CTextBlock Text="{Binding LatestActivePackage.StatusText, FallbackValue=就绪, TargetNullValue=就绪}"/>
+                <controls:CTextBlock Text="{Binding LatestActivePackage.StatusText, FallbackValue=就绪, TargetNullValue=就绪}" />
             </StatusBarItem>
         </StatusBar>
     </Grid>
