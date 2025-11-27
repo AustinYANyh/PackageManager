@@ -105,6 +105,8 @@ namespace PackageManager.Models
 
         private ICommand runEmbeddedToolCommand;
 
+        private System.Collections.Generic.Dictionary<string, string> versionLocalPaths;
+
         /// <summary>
         /// 更新请求事件
         /// </summary>
@@ -224,6 +226,23 @@ namespace PackageManager.Models
                 }
             }
         }
+
+        public System.Collections.Generic.Dictionary<string, string> VersionLocalPaths
+        {
+            get => versionLocalPaths ?? (versionLocalPaths = new System.Collections.Generic.Dictionary<string, string>(System.StringComparer.OrdinalIgnoreCase));
+            set => SetProperty(ref versionLocalPaths, value);
+        }
+
+        public string GetLocalPathForVersion(string version)
+        {
+            if (!string.IsNullOrWhiteSpace(version) && VersionLocalPaths != null && VersionLocalPaths.TryGetValue(version, out var p) && !string.IsNullOrWhiteSpace(p))
+            {
+                return p;
+            }
+            return LocalPath;
+        }
+
+        public string EffectiveLocalPath => GetLocalPathForVersion(Version);
 
         /// <summary>
         /// 包状态
@@ -710,7 +729,7 @@ namespace PackageManager.Models
 
         private void ExecuteOpenParameterConfig()
         {
-            string path = Path.Combine(LocalPath, "config");
+            string path = System.IO.Path.Combine(EffectiveLocalPath, "config");
             if (!string.IsNullOrEmpty(path) && Directory.Exists(path))
             {
                 Process.Start(path);
@@ -723,7 +742,7 @@ namespace PackageManager.Models
 
         private void ExecuteOpenImageConfig()
         {
-            string path = Path.Combine(LocalPath, "Image");
+            string path = System.IO.Path.Combine(EffectiveLocalPath, "Image");
             if (!string.IsNullOrEmpty(path) && Directory.Exists(path))
             {
                 //打开文件夹
@@ -755,13 +774,13 @@ namespace PackageManager.Models
         {
             try
             {
-                if (string.IsNullOrWhiteSpace(LocalPath))
+                if (string.IsNullOrWhiteSpace(EffectiveLocalPath))
                 {
                     MessageBox.Show("本地包路径无效，请先在路径设置中配置。", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
                     return;
                 }
                 
-                if (!Directory.Exists(LocalPath))
+                if (!System.IO.Directory.Exists(EffectiveLocalPath))
                 {
                     MessageBox.Show("本地包不存在，请先进行更新。", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
                     return;
@@ -771,10 +790,10 @@ namespace PackageManager.Models
                 string currentIniContent = null;
                 try
                 {
-                    var currentIniPath = Path.Combine(LocalPath, "config", "ServerInfo.ini");
-                    if (File.Exists(currentIniPath))
+                    var currentIniPath = System.IO.Path.Combine(EffectiveLocalPath, "config", "ServerInfo.ini");
+                    if (System.IO.File.Exists(currentIniPath))
                     {
-                        currentIniContent = File.ReadAllText(currentIniPath, Encoding.UTF8);
+                        currentIniContent = System.IO.File.ReadAllText(currentIniPath, Encoding.UTF8);
                     }
                 }
                 catch { }
@@ -790,14 +809,14 @@ namespace PackageManager.Models
                     return;
                 }
 
-                var configDir = Path.Combine(LocalPath, "config");
-                if (!Directory.Exists(configDir))
+                var configDir = System.IO.Path.Combine(EffectiveLocalPath, "config");
+                if (!System.IO.Directory.Exists(configDir))
                 {
-                    Directory.CreateDirectory(configDir);
+                    System.IO.Directory.CreateDirectory(configDir);
                 }
 
-                var iniPath = Path.Combine(configDir, "ServerInfo.ini");
-                File.WriteAllText(iniPath, window.SelectedPresetContent, new UTF8Encoding(false));
+                var iniPath = System.IO.Path.Combine(configDir, "ServerInfo.ini");
+                System.IO.File.WriteAllText(iniPath, window.SelectedPresetContent, new UTF8Encoding(false));
 
                 LoggingService.LogInfo($"已应用预设配置到: {iniPath}");
                 StatusText = "预设配置已应用，已写入 ServerInfo.ini";
@@ -817,7 +836,7 @@ namespace PackageManager.Models
             bool target = !IsDebugMode;
             try
             {
-                DebugSettingsService.WriteIsDebugMode(LocalPath, target);
+            DebugSettingsService.WriteIsDebugMode(EffectiveLocalPath, target);
             }
             catch
             {
@@ -845,7 +864,7 @@ namespace PackageManager.Models
                 {
                     //配置Addin文件
                     string defaultAddinDir = GetAddinPath();
-                    if (!Directory.Exists(defaultAddinDir))
+                    if (!System.IO.Directory.Exists(defaultAddinDir))
                     {
                         return;
                     }
@@ -853,12 +872,12 @@ namespace PackageManager.Models
                     string version = applicationVersion.Version;
                     string addinDir = Path.Combine(defaultAddinDir, version);
 
-                    string binDir = Path.Combine(LocalPath, "bin");
+                    string binDir = System.IO.Path.Combine(EffectiveLocalPath, "bin");
 
                     // 查找bin目录下所有dll文件，找出以G开头、包含版本号、以.dll结尾的文件，并复制其完整路径
                     if (Directory.Exists(binDir))
                     {
-                        var targetFiles = Directory.GetFiles(binDir, "*.dll")
+                        var targetFiles = System.IO.Directory.GetFiles(binDir, "*.dll")
                                                    .Where(file => Path.GetFileName(file).StartsWith("G") && Path.GetFileName(file).Contains(version))
                                                    .ToList().FirstOrDefault();
 
@@ -871,11 +890,11 @@ namespace PackageManager.Models
                                 targetFiles = Path.Combine(Path.GetDirectoryName(targetFiles) ?? string.Empty, replace);
                             }
 
-                            string addinFile = Directory.GetFiles(LocalPath, "*.addin").FirstOrDefault();
+                            string addinFile = System.IO.Directory.GetFiles(EffectiveLocalPath, "*.addin").FirstOrDefault();
                             if (!string.IsNullOrEmpty(addinFile))
                             {
                                 string addinStr = string.Empty;
-                                using (StreamReader streamReader = new StreamReader(new FileStream(addinFile, FileMode.Open)))
+                                using (System.IO.StreamReader streamReader = new System.IO.StreamReader(new System.IO.FileStream(addinFile, System.IO.FileMode.Open)))
                                 {
                                     addinStr = streamReader.ReadToEnd();
 
@@ -889,10 +908,10 @@ namespace PackageManager.Models
                                     }
                                 }
 
-                                File.WriteAllText(addinFile, addinStr);
+                                System.IO.File.WriteAllText(addinFile, addinStr);
 
-                                string addinFilePath = Path.Combine(addinDir, Path.GetFileName(addinFile));
-                                File.Copy(addinFile, addinFilePath, true);
+                                string addinFilePath = System.IO.Path.Combine(addinDir, Path.GetFileName(addinFile));
+                                System.IO.File.Copy(addinFile, addinFilePath, true);
                             }
                         }
                     }

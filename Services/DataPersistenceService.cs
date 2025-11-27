@@ -20,6 +20,7 @@ namespace PackageManager.Services
         public bool IsDebugMode { get; set; }
         
         public List<ApplicationVersion> AvailableExecutableVersions { get; set; } = new List<ApplicationVersion>();
+        public Dictionary<string, string> VersionLocalPaths { get; set; } = new Dictionary<string, string>();
     }
 
     /// <summary>
@@ -123,7 +124,7 @@ namespace PackageManager.Services
                 new PackageConfigItem { ProductName = "建模大师（钢构）Develop", FtpServerPath = "http://doc-dev.hongwa.cc:8001/BuildMaster(ST)/", LocalPath = @"C:\红瓦科技\建模大师（钢构）Develop", SupportsConfigOps = true },
                 new PackageConfigItem { ProductName = "建模大师（施工）Develop", FtpServerPath = "http://doc-dev.hongwa.cc:8001/BuildMaster(CST)/", LocalPath = @"C:\红瓦科技\建模大师（施工）Develop", SupportsConfigOps = true },
                 new PackageConfigItem { ProductName = "BuildMaster(Dazzle)", FtpServerPath = "http://doc-dev.hongwa.cc:8001/BuildMaster(Dazzle)/Dazzle.RevitApp/", LocalPath = @"C:\红瓦科技\BuildMaster(Dazzle)Develop", SupportsConfigOps = false },
-                new PackageConfigItem { ProductName = "TeamworkMaster(Develop)", FtpServerPath = "http://doc-dev.hongwa.cc:8001/TeamworkMaster/", LocalPath = @"C:\红瓦科技\TeamworkMaster(Develop)", SupportsConfigOps = false },
+                new PackageConfigItem { ProductName = "TeamworkMaster(Develop)", FtpServerPath = "http://doc-dev.hongwa.cc:8001/TeamworkMaster/", LocalPath = @"C:\红瓦科技\TeamworkMaster(Develop)", SupportsConfigOps = true },
             };
         }
 
@@ -269,7 +270,8 @@ namespace PackageManager.Services
                         SelectedExecutableVersion = package.SelectedExecutableVersion,
                         ExecutablePath = package.ExecutablePath,
                         IsDebugMode = package.IsDebugMode,
-                        AvailableExecutableVersions = package.AvailableExecutableVersions?.ToList() ?? new List<ApplicationVersion>()
+                        AvailableExecutableVersions = package.AvailableExecutableVersions?.ToList() ?? new List<ApplicationVersion>(),
+                        VersionLocalPaths = package.VersionLocalPaths?.ToDictionary(kv => kv.Key, kv => kv.Value) ?? new Dictionary<string, string>()
                     };
                     stateData.Packages.Add(packageState);
                 }
@@ -331,6 +333,11 @@ namespace PackageManager.Services
             // 先应用调试模式，再设置LocalPath以便配置文件优先生效
             package.IsDebugMode = stateData.IsDebugMode;
             package.LocalPath = stateData.LocalPath;
+            try
+            {
+                package.VersionLocalPaths = stateData.VersionLocalPaths ?? new Dictionary<string, string>();
+            }
+            catch { }
             if (stateData.AvailableExecutableVersions?.Count > 0)
             {
                 package.AvailableExecutableVersions.Clear();

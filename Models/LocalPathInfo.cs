@@ -21,14 +21,17 @@ namespace PackageManager.Models
             set => SetProperty(ref productName, value);
         }
 
-        [DataGridColumn(2, DisplayName = "本地包路径", Width = "420")]
+        [DataGridColumn(2, DisplayName = "版本", Width = "80", IsReadOnly = true)]
+        public string Version { get; set; }
+
+        [DataGridColumn(3, DisplayName = "本地包路径", Width = "420")]
         public string LocalPath
         {
             get => localPath;
             set => SetProperty(ref localPath, value);
         }
 
-        [DataGridButton(3, DisplayName = "选择路径", Width = "120", ControlType = "Button", ButtonText = "浏览...", ButtonWidth = 90, ButtonHeight = 26, ButtonCommandProperty = "BrowseCommand")]
+        [DataGridButton(4, DisplayName = "选择路径", Width = "120", ControlType = "Button", ButtonText = "浏览...", ButtonWidth = 90, ButtonHeight = 26, ButtonCommandProperty = "BrowseCommand")]
         public string Browse { get; set; }
 
         public ICommand BrowseCommand

@@ -80,7 +80,7 @@
                         <button:CButton Content="解锁更新" Command="{Binding LatestActivePackage.UnlockAndDownloadCommand}" Width="80" Margin="0,0,8,0" IsEnabled="{Binding LatestActivePackage.IsEnabled}" />
                         <button:CButton Content="更新" Command="{Binding LatestActivePackage.UpdateCommand}" Width="80" Margin="0,0,8,0" IsEnabled="{Binding LatestActivePackage.IsEnabled}" />
                         <button:CButton Content="打开Revit" Command="{Binding LatestActivePackage.OpenPathCommand}" Width="100" Margin="0,0,8,0" IsEnabled="{Binding LatestActivePackage.IsEnabled}" />
-                        <button:CButton Content="切换配置" Command="{Binding LatestActivePackage.ChangeConfigPresetCommand}" Width="80" IsEnabled="{Binding LatestActivePackage.IsEnabled}" />
+                        <button:CButton Content="切换配置" Command="{Binding LatestActivePackage.ChangeConfigPresetCommand}" Width="80" IsEnabled="{Binding LatestActivePackage.ConfigOpsEnabled}" />
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
                         <button:CButton Content="参数目录" Command="{Binding LatestActivePackage.OpenParameterConfigCommand}" Width="80" Margin="0,0,8,0" IsEnabled="{Binding LatestActivePackage.ConfigOpsEnabled}" />

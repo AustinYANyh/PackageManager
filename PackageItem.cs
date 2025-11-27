@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Windows.Input;
@@ -80,6 +80,7 @@ namespace PackageManager
             }
         }
 
+        [DataGridCheckBox(4, DisplayName = "允许操作按钮", Width = "120", IsReadOnlyProperty = nameof(IsBuiltIn))]
         public bool SupportsConfigOps
         {
             get => supportsConfigOps;
@@ -115,7 +116,7 @@ namespace PackageManager
 
         public bool CanEditDelete => !IsBuiltIn;
 
-        [DataGridMultiButton(nameof(ActionButtonsConfig), 4, DisplayName = "操作", Width = "250", ButtonSpacing = 12)]
+        [DataGridMultiButton(nameof(ActionButtonsConfig), 5, DisplayName = "操作", Width = "250", ButtonSpacing = 12)]
         public string Actions { get; set; }
 
         public ICommand EditCommand { get; }

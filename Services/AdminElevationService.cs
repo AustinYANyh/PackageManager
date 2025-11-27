@@ -61,7 +61,7 @@ namespace PackageManager.Services
             {
                 ProductName = packageInfo.ProductName,
                 DownloadUrl = packageInfo.DownloadUrl,
-                LocalPath = packageInfo.LocalPath,
+                LocalPath = packageInfo.GetLocalPathForVersion(packageInfo.Version),
                 ForceUnlock = forceUnlock
             };
             File.WriteAllText(jsonPath, JsonConvert.SerializeObject(cfg));
@@ -95,4 +95,3 @@ namespace PackageManager.Services
         }
     }
 }
-

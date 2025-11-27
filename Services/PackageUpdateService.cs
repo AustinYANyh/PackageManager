@@ -43,7 +43,8 @@ namespace PackageManager.Services
         {
             try
             {
-                if (!AdminElevationService.IsRunningAsAdministrator() && AdminElevationService.RequiresAdminForPath(packageInfo.LocalPath))
+                var targetLocalPath = packageInfo.GetLocalPathForVersion(packageInfo.Version);
+                if (!AdminElevationService.IsRunningAsAdministrator() && AdminElevationService.RequiresAdminForPath(targetLocalPath))
                 {
                     packageInfo.Status = PackageStatus.Downloading;
                     packageInfo.StatusText = "正在以管理员权限执行更新...";
@@ -51,7 +52,7 @@ namespace PackageManager.Services
                     var elevatedOk = await AdminElevationService.RunElevatedUpdateAsync(packageInfo, forceUnlock);
                 }
                 // 记录开始更新
-                LoggingService.LogInfo($"开始更新包：{packageInfo?.ProductName ?? "<unknown>"} | Url={packageInfo?.DownloadUrl} | Local={packageInfo?.LocalPath}");
+                LoggingService.LogInfo($"开始更新包：{packageInfo?.ProductName ?? "<unknown>"} | Url={packageInfo?.DownloadUrl} | Local={targetLocalPath}");
 
                 // 更新状态为下载中
                 packageInfo.Status = PackageStatus.Downloading;
@@ -108,12 +109,12 @@ namespace PackageManager.Services
                 packageInfo.Status = PackageStatus.Extracting;
                 packageInfo.StatusText = "正在解压...";
                 progressCallback?.Invoke(80, "开始解压");
-                LoggingService.LogInfo($"开始解压：{tempFilePath} -> {packageInfo.LocalPath}");
-                await TryUnlockProcessesAsync(packageInfo.LocalPath, forceUnlock, progressCallback);
+                LoggingService.LogInfo($"开始解压：{tempFilePath} -> {targetLocalPath}");
+                await TryUnlockProcessesAsync(targetLocalPath, forceUnlock, progressCallback);
 
                 var extractLogGate = 0; // 每25%记录一次
                 success = await ExtractPackageAsync(tempFilePath,
-                                                    packageInfo.LocalPath,
+                                                    targetLocalPath,
                                                     progress =>
                                                     {
                                                         var totalProgress = 80 + (progress * 0.2); // 解压占20%进度
@@ -152,7 +153,7 @@ namespace PackageManager.Services
                 {
                     packageInfo.Status = PackageStatus.Error;
                     packageInfo.StatusText = "解压失败";
-                    LoggingService.LogWarning($"解压失败：{tempFilePath} -> {packageInfo?.LocalPath}");
+                    LoggingService.LogWarning($"解压失败：{tempFilePath} -> {targetLocalPath}");
                 }
 
                 return success;

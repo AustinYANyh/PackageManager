@@ -3,6 +3,8 @@ using System.Linq;
 using System.Windows;
 using PackageManager.Models;
 using PackageManager.Services;
+using System.Windows.Controls;
+using System.Windows.Media;
 
 namespace PackageManager
 {
@@ -19,12 +21,35 @@ namespace PackageManager
             this.dataPersistenceService = dataPersistenceService;
             this.packages = packages;
 
-            // 构建本地路径设置项集合
-            LocalPathItems = new ObservableCollection<LocalPathInfo>(packages.Select(p => new LocalPathInfo
+            var items = new ObservableCollection<LocalPathInfo>();
+            foreach (var p in packages)
             {
-                ProductName = p.ProductName,
-                LocalPath = p.LocalPath,
-            }));
+                var versions = new System.Collections.Generic.HashSet<string>(System.StringComparer.OrdinalIgnoreCase);
+                if (p.AvailableVersions != null)
+                {
+                    foreach (var v in p.AvailableVersions)
+                    {
+                        if (!string.IsNullOrWhiteSpace(v)) versions.Add(v);
+                    }
+                }
+                if (p.VersionLocalPaths != null)
+                {
+                    foreach (var v in p.VersionLocalPaths.Keys)
+                    {
+                        if (!string.IsNullOrWhiteSpace(v)) versions.Add(v);
+                    }
+                }
+                foreach (var v in versions)
+                {
+                    items.Add(new LocalPathInfo
+                    {
+                        ProductName = p.ProductName,
+                        Version = v,
+                        LocalPath = p.GetLocalPathForVersion(v),
+                    });
+                }
+            }
+            LocalPathItems = items;
 
             DataContext = this;
         }
@@ -33,13 +58,15 @@ namespace PackageManager
 
         private void SaveButton_Click(object sender, RoutedEventArgs e)
         {
-            // 将设置项写回原始PackageInfo集合
             foreach (var item in LocalPathItems)
             {
                 var pkg = packages.FirstOrDefault(p => p.ProductName == item.ProductName);
                 if (pkg != null)
                 {
-                    pkg.LocalPath = item.LocalPath;
+                    if (!string.IsNullOrWhiteSpace(item.Version))
+                    {
+                        pkg.VersionLocalPaths[item.Version] = item.LocalPath;
+                    }
                 }
             }
 
@@ -54,6 +81,40 @@ namespace PackageManager
         {
             DialogResult = false;
             Close();
+        }
+
+        private void Window_Loaded(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                Dispatcher.BeginInvoke(new System.Action(() =>
+                {
+                    var groups = FindVisualChildren<GroupItem>(LocalPathGrid).ToList();
+                    for (int i = 0; i < groups.Count; i++)
+                    {
+                        var expander = FindVisualChildren<Expander>(groups[i]).FirstOrDefault();
+                        if (expander != null)
+                        {
+                            expander.IsExpanded = (i == 0);
+                        }
+                    }
+                }));
+            }
+            catch
+            {
+                // ignored
+            }
+        }
+
+        private static System.Collections.Generic.IEnumerable<T> FindVisualChildren<T>(DependencyObject parent) where T : DependencyObject
+        {
+            if (parent == null) yield break;
+            for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+            {
+                var child = VisualTreeHelper.GetChild(parent, i);
+                if (child is T t) yield return t;
+                foreach (var c in FindVisualChildren<T>(child)) yield return c;
+            }
         }
     }
 }

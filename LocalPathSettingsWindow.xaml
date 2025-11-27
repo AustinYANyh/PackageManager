@@ -3,9 +3,18 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:C="clr-namespace:CustomControlLibrary.CustomControl.Controls.DataGrid;assembly=CustomControlLibrary"
         xmlns:button="clr-namespace:CustomControlLibrary.CustomControl.Controls.Button;assembly=CustomControlLibrary"
-        Title="本地包路径设置" Height="540" Width="900"
-        WindowStartupLocation="CenterOwner">
+        xmlns:controls="clr-namespace:CustomControlLibrary.CustomControl.Controls;assembly=CustomControlLibrary"
+        Title="本地包路径设置" Height="540" Width="950"
+        WindowStartupLocation="CenterOwner"
+        Loaded="Window_Loaded">
     <Grid Margin="20">
+        <Grid.Resources>
+            <CollectionViewSource x:Key="LocalPathItemsView" Source="{Binding LocalPathItems}">
+                <CollectionViewSource.GroupDescriptions>
+                    <PropertyGroupDescription PropertyName="ProductName" />
+                </CollectionViewSource.GroupDescriptions>
+            </CollectionViewSource>
+        </Grid.Resources>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
@@ -17,9 +26,39 @@
         <C:CDataGrid x:Name="LocalPathGrid" Grid.Row="1"
                      TextAlignment="Left"
                      EnableAutoTemplateSelection="True"
-                     ItemsSource="{Binding LocalPathItems}"
-                     Margin="0,12,0,12"/>
-
+                     ItemsSource="{Binding Source={StaticResource LocalPathItemsView}}"
+                     Margin="0,12,0,12"
+                     >
+            <C:CDataGrid.GroupStyle>
+                <GroupStyle HidesIfEmpty="True">
+                    <GroupStyle.ContainerStyle>
+                        <Style TargetType="{x:Type GroupItem}">
+                            <Setter Property="Template">
+                                <Setter.Value>
+                                    <ControlTemplate TargetType="{x:Type GroupItem}">
+                                        <Expander IsExpanded="False">
+                                            <Expander.Header>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <controls:CTextBlock Text="{Binding Name}"
+                                                               FontSize="16"
+                                                               FontWeight="SemiBold"/>
+                                                    <controls:CTextBlock Text="{Binding ItemCount, StringFormat=（{0} 个版本）}"
+                                                               Margin="8,0,0,0"
+                                                               Foreground="#6B6B6B"/>
+                                                </StackPanel>
+                                            </Expander.Header>
+                                            <ItemsPresenter Margin="18,4,0,8"/>
+                                        </Expander>
+                                    </ControlTemplate>
+                                </Setter.Value>
+                            </Setter>
+                        </Style>
+                    </GroupStyle.ContainerStyle>
+                </GroupStyle>
+            </C:CDataGrid.GroupStyle>
+        </C:CDataGrid>
+        
+        
         <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
             <button:CButton Content="保存" Width="100" Margin="0,0,10,0" Click="SaveButton_Click"/>
             <button:CButton Content="取消" Width="100" Click="CancelButton_Click"/>

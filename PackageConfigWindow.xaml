@@ -6,7 +6,7 @@
         xmlns:C="clr-namespace:CustomControlLibrary.CustomControl.Controls.DataGrid;assembly=CustomControlLibrary"
         xmlns:button="clr-namespace:CustomControlLibrary.CustomControl.Controls.Button;assembly=CustomControlLibrary"
         mc:Ignorable="d"
-        Title="包配置" Height="600" Width="1300" WindowStartupLocation="CenterOwner">
+        Title="包配置" Height="600" Width="1350" WindowStartupLocation="CenterOwner">
     <Grid Margin="16">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
