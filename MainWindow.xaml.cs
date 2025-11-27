@@ -502,7 +502,9 @@ namespace PackageManager
         {
             try
             {
-                var win = new LocalPathSettingsWindow(_dataPersistenceService, Packages)
+            var initialProductName = LatestActivePackage?.ProductName;
+            var initialVersion = LatestActivePackage?.Version;
+            var win = new LocalPathSettingsWindow(_dataPersistenceService, Packages, initialProductName, initialVersion)
                 {
                     Owner = this
                 };
