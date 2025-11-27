@@ -12,7 +12,7 @@ using Endelib;
 using Microsoft.Win32;
 using PackageManager.Services;
 
-namespace PackageManager
+namespace PackageManager.Function.CsvTool
 {
     public partial class CsvCryptoWindow : Window
     {
@@ -35,7 +35,7 @@ namespace PackageManager
             if (e.Data.GetDataPresent(DataFormats.FileDrop))
             {
                 var files = e.Data.GetData(DataFormats.FileDrop) as string[];
-                if ((files != null) && files.Any(f => Path.GetExtension(f).Equals(".csv", StringComparison.OrdinalIgnoreCase)))
+                if ((files != null) && files.Any(f => System.IO.Path.GetExtension(f).Equals(".csv", StringComparison.OrdinalIgnoreCase)))
                 {
                     e.Effects = DragDropEffects.Copy;
                 }
@@ -173,7 +173,7 @@ namespace PackageManager
                 return;
             }
 
-            foreach (var f in files.Where(f => Path.GetExtension(f).Equals(".csv", StringComparison.OrdinalIgnoreCase)))
+            foreach (var f in files.Where(f => System.IO.Path.GetExtension(f).Equals(".csv", StringComparison.OrdinalIgnoreCase)))
             {
                 if (_items.Any(i => i.FilePath.Equals(f, StringComparison.OrdinalIgnoreCase)))
                 {
@@ -205,9 +205,9 @@ namespace PackageManager
                     try
                     {
                         var inputText = File.ReadAllText(item.FilePath, Encoding.GetEncoding("GB2312"));
-                        var name = Path.GetFileNameWithoutExtension(item.FilePath);
+                        var name = System.IO.Path.GetFileNameWithoutExtension(item.FilePath);
                         var outName = _mode == Mode.Encrypt ? name + ".encrypted.csv" : name + ".decrypted.csv";
-                        var outPath = Path.Combine(outDir, outName);
+                        var outPath = System.IO.Path.Combine(outDir, outName);
 
                         if (_mode == Mode.Decrypt)
                         {

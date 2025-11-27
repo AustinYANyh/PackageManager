@@ -4,7 +4,7 @@ using System.Windows;
 using System.Windows.Data;
 using PackageManager.Models;
 
-namespace PackageManager
+namespace PackageManager.Converters
 {
     /// <summary>
     /// 状态到可见性转换器 - 用于进度条显示

@@ -1,7 +1,7 @@
 using System.Windows;
 using PackageManager.Models;
 
-namespace PackageManager
+namespace PackageManager.Function.Log
 {
     public partial class LogDetailsWindow : Window
     {

@@ -1,4 +1,4 @@
-<Window x:Class="PackageManager.ConfigPresetWindow"
+<Window x:Class="PackageManager.Function.ConfigPreset.ConfigPresetWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:controls="clr-namespace:CustomControlLibrary.CustomControl.Controls;assembly=CustomControlLibrary"
@@ -7,10 +7,11 @@
         xmlns:local="clr-namespace:PackageManager"
         xmlns:conv="clr-namespace:PackageManager.Converters"
         xmlns:navigation="clr-namespace:CustomControlLibrary.CustomControl.Controls.Navigation;assembly=CustomControlLibrary"
+        xmlns:configPreset="clr-namespace:PackageManager.Function.ConfigPreset"
         Title="切换配置" Height="660" Width="1000"
         ResizeMode="CanResize" WindowStartupLocation="CenterOwner" Loaded="Window_Loaded">
     <Window.Resources>
-        <local:UrlWrapConverter x:Key="UrlWrapConverter" />
+        <conv:UrlWrapConverter x:Key="UrlWrapConverter" />
         <conv:PresetToIniConverter x:Key="PresetToIniConverter" />
     </Window.Resources>
     <Grid Margin="20">
@@ -48,7 +49,7 @@
                     </Border>
                 </DataTemplate>
                 <!-- 添加卡片模板：始终置于最前 -->
-                <DataTemplate DataType="{x:Type local:AddCardPlaceholder}">
+                <DataTemplate DataType="{x:Type configPreset:AddCardPlaceholder}">
                     <Border BorderBrush="#DDD" BorderThickness="1" Padding="10" Margin="0,0,10,10" Width="280" Background="#F9F9F9" MouseLeftButtonUp="AddPresetCard_MouseLeftButtonUp" Cursor="Hand"
                             Height="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=CardHeight}">
                         <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">

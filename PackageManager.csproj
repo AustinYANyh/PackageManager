@@ -72,10 +72,43 @@
             <Generator>MSBuild:Compile</Generator>
             <SubType>Designer</SubType>
         </ApplicationDefinition>
-        <Compile Include="AddPresetWindow.xaml.cs" />
+        <Compile Include="Function\ConfigPreset\AddPresetWindow.xaml.cs" />
+        <Compile Include="Function\ConfigPreset\ConfigPresetWindow.xaml.cs">
+          <DependentUpon>ConfigPresetWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Compile Include="Function\CsvTool\CsvCryptoWindow.xaml.cs">
+          <DependentUpon>CsvCryptoWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Compile Include="Function\DnsTool\DnsEditDialog.xaml.cs">
+          <DependentUpon>DnsEditDialog.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Compile Include="Function\DnsTool\DnsSettingsWindow.xaml.cs">
+          <DependentUpon>DnsSettingsWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Compile Include="Function\Log\LogDetailsWindow.xaml.cs">
+          <DependentUpon>LogDetailsWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Compile Include="Function\Log\LogViewerWindow.xaml.cs">
+          <DependentUpon>LogViewerWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Compile Include="Function\PackageManage\PackageConfigWindow.xaml.cs" />
+        <Compile Include="Function\PackageManage\PackageEditWindow.xaml.cs">
+          <DependentUpon>PackageEditWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Compile Include="Function\Path\LocalPathSettingsWindow.xaml.cs">
+          <DependentUpon>LocalPathSettingsWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Compile Include="Function\Setting\SettingsWindow.xaml.cs" />
         <Compile Include="Models\ConfigPreset.cs" />
-        <Compile Include="PackageConfigWindow.xaml.cs" />
-        <Compile Include="PackageItem.cs" />
+        <Compile Include="Models\PackageItem.cs" />
         <Compile Include="Services\AdminElevationService.cs" />
         <Compile Include="Services\ConfigPresetStore.cs" />
         <Compile Include="Services\DebugSettingsService.cs" />
@@ -83,67 +116,36 @@
         <Compile Include="Services\LoggingService.cs" />
         <Compile Include="Services\ToastService.cs" />
         <Compile Include="Services\AppUpdateService.cs" />
-        <Compile Include="SettingsWindow.xaml.cs" />
-        <Compile Include="ConfigPresetWindow.xaml.cs">
-            <DependentUpon>ConfigPresetWindow.xaml</DependentUpon>
-            <SubType>Code</SubType>
-        </Compile>
-        <Compile Include="LocalPathSettingsWindow.xaml.cs">
-            <DependentUpon>LocalPathSettingsWindow.xaml</DependentUpon>
-            <SubType>Code</SubType>
-        </Compile>
-        <Page Include="AddPresetWindow.xaml" />
+        <Page Include="Function\ConfigPreset\AddPresetWindow.xaml" />
+        <Page Include="Function\ConfigPreset\ConfigPresetWindow.xaml" />
+        <Page Include="Function\CsvTool\CsvCryptoWindow.xaml">
+          <Generator>MSBuild:Compile</Generator>
+          <SubType>Designer</SubType>
+        </Page>
+        <Page Include="Function\DnsTool\DnsEditDialog.xaml" />
+        <Page Include="Function\DnsTool\DnsSettingsWindow.xaml" />
+        <Page Include="Function\Log\LogDetailsWindow.xaml">
+          <Generator>MSBuild:Compile</Generator>
+          <SubType>Designer</SubType>
+        </Page>
+        <Page Include="Function\Log\LogViewerWindow.xaml">
+          <Generator>MSBuild:Compile</Generator>
+          <SubType>Designer</SubType>
+        </Page>
+        <Page Include="Function\PackageManage\PackageConfigWindow.xaml" />
+        <Page Include="Function\PackageManage\PackageEditWindow.xaml" />
+        <Page Include="Function\Path\LocalPathSettingsWindow.xaml" />
+        <Page Include="Function\Setting\SettingsWindow.xaml" />
         <Page Include="MainWindow.xaml">
             <Generator>MSBuild:Compile</Generator>
             <SubType>Designer</SubType>
         </Page>
-        <Page Include="CsvCryptoWindow.xaml">
-            <Generator>MSBuild:Compile</Generator>
-            <SubType>Designer</SubType>
-        </Page>
-        <Page Include="LogViewerWindow.xaml">
-            <Generator>MSBuild:Compile</Generator>
-            <SubType>Designer</SubType>
-        </Page>
-        <Page Include="LogDetailsWindow.xaml">
-            <Generator>MSBuild:Compile</Generator>
-            <SubType>Designer</SubType>
-        </Page>
-        <Page Include="LocalPathSettingsWindow.xaml" />
-        <Page Include="ConfigPresetWindow.xaml" />
-        <Page Include="DnsSettingsWindow.xaml" />
-        <Page Include="DnsEditDialog.xaml" />
-        <Page Include="PackageEditWindow.xaml" />
         <Compile Include="App.xaml.cs">
             <DependentUpon>App.xaml</DependentUpon>
             <SubType>Code</SubType>
         </Compile>
         <Compile Include="MainWindow.xaml.cs">
             <DependentUpon>MainWindow.xaml</DependentUpon>
-            <SubType>Code</SubType>
-        </Compile>
-        <Compile Include="DnsSettingsWindow.xaml.cs">
-            <DependentUpon>DnsSettingsWindow.xaml</DependentUpon>
-            <SubType>Code</SubType>
-        </Compile>
-        <Compile Include="DnsEditDialog.xaml.cs">
-            <DependentUpon>DnsEditDialog.xaml</DependentUpon>
-            <SubType>Code</SubType>
-        </Compile>
-        <Compile Include="PackageEditWindow.xaml.cs">
-            <DependentUpon>PackageEditWindow.xaml</DependentUpon>
-            <SubType>Code</SubType>
-        </Compile>
-        <Compile Include="CsvCryptoWindow.xaml.cs">
-            <DependentUpon>CsvCryptoWindow.xaml</DependentUpon>
-            <SubType>Code</SubType>
-        </Compile>
-        <Compile Include="LogViewerWindow.xaml.cs">
-            <DependentUpon>LogViewerWindow.xaml</DependentUpon>
-            <SubType>Code</SubType>
-        </Compile>
-        <Compile Include="LogDetailsWindow.xaml.cs">
-            <DependentUpon>LogDetailsWindow.xaml</DependentUpon>
             <SubType>Code</SubType>
         </Compile>
         <Compile Include="Models\PackageInfo.cs" />
@@ -155,8 +157,6 @@
         <Compile Include="Services\PackageUpdateService.cs" />
         <Compile Include="Converters\StatusConverters.cs" />
         <Compile Include="Converters\PresetToIniConverter.cs" />
-        <Page Include="PackageConfigWindow.xaml" />
-        <Page Include="SettingsWindow.xaml" />
     </ItemGroup>
     <ItemGroup>
         <Compile Include="Properties\AssemblyInfo.cs">
@@ -173,7 +173,7 @@
         </EmbeddedResource>
     </ItemGroup>
     <ItemGroup>
-        <None Include="App.config"/>
+        <None Include="App.config" />
         <None Include="packages.config" />
     </ItemGroup>
   <ItemGroup>

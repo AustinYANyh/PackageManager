@@ -1,4 +1,4 @@
-<Window x:Class="PackageManager.AddPresetWindow"
+<Window x:Class="PackageManager.Function.ConfigPreset.AddPresetWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:controls="clr-namespace:CustomControlLibrary.CustomControl.Controls;assembly=CustomControlLibrary"

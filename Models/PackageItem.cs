@@ -3,10 +3,10 @@ using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Windows.Input;
 using CustomControlLibrary.CustomControl.Attribute.DataGrid;
-using PackageManager.Models;
+using PackageManager.Function.PackageManage;
 using PackageManager.Services;
 
-namespace PackageManager
+namespace PackageManager.Models
 {
     public class PackageItem: INotifyPropertyChanged
     {

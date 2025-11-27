@@ -1,14 +1,12 @@
 using System;
 using System.Collections.ObjectModel;
-using System.Linq;
 using System.ComponentModel;
+using System.Linq;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Windows;
-using PackageManager.Models;
 using PackageManager.Services;
 
-namespace PackageManager
+namespace PackageManager.Function.ConfigPreset
 {
     // 添加卡片占位类型（仅用于模板识别）
     public sealed class AddCardPlaceholder
@@ -22,7 +20,7 @@ namespace PackageManager
     {
         private readonly string _initialIniContent;
 
-        private ConfigPreset SelectedPreset;
+        private Models.ConfigPreset SelectedPreset;
 
         public ConfigPresetWindow(string initialIniContent = null)
         {
@@ -35,7 +33,7 @@ namespace PackageManager
         // 用于 ItemsControl 的统一数据源（内置 + 自定义 + 添加占位）
         public ObservableCollection<object> PresetItems { get; } = new ObservableCollection<object>();
 
-        public ObservableCollection<ConfigPreset> CustomPresets { get; } = new ObservableCollection<ConfigPreset>();
+        public ObservableCollection<Models.ConfigPreset> CustomPresets { get; } = new ObservableCollection<Models.ConfigPreset>();
 
         public string SelectedPresetContent { get; private set; }
 
@@ -103,7 +101,7 @@ namespace PackageManager
 
         private void ApplyButton_Click(object sender, RoutedEventArgs e)
         {
-            var selected = SelectedPreset ?? PresetItems.OfType<ConfigPreset>().FirstOrDefault(p => p.IsSelected);
+            var selected = SelectedPreset ?? PresetItems.OfType<Models.ConfigPreset>().FirstOrDefault(p => p.IsSelected);
             if (selected == null)
             {
                 MessageBox.Show("请先选择一个预设或自定义配置", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -181,7 +179,7 @@ namespace PackageManager
 
         private void PresetRadio_Checked(object sender, RoutedEventArgs e)
         {
-            if (sender is FrameworkElement fe && fe.Tag is ConfigPreset preset)
+            if (sender is FrameworkElement fe && fe.Tag is Models.ConfigPreset preset)
             {
                 SelectedPreset = preset;
             }
@@ -194,7 +192,7 @@ namespace PackageManager
                 var menuItem = sender as System.Windows.Controls.MenuItem;
                 var ctx = menuItem?.Parent as System.Windows.Controls.ContextMenu;
                 var target = ctx?.PlacementTarget as FrameworkElement;
-                var preset = target?.DataContext as ConfigPreset;
+                var preset = target?.DataContext as Models.ConfigPreset;
 
                 if (preset == null)
                 {
@@ -232,9 +230,9 @@ namespace PackageManager
                 {
                     SelectedPreset = null;
                     var defaultPreset = PresetItems
-                        .OfType<ConfigPreset>()
+                        .OfType<Models.ConfigPreset>()
                         .FirstOrDefault(p => p.IsBuiltIn && string.Equals(p.Name, "默认", StringComparison.OrdinalIgnoreCase))
-                        ?? PresetItems.OfType<ConfigPreset>().FirstOrDefault();
+                        ?? PresetItems.OfType<Models.ConfigPreset>().FirstOrDefault();
 
                     if (defaultPreset != null)
                     {
@@ -251,7 +249,7 @@ namespace PackageManager
 
         private void PresetCard_ContextMenuOpening(object sender, System.Windows.Controls.ContextMenuEventArgs e)
         {
-            if (sender is FrameworkElement fe && fe.DataContext is ConfigPreset preset && preset.IsBuiltIn)
+            if (sender is FrameworkElement fe && fe.DataContext is Models.ConfigPreset preset && preset.IsBuiltIn)
             {
                 // 内置预设不显示右键菜单
                 e.Handled = true;
@@ -262,7 +260,7 @@ namespace PackageManager
         {
             
             // 默认（空域名，3000超时）
-            PresetItems.Add(new ConfigPreset
+            PresetItems.Add(new Models.ConfigPreset
             {
                 Name = "默认",
                 ServerDomain = string.Empty,
@@ -275,7 +273,7 @@ namespace PackageManager
             });
             
             // 136
-            PresetItems.Add(new ConfigPreset
+            PresetItems.Add(new Models.ConfigPreset
             {
                 Name = "136",
                 ServerDomain = "http://192.168.0.136:8171/HWBuildMasterPlus/",
@@ -288,7 +286,7 @@ namespace PackageManager
             });
 
             // 137
-            PresetItems.Add(new ConfigPreset
+            PresetItems.Add(new Models.ConfigPreset
             {
                 Name = "137",
                 ServerDomain = "http://192.168.0.137:8171/HWBuildMasterPlus/",
@@ -306,7 +304,7 @@ namespace PackageManager
             // 先移除已有的自定义项与添加占位
             for (int i = PresetItems.Count - 1; i >= 0; i--)
             {
-                if (PresetItems[i] is ConfigPreset cp && CustomPresets.Contains(cp))
+                if (PresetItems[i] is Models.ConfigPreset cp && CustomPresets.Contains(cp))
                 {
                     PresetItems.RemoveAt(i);
                 }
@@ -342,7 +340,7 @@ namespace PackageManager
 
             var expected = Normalize(_initialIniContent);
             var match = PresetItems
-                .OfType<ConfigPreset>()
+                .OfType<Models.ConfigPreset>()
                 .FirstOrDefault(p => Normalize(string.IsNullOrWhiteSpace(p.RawIniContent) ? BuildIniForDisplay(p) : p.RawIniContent) == expected);
 
             if (match != null)
@@ -357,7 +355,7 @@ namespace PackageManager
             try
             {
                 int maxLines = 1;
-                foreach (var p in PresetItems.OfType<ConfigPreset>())
+                foreach (var p in PresetItems.OfType<Models.ConfigPreset>())
                 {
                     var text = string.IsNullOrWhiteSpace(p.RawIniContent)
                         ? BuildIniForDisplay(p)
@@ -388,7 +386,7 @@ namespace PackageManager
             return count;
         }
 
-        private static string BuildIniForDisplay(ConfigPreset p)
+        private static string BuildIniForDisplay(Models.ConfigPreset p)
         {
             var sb = new StringBuilder();
             BuildIni(sb,

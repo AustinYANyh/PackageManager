@@ -1,17 +1,13 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Linq;
 using System.Net.NetworkInformation;
 using System.Windows;
 using System.Windows.Input;
 using CustomControlLibrary.CustomControl.Attribute.DataGrid;
 using PackageManager.Models;
-using System.Diagnostics;
-using System.Management;
-using System.Threading.Tasks;
-using System.Windows.Automation;
-using Forms = System.Windows.Forms;
 
-namespace PackageManager
+namespace PackageManager.Function.DnsTool
 {
     public partial class DnsSettingsWindow : Window
     {

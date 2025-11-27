@@ -1,12 +1,12 @@
 using System;
 using System.ComponentModel;
-using System.IO;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using Microsoft.Win32;
+using PackageManager.Function.PackageManage;
 using PackageManager.Services;
 
-namespace PackageManager
+namespace PackageManager.Function.Setting
 {
     /// <summary>
     /// SettingsWindow.xaml 的交互逻辑

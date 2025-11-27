@@ -6,7 +6,7 @@ using System.Windows.Input;
 using CustomControlLibrary.CustomControl.Attribute.DataGrid;
 using PackageManager.Models;
 
-namespace PackageManager
+namespace PackageManager.Function.DnsTool
 {
     public partial class DnsEditDialog : Window
     {

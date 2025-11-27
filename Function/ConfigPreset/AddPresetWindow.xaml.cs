@@ -1,12 +1,10 @@
-using System;
 using System.Windows;
-using PackageManager.Models;
 
-namespace PackageManager
+namespace PackageManager.Function.ConfigPreset
 {
     public partial class AddPresetWindow : Window
     {
-        public ConfigPreset ResultPreset { get; private set; }
+        public Models.ConfigPreset ResultPreset { get; private set; }
 
         public AddPresetWindow()
         {
@@ -29,7 +27,7 @@ namespace PackageManager
                 return;
             }
 
-            ResultPreset = new ConfigPreset
+            ResultPreset = new Models.ConfigPreset
             {
                 Name = name,
                 RawIniContent = raw,

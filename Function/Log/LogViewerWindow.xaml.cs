@@ -10,7 +10,7 @@ using System.Windows.Input;
 using PackageManager.Models;
 using PackageManager.Services;
 
-namespace PackageManager
+namespace PackageManager.Function.Log
 {
     public partial class LogViewerWindow : Window
     {
@@ -29,8 +29,8 @@ namespace PackageManager
 
         private void InitializeDirs()
         {
-            infoDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PackageManager", "logs");
-            errorDir = Path.Combine(infoDir, "errors");
+            infoDir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PackageManager", "logs");
+            errorDir = System.IO.Path.Combine(infoDir, "errors");
             try
             {
                 Directory.CreateDirectory(infoDir);
@@ -62,7 +62,7 @@ namespace PackageManager
                                    ? Directory.GetFiles(errorDir, "*.log", SearchOption.TopDirectoryOnly)
                                    : Array.Empty<string>());
                 var dates = files
-                            .Select(f => Path.GetFileNameWithoutExtension(f))
+                            .Select(f => System.IO.Path.GetFileNameWithoutExtension(f))
                             .Where(name => Regex.IsMatch(name, "^\\d{8}$"))
                             .Distinct()
                             .Select(s => DateTime.ParseExact(s, "yyyyMMdd", System.Globalization.CultureInfo.InvariantCulture))
@@ -102,7 +102,7 @@ namespace PackageManager
                 var dateFile = DateTime.ParseExact(dateStr, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture).ToString("yyyyMMdd") +
                                ".log";
                 var dir = type == "错误日志" ? errorDir : infoDir;
-                var path = Path.Combine(dir, dateFile);
+                var path = System.IO.Path.Combine(dir, dateFile);
 
                 var entries = ReadEntries(path);
 

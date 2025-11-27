@@ -1,4 +1,4 @@
-<Window x:Class="PackageManager.DnsSettingsWindow"
+<Window x:Class="PackageManager.Function.DnsTool.DnsSettingsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:C="clr-namespace:CustomControlLibrary.CustomControl.Controls.DataGrid;assembly=CustomControlLibrary"

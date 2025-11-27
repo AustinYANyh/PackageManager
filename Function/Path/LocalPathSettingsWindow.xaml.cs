@@ -1,12 +1,12 @@
 using System.Collections.ObjectModel;
 using System.Linq;
 using System.Windows;
-using PackageManager.Models;
-using PackageManager.Services;
 using System.Windows.Controls;
 using System.Windows.Media;
+using PackageManager.Models;
+using PackageManager.Services;
 
-namespace PackageManager
+namespace PackageManager.Function.Path
 {
     public partial class LocalPathSettingsWindow : Window
     {

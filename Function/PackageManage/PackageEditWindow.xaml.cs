@@ -2,12 +2,13 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Windows;
-using CustomControlLibrary.CustomControl.Attribute.DataGrid;
 using System.Windows.Input;
-using CustomControlLibrary.CustomControl.Example;
+using CustomControlLibrary.CustomControl.Attribute.DataGrid;
 using Microsoft.Win32;
+using PackageManager.Models;
+using RelayCommand = CustomControlLibrary.CustomControl.Example.RelayCommand;
 
-namespace PackageManager
+namespace PackageManager.Function.PackageManage
 {
     public partial class PackageEditWindow : Window
     {

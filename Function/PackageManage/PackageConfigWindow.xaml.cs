@@ -1,12 +1,13 @@
 using System;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
-using System.Runtime.CompilerServices;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Windows;
+using PackageManager.Models;
 using PackageManager.Services;
 
-namespace PackageManager
+namespace PackageManager.Function.PackageManage
 {
     public partial class PackageConfigWindow : Window, INotifyPropertyChanged
     {
