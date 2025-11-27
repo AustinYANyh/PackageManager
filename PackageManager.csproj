@@ -105,6 +105,10 @@
             <Generator>MSBuild:Compile</Generator>
             <SubType>Designer</SubType>
         </Page>
+        <Page Include="LogDetailsWindow.xaml">
+            <Generator>MSBuild:Compile</Generator>
+            <SubType>Designer</SubType>
+        </Page>
         <Page Include="LocalPathSettingsWindow.xaml" />
         <Page Include="ConfigPresetWindow.xaml" />
         <Page Include="DnsSettingsWindow.xaml" />
@@ -138,6 +142,10 @@
             <DependentUpon>LogViewerWindow.xaml</DependentUpon>
             <SubType>Code</SubType>
         </Compile>
+        <Compile Include="LogDetailsWindow.xaml.cs">
+            <DependentUpon>LogDetailsWindow.xaml</DependentUpon>
+            <SubType>Code</SubType>
+        </Compile>
         <Compile Include="Models\PackageInfo.cs" />
         <Compile Include="Models\LogEntry.cs" />
         <Compile Include="Models\LocalPathInfo.cs" />
@@ -146,6 +154,7 @@
         <Compile Include="Services\FtpService.cs" />
         <Compile Include="Services\PackageUpdateService.cs" />
         <Compile Include="Converters\StatusConverters.cs" />
+        <Compile Include="Converters\PresetToIniConverter.cs" />
         <Page Include="PackageConfigWindow.xaml" />
         <Page Include="SettingsWindow.xaml" />
     </ItemGroup>

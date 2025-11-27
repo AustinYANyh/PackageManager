@@ -1,6 +1,7 @@
 using System;
 using System.Collections.ObjectModel;
 using System.Linq;
+using System.ComponentModel;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows;
@@ -17,7 +18,7 @@ namespace PackageManager
     /// <summary>
     /// 用于选择并应用预设配置的窗口
     /// </summary>
-    public partial class ConfigPresetWindow : Window
+    public partial class ConfigPresetWindow : Window, INotifyPropertyChanged
     {
         private readonly string _initialIniContent;
 
@@ -37,6 +38,26 @@ namespace PackageManager
         public ObservableCollection<ConfigPreset> CustomPresets { get; } = new ObservableCollection<ConfigPreset>();
 
         public string SelectedPresetContent { get; private set; }
+
+        private double _cardHeight = 220;
+        public double CardHeight
+        {
+            get => _cardHeight;
+            private set
+            {
+                if (Math.Abs(_cardHeight - value) > 0.5)
+                {
+                    _cardHeight = value;
+                    OnPropertyChanged(nameof(CardHeight));
+                }
+            }
+        }
+
+        public event PropertyChangedEventHandler PropertyChanged;
+        private void OnPropertyChanged(string name)
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        }
 
         private static string NormalizeDomain(string s)
         {
@@ -59,38 +80,7 @@ namespace PackageManager
             return s ?? string.Empty;
         }
 
-        private static ConfigPreset ParseIni(string content)
-        {
-            try
-            {
-                string ReadQuoted(string key)
-                {
-                    var m = Regex.Match(content, $@"^{key}\s*=\s*""(.*?)""\s*$", RegexOptions.Multiline);
-                    return m.Success ? m.Groups[1].Value : string.Empty;
-                }
-
-                int ReadInt(string key, int def = 0)
-                {
-                    var m = Regex.Match(content, $@"^{key}\=(\d+)\s*$", RegexOptions.Multiline);
-                    return m.Success ? int.Parse(m.Groups[1].Value) : def;
-                }
-
-                var preset = new ConfigPreset
-                {
-                    ServerDomain = ReadQuoted("ServerDomain"),
-                    CommonServerDomain = ReadQuoted("CommonServerDomain"),
-                    IEProxyAvailable = ReadQuoted("IEProxyAvailable"),
-                    requestTimeout = ReadInt("requestTimeout"),
-                    responseTimeout = ReadInt("responseTimeout"),
-                    requestRetryTimes = ReadInt("requestRetryTimes"),
-                };
-                return preset;
-            }
-            catch
-            {
-                return null;
-            }
-        }
+        // 已移除INI解析逻辑，键不固定
 
         private static void BuildIni(StringBuilder content,
                                      string serverDomain,
@@ -113,7 +103,6 @@ namespace PackageManager
 
         private void ApplyButton_Click(object sender, RoutedEventArgs e)
         {
-            var content = new StringBuilder();
             var selected = SelectedPreset ?? PresetItems.OfType<ConfigPreset>().FirstOrDefault(p => p.IsSelected);
             if (selected == null)
             {
@@ -121,15 +110,23 @@ namespace PackageManager
                 return;
             }
 
-            BuildIni(content,
-                     selected.ServerDomain ?? string.Empty,
-                     selected.CommonServerDomain ?? string.Empty,
-                     selected.IEProxyAvailable ?? "yes",
-                     selected.requestTimeout,
-                     selected.responseTimeout,
-                     selected.requestRetryTimes);
-
-            SelectedPresetContent = content.ToString();
+            // 若该预设包含原始 INI 文本，则直接使用
+            if (!string.IsNullOrWhiteSpace(selected.RawIniContent))
+            {
+                SelectedPresetContent = selected.RawIniContent;
+            }
+            else
+            {
+                var content = new StringBuilder();
+                BuildIni(content,
+                         selected.ServerDomain ?? string.Empty,
+                         selected.CommonServerDomain ?? string.Empty,
+                         selected.IEProxyAvailable ?? "yes",
+                         selected.requestTimeout,
+                         selected.responseTimeout,
+                         selected.requestRetryTimes);
+                SelectedPresetContent = content.ToString();
+            }
             DialogResult = true;
             Close();
         }
@@ -152,6 +149,7 @@ namespace PackageManager
                 }
 
                 RebuildPresetItems();
+                UpdateCardHeight();
                 TrySelectInitialPreset();
             }
             catch (Exception ex)
@@ -177,6 +175,7 @@ namespace PackageManager
                 {
                     MessageBox.Show($"保存自定义配置失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
                 }
+                UpdateCardHeight();
             }
         }
 
@@ -226,16 +225,21 @@ namespace PackageManager
 
                 // 确保“添加”卡片在最前
                 RebuildPresetItems();
+                UpdateCardHeight();
 
-                // 如果删除的是当前选中项，重置选中到第一个配置项
+                // 如果删除的是当前选中项，重置选中到“默认”预设；若不存在则选中第一个配置项
                 if (SelectedPreset == preset)
                 {
                     SelectedPreset = null;
-                    var first = PresetItems.OfType<ConfigPreset>().FirstOrDefault();
-                    if (first != null)
+                    var defaultPreset = PresetItems
+                        .OfType<ConfigPreset>()
+                        .FirstOrDefault(p => p.IsBuiltIn && string.Equals(p.Name, "默认", StringComparison.OrdinalIgnoreCase))
+                        ?? PresetItems.OfType<ConfigPreset>().FirstOrDefault();
+
+                    if (defaultPreset != null)
                     {
-                        first.IsSelected = true;
-                        SelectedPreset = first;
+                        defaultPreset.IsSelected = true;
+                        SelectedPreset = defaultPreset;
                     }
                 }
             }
@@ -324,52 +328,77 @@ namespace PackageManager
 
         private void TrySelectInitialPreset()
         {
-            if (string.IsNullOrWhiteSpace(_initialIniContent))
-            {
-                return; // 不再默认选中预设一
-            }
-
-            var parsed = ParseIni(_initialIniContent);
-            if (parsed == null)
+            if (string.IsNullOrEmpty(_initialIniContent))
             {
                 return;
             }
 
-            // 在所有配置中寻找匹配项（规范化域名，先严格匹配，后域名匹配回退）
-            var expectedServer = NormalizeDomain(parsed.ServerDomain);
-            var expectedCommon = NormalizeDomain(parsed.CommonServerDomain);
-
-            var match = PresetItems.OfType<ConfigPreset>().FirstOrDefault(p =>
-                                                                              string.Equals(NormalizeDomain(p.ServerDomain),
-                                                                                            expectedServer,
-                                                                                            StringComparison.OrdinalIgnoreCase) &&
-                                                                              string.Equals(NormalizeDomain(p.CommonServerDomain),
-                                                                                            expectedCommon,
-                                                                                            StringComparison.OrdinalIgnoreCase) &&
-                                                                              string.Equals(NullToEmpty(p.IEProxyAvailable),
-                                                                                            NullToEmpty(parsed.IEProxyAvailable),
-                                                                                            StringComparison.OrdinalIgnoreCase) &&
-                                                                              (p.requestTimeout == parsed.requestTimeout) &&
-                                                                              (p.responseTimeout == parsed.responseTimeout) &&
-                                                                              (p.requestRetryTimes == parsed.requestRetryTimes));
-
-            // 回退：仅根据两个域名匹配
-            if (match == null)
+            string Normalize(string s)
             {
-                match = PresetItems.OfType<ConfigPreset>().FirstOrDefault(p =>
-                                                                              string.Equals(NormalizeDomain(p.ServerDomain),
-                                                                                            expectedServer,
-                                                                                            StringComparison.OrdinalIgnoreCase) &&
-                                                                              string.Equals(NormalizeDomain(p.CommonServerDomain),
-                                                                                            expectedCommon,
-                                                                                            StringComparison.OrdinalIgnoreCase));
+                if (string.IsNullOrEmpty(s)) return string.Empty;
+                var t = s.Replace("\r\n", "\n").Replace("\r", "\n");
+                return t.TrimEnd();
             }
+
+            var expected = Normalize(_initialIniContent);
+            var match = PresetItems
+                .OfType<ConfigPreset>()
+                .FirstOrDefault(p => Normalize(string.IsNullOrWhiteSpace(p.RawIniContent) ? BuildIniForDisplay(p) : p.RawIniContent) == expected);
 
             if (match != null)
             {
                 match.IsSelected = true;
                 SelectedPreset = match;
             }
+        }
+
+        private void UpdateCardHeight()
+        {
+            try
+            {
+                int maxLines = 1;
+                foreach (var p in PresetItems.OfType<ConfigPreset>())
+                {
+                    var text = string.IsNullOrWhiteSpace(p.RawIniContent)
+                        ? BuildIniForDisplay(p)
+                        : p.RawIniContent;
+
+                    var lines = CountLines(text);
+                    if (lines > maxLines) maxLines = lines;
+                }
+
+                // 估算高度：单行约18像素 + 顶部单选按钮约28 + 内边距
+                double estimated = 28 + (maxLines * 18) + 20; // radio + text + padding
+                CardHeight = Math.Max(220, estimated);
+            }
+            catch
+            {
+                CardHeight = 220;
+            }
+        }
+
+        private static int CountLines(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return 1;
+            int count = 1;
+            foreach (var ch in s)
+            {
+                if (ch == '\n') count++;
+            }
+            return count;
+        }
+
+        private static string BuildIniForDisplay(ConfigPreset p)
+        {
+            var sb = new StringBuilder();
+            BuildIni(sb,
+                     p.ServerDomain ?? string.Empty,
+                     p.CommonServerDomain ?? string.Empty,
+                     string.IsNullOrEmpty(p.IEProxyAvailable) ? "yes" : p.IEProxyAvailable,
+                     p.requestTimeout,
+                     p.responseTimeout,
+                     p.requestRetryTimes);
+            return sb.ToString();
         }
     }
 }

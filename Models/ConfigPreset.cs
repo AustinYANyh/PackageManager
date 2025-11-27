@@ -11,6 +11,9 @@ namespace PackageManager.Models
         public string CommonServerDomain { get; set; }
         public string IEProxyAvailable { get; set; } = "yes";
 
+        // 可选：用于存储用户粘贴的完整 INI 文本。当存在时，优先使用该文本进行应用。
+        public string RawIniContent { get; set; }
+
         public int requestTimeout { get; set; }
         public int responseTimeout { get; set; }
         public int requestRetryTimes { get; set; }

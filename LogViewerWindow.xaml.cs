@@ -2,9 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using PackageManager.Models;
 using PackageManager.Services;
 
@@ -45,6 +47,7 @@ namespace PackageManager
             DateCombo.SelectionChanged += (s, e) => RefreshLogs();
             LevelCombo.SelectionChanged += (s, e) => RefreshLogs();
             SearchTextBox.TextChanged += (s, e) => RefreshLogs();
+            LogGrid.MouseDoubleClick += LogGrid_MouseDoubleClick;
         }
 
         private void LoadAvailableDates()
@@ -139,6 +142,31 @@ namespace PackageManager
             }
         }
 
+        private void LogGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+        {
+            try
+            {
+                var type = ((ComboBoxItem)LogTypeCombo.SelectedItem)?.Content?.ToString() ?? "常规日志";
+                if (!string.Equals(type, "错误日志", StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+
+                var entry = LogGrid.SelectedItem as LogEntry;
+                if (entry == null)
+                {
+                    return;
+                }
+
+                var win = new LogDetailsWindow(entry) { Owner = this };
+                win.ShowDialog();
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, "打开日志详情失败");
+            }
+        }
+
         private List<LogEntry> ReadEntries(string path)
         {
             var result = new List<LogEntry>();
@@ -147,42 +175,59 @@ namespace PackageManager
                 return result;
             }
 
-            var content = File.ReadAllText(path);
-            var blocks = Regex.Split(content, "\r?\n\r?\n");
-            var headerPattern = new Regex("^(?<ts>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3}) \\[(?<level>INFO|WARN|ERROR)\\] (?<msg>.*)$",
-                                          RegexOptions.Multiline);
+            // 以“头部行”作为新日志条目的开始，连续行（包括空行）作为详情，直到下一个头部行。
+            var headerRegex = new Regex(
+                "^(?<ts>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3}) \\[(?<level>INFO|WARN|ERROR)\\] (?<msg>.*)$");
 
-            foreach (var block in blocks)
+            LogEntry current = null;
+            var detailsSb = new StringBuilder();
+
+            foreach (var line in File.ReadLines(path))
             {
-                if (string.IsNullOrWhiteSpace(block))
-                {
-                    continue;
-                }
-
-                var lines = block.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
-                var first = lines.FirstOrDefault() ?? string.Empty;
-                var m = headerPattern.Match(first);
+                var m = headerRegex.Match(line);
                 if (m.Success)
                 {
-                    var ts = m.Groups["ts"].Value;
-                    var lvl = m.Groups["level"].Value;
-                    var msg = m.Groups["msg"].Value;
-                    var details = string.Join(Environment.NewLine, lines.Skip(1));
-                    result.Add(new LogEntry
+                    // 结束上一条
+                    if (current != null)
                     {
-                        Timestamp = ts,
-                        Level = lvl,
-                        Message = msg,
-                        Details = details,
-                    });
+                        current.Details = detailsSb.ToString().TrimEnd('\r', '\n');
+                        result.Add(current);
+                        detailsSb.Clear();
+                    }
+
+                    current = new LogEntry
+                    {
+                        Timestamp = m.Groups["ts"].Value,
+                        Level = m.Groups["level"].Value,
+                        Message = m.Groups["msg"].Value,
+                        Details = string.Empty,
+                    };
                 }
                 else
                 {
-                    result.Add(new LogEntry
+                    // 非头部行：归入当前条目的详情；若尚无当前条目，则以 INFO 级别创建一条“散行”条目
+                    if (current == null)
                     {
-                        Timestamp = "", Level = "INFO", Message = first, Details = string.Join(Environment.NewLine, lines.Skip(1)),
-                    });
+                        current = new LogEntry
+                        {
+                            Timestamp = string.Empty,
+                            Level = "INFO",
+                            Message = line,
+                            Details = string.Empty,
+                        };
+                    }
+                    else
+                    {
+                        detailsSb.AppendLine(line);
+                    }
                 }
+            }
+
+            // 收尾最后一条
+            if (current != null)
+            {
+                current.Details = detailsSb.ToString().TrimEnd('\r', '\n');
+                result.Add(current);
             }
 
             return result;

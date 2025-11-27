@@ -3,55 +3,50 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:controls="clr-namespace:CustomControlLibrary.CustomControl.Controls;assembly=CustomControlLibrary"
         xmlns:button="clr-namespace:CustomControlLibrary.CustomControl.Controls.Button;assembly=CustomControlLibrary"
-        Title="新增自定义配置" Height="320" Width="560"
+        Title="新增自定义配置" Height="420" Width="720"
         ResizeMode="CanResize" WindowStartupLocation="CenterOwner">
     <Grid Margin="20">
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <Grid Margin="0,0,0,10">
+        <!-- 名称 -->
+        <Grid Grid.Row="0" Margin="0,0,0,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="50"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+            
+            <TextBlock Grid.Row="0" Grid.Column="0" Text="名称" VerticalAlignment="Center"/>
+            <controls:CTextBox Grid.Row="0"  Grid.Column="1" x:Name="NameText" Margin="8,4,0,4" HorizontalAlignment="Stretch"/>
+        </Grid>
+        
+        <!-- 文本粘贴（唯一模式） -->
+        <Grid Grid.Row="1" Margin="0,10,0,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="50"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
             </Grid.RowDefinitions>
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="160"/>
-                <ColumnDefinition Width="*"/>
-            </Grid.ColumnDefinitions>
-
-            <TextBlock Grid.Column="0" Text="名称" VerticalAlignment="Center"/>
-            <controls:CTextBox Grid.Column="1" x:Name="NameText" Margin="8,4,0,4" HorizontalAlignment="Stretch"/>
-
-            <TextBlock Grid.Row="1" Grid.Column="0" Text="ServerDomain" VerticalAlignment="Center"/>
-            <controls:CTextBox Grid.Row="1" Grid.Column="1" x:Name="ServerDomainText" Margin="8,4,0,4" HorizontalAlignment="Stretch"/>
-
-            <TextBlock Grid.Row="2" Grid.Column="0" Text="CommonServerDomain" VerticalAlignment="Center"/>
-            <controls:CTextBox Grid.Row="2" Grid.Column="1" x:Name="CommonServerDomainText" Margin="8,4,0,4" HorizontalAlignment="Stretch"/>
-
-            <TextBlock Grid.Row="3" Grid.Column="0" Text="IEProxyAvailable" VerticalAlignment="Center"/>
-            <controls:CComboBox Grid.Row="3" Grid.Column="1" x:Name="IEProxyCombo" Margin="8,4,0,4" HorizontalAlignment="Stretch">
-                <ComboBoxItem Content="yes" IsSelected="True"/>
-                <ComboBoxItem Content="no"/>
-            </controls:CComboBox>
-
-            <TextBlock Grid.Row="4" Grid.Column="0" Text="requestTimeout" VerticalAlignment="Center"/>
-            <controls:CTextBox Grid.Row="4" Grid.Column="1" x:Name="RequestTimeoutText" Text="5000" Margin="8,4,0,4" HorizontalAlignment="Stretch"/>
-
-            <TextBlock Grid.Row="5" Grid.Column="0" Text="responseTimeout" VerticalAlignment="Center"/>
-            <controls:CTextBox Grid.Row="5" Grid.Column="1" x:Name="ResponseTimeoutText" Text="5000" Margin="8,4,0,4" HorizontalAlignment="Stretch"/>
-
-            <TextBlock Grid.Row="6" Grid.Column="0" Text="requestRetryTimes" VerticalAlignment="Center"/>
-            <controls:CTextBox Grid.Row="6" Grid.Column="1" x:Name="RetryTimesText" Text="0" Margin="8,4,0,4" HorizontalAlignment="Stretch"/>
+            
+            <TextBlock Grid.Row="0" Grid.Column="0" Text="内容" VerticalAlignment="Center"/>
+            <TextBlock Grid.Row="0" Grid.Column="1" Text="粘贴完整的 ServerInfo.ini 文本或键值对内容" Foreground="#6B6B6B" Margin="8,4,0,4"/>
+            <controls:CTextBox Grid.Row="2"  Grid.Column="1"  x:Name="RawIniText" AcceptsReturn="True" VerticalScrollBarVisibility="Auto" TextWrapping="Wrap" Margin="8,4,0,4"/>
         </Grid>
 
-        <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right">
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right">
             <button:CButton Content="确定" Width="100" Margin="0,0,10,0" Click="OkButton_Click"/>
             <button:CButton Content="取消" Width="100" Click="CancelButton_Click"/>
         </StackPanel>

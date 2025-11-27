@@ -5,11 +5,13 @@
         xmlns:button="clr-namespace:CustomControlLibrary.CustomControl.Controls.Button;assembly=CustomControlLibrary"
         xmlns:models="clr-namespace:PackageManager.Models"
         xmlns:local="clr-namespace:PackageManager"
+        xmlns:conv="clr-namespace:PackageManager.Converters"
         xmlns:navigation="clr-namespace:CustomControlLibrary.CustomControl.Controls.Navigation;assembly=CustomControlLibrary"
         Title="切换配置" Height="660" Width="1000"
         ResizeMode="CanResize" WindowStartupLocation="CenterOwner" Loaded="Window_Loaded">
     <Window.Resources>
         <local:UrlWrapConverter x:Key="UrlWrapConverter" />
+        <conv:PresetToIniConverter x:Key="PresetToIniConverter" />
     </Window.Resources>
     <Grid Margin="20">
         <Grid.RowDefinitions>
@@ -30,43 +32,13 @@
                     </ItemsPanelTemplate>
                 </ItemsControl.ItemsPanel>
                 <ItemsControl.Resources>
-                <!-- 配置卡片模板：统一宽度与高度，内置项不显示右键菜单 -->
+                <!-- 配置卡片模板：统一宽度与最高项一致的高度，直接显示INI文本 -->
                 <DataTemplate DataType="{x:Type models:ConfigPreset}">
-                    <Border x:Name="CardBorder" BorderBrush="#DDD" BorderThickness="1" Padding="10" Margin="0,0,10,10" Width="280" Height="220" ContextMenuOpening="PresetCard_ContextMenuOpening">
+                    <Border x:Name="CardBorder" BorderBrush="#DDD" BorderThickness="1" Padding="10" Margin="0,0,10,10" Width="280" ContextMenuOpening="PresetCard_ContextMenuOpening" Background="Transparent"
+                            Height="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=CardHeight}">
                         <StackPanel>
                             <controls:CRadioButton GroupName="PresetGroup" Content="{Binding Name}" Tag="{Binding}" IsChecked="{Binding IsSelected, Mode=TwoWay}" Checked="PresetRadio_Checked" Margin="0,0,0,8"/>
-                            <TextBlock Text="[ServerInfo]" FontFamily="Consolas" FontSize="14"/>
-                            <TextBlock FontFamily="Consolas" FontSize="14" TextWrapping="Wrap">
-                                <TextBlock.Text>
-                                    <Binding Path="ServerDomain" Converter="{StaticResource UrlWrapConverter}" StringFormat='ServerDomain="{0}"' />
-                                </TextBlock.Text>
-                            </TextBlock>
-                            <TextBlock FontFamily="Consolas" FontSize="14" TextWrapping="Wrap">
-                                <TextBlock.Text>
-                                    <Binding Path="CommonServerDomain" Converter="{StaticResource UrlWrapConverter}" StringFormat='CommonServerDomain="{0}"' />
-                                </TextBlock.Text>
-                            </TextBlock>
-                            <TextBlock FontFamily="Consolas" FontSize="14">
-                                <TextBlock.Text>
-                                    <Binding Path="IEProxyAvailable" StringFormat='IEProxyAvailable="{0}"' />
-                                </TextBlock.Text>
-                            </TextBlock>
-                            <TextBlock Text="[LoginSetting]" FontFamily="Consolas" FontSize="14" Margin="0,8,0,0"/>
-                            <TextBlock FontFamily="Consolas" FontSize="14">
-                                <TextBlock.Text>
-                                    <Binding Path="requestTimeout" StringFormat='requestTimeout={0}' />
-                                </TextBlock.Text>
-                            </TextBlock>
-                            <TextBlock FontFamily="Consolas" FontSize="14">
-                                <TextBlock.Text>
-                                    <Binding Path="responseTimeout" StringFormat='responseTimeout={0}' />
-                                </TextBlock.Text>
-                            </TextBlock>
-                            <TextBlock FontFamily="Consolas" FontSize="14">
-                                <TextBlock.Text>
-                                    <Binding Path="requestRetryTimes" StringFormat='requestRetryTimes={0}' />
-                                </TextBlock.Text>
-                            </TextBlock>
+                            <TextBlock FontFamily="Consolas" FontSize="14" TextWrapping="Wrap" Text="{Binding Converter={StaticResource PresetToIniConverter}}"/>
                         </StackPanel>
                         <Border.ContextMenu>
                             <navigation:CContextMenu>
@@ -77,7 +49,8 @@
                 </DataTemplate>
                 <!-- 添加卡片模板：始终置于最前 -->
                 <DataTemplate DataType="{x:Type local:AddCardPlaceholder}">
-                    <Border BorderBrush="#DDD" BorderThickness="1" Padding="10" Margin="0,0,10,10" Width="280" Height="220" Background="#F9F9F9" MouseLeftButtonUp="AddPresetCard_MouseLeftButtonUp" Cursor="Hand">
+                    <Border BorderBrush="#DDD" BorderThickness="1" Padding="10" Margin="0,0,10,10" Width="280" Background="#F9F9F9" MouseLeftButtonUp="AddPresetCard_MouseLeftButtonUp" Cursor="Hand"
+                            Height="{Binding RelativeSource={RelativeSource AncestorType=Window}, Path=CardHeight}">
                         <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
                             <TextBlock Text="+" FontSize="32" FontWeight="Bold" HorizontalAlignment="Center"/>
                             <TextBlock Text="添加自定义配置" Margin="0,8,0,0" FontSize="14" HorizontalAlignment="Center"/>
