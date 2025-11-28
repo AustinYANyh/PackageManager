@@ -6,6 +6,7 @@ using System.IO.Compression;
 using System.Linq;
 using System.Net;
 using System.Runtime.InteropServices;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using PackageManager.Models;
@@ -39,10 +40,17 @@ namespace PackageManager.Services
         /// <param name="progressCallback">进度回调</param>
         /// <param name="forceUnlock"></param>
         /// <returns></returns>
-        public async Task<bool> UpdatePackageAsync(PackageInfo packageInfo, Action<double, string> progressCallback = null, bool forceUnlock = false)
+        public async Task<bool> UpdatePackageAsync(PackageInfo packageInfo, Action<double, string> progressCallback = null, bool forceUnlock = false, CancellationToken cancellationToken = default)
         {
             try
             {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    packageInfo.Status = PackageStatus.Ready;
+                    packageInfo.StatusText = "已取消";
+                    packageInfo.Progress = 0;
+                    return false;
+                }
                 var targetLocalPath = packageInfo.GetLocalPathForVersion(packageInfo.Version);
                 if (!AdminElevationService.IsRunningAsAdministrator() && AdminElevationService.RequiresAdminForPath(targetLocalPath))
                 {
@@ -59,6 +67,14 @@ namespace PackageManager.Services
                 packageInfo.StatusText = "正在下载...";
                 progressCallback?.Invoke(0, "开始下载");
 
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    packageInfo.Status = PackageStatus.Ready;
+                    packageInfo.StatusText = "已取消";
+                    packageInfo.Progress = 0;
+                    return false;
+                }
+
                 // 创建临时下载目录
                 var tempDir = Path.Combine(Path.GetTempPath(), "PackageManager");
                 if (!Directory.Exists(tempDir))
@@ -74,7 +90,10 @@ namespace PackageManager.Services
                 // 下载文件
                 LoggingService.LogInfo($"开始下载：{packageInfo.DownloadUrl} -> {tempFilePath}");
                 var downloadLogGate = -10; // 每10%记录一次
-                var success = await DownloadFileAsync(packageInfo.DownloadUrl,
+                bool success;
+                try
+                {
+                    success = await DownloadFileAsync(packageInfo.DownloadUrl,
                                                       tempFilePath,
                                                       progress =>
                                                       {
@@ -85,13 +104,30 @@ namespace PackageManager.Services
                                                               LoggingService.LogInfo($"下载进度：{progress:F0}%");
                                                               downloadLogGate = (int)progress;
                                                           }
-                                                      });
+                                                      },
+                                                      cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    packageInfo.Status = PackageStatus.Ready;
+                    packageInfo.StatusText = "已取消";
+                    packageInfo.Progress = 0;
+                    return false;
+                }
 
                 if (!success)
                 {
                     packageInfo.Status = PackageStatus.Error;
                     packageInfo.StatusText = "下载失败";
                     LoggingService.LogWarning($"下载失败：Url={packageInfo?.DownloadUrl} -> {tempFilePath}");
+                    return false;
+                }
+
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    packageInfo.Status = PackageStatus.Ready;
+                    packageInfo.StatusText = "已取消";
+                    packageInfo.Progress = 0;
                     return false;
                 }
 
@@ -110,22 +146,33 @@ namespace PackageManager.Services
                 packageInfo.StatusText = "正在解压...";
                 progressCallback?.Invoke(80, "开始解压");
                 LoggingService.LogInfo($"开始解压：{tempFilePath} -> {targetLocalPath}");
-                await TryUnlockProcessesAsync(targetLocalPath, forceUnlock, progressCallback);
+                await TryUnlockProcessesAsync(targetLocalPath, forceUnlock, progressCallback, cancellationToken);
 
                 var extractLogGate = 0; // 每25%记录一次
-                success = await ExtractPackageAsync(tempFilePath,
-                                                    targetLocalPath,
-                                                    progress =>
-                                                    {
-                                                        var totalProgress = 80 + (progress * 0.2); // 解压占20%进度
-                                                        packageInfo.Progress = totalProgress;
-                                                        progressCallback?.Invoke(totalProgress, $"解压中... {progress:F1}%");
-                                                        if ((progress >= (extractLogGate + 25)) || (progress >= 100))
+                try
+                {
+                    success = await ExtractPackageAsync(tempFilePath,
+                                                        targetLocalPath,
+                                                        progress =>
                                                         {
-                                                            LoggingService.LogInfo($"解压进度：{progress:F0}%");
-                                                            extractLogGate = (int)progress;
-                                                        }
-                                                    });
+                                                            var totalProgress = 80 + (progress * 0.2); // 解压占20%进度
+                                                            packageInfo.Progress = totalProgress;
+                                                            progressCallback?.Invoke(totalProgress, $"解压中... {progress:F1}%");
+                                                            if ((progress >= (extractLogGate + 25)) || (progress >= 100))
+                                                            {
+                                                                LoggingService.LogInfo($"解压进度：{progress:F0}%");
+                                                                extractLogGate = (int)progress;
+                                                            }
+                                                        },
+                                                        cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    packageInfo.Status = PackageStatus.Ready;
+                    packageInfo.StatusText = "已取消";
+                    packageInfo.Progress = 0;
+                    return false;
+                }
 
                 // 清理临时文件
                 if (File.Exists(tempFilePath))
@@ -157,6 +204,14 @@ namespace PackageManager.Services
                 }
 
                 return success;
+            }
+            catch (OperationCanceledException)
+            {
+                packageInfo.Status = PackageStatus.Ready;
+                packageInfo.StatusText = "已取消";
+                packageInfo.Progress = 0;
+                LoggingService.LogInfo($"更新已取消：{packageInfo?.ProductName}");
+                return false;
             }
             catch (Exception ex)
             {
@@ -263,7 +318,7 @@ namespace PackageManager.Services
         /// <summary>
         /// 下载文件
         /// </summary>
-        private async Task<bool> DownloadFileAsync(string ftpUrl, string localPath, Action<double> progressCallback = null)
+        private async Task<bool> DownloadFileAsync(string ftpUrl, string localPath, Action<double> progressCallback = null, CancellationToken cancellationToken = default)
         {
             try
             {
@@ -281,7 +336,13 @@ namespace PackageManager.Services
                         }
                     };
 
-                    await client.DownloadFileTaskAsync(new Uri(ftpUrl), localPath);
+                    using (cancellationToken.Register(() =>
+                    {
+                        try { client.CancelAsync(); } catch { }
+                    }))
+                    {
+                        await client.DownloadFileTaskAsync(new Uri(ftpUrl), localPath);
+                    }
                 }
 
                 try
@@ -295,6 +356,11 @@ namespace PackageManager.Services
 
                 return true;
             }
+            catch (WebException wex) when (wex.Status == WebExceptionStatus.RequestCanceled)
+            {
+                LoggingService.LogInfo("下载已取消");
+                throw new OperationCanceledException("下载取消", wex);
+            }
             catch (Exception ex)
             {
                 Debug.WriteLine($"下载失败: {ex.Message}");
@@ -306,7 +372,7 @@ namespace PackageManager.Services
         /// <summary>
         /// 解压包文件
         /// </summary>
-        private async Task<bool> ExtractPackageAsync(string zipFilePath, string extractPath, Action<double> progressCallback = null)
+        private async Task<bool> ExtractPackageAsync(string zipFilePath, string extractPath, Action<double> progressCallback = null, CancellationToken cancellationToken = default)
         {
             try
             {
@@ -315,6 +381,7 @@ namespace PackageManager.Services
                 var pendingRemain = 0;
                 await Task.Run(() =>
                 {
+                    if (cancellationToken.IsCancellationRequested) { throw new OperationCanceledException(); }
                     // 清理目标目录（尽量安全删除，无法删除则改为覆盖写入）
                     if (Directory.Exists(extractPath))
                     {
@@ -334,6 +401,7 @@ namespace PackageManager.Services
 
                         foreach (var entry in archive.Entries)
                         {
+                            if (cancellationToken.IsCancellationRequested) { throw new OperationCanceledException(); }
                             var destinationPath = Path.Combine(extractPath, entry.FullName);
 
                             // 确保目录存在
@@ -428,6 +496,7 @@ namespace PackageManager.Services
 
                         foreach (var item in pendingReplacements)
                         {
+                            if (cancellationToken.IsCancellationRequested) { throw new OperationCanceledException(); }
                             var temp = item.Item1;
                             var dest = item.Item2;
                             try
@@ -452,7 +521,7 @@ namespace PackageManager.Services
 
                         pendingRemain = pendingReplacements.Count(t => File.Exists(t.Item1));
                     }
-                });
+                }, cancellationToken);
                 LoggingService.LogInfo($"解压完成：{zipFilePath} -> {extractPath}");
                 if (pendingRemain > 0)
                 {
@@ -465,6 +534,11 @@ namespace PackageManager.Services
 
                 return true;
             }
+            catch (OperationCanceledException)
+            {
+                LoggingService.LogInfo("解压已取消");
+                throw;
+            }
             catch (Exception ex)
             {
                 Debug.WriteLine($"解压失败: {ex.Message}");
@@ -473,10 +547,14 @@ namespace PackageManager.Services
             }
         }
 
-        private async Task TryUnlockProcessesAsync(string targetDirectory, bool forceUnlock, Action<double, string> progressCallback)
+        private async Task TryUnlockProcessesAsync(string targetDirectory, bool forceUnlock, Action<double, string> progressCallback, CancellationToken cancellationToken)
         {
             try
             {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
                 var files = new List<string>();
                 try
                 {
@@ -497,6 +575,10 @@ namespace PackageManager.Services
                     return;
                 }
 
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
                 progressCallback?.Invoke(80, "检测到占用进程，准备解锁");
                 var proceed = forceUnlock;
                 if (!forceUnlock)
@@ -519,6 +601,7 @@ namespace PackageManager.Services
 
                 await Task.Run(() =>
                 {
+                    if (cancellationToken.IsCancellationRequested) { return; }
                     foreach (var p in procs)
                     {
                         try
@@ -544,7 +627,7 @@ namespace PackageManager.Services
                         {
                         }
                     }
-                });
+                }, cancellationToken);
             }
             catch
             {

@@ -1,0 +1,10 @@
+{
+  "Configuration": "Release",
+  "TargetExePath": "bin\\Release\\PackageManager.exe",
+  "Build": false,
+  "MSBuildPath": "",
+  "PfxPath": "",
+  "PfxPassword": "",
+  "SubjectName": "",
+  "TimestampUrl": "http://timestamp.digicert.com"
+}

@@ -88,15 +88,15 @@
                                             SelectedValue="{Binding LatestActivePackage.SelectedExecutableVersion, Mode=TwoWay}" Width="320" />
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
-                        <button:CButton Content="解锁更新" Command="{Binding LatestActivePackage.UnlockAndDownloadCommand}" Width="80" Margin="0,0,8,0" IsEnabled="{Binding LatestActivePackage.IsEnabled}" />
-                        <button:CButton Content="更新" Command="{Binding LatestActivePackage.UpdateCommand}" Width="80" Margin="0,0,8,0" IsEnabled="{Binding LatestActivePackage.IsEnabled}" />
+                        <button:CButton Content="{Binding LatestActivePackage.UnlockUpdateButtonText}" Command="{Binding LatestActivePackage.UnlockUpdateToggleCommand}" Width="80" Margin="0,0,8,0" />
+                        <button:CButton Content="{Binding LatestActivePackage.UpdateButtonText}" Command="{Binding LatestActivePackage.UpdateToggleCommand}" Width="80" Margin="0,0,8,0" />
                         <button:CButton Content="打开Revit" Command="{Binding LatestActivePackage.OpenPathCommand}" Width="100" Margin="0,0,8,0" IsEnabled="{Binding LatestActivePackage.IsEnabled}" />
                         <button:CButton Content="切换配置" Command="{Binding LatestActivePackage.ChangeConfigPresetCommand}" Width="80" IsEnabled="{Binding LatestActivePackage.ConfigOpsEnabled}" />
                     </StackPanel>
                     <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
                         <button:CButton Content="参数目录" Command="{Binding LatestActivePackage.OpenParameterConfigCommand}" Width="80" Margin="0,0,8,0" IsEnabled="{Binding LatestActivePackage.ConfigOpsEnabled}" />
                         <button:CButton Content="模式切换" Command="{Binding LatestActivePackage.ChangeModeToDebugCommand}" Width="80" Margin="0,0,8,0" IsEnabled="{Binding LatestActivePackage.ConfigOpsEnabled}" />
-                        <button:CButton Content="签名加密" Command="{Binding LatestActivePackage.RunEmbeddedToolCommand}" Width="100" IsEnabled="{Binding LatestActivePackage.CanRunSignatureEncryption}" />
+                        <button:CButton Content="{Binding LatestActivePackage.SignatureToggleText}" Command="{Binding LatestActivePackage.SignatureToggleCommand}" Width="100" />
                         <button:CButton Content="CSV加解密" Width="100" Margin="0,0,8,0" Click="OpenCsvCryptoWindowButton_Click"/>
                         <button:CButton Content="DNS" Width="80" Margin="0,0,8,0" Click="OpenDnsSettingsWindowButton_Click" IsEnabled="{Binding LatestActivePackage.IsTeamworkMasterDevelop}"/>
                     </StackPanel>

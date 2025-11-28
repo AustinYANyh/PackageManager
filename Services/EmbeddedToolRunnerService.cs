@@ -28,6 +28,9 @@ namespace PackageManager.Services
         private readonly Dictionary<string, double> stageProgress = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
         private readonly List<string> stageOrder = new List<string>();
         private string currentStage;
+        private CancellationTokenSource logTailCts;
+        private Process runningProcess;
+        private volatile bool isCancelled;
         
         /// <summary>
         /// 运行嵌入外部工具（异步，不阻塞UI）
@@ -59,8 +62,8 @@ namespace PackageManager.Services
 
                     string logPath = GetEmbeddedToolLogPath(Package.ProductName);
                     EnsureLogFileExists(logPath);
-                    var cts = new CancellationTokenSource();
-                    StartRealtimeLogTail(logPath, cts.Token, Package);
+                    logTailCts = new CancellationTokenSource();
+                    StartRealtimeLogTail(logPath, logTailCts.Token, Package);
                     
                     string resultPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), Package.UploadPackageName + "_result.log");
 
@@ -78,12 +81,13 @@ namespace PackageManager.Services
 
                     LoggingService.LogInfo($"启动外部工具：Exe={exePath}, Args={psi.Arguments}");
                     var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
+                    runningProcess = process;
                     process.Exited += (s, e) =>
                     {
                         try
                         {
                             var exitCode = process.ExitCode;
-                            if (exitCode != 0)
+                            if (!isCancelled && exitCode != 0)
                             {
                                 LoggingService.LogError(new Exception($"ExitCode={exitCode}"), "外部工具运行失败");
                             }
@@ -94,15 +98,25 @@ namespace PackageManager.Services
 
                             Application.Current.Dispatcher.BeginInvoke(new Action(() =>
                             {
-                                Package.StatusText = exitCode == 0 ? "外部工具运行完成" : $"外部工具运行失败（{exitCode}）";
-                                Package.Progress = exitCode == 0 ? 100 : Package.Progress;
-                                Package.Status = exitCode == 0 ? Models.PackageStatus.Completed : Models.PackageStatus.Error;
-                                // PackageUpdateService.NotifyVerificationCompleted(Package, exitCode == 0, $"ExitCode={exitCode}");
-                                PackageUpdateService.NotifyVerificationCompleted(Package, exitCode == 0);
+                                if (isCancelled)
+                                {
+                                    Package.StatusText = "校验已取消";
+                                    Package.Status = Models.PackageStatus.Ready;
+                                    Package.Progress = 0;
+                                    PackageUpdateService.NotifyVerificationCompleted(Package, false);
+                                }
+                                else
+                                {
+                                    Package.StatusText = exitCode == 0 ? "外部工具运行完成" : $"外部工具运行失败（{exitCode}）";
+                                    Package.Progress = exitCode == 0 ? 100 : Package.Progress;
+                                    Package.Status = exitCode == 0 ? Models.PackageStatus.Completed : Models.PackageStatus.Error;
+                                    PackageUpdateService.NotifyVerificationCompleted(Package, exitCode == 0);
+                                }
                             }));
                         }
                         finally
                         {
+                            try { logTailCts?.Cancel(); } catch { }
                             process.Dispose();
                             Package.IsSignatureEncryptionRunning = false;
                         }
@@ -143,6 +157,35 @@ namespace PackageManager.Services
                     Package.IsSignatureEncryptionRunning = false;
                 }
             });
+        }
+
+        /// <summary>
+        /// 取消正在运行的嵌入式工具
+        /// </summary>
+        public void Cancel()
+        {
+            try
+            {
+                isCancelled = true;
+                try { logTailCts?.Cancel(); } catch { }
+                if (runningProcess != null)
+                {
+                    try
+                    {
+                        if (!runningProcess.HasExited)
+                        {
+                            runningProcess.Kill();
+                        }
+                    }
+                    catch { }
+                }
+
+                Application.Current.Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    Package.StatusText = "校验取消中...";
+                }));
+            }
+            catch { }
         }
 
         private string BuildEmbeddedToolArguments(string downloadUrl, string logPath, string resultPath)

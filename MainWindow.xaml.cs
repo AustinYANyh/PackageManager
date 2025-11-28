@@ -107,6 +107,7 @@ namespace PackageManager
                 CommonLinks.Clear();
                 CommonLinks.Add(new CommonLinkItem("JenKins", "http://192.168.0.245:8080/view/%E6%9C%BA%E7%94%B5%E9%A1%B9%E7%9B%AE%E7%BB%84/"));
                 CommonLinks.Add(new CommonLinkItem("导航", "http://192.168.0.11:9999/"));
+                CommonLinks.Add(new CommonLinkItem("传360", "https://i.360.cn/login/?src=pcw_renzheng&tpl=client&destUrl=https%3A%2F%2Fopen.soft.360.cn%2Fsoftsubmit.php"));
                 SelectedCommonLink = CommonLinks.FirstOrDefault();
             }
             catch (Exception ex)
@@ -413,6 +414,8 @@ namespace PackageManager
             
             // 设置为只读状态，防止更新时编辑
             packageInfo.IsReadOnly = true;
+            packageInfo.IsUpdatingRunning = true;
+            packageInfo.UpdateCancellationSource = new System.Threading.CancellationTokenSource();
                 
             // 开始更新
             var success = await _updateService.UpdatePackageAsync(packageInfo, 
@@ -423,13 +426,16 @@ namespace PackageManager
                                                                       {
                                                                           packageInfo.StatusText = $"{packageInfo.ProductName}: {message}";
                                                                       });
-                                                                  });
+                                                                  },
+                                                                  false,
+                                                                  packageInfo.UpdateCancellationSource.Token);
 
             // 更新完成后的状态
             Dispatcher.Invoke(() =>
             {
                 // 恢复可编辑状态
                 packageInfo.IsReadOnly = false;
+                packageInfo.IsUpdatingRunning = false;
                 
                 if (success)
                 {
@@ -437,7 +443,15 @@ namespace PackageManager
                 }
                 else
                 {
-                    packageInfo.StatusText = $"{packageInfo.ProductName} 更新失败";
+                    // 如果服务端已将状态设置为取消，则沿用取消文案
+                    if (packageInfo.Status == PackageStatus.Ready && string.Equals(packageInfo.StatusText, "已取消", StringComparison.Ordinal))
+                    {
+                        packageInfo.StatusText = $"{packageInfo.ProductName} 更新已取消";
+                    }
+                    else
+                    {
+                        packageInfo.StatusText = $"{packageInfo.ProductName} 更新失败";
+                    }
                 }
             });
         }
@@ -446,6 +460,8 @@ namespace PackageManager
         {
             packageInfo.StatusText = $"正在解锁并更新 {packageInfo.ProductName}...";
             packageInfo.IsReadOnly = true;
+            packageInfo.IsUpdatingRunning = true;
+            packageInfo.UpdateCancellationSource = new System.Threading.CancellationTokenSource();
             var success = await _updateService.UpdatePackageAsync(packageInfo,
                                                                   (progress, message) =>
                                                                   {
@@ -454,17 +470,26 @@ namespace PackageManager
                                                                           packageInfo.StatusText = $"{packageInfo.ProductName}: {message}";
                                                                       });
                                                                   },
-                                                                  true);
+                                                                  true,
+                                                                  packageInfo.UpdateCancellationSource.Token);
             Dispatcher.Invoke(() =>
             {
                 packageInfo.IsReadOnly = false;
+                packageInfo.IsUpdatingRunning = false;
                 if (success)
                 {
                     packageInfo.StatusText = $"{packageInfo.ProductName} 更新完成";
                 }
                 else
                 {
-                    packageInfo.StatusText = $"{packageInfo.ProductName} 更新失败";
+                    if (packageInfo.Status == PackageStatus.Ready && string.Equals(packageInfo.StatusText, "已取消", StringComparison.Ordinal))
+                    {
+                        packageInfo.StatusText = $"{packageInfo.ProductName} 更新已取消";
+                    }
+                    else
+                    {
+                        packageInfo.StatusText = $"{packageInfo.ProductName} 更新失败";
+                    }
                 }
             });
         }

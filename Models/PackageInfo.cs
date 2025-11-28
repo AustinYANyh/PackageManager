@@ -8,6 +8,7 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Windows;
 using System.Windows.Input;
 using CustomControlLibrary.CustomControl.Attribute.DataGrid;
@@ -233,6 +234,12 @@ namespace PackageManager.Models
             get => versionLocalPaths ?? (versionLocalPaths = new System.Collections.Generic.Dictionary<string, string>(System.StringComparer.OrdinalIgnoreCase));
             set => SetProperty(ref versionLocalPaths, value);
         }
+
+        private CancellationTokenSource updateCancellationSource;
+        private bool isUpdatingRunning;
+        private EmbeddedToolRunnerService embeddedToolRunner;
+        private ICommand cancelUpdateCommand;
+        private ICommand cancelEmbeddedToolCommand;
 
         public string GetLocalPathForVersion(string version)
         {
@@ -490,6 +497,24 @@ namespace PackageManager.Models
         }
 
         /// <summary>
+        /// 更新流程是否运行中（用于切换按钮文案与命令）
+        /// </summary>
+        public bool IsUpdatingRunning
+        {
+            get => isUpdatingRunning;
+            set
+            {
+                if (SetProperty(ref isUpdatingRunning, value))
+                {
+                    OnPropertyChanged(nameof(UpdateButtonText));
+                    OnPropertyChanged(nameof(UnlockUpdateButtonText));
+                    OnPropertyChanged(nameof(UpdateToggleCommand));
+                    OnPropertyChanged(nameof(UnlockUpdateToggleCommand));
+                }
+            }
+        }
+
+        /// <summary>
         /// 是否为调试模式（影响按钮文案与配置写入），需持久化
         /// </summary>
         public bool IsDebugMode
@@ -509,6 +534,8 @@ namespace PackageManager.Models
                 if (SetProperty(ref isSignatureEncryptionRunning, value))
                 {
                     OnPropertyChanged(nameof(CanRunSignatureEncryption));
+                    OnPropertyChanged(nameof(SignatureToggleText));
+                    OnPropertyChanged(nameof(SignatureToggleCommand));
                 }
             }
         }
@@ -577,6 +604,72 @@ namespace PackageManager.Models
             get => updateCommand ?? (updateCommand = new RelayCommand(ExecuteDownload));
 
             set => SetProperty(ref updateCommand, value);
+        }
+
+        /// <summary>
+        /// 更新/取消切换命令（运行中时为取消，否则为更新）
+        /// </summary>
+        public ICommand UpdateToggleCommand => IsUpdatingRunning ? CancelUpdateCommand : UpdateCommand;
+
+        /// <summary>
+        /// 解锁更新/取消切换命令（运行中时为取消，否则为解锁更新）
+        /// </summary>
+        public ICommand UnlockUpdateToggleCommand => IsUpdatingRunning ? CancelUpdateCommand : UnlockAndDownloadCommand;
+
+        /// <summary>
+        /// 签名加密校验/取消切换命令（运行中时为取消，否则为校验）
+        /// </summary>
+        public ICommand SignatureToggleCommand => IsSignatureEncryptionRunning ? CancelEmbeddedToolCommand : RunEmbeddedToolCommand;
+
+        /// <summary>
+        /// 更新按钮文案（运行中显示“取消”）
+        /// </summary>
+        public string UpdateButtonText => IsUpdatingRunning ? "取消" : "更新";
+
+        /// <summary>
+        /// 解锁更新按钮文案（运行中显示“取消”）
+        /// </summary>
+        public string UnlockUpdateButtonText => IsUpdatingRunning ? "取消" : "解锁更新";
+
+        /// <summary>
+        /// 签名加密按钮文案（运行中显示“取消”）
+        /// </summary>
+        public string SignatureToggleText => IsSignatureEncryptionRunning ? "取消" : "签名加密";
+
+        /// <summary>
+        /// 取消更新命令
+        /// </summary>
+        public ICommand CancelUpdateCommand
+        {
+            get => cancelUpdateCommand ?? (cancelUpdateCommand = new RelayCommand(ExecuteCancelUpdate));
+            set => SetProperty(ref cancelUpdateCommand, value);
+        }
+
+        /// <summary>
+        /// 取消签名加密校验命令
+        /// </summary>
+        public ICommand CancelEmbeddedToolCommand
+        {
+            get => cancelEmbeddedToolCommand ?? (cancelEmbeddedToolCommand = new RelayCommand(ExecuteCancelEmbeddedTool));
+            set => SetProperty(ref cancelEmbeddedToolCommand, value);
+        }
+
+        /// <summary>
+        /// 更新流程的取消令牌源（由界面启动时创建）
+        /// </summary>
+        public CancellationTokenSource UpdateCancellationSource
+        {
+            get => updateCancellationSource;
+            set => SetProperty(ref updateCancellationSource, value);
+        }
+
+        /// <summary>
+        /// 嵌入工具运行器引用（用于取消）
+        /// </summary>
+        public EmbeddedToolRunnerService EmbeddedToolRunner
+        {
+            get => embeddedToolRunner;
+            set => SetProperty(ref embeddedToolRunner, value);
         }
 
         /// <summary>
@@ -760,12 +853,33 @@ namespace PackageManager.Models
         /// </summary>
         private void ExecuteRunEmbeddedTool()
         {
-            new EmbeddedToolRunnerService(this).RunAsync();
+            EmbeddedToolRunner = new EmbeddedToolRunnerService(this);
+            EmbeddedToolRunner.RunAsync();
         }
 
         private void ExecuteUnlockAndDownload()
         {
             UnlockAndDownloadRequested?.Invoke(this);
+        }
+
+        private void ExecuteCancelUpdate()
+        {
+            try
+            {
+                UpdateCancellationSource?.Cancel();
+                StatusText = $"{ProductName} 取消中...";
+            }
+            catch { }
+        }
+
+        private void ExecuteCancelEmbeddedTool()
+        {
+            try
+            {
+                EmbeddedToolRunner?.Cancel();
+                StatusText = $"{ProductName} 校验取消中...";
+            }
+            catch { }
         }
         
         /// <summary>

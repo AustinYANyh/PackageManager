@@ -213,6 +213,10 @@
       <Folder Include="packages\" />
     </ItemGroup>
     <ItemGroup>
+      <Content Include="scripts\GenerateIcon.ps1" />
+      <Content Include="scripts\sign.config.json" />
+      <Content Include="scripts\SignExe.ps1" />
+      <Content Include="scripts\SignPackageManager.ps1" />
       <EmbeddedResource Include="Assets\Tools\LogViewPro.exe" />
       <Content Include="Assets\Icons\README.txt" />
       <Content Include="Assets\Icons\source.png" />
