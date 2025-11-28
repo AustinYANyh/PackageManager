@@ -348,6 +348,37 @@ namespace PackageManager.Function.ConfigPreset
                 match.IsSelected = true;
                 SelectedPreset = match;
             }
+            else
+            {
+                // 若当前配置不在内置或已保存项中，则以当前配置文本创建一张卡片并选中
+                var newPreset = new Models.ConfigPreset
+                {
+                    Name = "当前配置",
+                    RawIniContent = _initialIniContent,
+                    IEProxyAvailable = "yes",
+                    requestTimeout = 0,
+                    responseTimeout = 0,
+                    requestRetryTimes = 0,
+                    IsBuiltIn = false,
+                };
+
+                // 加入自定义列表并持久化
+                CustomPresets.Add(newPreset);
+                try
+                {
+                    Services.ConfigPresetStore.Save(CustomPresets);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show($"保存自定义配置失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+
+                // 刷新展示列表并选中该卡片
+                RebuildPresetItems();
+                UpdateCardHeight();
+                newPreset.IsSelected = true;
+                SelectedPreset = newPreset;
+            }
         }
 
         private void UpdateCardHeight()
