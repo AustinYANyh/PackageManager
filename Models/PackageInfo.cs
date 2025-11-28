@@ -714,10 +714,17 @@ namespace PackageManager.Models
                 AvailableVersions.Add(version);
             }
 
-            // 如果有版本且当前版本为空，则选择最后一个版本
-            if ((AvailableVersions.Count > 0) && string.IsNullOrEmpty(Version))
+            // 刷新时默认选择：Dazzle 强制首项，其他包仅在未选择时选末项
+            if (AvailableVersions.Count > 0)
             {
-                Version = AvailableVersions.Last();
+                if (string.Equals(ProductName, "BuildMaster(Dazzle)", StringComparison.OrdinalIgnoreCase))
+                {
+                    Version = AvailableVersions.First();
+                }
+                else if (string.IsNullOrEmpty(Version))
+                {
+                    Version = AvailableVersions.Last();
+                }
             }
         }
 
