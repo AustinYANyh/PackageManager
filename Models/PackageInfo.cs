@@ -339,6 +339,12 @@ namespace PackageManager.Models
 
         public bool IsEnabled => !IsReadOnly;
 
+        // 更新/解锁更新按钮的启用状态：运行中或非只读时均应可点击（以便取消）
+        public bool UpdateCancelEnabled => IsUpdatingRunning || IsEnabled;
+
+        // 签名加密按钮的启用状态：运行中或非只读时均应可点击（以便取消）
+        public bool SignatureCancelEnabled => IsSignatureEncryptionRunning || IsEnabled;
+
         public bool IsTeamworkMasterDevelop => string.Equals(ProductName, "TeamworkMaster(Develop)", StringComparison.OrdinalIgnoreCase);
 
         public bool? SupportsConfigOpsOverride { get; set; }
@@ -493,6 +499,8 @@ namespace PackageManager.Models
                 OnPropertyChanged(nameof(IsEnabled));
                 OnPropertyChanged(nameof(CanRunSignatureEncryption));
                 OnPropertyChanged(nameof(ConfigOpsEnabled));
+                OnPropertyChanged(nameof(UpdateCancelEnabled));
+                OnPropertyChanged(nameof(SignatureCancelEnabled));
             }
         }
 
@@ -510,6 +518,7 @@ namespace PackageManager.Models
                     OnPropertyChanged(nameof(UnlockUpdateButtonText));
                     OnPropertyChanged(nameof(UpdateToggleCommand));
                     OnPropertyChanged(nameof(UnlockUpdateToggleCommand));
+                    OnPropertyChanged(nameof(UpdateCancelEnabled));
                 }
             }
         }
@@ -536,6 +545,7 @@ namespace PackageManager.Models
                     OnPropertyChanged(nameof(CanRunSignatureEncryption));
                     OnPropertyChanged(nameof(SignatureToggleText));
                     OnPropertyChanged(nameof(SignatureToggleCommand));
+                    OnPropertyChanged(nameof(SignatureCancelEnabled));
                 }
             }
         }
