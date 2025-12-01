@@ -213,6 +213,8 @@
       <Folder Include="packages\" />
     </ItemGroup>
     <ItemGroup>
+      <Content Include="CHANGELOG.md" />
+      <Content Include="README.md" />
       <Content Include="scripts\GenerateIcon.ps1" />
       <Content Include="scripts\sign.config.json" />
       <Content Include="scripts\SignExe.ps1" />
