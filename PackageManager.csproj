@@ -133,6 +133,10 @@
         <Compile Include="Views\LogViewerPage.xaml.cs" />
         <Compile Include="Views\NavigationPanel.xaml.cs" />
         <Compile Include="Views\PackagesHomePage.xaml.cs" />
+        <Compile Include="Views\ChangelogPage.xaml.cs">
+          <DependentUpon>ChangelogPage.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
         <Compile Include="Views\PackageConfigPage.xaml.cs" />
         <Compile Include="Views\ProductLogsPage.xaml.cs" />
         <Compile Include="Views\SettingsPage.xaml.cs" />
@@ -184,6 +188,10 @@
         <Page Include="Views\LogViewerPage.xaml" />
         <Page Include="Views\NavigationPanel.xaml" />
         <Page Include="Views\PackagesHomePage.xaml" />
+        <Page Include="Views\ChangelogPage.xaml">
+          <Generator>MSBuild:Compile</Generator>
+          <SubType>Designer</SubType>
+        </Page>
         <Page Include="Views\PackageConfigPage.xaml" />
         <Page Include="Views\ProductLogsPage.xaml" />
         <Page Include="Views\SettingsPage.xaml" />
@@ -234,7 +242,7 @@
       <Folder Include="packages\" />
     </ItemGroup>
     <ItemGroup>
-      <Content Include="CHANGELOG.md" />
+      <EmbeddedResource Include="CHANGELOG.md" />
       <Content Include="README.md" />
       <Content Include="scripts\GenerateIcon.ps1" />
       <Content Include="scripts\sign.config.json" />

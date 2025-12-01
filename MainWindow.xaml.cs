@@ -91,6 +91,7 @@ namespace PackageManager
         public ICommand OpenProductLogsCommand { get; }
         public ICommand OpenPackageConfigCommand { get; }
         public ICommand OpenCommonLinksPageCommand { get; }
+        public ICommand OpenChangelogPageCommand { get; }
 
 
         public ObservableCollection<PackageInfo> Packages
@@ -109,6 +110,22 @@ namespace PackageManager
 
         // 中央区域页面承载：主页与导航方法
         private PackageManager.Views.PackagesHomePage _homePage;
+        private int _navigationVersion;
+        private bool _isHomeActive;
+
+        // 每次成功导航后递增，用于左侧导航在命令执行失败时回退选中项
+        public int NavigationVersion
+        {
+            get => _navigationVersion;
+            private set => SetProperty(ref _navigationVersion, value);
+        }
+
+        // 指示中央区域是否处于主页（用于左侧导航同步选中状态）
+        public bool IsHomeActive
+        {
+            get => _isHomeActive;
+            private set => SetProperty(ref _isHomeActive, value);
+        }
 
         private void NavigateHome()
         {
@@ -119,6 +136,8 @@ namespace PackageManager
                 _homePage.DataContext = this;
             }
             CentralFrame.Navigate(_homePage);
+            NavigationVersion++;
+            IsHomeActive = true;
         }
 
         private void NavigateTo(Page page)
@@ -130,6 +149,8 @@ namespace PackageManager
                 page.DataContext = this;
             }
             CentralFrame.Navigate(page);
+            NavigationVersion++;
+            IsHomeActive = false;
         }
 
         private CustomControlLibrary.CustomControl.Controls.DataGrid.CDataGrid GetPackageDataGrid()
@@ -168,6 +189,7 @@ namespace PackageManager
             OpenProductLogsCommand = new RelayCommand(() => { OpenProductLogButton_Click(this, new RoutedEventArgs()); });
             OpenPackageConfigCommand = new RelayCommand(() => { OpenPackageConfigButton_Click(this, new RoutedEventArgs()); });
             OpenCommonLinksPageCommand = new RelayCommand(OpenCommonLinksPage);
+            OpenChangelogPageCommand = new RelayCommand(() => { OpenChangelogPageButton_Click(this, new RoutedEventArgs()); });
         }
 
         private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
@@ -888,6 +910,24 @@ namespace PackageManager
             {
                 LoggingService.LogError(ex, "打开日志查看器失败");
                 MessageBox.Show($"打开日志查看器失败：{ex.Message}", "日志", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
+        private void OpenChangelogPageButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var page = new PackageManager.Views.ChangelogPage();
+                if (page is PackageManager.Views.ICentralPage icp)
+                {
+                    icp.RequestExit += () => NavigateHome();
+                }
+                NavigateTo(page);
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, "打开更新日志页面失败");
+                MessageBox.Show($"打开更新日志页面失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 

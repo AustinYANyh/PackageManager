@@ -33,10 +33,10 @@
             <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right">
                 <button:CButton Content="刷新" Margin="0,0,8,0" Padding="10,6" Click="RefreshButton_Click" />
                 <button:CButton Content="筛选" Margin="0,0,8,0" Padding="10,6" Click="FilterButton_Click" />
-                <button:CButton Content="设置" Margin="0,0,8,0" Padding="10,6" Click="SettingsButton_Click" />
-                <button:CButton Content="路径" Margin="0,0,8,0" Padding="10,6" Click="LocalPathSettingsButton_Click" />
-                <button:CButton Content="日志" Padding="10,6" Click="OpenLogViewerButton_Click" />
-                <button:CButton Content="产品日志" Margin="8,0,0,0" Padding="10,6" Click="OpenProductLogButton_Click" />
+                <!-- <button:CButton Content="设置" Margin="0,0,8,0" Padding="10,6" Click="SettingsButton_Click" /> -->
+                <!-- <button:CButton Content="路径" Margin="0,0,8,0" Padding="10,6" Click="LocalPathSettingsButton_Click" /> -->
+                <!-- <button:CButton Content="日志" Padding="10,6" Click="OpenLogViewerButton_Click" /> -->
+                <!-- <button:CButton Content="产品日志" Margin="8,0,0,0" Padding="10,6" Click="OpenProductLogButton_Click" /> -->
 
                 <!-- 常用网址导航 -->
                 <controls:CComboBox x:Name="CommonLinksCombo"
