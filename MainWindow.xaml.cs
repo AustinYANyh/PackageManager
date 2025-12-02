@@ -1382,44 +1382,4 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             SaveCurrentState();
         }
     }
-
-    private DataPersistenceService.PackageConfigItem FindFinalizeTargetByProduct(string productName)
-    {
-        var builtIns = _dataPersistenceService.GetBuiltInFinalizePackageConfigs() ?? new List<DataPersistenceService.PackageConfigItem>();
-        var customs = _dataPersistenceService.LoadFinalizePackageConfigs() ?? new List<DataPersistenceService.PackageConfigItem>();
-        var all = builtIns.Concat(customs).ToList();
-
-        // 直接匹配（去掉Develop后缀）
-        string normalized = (productName ?? string.Empty).Replace("Develop", string.Empty).Trim();
-        var direct = all.FirstOrDefault(x => string.Equals(x.ProductName?.Trim(), normalized, StringComparison.OrdinalIgnoreCase));
-        if (direct != null)
-        {
-            return direct;
-        }
-
-        // 括号内标识映射（英文->中文）
-        var synonyms = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            { "（Duct）", "（风管）" },
-            { "（PMEP）", "（管道）" },
-            { "（MEP）", "（管道）" },
-            { "（CABE）", "（机电）" },
-            { "（ST）", "（钢构）" },
-            { "（CST）", "（施工）" },
-        };
-        foreach (var kv in synonyms)
-        {
-            if (normalized.Contains(kv.Key))
-            {
-                string mapped = normalized.Replace(kv.Key, kv.Value);
-                var hit = all.FirstOrDefault(x => string.Equals(x.ProductName?.Trim(), mapped, StringComparison.OrdinalIgnoreCase));
-                if (hit != null)
-                {
-                    return hit;
-                }
-            }
-        }
-
-        return null;
-    }
 }

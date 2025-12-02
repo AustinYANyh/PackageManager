@@ -244,6 +244,7 @@
     </ItemGroup>
     <ItemGroup>
       <EmbeddedResource Include="CHANGELOG.md" />
+      <Content Include="Assets\Tools\FtpPublisher.exe" />
       <Content Include="README.md" />
       <Content Include="scripts\GenerateIcon.ps1" />
       <Content Include="scripts\release.py" />
