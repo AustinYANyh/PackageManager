@@ -61,7 +61,7 @@ namespace PackageManager.Views
                 return;
             }
             var ownerWindow = Window.GetWindow(this);
-            var win = new PackageManager.Function.PackageManage.PackageEditWindow(item)
+            var win = new PackageManager.Function.PackageManage.PackageEditWindow(item, isNew)
             {
                 Owner = ownerWindow
             };
@@ -91,6 +91,7 @@ namespace PackageManager.Views
                 ProductName = string.Empty,
                 FtpServerPath = string.Empty,
                 LocalPath = string.Empty,
+                FinalizeFtpServerPath = string.Empty,
                 SupportsConfigOps = true,
                 IsBuiltIn = false
             };
@@ -107,7 +108,11 @@ namespace PackageManager.Views
                 var ok = _dataService.SavePackageConfigs(customList);
                 if (ok)
                 {
-                    MessageBox.Show("保存成功，重启应用后生效", "成功", MessageBoxButton.OK, MessageBoxImage.Information);
+                    // 保存成功后立即让主窗体重载包配置，无需重启
+                    var main = System.Windows.Application.Current?.MainWindow as PackageManager.MainWindow;
+                    main?.ReloadPackagesFromConfig();
+
+                    LoggingService.LogInfo("保存成功，配置已立即生效，正在自动加载版本");
                     RequestExit?.Invoke();
                 }
                 else
@@ -117,7 +122,7 @@ namespace PackageManager.Views
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"保存失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                LoggingService.LogError(ex,"保存失败");
             }
         }
 
@@ -140,4 +145,3 @@ namespace PackageManager.Views
         }
     }
 }
-

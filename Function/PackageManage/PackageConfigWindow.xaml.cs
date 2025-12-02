@@ -40,7 +40,7 @@ namespace PackageManager.Function.PackageManage
                 MessageBox.Show("内置项不可编辑", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
-            var win = new PackageEditWindow(item) { Owner = this };
+            var win = new PackageEditWindow(item,isNew) { Owner = this };
             var result = win.ShowDialog();
             if (result != true && isNew)
             {

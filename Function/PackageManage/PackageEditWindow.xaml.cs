@@ -15,16 +15,21 @@ namespace PackageManager.Function.PackageManage
         public PackageItem Item { get; }
         public ObservableCollection<EditItem> EditItems { get; }
 
-        public PackageEditWindow(PackageItem item)
+        private readonly bool isNew;
+
+        public PackageEditWindow(PackageItem item, bool isNew)
         {
             InitializeComponent();
+            this.isNew = isNew;
             Item = item;
             EditItems = new ObservableCollection<EditItem> { new EditItem
             {
                 ProductName = item.ProductName,
                 FtpServerPath = item.FtpServerPath,
                 LocalPath = item.LocalPath,
+                FinalizeFtpServerPath = item.FinalizeFtpServerPath,
                 IsBuiltIn = item.IsBuiltIn,
+                IsNew = isNew,
             }};
             DataContext = this;
         }
@@ -37,6 +42,11 @@ namespace PackageManager.Function.PackageManage
                 Item.ProductName = edited.ProductName;
                 Item.FtpServerPath = edited.FtpServerPath;
                 Item.LocalPath = edited.LocalPath;
+                // 仅在新增时允许写入定版地址
+                if (isNew)
+                {
+                    Item.FinalizeFtpServerPath = edited.FinalizeFtpServerPath;
+                }
             }
             DialogResult = true;
             Close();
@@ -53,6 +63,8 @@ namespace PackageManager.Function.PackageManage
             private string productName;
             private string ftpServerPath;
             private string localPath;
+            private string finalizeFtpServerPath;
+            public bool IsNew { get; set; }
             private ICommand browseCommand;
 
             [DataGridColumn(1, DisplayName = "产品名称", Width = "180", IsReadOnlyProperty = nameof(IsBuiltIn))]
@@ -69,14 +81,23 @@ namespace PackageManager.Function.PackageManage
                 set => SetProperty(ref ftpServerPath, value);
             }
 
-            [DataGridColumn(3, DisplayName = "本地路径", Width = "300", IsReadOnlyProperty = nameof(IsBuiltIn))]
+            [DataGridColumn(4, DisplayName = "本地路径", Width = "300", IsReadOnlyProperty = nameof(IsBuiltIn))]
             public string LocalPath
             {
                 get => localPath;
                 set => SetProperty(ref localPath, value);
             }
 
-            [DataGridButton(4, DisplayName = "选择路径", Width = "120", ControlType = "Button", ButtonText = "浏览...", ButtonWidth = 90, ButtonHeight = 26, ButtonCommandProperty = nameof(BrowseCommand), IsReadOnlyProperty = nameof(IsBuiltIn))]
+            [DataGridColumn(3, DisplayName = "定版FTP路径", Width = "350", IsReadOnlyProperty = nameof(IsFinalizeReadonly))]
+            public string FinalizeFtpServerPath
+            {
+                get => finalizeFtpServerPath;
+                set => SetProperty(ref finalizeFtpServerPath, value);
+            }
+
+            public bool IsFinalizeReadonly => IsBuiltIn || !IsNew;
+
+            [DataGridButton(5, DisplayName = "选择路径", Width = "120", ControlType = "Button", ButtonText = "浏览...", ButtonWidth = 90, ButtonHeight = 26, ButtonCommandProperty = nameof(BrowseCommand), IsReadOnlyProperty = nameof(IsBuiltIn))]
             public string Browse { get; set; }
 
             public ICommand BrowseCommand

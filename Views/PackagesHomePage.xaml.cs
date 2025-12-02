@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Controls;
 using PackageManager.Function.CsvTool;
 using PackageManager.Function.DnsTool;
+using System.Threading.Tasks;
 
 namespace PackageManager.Views
 {
@@ -43,6 +44,24 @@ namespace PackageManager.Views
             catch
             {
                 MessageBox.Show("打开DNS设置窗口失败", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private async void FinalizeButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var main = Window.GetWindow(this) as MainWindow;
+                if (main == null)
+                {
+                    MessageBox.Show("未找到主窗口，无法执行定版操作", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+                await main.FinalizeSelectedPackageAsync();
+            }
+            catch
+            {
+                MessageBox.Show("定版执行失败", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
     }

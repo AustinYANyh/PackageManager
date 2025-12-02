@@ -109,6 +109,9 @@ namespace PackageManager.Models
 
         private System.Collections.Generic.Dictionary<string, string> versionLocalPaths;
 
+        private string finalizeFtpServerPath;
+        private bool isFinalizing;
+
         /// <summary>
         /// 更新请求事件
         /// </summary>
@@ -503,6 +506,42 @@ namespace PackageManager.Models
                 OnPropertyChanged(nameof(SignatureCancelEnabled));
             }
         }
+
+        /// <summary>
+        /// 用于定版上传的目标FTP根路径
+        /// </summary>
+        [DataGridColumn(5, DisplayName = "定版FTP路径", Width = "350", IsReadOnly = true, IsVisible = false)]
+        public string FinalizeFtpServerPath
+        {
+            get => finalizeFtpServerPath;
+            set
+            {
+                if (SetProperty(ref finalizeFtpServerPath, value))
+                {
+                    OnPropertyChanged(nameof(FinalizeButtonEnabled));
+                }
+            }
+        }
+
+        /// <summary>
+        /// 定版流程是否运行中（用于禁用按钮）
+        /// </summary>
+        public bool IsFinalizing
+        {
+            get => isFinalizing;
+            set
+            {
+                if (SetProperty(ref isFinalizing, value))
+                {
+                    OnPropertyChanged(nameof(FinalizeButtonEnabled));
+                }
+            }
+        }
+
+        /// <summary>
+        /// 定版按钮可用性：需已配置定版路径且当前不在定版中
+        /// </summary>
+        public bool FinalizeButtonEnabled => !IsFinalizing && !string.IsNullOrWhiteSpace(FinalizeFtpServerPath);
 
         /// <summary>
         /// 更新流程是否运行中（用于切换按钮文案与命令）

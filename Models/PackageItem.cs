@@ -18,6 +18,8 @@ namespace PackageManager.Models
 
         private string localPath;
 
+        private string finalizeFtpServerPath;
+
         private bool supportsConfigOps;
 
         private bool isBuiltIn;
@@ -80,6 +82,23 @@ namespace PackageManager.Models
             }
         }
 
+        [DataGridColumn(5, DisplayName = "定版FTP路径", Width = "450", IsReadOnly = true)]
+        public string FinalizeFtpServerPath
+        {
+            get => finalizeFtpServerPath;
+
+            set
+            {
+                if (value == finalizeFtpServerPath)
+                {
+                    return;
+                }
+
+                finalizeFtpServerPath = value;
+                OnPropertyChanged();
+            }
+        }
+
         [DataGridCheckBox(4, DisplayName = "允许操作按钮", Width = "120", IsReadOnlyProperty = nameof(IsBuiltIn))]
         public bool SupportsConfigOps
         {
@@ -116,7 +135,7 @@ namespace PackageManager.Models
 
         public bool CanEditDelete => !IsBuiltIn;
 
-        [DataGridMultiButton(nameof(ActionButtonsConfig), 5, DisplayName = "操作", Width = "250", ButtonSpacing = 12)]
+        [DataGridMultiButton(nameof(ActionButtonsConfig), 6, DisplayName = "操作", Width = "250", ButtonSpacing = 12)]
         public string Actions { get; set; }
 
         public ICommand EditCommand { get; }
@@ -134,6 +153,7 @@ namespace PackageManager.Models
             ProductName = c.ProductName,
             FtpServerPath = c.FtpServerPath,
             LocalPath = c.LocalPath,
+            FinalizeFtpServerPath = c.FinalizeFtpServerPath,
             SupportsConfigOps = c.SupportsConfigOps,
             IsBuiltIn = builtIn
         };
@@ -143,6 +163,7 @@ namespace PackageManager.Models
             ProductName = p.ProductName,
             FtpServerPath = p.FtpServerPath,
             LocalPath = p.LocalPath,
+            FinalizeFtpServerPath = p.FinalizeFtpServerPath,
             SupportsConfigOps = p.SupportsConfigOps
         };
 
