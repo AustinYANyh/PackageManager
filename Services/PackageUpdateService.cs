@@ -718,6 +718,80 @@ namespace PackageManager.Services
             }
         }
 
+        /// <summary>
+        /// 解除占用：对指定目标（文件或文件夹）进行占用检测并尝试关闭相关进程。
+        /// 返回尝试处理的进程数量。
+        /// </summary>
+        public async Task<int> UnlockLocksForTargetsAsync(IEnumerable<string> targets, CancellationToken cancellationToken = default)
+        {
+            if (targets == null) return 0;
+            var files = new List<string>();
+
+            try
+            {
+                foreach (var t in targets)
+                {
+                    if (string.IsNullOrWhiteSpace(t)) continue;
+                    try
+                    {
+                        if (Directory.Exists(t))
+                        {
+                            var dirFiles = Directory.EnumerateFiles(t, "*.*", SearchOption.AllDirectories)
+                                                    .Take(10000);
+                            files.AddRange(dirFiles);
+                        }
+                        else if (File.Exists(t))
+                        {
+                            files.Add(t);
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+
+            var procs = GetLockingProcesses(files);
+            if (procs.Count == 0) return 0;
+
+            try
+            {
+                await Task.Run(() =>
+                {
+                    foreach (var p in procs)
+                    {
+                        if (cancellationToken.IsCancellationRequested) return;
+                        try
+                        {
+                            if (p.CloseMainWindow())
+                            {
+                                p.WaitForExit(3000);
+                            }
+                        }
+                        catch { }
+
+                        try
+                        {
+                            if (!p.HasExited)
+                            {
+                                p.Kill();
+                                p.WaitForExit(2000);
+                            }
+                        }
+                        catch { }
+                    }
+                }, cancellationToken);
+            }
+            catch { }
+
+            return procs.Count;
+        }
+
+        public Task<int> UnlockLocksForDirectoryAsync(string targetDirectory, CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(targetDirectory)) return Task.FromResult(0);
+            return UnlockLocksForTargetsAsync(new[] { targetDirectory }, cancellationToken);
+        }
+
         private static List<Process> GetLockingProcesses(List<string> files)
         {
             var result = new List<Process>();
