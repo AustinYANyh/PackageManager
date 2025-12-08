@@ -718,10 +718,6 @@ namespace PackageManager.Services
             }
         }
 
-        /// <summary>
-        /// 解除占用：对指定目标（文件或文件夹）进行占用检测并尝试关闭相关进程。
-        /// 返回尝试处理的进程数量。
-        /// </summary>
         public async Task<int> UnlockLocksForTargetsAsync(IEnumerable<string> targets, CancellationToken cancellationToken = default)
         {
             if (targets == null) return 0;
@@ -783,7 +779,7 @@ namespace PackageManager.Services
 
                 var remaining = procs.Where(p =>
                 {
-                    try { return !p.HasExited; } catch { return true; }
+                    try { return !p.HasExited; } catch { return false; }
                 }).ToList();
 
                 if (remaining.Count > 0 && !AdminElevationService.IsRunningAsAdministrator())

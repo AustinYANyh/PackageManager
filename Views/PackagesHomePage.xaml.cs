@@ -4,6 +4,7 @@ using System.Windows.Controls;
 using PackageManager.Function.CsvTool;
 using PackageManager.Function.DnsTool;
 using PackageManager.Function.UnlockTool;
+using PackageManager.Function.SlnTool;
 using System.Threading.Tasks;
 using System.IO;
 using System.Linq;
@@ -131,6 +132,19 @@ namespace PackageManager.Views
             catch
             {
                 MessageBox.Show("打开解除占用窗口失败", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void OpenSlnUpdateWindowButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var win = new SlnUpdateWindow { Owner = Window.GetWindow(this) };
+                win.Show();
+            }
+            catch
+            {
+                MessageBox.Show("打开编译顺序窗口失败", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
     }

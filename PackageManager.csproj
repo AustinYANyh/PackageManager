@@ -115,11 +115,16 @@
           <DependentUpon>LocalPathSettingsWindow.xaml</DependentUpon>
           <SubType>Code</SubType>
         </Compile>
+        <Compile Include="Function\SlnTool\Updater.cs" />
         <Compile Include="Function\UnlockTool\UnlockFilesWindow.xaml.cs">
           <DependentUpon>UnlockFilesWindow.xaml</DependentUpon>
           <SubType>Code</SubType>
         </Compile>
         <Compile Include="Function\Setting\SettingsWindow.xaml.cs" />
+        <Compile Include="Function\SlnTool\SlnUpdateWindow.xaml.cs">
+          <DependentUpon>SlnUpdateWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
         <Compile Include="Models\CategoryNode.cs" />
         <Compile Include="Models\ConfigPreset.cs" />
         <Compile Include="Models\PackageItem.cs" />
@@ -167,6 +172,7 @@
         <Page Include="Function\Path\LocalPathSettingsWindow.xaml" />
         <Page Include="Function\Setting\SettingsWindow.xaml" />
         <Page Include="Function\Setting\DebugOptionsWindow.xaml" />
+        <Page Include="Function\SlnTool\SlnUpdateWindow.xaml" />
         <Page Include="Function\UnlockTool\UnlockFilesWindow.xaml" />
         <Page Include="MainWindow.xaml">
             <Generator>MSBuild:Compile</Generator>
