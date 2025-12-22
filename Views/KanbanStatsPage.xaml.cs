@@ -155,6 +155,7 @@ namespace PackageManager.Views
                     return;
                 }
 
+                double total = 0;
                 ResultTextContent = "查询中...";
                 var rows = new ObservableCollection<MemberStatsItem>();
                 var aggregates = await _api.GetIterationStoryPointsBreakdownByAssigneeAsync(iter.Id);
@@ -176,12 +177,13 @@ namespace PackageManager.Views
                                 Done = b.Done,
                                 Total = b.Total
                             });
+                            total+=b.Total;
                         }
                     }
                 }
 
                 StatsRows = rows;
-                ResultTextContent = $"统计完成：{rows.Count} 人员";
+                ResultTextContent = $"统计完成：{rows.Count} 人员，故事点总数：{total}";
             }
             catch (Exception ex)
             {

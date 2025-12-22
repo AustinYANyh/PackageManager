@@ -26,43 +26,45 @@
         <Grid Grid.Row="1">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
             </Grid.RowDefinitions>
             <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,6,0,6">
-                <controls:CTextBlock Text="项目" Width="100" VerticalAlignment="Center" />
-                <controls:CComboBox Width="280"
-                                    ItemsSource="{Binding Projects}"
-                                    DisplayMemberPath="Name"
-                                    SelectedValuePath="Id"
-                                    SelectedItem="{Binding SelectedProject, Mode=TwoWay}"
-                                    SelectionChanged="ProjectCombo_SelectionChanged" />
+                <StackPanel Orientation="Horizontal" Margin="0,6,0,6">
+                    <controls:CTextBlock Text="项目" Width="35" VerticalAlignment="Center" />
+                    <controls:CComboBox Width="180" Height="35"
+                                        ItemsSource="{Binding Projects}"
+                                        DisplayMemberPath="Name"
+                                        SelectedValuePath="Id"
+                                        SelectedItem="{Binding SelectedProject, Mode=TwoWay}"
+                                        SelectionChanged="ProjectCombo_SelectionChanged" />
+                </StackPanel>
+                
+                <StackPanel  Orientation="Horizontal" Margin="10,6,0,6">
+                    <controls:CTextBlock Text="迭代" Width="35" VerticalAlignment="Center" />
+                    <controls:CComboBox Width="230" Height="35"
+                                        ItemsSource="{Binding Iterations}"
+                                        DisplayMemberPath="Name"
+                                        SelectedValuePath="Id"
+                                        SelectedItem="{Binding SelectedIteration, Mode=TwoWay}"
+                                        SelectionChanged="IterationCombo_SelectionChanged" />
+                </StackPanel>
+                
+                <StackPanel  Orientation="Horizontal" Margin="10,6,0,6">
+                    <controls:CTextBlock Text="人员" Width="35" VerticalAlignment="Center" />
+                    <controls:CComboBox Width="80" Height="35"
+                                        ItemsSource="{Binding Users}"
+                                        DisplayMemberPath="Name"
+                                        SelectedValuePath="Id"
+                                        SelectedItem="{Binding SelectedUser, Mode=TwoWay}"
+                                        SelectionChanged="UserCombo_SelectionChanged" />
+                </StackPanel>
+                
+                <StackPanel Orientation="Horizontal" Margin="0,6,0,6">
+                    <button:CButton Content="查询" Width="100" Click="QueryButton_Click" />
+                    <TextBlock Margin="12,0,0,0" VerticalAlignment="Center" Text="{Binding ResultTextContent}" />
+                </StackPanel>
             </StackPanel>
-            <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,6,0,6">
-                <controls:CTextBlock Text="人员" Width="100" VerticalAlignment="Center" />
-                <controls:CComboBox Width="280"
-                                    ItemsSource="{Binding Users}"
-                                    DisplayMemberPath="Name"
-                                    SelectedValuePath="Id"
-                                    SelectedItem="{Binding SelectedUser, Mode=TwoWay}"
-                                    SelectionChanged="UserCombo_SelectionChanged" />
-            </StackPanel>
-            <StackPanel Grid.Row="2" Orientation="Horizontal" Margin="0,6,0,6">
-                <controls:CTextBlock Text="迭代" Width="100" VerticalAlignment="Center" />
-                <controls:CComboBox Width="280"
-                                    ItemsSource="{Binding Iterations}"
-                                    DisplayMemberPath="Name"
-                                    SelectedValuePath="Id"
-                                    SelectedItem="{Binding SelectedIteration, Mode=TwoWay}"
-                                    SelectionChanged="IterationCombo_SelectionChanged" />
-            </StackPanel>
-            <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,6,0,6">
-                <button:CButton Content="查询" Width="100" Click="QueryButton_Click" />
-                <TextBlock Margin="12,0,0,0" VerticalAlignment="Center" Text="{Binding ResultTextContent}" />
-            </StackPanel>
-            <C:CDataGrid Grid.Row="4"
+            <C:CDataGrid Grid.Row="1"
                          ItemsSource="{Binding StatsRows}"
                          EnableAutoTemplateSelection="True"
                          TextAlignment="Left"
