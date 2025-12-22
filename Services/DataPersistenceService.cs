@@ -638,5 +638,9 @@ namespace PackageManager.Services
 
         // 外部工具路径缓存
         public string VsCodePath { get; set; } = null;
+        
+        public string PingCodeClientId { get; set; } = "wgRVSMOfjwqp";
+
+        public string PingCodeClientSecret { get; set; } = "UMxFmEenlPmQJuDKhguTlwJE";
     }
 }

@@ -125,6 +125,7 @@
           <DependentUpon>SlnUpdateWindow.xaml</DependentUpon>
           <SubType>Code</SubType>
         </Compile>
+        <Compile Include="Models\MemberStatsItem.cs" />
         <Compile Include="Models\CategoryNode.cs" />
         <Compile Include="Models\ConfigPreset.cs" />
         <Compile Include="Models\PackageItem.cs" />
@@ -134,11 +135,13 @@
         <Compile Include="Services\DebugSettingsService.cs" />
         <Compile Include="Services\EmbeddedToolRunnerService.cs" />
         <Compile Include="Services\LoggingService.cs" />
+        <Compile Include="Services\PingCodeApiService.cs" />
         <Compile Include="Services\ToastService.cs" />
         <Compile Include="Services\AppUpdateService.cs" />
         <Compile Include="Views\CommonLinksPage.xaml.cs" />
         <Compile Include="Views\CommonLinksWindow.xaml.cs" />
         <Compile Include="Views\ICentralPage.cs" />
+        <Compile Include="Views\KanbanStatsPage.xaml.cs" />
         <Compile Include="Views\LocalPathSettingsPage.xaml.cs" />
         <Compile Include="Views\LogViewerPage.xaml.cs" />
         <Compile Include="Views\NavigationPanel.xaml.cs" />
@@ -201,6 +204,7 @@
         <Compile Include="Converters\PresetToIniConverter.cs" />
         <Page Include="Views\CommonLinksPage.xaml" />
         <Page Include="Views\CommonLinksWindow.xaml" />
+        <Page Include="Views\KanbanStatsPage.xaml" />
         <Page Include="Views\LocalPathSettingsPage.xaml" />
         <Page Include="Views\LogViewerPage.xaml" />
         <Page Include="Views\NavigationPanel.xaml" />

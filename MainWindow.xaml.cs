@@ -98,6 +98,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         OpenPackageConfigCommand = new RelayCommand(() => { OpenPackageConfigButton_Click(this, new RoutedEventArgs()); });
         OpenCommonLinksPageCommand = new RelayCommand(OpenCommonLinksPage);
         OpenChangelogPageCommand = new RelayCommand(() => { OpenChangelogPageButton_Click(this, new RoutedEventArgs()); });
+        OpenKanbanStatsPageCommand = new RelayCommand(() => { OpenKanbanStatsPageButton_Click(this, new RoutedEventArgs()); });
     }
 
     public event PropertyChangedEventHandler PropertyChanged;
@@ -145,6 +146,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     public ICommand OpenCommonLinksPageCommand { get; }
 
     public ICommand OpenChangelogPageCommand { get; }
+    
+    public ICommand OpenKanbanStatsPageCommand { get; }
 
     public ObservableCollection<PackageInfo> Packages
     {
@@ -416,6 +419,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                        : (page is LogViewerPage) ? "软件日志"
                        : (page is PackageConfigPage) ? "产品管理"
                        : (page is SettingsPage) ? "软件设置"
+                       : (page is KanbanStatsPage) ? "看板统计"
                        : null;
             if (!string.IsNullOrEmpty(name))
             {
@@ -1419,6 +1423,24 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             LoggingService.LogError(ex, "打开产品日志目录失败");
             MessageBox.Show($"打开产品日志目录失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+    
+    private void OpenKanbanStatsPageButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var page = new KanbanStatsPage();
+            if (page is ICentralPage icp)
+            {
+                icp.RequestExit += () => NavigateHome();
+            }
+            NavigateTo(page);
+        }
+        catch (Exception ex)
+        {
+            LoggingService.LogError(ex, "打开看板统计页面失败");
+            MessageBox.Show($"打开看板统计页面失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
