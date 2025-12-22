@@ -368,6 +368,112 @@ namespace PackageManager.Services
             return breakdown;
         }
         
+        public async Task<Dictionary<string, StoryPointBreakdown>> GetIterationStoryPointsBreakdownByAssigneeAsync(string iterationOrSprintId)
+        {
+            var result = new Dictionary<string, StoryPointBreakdown>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(iterationOrSprintId))
+            {
+                return result;
+            }
+            var baseUrlCandidates = new[]
+            {
+                "https://open.pingcode.com/v1/project/work_items",
+                "https://open.pingcode.com/v1/agile/work_items"
+            };
+            foreach (var baseUrl in baseUrlCandidates)
+            {
+                try
+                {
+                    var pageIndex = 0;
+                    var pageSize = 100;
+                    while (true)
+                    {
+                        var url = $"{baseUrl}?sprint_id={Uri.EscapeDataString(iterationOrSprintId)}&page_size={pageSize}&page_index={pageIndex}";
+                        var json = await GetJsonAsync(url);
+                        var values = GetValuesArray(json);
+                        if (values == null || values.Count == 0)
+                        {
+                            url = $"{baseUrl}?iteration_id={Uri.EscapeDataString(iterationOrSprintId)}&page_size={pageSize}&page_index={pageIndex}";
+                            json = await GetJsonAsync(url);
+                            values = GetValuesArray(json);
+                            if (values == null || values.Count == 0) break;
+                        }
+                        foreach (var v in values)
+                        {
+                            var assignedId = v["assigned_to"]?["id"]?.ToString() ??
+                                             v["assignee"]?["id"]?.ToString() ??
+                                             v["owner"]?["id"]?.ToString() ??
+                                             v["processor"]?["id"]?.ToString() ??
+                                             v["fields"]?["assigned_to"]?["id"]?.ToString() ??
+                                             v["fields"]?["assignee"]?["id"]?.ToString() ??
+                                             v["fields"]?["owner"]?["id"]?.ToString() ??
+                                             v["fields"]?["processor"]?["id"]?.ToString() ??
+                                             ExtractString(v["assigned_to"]) ??
+                                             ExtractString(v["assignee"]) ??
+                                             ExtractString(v["owner"]) ??
+                                             ExtractString(v["processor"]) ??
+                                             ExtractString(v["fields"]?["assigned_to"]) ??
+                                             ExtractString(v["fields"]?["assignee"]) ??
+                                             ExtractString(v["fields"]?["owner"]) ??
+                                             ExtractString(v["fields"]?["processor"]);
+                            var assignedName = ExtractString(v["assigned_to_name"]) ??
+                                               ExtractString(v["assignee_name"]) ??
+                                               ExtractString(v["owner_name"]) ??
+                                               ExtractString(v["processor_name"]) ??
+                                               ExtractString(v["fields"]?["assigned_to_name"]) ??
+                                               ExtractString(v["fields"]?["assignee_name"]) ??
+                                               ExtractString(v["fields"]?["owner_name"]) ??
+                                               ExtractString(v["fields"]?["processor_name"]);
+                            var keyId = (assignedId ?? "").Trim().ToLowerInvariant();
+                            var keyName = (assignedName ?? "").Trim().ToLowerInvariant();
+                            if (string.IsNullOrEmpty(keyId) && string.IsNullOrEmpty(keyName)) continue;
+                            StoryPointBreakdown bd = null;
+                            if (!string.IsNullOrEmpty(keyId) && result.TryGetValue(keyId, out var existById))
+                            {
+                                bd = existById;
+                            }
+                            else if (!string.IsNullOrEmpty(keyName) && result.TryGetValue(keyName, out var existByName))
+                            {
+                                bd = existByName;
+                            }
+                            else
+                            {
+                                bd = new StoryPointBreakdown();
+                                if (!string.IsNullOrEmpty(keyId)) result[keyId] = bd;
+                                if (!string.IsNullOrEmpty(keyName)) result[keyName] = bd;
+                            }
+                            double sp = ReadDouble(v["story_points"]);
+                            if (sp == 0) sp = ReadDouble(v["story_point"]);
+                            if (sp == 0) sp = ReadDouble(v["fields"]?["story_points"]);
+                            var status = ReadStatus(v);
+                            var s = (status ?? "").Trim().ToLowerInvariant();
+                            if (s.Contains("done") || s.Contains("完成") || s.Contains("resolved") || s.Contains("closed") || s.Contains("已完成"))
+                            {
+                                bd.Done += sp;
+                            }
+                            else if (s.Contains("progress") || s.Contains("进行中") || s.Contains("doing") || s.Contains("开发中") || s.Contains("处理中"))
+                            {
+                                bd.InProgress += sp;
+                            }
+                            else
+                            {
+                                bd.NotStarted += sp;
+                            }
+                            bd.Total += sp;
+                        }
+                        var totalCount = json.Value<int?>("total") ?? 0;
+                        pageIndex++;
+                        if ((pageIndex * pageSize) >= totalCount) break;
+                    }
+                    return result;
+                }
+                catch (Exception ex)
+                {
+                }
+            }
+            return result;
+        }
+        
         public async Task<double> GetUserStoryPointsSumAsync(string iterationOrSprintId, string userId)
         {
             if (string.IsNullOrWhiteSpace(iterationOrSprintId) || string.IsNullOrWhiteSpace(userId))

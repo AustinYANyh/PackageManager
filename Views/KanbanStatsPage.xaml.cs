@@ -115,8 +115,9 @@ namespace PackageManager.Views
                 {
                     var preferred = Projects.FirstOrDefault(x => (x.Name ?? "").Contains("建模组"));
                     SelectedProject = preferred ?? Projects.First();
-                    await LoadMembersForProject();
-                    await LoadIterationsForProject();
+                    var t1 = LoadMembersForProject();
+                    var t2 = LoadIterationsForProject();
+                    await Task.WhenAll(t1, t2);
                     if (Iterations.Count == 0)
                     {
                         ResultTextContent = "该项目没有进行中的迭代";
@@ -156,23 +157,27 @@ namespace PackageManager.Views
 
                 ResultTextContent = "查询中...";
                 var rows = new ObservableCollection<MemberStatsItem>();
+                var aggregates = await _api.GetIterationStoryPointsBreakdownByAssigneeAsync(iter.Id);
                 var users = Users.GroupBy(x => x.Id).Select(g => g.First()).ToList();
                 foreach (var u in users)
                 {
-                    var b = await _api.GetUserStoryPointsBreakdownAsync(iter.Id, u.Id, u.Name);
-                    if (b.Total == 0)
+                    var keyId = (u.Id ?? "").Trim().ToLowerInvariant();
+                    var keyName = (u.Name ?? "").Trim().ToLowerInvariant();
+                    if (string.IsNullOrEmpty(keyId) && string.IsNullOrEmpty(keyName)) continue;
+                    if (aggregates.TryGetValue(keyId, out var b) || aggregates.TryGetValue(keyName, out b))
                     {
-                        continue;
+                        if (b.Total > 0)
+                        {
+                            rows.Add(new MemberStatsItem
+                            {
+                                MemberName = u.Name ?? u.Id,
+                                NotStarted = b.NotStarted,
+                                InProgress = b.InProgress,
+                                Done = b.Done,
+                                Total = b.Total
+                            });
+                        }
                     }
-
-                    rows.Add(new MemberStatsItem
-                    {
-                        MemberName = u.Name ?? u.Id,
-                        NotStarted = b.NotStarted,
-                        InProgress = b.InProgress,
-                        Done = b.Done,
-                        Total = b.Total
-                    });
                 }
 
                 StatsRows = rows;
