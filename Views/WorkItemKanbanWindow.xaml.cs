@@ -151,7 +151,7 @@ namespace PackageManager.Views
                     }
                 }
                 Members.Clear();
-                foreach (var m in list.OrderBy(x => x.Name ?? x.Id))
+                foreach (var m in list.OrderBy(x => (string.Equals(x.Name, "全部", StringComparison.OrdinalIgnoreCase) || string.Equals(x.Id, "*", StringComparison.OrdinalIgnoreCase)) ? "\0" : (x.Name ?? x.Id)))
                 {
                     Members.Add(m);
                 }
@@ -168,12 +168,32 @@ namespace PackageManager.Views
                 if (WebView.CoreWebView2 == null)
                 {
                     await WebView.EnsureCoreWebView2Async();
+                    WebView.CoreWebView2.WebMessageReceived += (s, e) =>
+                    {
+                        try
+                        {
+                            var msg = e.WebMessageAsJson;
+                            if (string.IsNullOrWhiteSpace(msg)) return;
+                            if (msg.IndexOf("\"type\":\"ready\"", StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                SendBoardDataToWebView();
+                            }
+                        }
+                        catch
+                        {
+                        }
+                    };
+                    var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                    var htmlPath = System.IO.Path.Combine(baseDir, "Views", "WorkItemKanban.html");
+                    if (System.IO.File.Exists(htmlPath))
+                    {
+                        var fileUri = new UriBuilder("file", "", -1, htmlPath.Replace('\\', '/')).Uri;
+                        WebView.Source = fileUri;
+                    }
                 }
             }
             catch
             {
-                ItemsHost.Visibility = Visibility.Visible;
-                WebView.Visibility = Visibility.Collapsed;
             }
         }
         
@@ -183,91 +203,48 @@ namespace PackageManager.Views
             {
                 if (WebView.CoreWebView2 == null)
                 {
-                    ItemsHost.Visibility = Visibility.Visible;
-                    WebView.Visibility = Visibility.Collapsed;
                     return;
                 }
-                var html = BuildHtmlBoard();
-                WebView.NavigateToString(html);
-                WebView.Visibility = Visibility.Visible;
-                ItemsHost.Visibility = Visibility.Collapsed;
+                SendBoardDataToWebView();
             }
             catch
             {
-                ItemsHost.Visibility = Visibility.Visible;
-                WebView.Visibility = Visibility.Collapsed;
             }
         }
         
-        private string BuildHtmlBoard()
+        private void SendBoardDataToWebView()
         {
-            var order = new[] { "未开始", "进行中", "可测试", "测试中", "已完成", "已关闭" };
-            var grouped = (ApplyCurrentFilter(_allItems ?? new List<PingCodeApiService.WorkItemInfo>()))
-                .GroupBy(i => i.StateCategory)
-                .ToDictionary(g => g.Key ?? "未开始", g => g.ToList(), StringComparer.OrdinalIgnoreCase);
-            
-            var sb = new System.Text.StringBuilder();
-            sb.Append("<!DOCTYPE html><html><head><meta charset='utf-8'>");
-            sb.Append("<style>");
-            sb.Append("html,body{height:100%;margin:0;padding:0;background:#ffffff;font-family:'Segoe UI','Microsoft YaHei',Arial,sans-serif;}");
-            sb.Append(".board{display:grid;grid-template-columns:repeat(6,1fr);gap:16px;padding:4px;}");
-            sb.Append(".column{border:1px solid #E5E7EB;border-radius:10px;background:#F9FAFB;display:flex;flex-direction:column;min-width:220px;max-height:calc(100vh - 180px);}");
-            sb.Append(".col-header{padding:10px;border-bottom:1px solid #E5E7EB;background:#F9FAFB;}");
-            sb.Append(".col-title{font-weight:600;font-size:14px;color:#111827;}");
-            sb.Append(".col-meta{color:#6B7280;font-size:12px;margin-top:4px;}");
-            sb.Append(".cards{flex:1;overflow-y:auto;padding:8px;}");
-            sb.Append(".cards::-webkit-scrollbar{width:0;height:0} .cards{scrollbar-width:none;-ms-overflow-style:none}");
-            sb.Append(".card{background:#fff;border:1px solid #E5E7EB;border-radius:10px;padding:10px;margin-bottom:10px;box-shadow:0 1px 4px rgba(0,0,0,.08);transition:all .15s ease;}");
-            sb.Append(".card:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(0,0,0,.14)}");
-            sb.Append(".card.in-progress{background:#FFFBEB} .card.completed{background:#ECFDF5} .card.closed{background:#F3F4F6;opacity:.8}");
-            sb.Append(".card .title{font-weight:600;font-size:13px;color:#111827;margin-bottom:8px;}");
-            sb.Append(".row{display:flex;align-items:center;gap:6px;color:#6B7280;font-size:12px;margin-top:4px;flex-wrap:wrap}");
-            sb.Append(".badge{display:inline-flex;align-items:center;border-radius:999px;padding:2px 8px;font-size:12px;font-weight:600}");
-            sb.Append(".badge.primary{background:#2563EB;color:#fff} .badge.warn{background:#F59E0B;color:#fff} .badge.muted{background:#E5E7EB;color:#374151}");
-            sb.Append(".dot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:6px}");
-            sb.Append(".dot.in-progress{background:#F59E0B} .dot.completed{background:#10B981} .dot.closed{background:#9CA3AF} .dot.todo{background:#EF4444} .dot.testing{background:#A855F7} .dot.testable{background:#3B82F6}");
-            sb.Append("</style></head><body>");
-            sb.Append("<div class='board'>");
-            foreach (var cat in order)
+            try
             {
-                var items = grouped.TryGetValue(cat, out var list) ? list : new List<PingCodeApiService.WorkItemInfo>();
-                var totalPoints = items.Sum(i => i.StoryPoints);
-                sb.Append("<div class='column'>");
-                sb.Append("<div class='col-header'>");
-                sb.Append($"<div class='col-title'>{cat}</div>");
-                sb.Append($"<div class='col-meta'>数量 · {items.Count}  ·  故事点 · {totalPoints}</div>");
-                sb.Append("</div>");
-                sb.Append("<div class='cards'>");
-                foreach (var it in items)
+                var order = new[] { "未开始", "进行中", "可测试", "测试中", "已完成", "已关闭" };
+                var itemsForWeb = ApplyCurrentFilter(_allItems ?? new List<PingCodeApiService.WorkItemInfo>())?.ToList() ?? new List<PingCodeApiService.WorkItemInfo>();
+                var linkTpl = Environment.GetEnvironmentVariable("PINGCODE_WEB_LINK_TEMPLATE");
+                var payloadObj = new
                 {
-                    var cls = "card ";
-                    var dot = "<span class='dot todo'></span>";
-                    if (string.Equals(cat, "进行中", StringComparison.OrdinalIgnoreCase)) { cls += "in-progress"; dot = "<span class='dot in-progress'></span>"; }
-                    else if (string.Equals(cat, "已完成", StringComparison.OrdinalIgnoreCase)) { cls += "completed"; dot = "<span class='dot completed'></span>"; }
-                    else if (string.Equals(cat, "已关闭", StringComparison.OrdinalIgnoreCase)) { cls += "closed"; dot = "<span class='dot closed'></span>"; }
-                    else if (string.Equals(cat, "测试中", StringComparison.OrdinalIgnoreCase)) { dot = "<span class='dot testing'></span>"; }
-                    else if (string.Equals(cat, "可测试", StringComparison.OrdinalIgnoreCase)) { dot = "<span class='dot testable'></span>"; }
-                    var repaired = ((it.Status ?? "").IndexOf("已修复", StringComparison.OrdinalIgnoreCase) >= 0);
-                    sb.Append($"<div class='{cls}'>");
-                    sb.Append($"<div class='title'>{dot}{System.Net.WebUtility.HtmlEncode(it.Title ?? it.Id)}</div>");
-                    sb.Append("<div class='row'>");
-                    sb.Append($"<span class='badge primary'>{System.Net.WebUtility.HtmlEncode(string.IsNullOrWhiteSpace(it.Type) ? "需求" : it.Type)}</span>");
-                    sb.Append($"<span class='badge warn'>{System.Net.WebUtility.HtmlEncode(string.IsNullOrWhiteSpace(it.Priority) ? "普通" : it.Priority)}</span>");
-                    if (repaired) sb.Append("<span class='badge muted'>已修复</span>");
-                    sb.Append("</div>");
-                    sb.Append("<div class='row'>");
-                    sb.Append($"<span>负责人 · {System.Net.WebUtility.HtmlEncode(it.AssigneeName ?? "未指派")}</span>");
-                    sb.Append($"<span>故事点 · {it.StoryPoints}</span>");
-                    sb.Append("</div>");
-                    sb.Append("<div class='row'>");
-                    sb.Append($"<span class='badge muted'>{System.Net.WebUtility.HtmlEncode(it.Status ?? cat)}</span>");
-                    sb.Append("</div>");
-                    sb.Append("</div>");
+                    type = "data",
+                    order = order,
+                    linkTemplate = string.IsNullOrWhiteSpace(linkTpl) ? "#" : linkTpl,
+                    items = itemsForWeb.Select(i => new
+                    {
+                        id = i.Id,
+                        title = i.Title,
+                        status = i.Status,
+                        category = i.StateCategory,
+                        assigneeName = i.AssigneeName,
+                        storyPoints = i.StoryPoints,
+                        priority = i.Priority,
+                        type = i.Type
+                    }).ToArray()
+                };
+                var payloadJson = Newtonsoft.Json.JsonConvert.SerializeObject(payloadObj);
+                if (WebView.CoreWebView2 != null)
+                {
+                    WebView.CoreWebView2.PostWebMessageAsJson(payloadJson);
                 }
-                sb.Append("</div></div>");
             }
-            sb.Append("</div></body></html>");
-            return sb.ToString();
+            catch
+            {
+            }
         }
         
         private IEnumerable<PingCodeApiService.WorkItemInfo> ApplyCurrentFilter(IEnumerable<PingCodeApiService.WorkItemInfo> items)

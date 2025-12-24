@@ -45,6 +45,15 @@ namespace PackageManager.Services
 
             var allVersions = new List<ApplicationVersion>();
 
+            if (string.Equals(programName, "Revit", StringComparison.OrdinalIgnoreCase))
+            {
+                var revitByGuid = FindAllRevitByGuid();
+                if (revitByGuid.Any())
+                {
+                    allVersions.AddRange(revitByGuid);
+                    return allVersions;
+                }
+            }
             // 在PATH环境变量中查找
             var pathVersions = FindAllInPath(programName);
             allVersions.AddRange(pathVersions);
@@ -78,6 +87,12 @@ namespace PackageManager.Services
             if (string.IsNullOrWhiteSpace(programName))
                 return null;
 
+            if (string.Equals(programName, "Revit", StringComparison.OrdinalIgnoreCase))
+            {
+                var byGuid = FindRevitByGuid();
+                if (!string.IsNullOrEmpty(byGuid))
+                    return byGuid;
+            }
             // 1. 首先在PATH环境变量中查找
             var pathResult = FindInPath(programName);
             if (!string.IsNullOrEmpty(pathResult))
@@ -96,6 +111,102 @@ namespace PackageManager.Services
             return null;
         }
 
+        private string FindRevitByGuid()
+        {
+            try
+            {
+                var views = new[] { RegistryView.Registry64, RegistryView.Registry32 };
+                var roots = new[]
+                {
+                    @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+                    @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+                };
+                var regex = new Regex(@"^7346B4A0-\d{4}-0510-0000-705C0D862004$", RegexOptions.IgnoreCase);
+                foreach (var view in views)
+                {
+                    foreach (var root in roots)
+                    {
+                        using (var key = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, view).OpenSubKey(root))
+                        {
+                            if (key == null) continue;
+                            foreach (var name in key.GetSubKeyNames())
+                            {
+                                if (!regex.IsMatch(name)) continue;
+                                using (var sub = key.OpenSubKey(name))
+                                {
+                                    if (sub == null) continue;
+                                    var installLocation = sub.GetValue("InstallLocation")?.ToString();
+                                    if (string.IsNullOrWhiteSpace(installLocation)) continue;
+                                    var exe = Path.Combine(installLocation, "Revit.exe");
+                                    if (File.Exists(exe)) return exe;
+                                    var alt = FindExecutableInDirectory(installLocation, "Revit");
+                                    if (!string.IsNullOrEmpty(alt)) return alt;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch
+            {
+            }
+            return null;
+        }
+
+        private List<ApplicationVersion> FindAllRevitByGuid()
+        {
+            var results = new List<ApplicationVersion>();
+            try
+            {
+                var views = new[] { RegistryView.Registry64, RegistryView.Registry32 };
+                var roots = new[]
+                {
+                    @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+                    @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+                };
+                var regex = new Regex(@"^{7346B4A0-\d{4}-0510-0000-705C0D862004}$", RegexOptions.IgnoreCase);
+                foreach (var view in views)
+                {
+                    foreach (var root in roots)
+                    {
+                        using (var key = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, view).OpenSubKey(root))
+                        {
+                            if (key == null) continue;
+                            foreach (var name in key.GetSubKeyNames())
+                            {
+                                if (!regex.IsMatch(name)) continue;
+                                using (var sub = key.OpenSubKey(name))
+                                {
+                                    if (sub == null) continue;
+                                    var installLocation = sub.GetValue("InstallLocation")?.ToString();
+                                    var version = sub.GetValue("DisplayName")?.ToString();
+                                    if (string.IsNullOrWhiteSpace(installLocation)) continue;
+                                    var exe = Path.Combine(installLocation, "Revit.exe");
+                                    var execPath = File.Exists(exe) ? exe : FindExecutableInDirectory(installLocation, "Revit");
+                                    if (string.IsNullOrEmpty(execPath)) continue;
+                                    if (version != null)
+                                    {
+                                        results.Add(new ApplicationVersion
+                                        {
+                                            Name = "Revit",
+                                            Version = version.Replace("Revit", string.Empty).Trim(),
+                                            ExecutablePath = execPath,
+                                            InstallPath = installLocation
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // ignored
+            }
+
+            return results;
+        }
         /// <summary>
         /// 在PATH环境变量中查找所有版本的程序
         /// </summary>

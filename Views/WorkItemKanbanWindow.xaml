@@ -32,6 +32,7 @@
                     <wv2:WebView2 x:Name="WebView" />
                 </Grid>
                 
+                <!-- 注释掉 WPF 迭代看板，统一使用 WebView2 渲染真实网页
                 <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Disabled" x:Name="ItemsHost" Visibility="Collapsed">
                     <ItemsControl ItemsSource="{Binding Columns}">
                         <ItemsControl.ItemsPanel>
@@ -105,6 +106,7 @@
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
                 </ScrollViewer>
+                -->
                 <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
                     <button:CButton Content="关闭" Width="100" Click="CloseButton_Click" />
                 </StackPanel>
