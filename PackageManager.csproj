@@ -149,6 +149,10 @@
           <DependentUpon>ChangelogPage.xaml</DependentUpon>
           <SubType>Code</SubType>
         </Compile>
+        <Compile Include="Views\WorkItemKanbanWindow.xaml.cs">
+          <DependentUpon>WorkItemKanbanWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
         <Compile Include="Views\PackageConfigPage.xaml.cs" />
         <Compile Include="Views\ProductLogsPage.xaml.cs" />
         <Compile Include="Views\SettingsPage.xaml.cs" />
@@ -212,9 +216,13 @@
           <Generator>MSBuild:Compile</Generator>
           <SubType>Designer</SubType>
         </Page>
+        <Page Include="Views\WorkItemKanbanWindow.xaml" />
         <Page Include="Views\PackageConfigPage.xaml" />
         <Page Include="Views\ProductLogsPage.xaml" />
         <Page Include="Views\SettingsPage.xaml" />
+    </ItemGroup>
+    <ItemGroup>
+        <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2210.55" />
     </ItemGroup>
     <ItemGroup>
         <Compile Include="Properties\AssemblyInfo.cs">

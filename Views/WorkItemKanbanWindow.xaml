@@ -1,0 +1,114 @@
+<Window x:Class="PackageManager.Views.WorkItemKanbanWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:button="clr-namespace:CustomControlLibrary.CustomControl.Controls.Button;assembly=CustomControlLibrary"
+        xmlns:controls="clr-namespace:CustomControlLibrary.CustomControl.Controls;assembly=CustomControlLibrary"
+        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
+        Title="迭代看板" Height="700" Width="1080"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="CanResize"
+        WindowState="Maximized">
+    <Grid>
+        <!-- <controls:CLoadingOverlay x:Name="Overlay" Message="正在加载看板…" OverlayDarkness="0.25" AccentBrush="DodgerBlue"> -->
+            <Grid Margin="20">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,12">
+                    <TextBlock Text="迭代看板" FontSize="18" FontWeight="Bold" />
+                    <StackPanel Orientation="Horizontal" Margin="16,0,0,0">
+                        <controls:CTextBlock Text="人员" Width="50" VerticalAlignment="Center" />
+                        <controls:CComboBox Width="200" Height="35"
+                                            ItemsSource="{Binding Members}"
+                                            DisplayMemberPath="Name"
+                                            SelectedItem="{Binding SelectedMember, Mode=TwoWay}"
+                                            SelectionChanged="MemberCombo_SelectionChanged" />
+                    </StackPanel>
+                </StackPanel>
+                
+                <Grid Grid.Row="1">
+                    <wv2:WebView2 x:Name="WebView" />
+                </Grid>
+                
+                <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Disabled" x:Name="ItemsHost" Visibility="Collapsed">
+                    <ItemsControl ItemsSource="{Binding Columns}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <UniformGrid Columns="6" />
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border BorderBrush="#E5E7EB" BorderThickness="1" CornerRadius="10" Margin="0,0,16,0" MinWidth="240">
+                                    <DockPanel>
+                                        <StackPanel DockPanel.Dock="Top" Background="#F9FAFB" >
+                                            <TextBlock Text="{Binding Title}" FontSize="14" FontWeight="Bold" />
+                                            <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                                <TextBlock Text="{Binding Count, StringFormat=数量 · {0}}" Foreground="#6B7280" />
+                                                <TextBlock Text="  ·  " Foreground="#9CA3AF" />
+                                                <TextBlock Text="{Binding TotalPoints, StringFormat=故事点 · {0}}" Foreground="#6B7280" />
+                                            </StackPanel>
+                                        </StackPanel>
+                                        <ScrollViewer VerticalScrollBarVisibility="Hidden">
+                                            <ItemsControl ItemsSource="{Binding Items}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <Border Padding="10" Margin="10" CornerRadius="10" BorderThickness="1">
+                                                            <Border.Style>
+                                                                <Style TargetType="Border">
+                                                                    <Setter Property="Background" Value="#FFFFFF" />
+                                                                    <Setter Property="BorderBrush" Value="#E5E7EB" />
+                                                                    <Setter Property="Effect">
+                                                                        <Setter.Value>
+                                                                            <DropShadowEffect Color="#33000000" ShadowDepth="2" BlurRadius="6" />
+                                                                        </Setter.Value>
+                                                                    </Setter>
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding StateCategory}" Value="进行中">
+                                                                            <Setter Property="Background" Value="#FFFBEB" />
+                                                                        </DataTrigger>
+                                                                        <DataTrigger Binding="{Binding StateCategory}" Value="已完成">
+                                                                            <Setter Property="Background" Value="#ECFDF5" />
+                                                                            <Setter Property="Opacity" Value="0.9" />
+                                                                        </DataTrigger>
+                                                                        <DataTrigger Binding="{Binding StateCategory}" Value="已关闭">
+                                                                            <Setter Property="Background" Value="#F3F4F6" />
+                                                                            <Setter Property="Opacity" Value="0.7" />
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </Border.Style>
+                                                            <StackPanel>
+                                                                <TextBlock Text="{Binding Title}" TextWrapping="Wrap" FontWeight="Bold" FontSize="13" />
+                                                                <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
+                                                                    <TextBlock Text="{Binding Type}" Foreground="#6B7280" />
+                                                                    <TextBlock Text=" · " Foreground="#9CA3AF" />
+                                                                    <TextBlock Text="{Binding Priority}" Foreground="#B45309" />
+                                                                </StackPanel>
+                                                                <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
+                                                                    <TextBlock Text="{Binding AssigneeName}" Foreground="#6B7280" />
+                                                                    <TextBlock Text=" · " Foreground="#9CA3AF" />
+                                                                    <TextBlock Text="{Binding StoryPoints, StringFormat=故事点 {0}}" Foreground="#6B7280" />
+                                                                </StackPanel>
+                                                                <TextBlock Text="{Binding Status}" Foreground="#9CA3AF" Margin="0,6,0,0" />
+                                                            </StackPanel>
+                                                        </Border>
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </ScrollViewer>
+                                    </DockPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+                <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+                    <button:CButton Content="关闭" Width="100" Click="CloseButton_Click" />
+                </StackPanel>
+            </Grid>
+        <!-- </controls:CLoadingOverlay> -->
+    </Grid>
+</Window>

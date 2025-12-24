@@ -44,6 +44,19 @@ namespace PackageManager.Services
             public double OtherPriorityPoints { get; set; }
         }
         
+        public class WorkItemInfo
+        {
+            public string Id { get; set; }
+            public string Title { get; set; }
+            public string Status { get; set; }
+            public string StateCategory { get; set; }
+            public string AssigneeId { get; set; }
+            public string AssigneeName { get; set; }
+            public double StoryPoints { get; set; }
+            public string Priority { get; set; }
+            public string Type { get; set; }
+        }
+        
         private static double ReadDouble(JToken t)
         {
             if (t == null) return 0;
@@ -149,6 +162,38 @@ namespace PackageManager.Services
                 return PriorityCategory.Higher;
             }
             return PriorityCategory.Other;
+        }
+        
+        private static string CategorizeState(string status)
+        {
+            var s = (status ?? "").Trim().ToLowerInvariant();
+            if (string.IsNullOrEmpty(s)) return "未开始";
+            if (s.Contains("关闭") || s.Contains("closed") || s.Contains("已拒绝"))
+            {
+                return "已关闭";
+            }
+            if (s.Contains("done") || s.Contains("完成") || s.Contains("resolved") || s.Contains("已完成"))
+            {
+                return "已完成";
+            }
+            if (s.Contains("可测试") || s.Contains("已修复"))
+            {
+                return "可测试";
+            }
+            if (s.Contains("测试中") || s.Contains("测试"))
+            {
+                return "测试中";
+            }
+            if (s.Contains("progress") || s.Contains("进行中") || s.Contains("doing") || s.Contains("开发中") || s.Contains("处理中") ||
+                s.Contains("in_progress"))
+            {
+                return "进行中";
+            }
+            if (s.Contains("未开始") || s.Contains("新建") || s.Contains("待处理") || s.Contains("todo"))
+            {
+                return "未开始";
+            }
+            return "未开始";
         }
         
         private static JArray GetValuesArray(JObject json)
@@ -482,6 +527,112 @@ namespace PackageManager.Services
                     return result;
                 }
                 catch (Exception ex)
+                {
+                }
+            }
+            return result;
+        }
+        
+        public async Task<List<WorkItemInfo>> GetIterationWorkItemsAsync(string iterationOrSprintId)
+        {
+            var result = new List<WorkItemInfo>();
+            if (string.IsNullOrWhiteSpace(iterationOrSprintId))
+            {
+                return result;
+            }
+            var baseUrlCandidates = new[]
+            {
+                "https://open.pingcode.com/v1/project/work_items",
+                "https://open.pingcode.com/v1/agile/work_items"
+            };
+            foreach (var baseUrl in baseUrlCandidates)
+            {
+                try
+                {
+                    var pageIndex = 0;
+                    var pageSize = 100;
+                    while (true)
+                    {
+                        var url = $"{baseUrl}?sprint_id={Uri.EscapeDataString(iterationOrSprintId)}&page_size={pageSize}&page_index={pageIndex}";
+                        var json = await GetJsonAsync(url);
+                        var values = GetValuesArray(json);
+                        if (values == null || values.Count == 0)
+                        {
+                            url = $"{baseUrl}?iteration_id={Uri.EscapeDataString(iterationOrSprintId)}&page_size={pageSize}&page_index={pageIndex}";
+                            json = await GetJsonAsync(url);
+                            values = GetValuesArray(json);
+                            if (values == null || values.Count == 0) break;
+                        }
+                        foreach (var v in values)
+                        {
+                            var id = v.Value<string>("id") ?? v.Value<string>("work_item_id");
+                            var title = FirstNonEmpty(
+                                v.Value<string>("title"),
+                                v.Value<string>("name"),
+                                v.Value<string>("summary"),
+                                ExtractString(v["fields"]?["title"]),
+                                ExtractString(v["fields"]?["summary"])
+                            );
+                            var status = ReadStatus(v);
+                            var assigneeId = FirstNonEmpty(
+                                ExtractId(v["assigned_to"]),
+                                ExtractId(v["assignee"]),
+                                ExtractId(v["owner"]),
+                                ExtractId(v["processor"]),
+                                ExtractId(v["fields"]?["assigned_to"]),
+                                ExtractId(v["fields"]?["assignee"]),
+                                ExtractId(v["fields"]?["owner"]),
+                                ExtractId(v["fields"]?["processor"])
+                            );
+                            var assigneeName = FirstNonEmpty(
+                                ExtractString(v["assigned_to_name"]),
+                                ExtractString(v["assignee_name"]),
+                                ExtractString(v["owner_name"]),
+                                ExtractString(v["processor_name"]),
+                                ExtractString(v["fields"]?["assigned_to_name"]),
+                                ExtractString(v["fields"]?["assignee_name"]),
+                                ExtractString(v["fields"]?["owner_name"]),
+                                ExtractString(v["fields"]?["processor_name"]),
+                                ExtractName(v["assigned_to"]),
+                                ExtractName(v["assignee"]),
+                                ExtractName(v["owner"]),
+                                ExtractName(v["processor"]),
+                                ExtractName(v["fields"]?["assigned_to"]),
+                                ExtractName(v["fields"]?["assignee"]),
+                                ExtractName(v["fields"]?["owner"]),
+                                ExtractName(v["fields"]?["processor"])
+                            );
+                            var prio = ReadPriorityText(v);
+                            double sp = ReadDouble(v["story_points"]);
+                            if (sp == 0) sp = ReadDouble(v["story_point"]);
+                            if (sp == 0) sp = ReadDouble(v["fields"]?["story_points"]);
+                            var type = FirstNonEmpty(
+                                ExtractString(v["type"]),
+                                ExtractString(v["work_item_type"]),
+                                ExtractString(v["fields"]?["type"]),
+                                ExtractString(v["fields"]?["work_item_type"])
+                            );
+                            var wi = new WorkItemInfo
+                            {
+                                Id = id,
+                                Title = title ?? id,
+                                Status = status,
+                                StateCategory = CategorizeState(status),
+                                AssigneeId = assigneeId,
+                                AssigneeName = assigneeName,
+                                StoryPoints = sp,
+                                Priority = prio,
+                                Type = type
+                            };
+                            result.Add(wi);
+                        }
+                        var totalCount = json.Value<int?>("total") ?? 0;
+                        pageIndex++;
+                        if ((pageIndex * pageSize) >= totalCount) break;
+                    }
+                    return result;
+                }
+                catch
                 {
                 }
             }

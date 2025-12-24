@@ -300,5 +300,27 @@ namespace PackageManager.Views
         {
             RequestExit?.Invoke();
         }
+        
+        private void OpenKanbanWindow_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var iter = SelectedIteration;
+                var proj = SelectedProject;
+                if (iter == null || proj == null)
+                {
+                    MessageBox.Show("请先选择项目与迭代", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                var win = new WorkItemKanbanWindow(iter.Id, Users.ToList(), SelectedUser);
+                win.Owner = Application.Current?.MainWindow;
+                win.Show();
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, "打开迭代看板失败");
+                MessageBox.Show("打开迭代看板失败：" + ex.Message, "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
     }
 }
