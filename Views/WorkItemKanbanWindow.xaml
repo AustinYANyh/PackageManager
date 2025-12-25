@@ -119,7 +119,7 @@
                                                                             <TextBlock Text="{Binding Status}" Foreground="#92400E" />
                                                                         </Border>
                                                                         <Border Background="#FEE2E2" BorderBrush="#FCA5A5" BorderThickness="1" CornerRadius="10" Padding="6,2">
-                                                                            <TextBlock Text="{Binding Severity}" Foreground="#991B1B" />
+                                                                            <TextBlock Text="{Binding Priority}" Foreground="#991B1B" />
                                                                         </Border>
                                                                     </WrapPanel>
                                                                     <WrapPanel Margin="0,6,0,0" VerticalAlignment="Center">
