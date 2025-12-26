@@ -156,6 +156,10 @@
         <Compile Include="Views\PackageConfigPage.xaml.cs" />
         <Compile Include="Views\ProductLogsPage.xaml.cs" />
         <Compile Include="Views\SettingsPage.xaml.cs" />
+        <Compile Include="Views\Controls\WorkItemCard.xaml.cs">
+          <DependentUpon>WorkItemCard.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
         <Page Include="Function\ConfigPreset\AddPresetWindow.xaml" />
         <Page Include="Function\ConfigPreset\ConfigPresetWindow.xaml" />
         <Page Include="Function\CsvTool\CsvCryptoWindow.xaml">
@@ -220,6 +224,7 @@
         <Page Include="Views\PackageConfigPage.xaml" />
         <Page Include="Views\ProductLogsPage.xaml" />
         <Page Include="Views\SettingsPage.xaml" />
+        <Page Include="Views\Controls\WorkItemCard.xaml" />
     </ItemGroup>
     <ItemGroup>
         <Content Include="Models\json.txt" />

@@ -4,6 +4,7 @@
         xmlns:button="clr-namespace:CustomControlLibrary.CustomControl.Controls.Button;assembly=CustomControlLibrary"
         xmlns:controls="clr-namespace:CustomControlLibrary.CustomControl.Controls;assembly=CustomControlLibrary"
         xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
+        xmlns:pc="clr-namespace:PackageManager.Views.Controls"
         Title="迭代看板" Height="700" Width="1080"
         WindowStartupLocation="CenterOwner"
         ResizeMode="CanResize"
@@ -39,7 +40,7 @@
                         </ItemsControl.ItemsPanel>
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
-                                <Border BorderBrush="#E5E7EB" BorderThickness="1" CornerRadius="10" Margin="0,0,16,0" MinWidth="240" AllowDrop="True" Drop="Column_Drop">
+                                <Border BorderBrush="#E5E7EB" BorderThickness="1" CornerRadius="10" Margin="0,0,16,0" MinWidth="240" AllowDrop="True" Drop="Column_Drop" DragOver="Column_DragOver">
                                     <DockPanel>
                                         <StackPanel DockPanel.Dock="Top" Background="#F9FAFB" >
                                             <TextBlock Text="{Binding Title}" FontSize="14" FontWeight="Bold" />
@@ -49,97 +50,16 @@
                                                 <TextBlock Text="{Binding TotalPoints, StringFormat=故事点 · {0}}" Foreground="#6B7280" />
                                             </StackPanel>
                                         </StackPanel>
-                                        <ScrollViewer VerticalScrollBarVisibility="Hidden">
-                                                <ItemsControl ItemsSource="{Binding Items}">
-                                                    <ItemsControl.ItemTemplate>
-                                                        <DataTemplate>
-                                                            <Border Padding="10" Margin="10" CornerRadius="10" BorderThickness="1" PreviewMouseLeftButtonDown="Item_PreviewMouseLeftButtonDown" MouseMove="Item_MouseMove">
-                                                                <Border.Style>
-                                                                    <Style TargetType="Border">
-                                                                        <Setter Property="Background" Value="#FFFFFF" />
-                                                                        <Setter Property="BorderBrush" Value="#E5E7EB" />
-                                                                        <Setter Property="Effect">
-                                                                            <Setter.Value>
-                                                                                <DropShadowEffect Color="#33000000" ShadowDepth="2" BlurRadius="6" />
-                                                                            </Setter.Value>
-                                                                        </Setter>
-                                                                        <Style.Triggers>
-                                                                            <DataTrigger Binding="{Binding StateCategory}" Value="进行中">
-                                                                                <Setter Property="Background" Value="#FFFBEB" />
-                                                                            </DataTrigger>
-                                                                            <DataTrigger Binding="{Binding StateCategory}" Value="已完成">
-                                                                                <Setter Property="Background" Value="#ECFDF5" />
-                                                                                <Setter Property="Opacity" Value="0.9" />
-                                                                            </DataTrigger>
-                                                                            <DataTrigger Binding="{Binding StateCategory}" Value="已关闭">
-                                                                                <Setter Property="Background" Value="#F3F4F6" />
-                                                                                <Setter Property="Opacity" Value="0.7" />
-                                                                            </DataTrigger>
-                                                                        </Style.Triggers>
-                                                                    </Style>
-                                                                </Border.Style>
-                                                            <Grid>
-                                                                <Grid.ColumnDefinitions>
-                                                                    <ColumnDefinition Width="4"/>
-                                                                    <ColumnDefinition Width="*"/>
-                                                                </Grid.ColumnDefinitions>
-                                                                <Rectangle Grid.Column="0">
-                                                                    <Rectangle.Style>
-                                                                        <Style TargetType="Rectangle">
-                                                                            <Setter Property="Fill" Value="#F59E0B" />
-                                                                            <Style.Triggers>
-                                                                                <DataTrigger Binding="{Binding StateCategory}" Value="进行中">
-                                                                                    <Setter Property="Fill" Value="#F59E0B" />
-                                                                                </DataTrigger>
-                                                                                <DataTrigger Binding="{Binding StateCategory}" Value="已完成">
-                                                                                    <Setter Property="Fill" Value="#10B981" />
-                                                                                </DataTrigger>
-                                                                                <DataTrigger Binding="{Binding StateCategory}" Value="已关闭">
-                                                                                    <Setter Property="Fill" Value="#9CA3AF" />
-                                                                                </DataTrigger>
-                                                                                <DataTrigger Binding="{Binding StateCategory}" Value="可测试">
-                                                                                    <Setter Property="Fill" Value="#60A5FA" />
-                                                                                </DataTrigger>
-                                                                                <DataTrigger Binding="{Binding StateCategory}" Value="测试中">
-                                                                                    <Setter Property="Fill" Value="#3B82F6" />
-                                                                                </DataTrigger>
-                                                                                <DataTrigger Binding="{Binding StateCategory}" Value="未开始">
-                                                                                    <Setter Property="Fill" Value="#D1D5DB" />
-                                                                                </DataTrigger>
-                                                                            </Style.Triggers>
-                                                                        </Style>
-                                                                    </Rectangle.Style>
-                                                                </Rectangle>
-                                                                <StackPanel Grid.Column="1">
-                                                                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                                                        <TextBlock Text="{Binding Identifier}" Foreground="#6B7280" FontWeight="Bold" />
-                                                                        <Image Source="{Binding AssigneeAvatar}" Width="20" Height="20" Margin="8,0,0,0" />
-                                                                    </StackPanel>
-                                                                    <TextBlock Text="{Binding Title}" TextWrapping="Wrap" FontWeight="Bold" FontSize="13" />
-                                                                    <WrapPanel Margin="0,6,0,0">
-                                                                        <Border Background="#FEF3C7" BorderBrush="#FDE68A" BorderThickness="1" CornerRadius="10" Padding="6,2" Margin="0,0,6,0">
-                                                                            <TextBlock Text="{Binding Status}" Foreground="#92400E" />
-                                                                        </Border>
-                                                                        <Border Background="#FEE2E2" BorderBrush="#FCA5A5" BorderThickness="1" CornerRadius="10" Padding="6,2">
-                                                                            <TextBlock Text="{Binding Priority}" Foreground="#991B1B" />
-                                                                        </Border>
-                                                                    </WrapPanel>
-                                                                    <WrapPanel Margin="0,6,0,0" VerticalAlignment="Center">
-                                                                        <TextBlock Text="{Binding EndAt, StringFormat={}{0:MM\\月dd\\日}}" Foreground="#6B7280" />
-                                                                        <Border Background="#EEF2FF" BorderBrush="#E0E7FF" BorderThickness="1" CornerRadius="10" Padding="6,2" Margin="6,0,0,0">
-                                                                            <TextBlock Text="{Binding StoryPoints, StringFormat={}{0}}" Foreground="#3730A3" />
-                                                                        </Border>
-                                                                        <Border Background="#E5E7EB" BorderBrush="#D1D5DB" BorderThickness="1" CornerRadius="10" Padding="6,2" Margin="6,0,0,0">
-                                                                            <TextBlock Text="{Binding CommentCount}" Foreground="#374151" />
-                                                                        </Border>
-                                                                    </WrapPanel>
-                                                                </StackPanel>
-                                                            </Grid>
-                                                            </Border>
-                                                        </DataTemplate>
-                                                    </ItemsControl.ItemTemplate>
-                                                </ItemsControl>
-                                            </ScrollViewer>
+                                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                            <ItemsControl ItemsSource="{Binding Items}">
+                                                <ItemsControl.ItemTemplate>
+                                                    <DataTemplate>
+                                                        <pc:WorkItemCard PreviewMouseLeftButtonDown="Item_PreviewMouseLeftButtonDown"
+                                                                         MouseMove="Item_MouseMove" />
+                                                    </DataTemplate>
+                                                </ItemsControl.ItemTemplate>
+                                            </ItemsControl>
+                                        </ScrollViewer>
                                     </DockPanel>
                                 </Border>
                             </DataTemplate>

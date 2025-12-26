@@ -62,8 +62,10 @@ namespace PackageManager.Services
             public string Severity { get; set; }
             public string Type { get; set; }
             public string HtmlUrl { get; set; }
+            public DateTime? StartAt { get; set; }
             public DateTime? EndAt { get; set; }
             public int CommentCount { get; set; }
+            public List<string> Tags { get; set; } = new List<string>();
         }
         
         public class WorkItemDetails
@@ -850,6 +852,7 @@ namespace PackageManager.Services
                                 else if (d.Properties.TryGetValue("严重", out sv) && sv != null) severity = sv.ToString();
                             }
                             var endAt = FromUnixSeconds(d.EndAt);
+                            var startAt = FromUnixSeconds(d.StartAt);
                             var commentCount = 0;
                             object cc;
                             if (d.Properties != null)
@@ -860,6 +863,7 @@ namespace PackageManager.Services
                             }
                             var type = d.Type;
                             var htmlUrl = d.HtmlUrl;
+                            var tagNames = (d.Tags ?? new List<TagDto>()).Select(t => t?.Name).Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
                             var wi = new WorkItemInfo
                             {
                                 Id = d.Id ?? d.ShortId,
@@ -877,8 +881,10 @@ namespace PackageManager.Services
                                 Severity = severity,
                                 Type = type,
                                 HtmlUrl = htmlUrl,
+                                StartAt = startAt,
                                 EndAt = endAt,
-                                CommentCount = commentCount
+                                CommentCount = commentCount,
+                                Tags = tagNames
                             };
                             result.Add(wi);
                         }
