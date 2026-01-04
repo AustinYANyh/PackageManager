@@ -1,13 +1,11 @@
-using Microsoft.Win32;
-using PackageManager.Function.PackageManage;
-using PackageManager.Services;
 using System;
-using System.Collections.ObjectModel;
 using System.ComponentModel;
-using System.Runtime;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
+using Microsoft.Win32;
+using PackageManager.Function.PackageManage;
+using PackageManager.Services;
 
 namespace PackageManager.Views
 {
@@ -59,9 +57,6 @@ namespace PackageManager.Views
             set => SetProperty(ref _appVersionText, value);
         }
 
-        public ObservableCollection<string> LogTxtReaders { get; } = new ObservableCollection<string>();
-        public string LogTxtReader { get; set; }
-
         public SettingsPage(DataPersistenceService dataPersistenceService)
         {
             InitializeComponent();
@@ -83,12 +78,6 @@ namespace PackageManager.Views
                 UpdateServerUrl = settings?.UpdateServerUrl ?? string.Empty;
                 FilterLogDirectories = settings?.FilterLogDirectories ?? true;
                 DataLocation = _dataPersistenceService.GetDataFolderPath();
-
-                LogTxtReader = settings?.LogTxtReader ?? "LogViewPro";
-                LogTxtReaders.Add("LogViewPro");
-                LogTxtReaders.Add("VSCode");
-                LogTxtReaders.Add("Notepad");
-                LogTxtReaders.Add("NotepadPlusPlus");
             }
             catch (Exception ex)
             {
@@ -219,7 +208,6 @@ namespace PackageManager.Views
                     ProgramEntryWithG = ProgramEntryWithG,
                     UpdateServerUrl = string.IsNullOrWhiteSpace(UpdateServerUrl) ? null : UpdateServerUrl.Trim(),
                     FilterLogDirectories = FilterLogDirectories,
-                    LogTxtReader = LogTxtReader,
                 };
 
                 _dataPersistenceService.SaveSettings(settings);
