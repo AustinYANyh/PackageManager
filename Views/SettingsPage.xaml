@@ -4,6 +4,7 @@
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:button="clr-namespace:CustomControlLibrary.CustomControl.Controls.Button;assembly=CustomControlLibrary"
+             xmlns:controls="clr-namespace:CustomControlLibrary.CustomControl.Controls;assembly=CustomControlLibrary"
              mc:Ignorable="d">
     <Grid Margin="20">
         <Grid.RowDefinitions>
@@ -20,31 +21,43 @@
         <!-- 设置内容 -->
         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
             <StackPanel>
+
                 <!-- Addin路径设置 -->
                 <GroupBox Header="Addin文件夹设置" Margin="0,0,0,20">
+
                     <StackPanel Margin="10">
                         <TextBlock Text="默认Addin文件夹路径：" FontWeight="Bold" Margin="0,0,0,5"/>
                         <TextBlock Text="如默认addin文件夹与实际不符，请输入指定路径" 
                                    Foreground="Gray" FontSize="12" Margin="0,0,0,10"/>
-                        
+
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
-                            
+
                             <TextBox x:Name="AddinPathTextBox" Grid.Column="0" Height="30"
                                      Text="{Binding AddinPath, UpdateSourceTrigger=PropertyChanged}"
                                      Margin="0,0,10,0" Padding="5"/>
                             <button:CButton x:Name="BrowseButton" Grid.Column="1" Content="浏览..."  Height="30"
                                     Padding="10,5" Click="BrowseButton_Click"/>
                         </Grid>
-                        
+
                         <TextBlock Text="默认路径：C:\\ProgramData\\Autodesk\\Revit\\Addins" 
                                    Foreground="Gray" FontSize="11" Margin="0,5,0,0"/>
-                        
+
                         <CheckBox Content="程序入口文件是否带G" IsChecked="{Binding ProgramEntryWithG, UpdateSourceTrigger=PropertyChanged}"
                                   VerticalAlignment="Center" VerticalContentAlignment="Center" Margin="0,15,0,0"></CheckBox>
+                    </StackPanel>
+                </GroupBox>
+
+                <!-- 日志设置 -->
+                <GroupBox Header="日志设置" Margin="0,0,0,20">
+                    <StackPanel Margin="10" Orientation="Horizontal">
+                        <controls:CTextBlock Text="日志查看工具:" VerticalAlignment="Center"/>
+                        <controls:CComboBox ItemsSource="{Binding LogTxtReaders}"
+                                            SelectedValue="{Binding LogTxtReader}"
+                                            Width="280"/>
                     </StackPanel>
                 </GroupBox>
 

@@ -642,5 +642,9 @@ namespace PackageManager.Services
         public string PingCodeClientId { get; set; } = "wgRVSMOfjwqp";
 
         public string PingCodeClientSecret { get; set; } = "UMxFmEenlPmQJuDKhguTlwJE";
+        /// <summary>
+        /// 日志文本查看器
+        /// </summary>
+        public string LogTxtReader { get; set; } = "LogViewPro";
     }
 }
