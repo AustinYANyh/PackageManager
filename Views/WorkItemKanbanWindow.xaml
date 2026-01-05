@@ -55,7 +55,8 @@
                                                 <ItemsControl.ItemTemplate>
                                                     <DataTemplate>
                                                         <pc:WorkItemCard PreviewMouseLeftButtonDown="Item_PreviewMouseLeftButtonDown"
-                                                                         MouseMove="Item_MouseMove" />
+                                                                         MouseMove="Item_MouseMove"
+                                                                         MouseLeftButtonUp="Item_MouseLeftButtonUp" />
                                                     </DataTemplate>
                                                 </ItemsControl.ItemTemplate>
                                             </ItemsControl>

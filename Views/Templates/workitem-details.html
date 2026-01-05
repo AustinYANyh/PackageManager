@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <link rel="stylesheet" href="https://unpkg.com/antd@4.24.15/dist/antd.min.css"/>
+  <style>
+    html,body{height:100%}
+    body{margin:0;background:#fff;font-family:'Segoe UI','Microsoft YaHei',Arial,sans-serif;color:#111827;height:100%}
+    .wrap{padding:0;height:100%}
+    .drawer{width:100%;max-width:100%;margin:0;border-radius:0;box-shadow:none;height:100%}
+    .header{padding:16px 24px;border-bottom:1px solid #f0f0f0;background:#fff;display:flex;align-items:center;gap:10px}
+    .id{color:#6B7280;font-weight:600}
+    .title{font-size:18px;font-weight:700}
+    .quick{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;padding:8px 24px;border-bottom:1px solid #f0f0f0;background:#fff}
+    .quick .item{display:flex;flex-direction:column;gap:6px}
+    .quick .label{color:#6B7280}
+    .quick .value{font-weight:600}
+    .base-info{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;padding-top:4px}
+    .base-info .item{display:flex;flex-direction:column;gap:6px}
+    .base-info .label{color:#6B7280}
+    .base-info .value{font-weight:600}
+    .layout{display:grid;grid-template-columns:2.2fr 1fr;gap:16px;padding:16px 24px;background:#fff}
+    .section-title{font-size:16px;font-weight:700;margin:12px 0 8px}
+    .desc-card,.sketch-card,.comments-card{border:1px solid #f0f0f0;border-radius:8px;padding:12px;background:#fff}
+    .ant-descriptions-item-label{color:#6B7280}
+    .tag{display:inline-block;margin:0 8px 8px 0}
+    .comment-item{border-bottom:1px solid #f0f0f0;padding:12px 0}
+    .comment-item:last-child{border-bottom:none}
+    .badge{display:inline-block;border:1px solid #D1D5DB;border-radius:999px;padding:2px 8px;background:#F3F4F6;color:#374151}
+    .state-badge{min-width:70px;display:inline-block;text-align:center}
+    .state-badge.state-inprogress{background:#F59E0B;color:#fff;border-color:#FDBA74}
+    .state-badge.state-testable{background:#3B82F6;color:#fff;border-color:#93C5FD}
+    .state-badge.state-testing{background:#A855F7;color:#fff;border-color:#C4B5FD}
+    .state-badge.state-done{background:#10B981;color:#fff;border-color:#6EE7B7}
+    .state-badge.state-closed{background:#9CA3AF;color:#fff;border-color:#D1D5DB}
+    .state-badge.state-pending{background:#E5E7EB;color:#374151;border-color:#D1D5DB}
+    .ant-comment-avatar .ant-avatar{width:24px;height:24px;line-height:24px}
+    .ant-comment-avatar img{width:24px;height:24px;border-radius:50%}
+    .ant-comment-content-detail img,.desc-card img,.sketch-card img{max-width:100%;border-radius:8px;border:1px solid #E5E7EB}
+    .ant-comment-content-detail pre, .ant-comment-content-detail code{background:#F7F7F9;border:1px solid #E5E7EB;border-radius:6px}
+    .ant-comment-content-detail pre{padding:10px;overflow:auto}
+    .ant-comment-content-detail code{padding:2px 4px}
+  </style>
+  <title>工作项详情</title>
+  </head>
+<body>
+  <div class="wrap">
+    <div class="ant-drawer ant-drawer-open ant-drawer-right">
+      <div class="ant-drawer-content-wrapper drawer">
+        <div class="ant-drawer-content">
+          <div class="ant-drawer-wrapper-body">
+            <div class="ant-drawer-body" style="padding:0;height:100%;overflow:auto">
+              <div class="header"><span class="id">{{Identifier}}</span><span class="title">{{Title}}</span></div>
+              <div class="quick">
+                <div class="item"><div class="label">负责人</div><div class="value">{{AssigneeName}}</div></div>
+                <div class="item"><div class="label">状态</div><div class="value"><span class="badge state-badge {{StateClass}}">{{StateName}}</span></div></div>
+                <div class="item"><div class="label">开始时间</div><div class="value">{{StartAt}}</div></div>
+                <div class="item"><div class="label">结束时间</div><div class="value">{{EndAt}}</div></div>
+              </div>
+              <div class="layout">
+                <div>
+                  <div class="section-title">基本信息</div>
+                  <div class="base-info">
+                    <div class="item"><div class="label">优先级</div><div class="value"><span class="badge">{{PriorityName}}</span></div></div>
+                    <div class="item"><div class="label">严重程度</div><div class="value">{{SeverityText}}</div></div>
+                    <div class="item"><div class="label">故事点</div><div class="value">{{StoryPoints}}</div></div>
+                    <div class="item"><div class="label">所属产品</div><div class="value">{{ProductName}}</div></div>
+                    <div class="item"><div class="label">缺陷类别</div><div class="value">{{DefectCategory}}</div></div>
+                    <div class="item"><div class="label">复现版本号</div><div class="value">{{ReproduceVersion}}</div></div>
+                    <div class="item"><div class="label">复现概率</div><div class="value">{{ReproduceProbability}}</div></div>
+                  </div>
+                  <div class="section-title">标签</div>
+                  <div>{{TagsHtml}}</div>
+                  <div class="section-title">描述</div>
+                  <div class="desc-card">{{DescriptionHtml}}</div>
+                  <div class="section-title">示意图</div>
+                  <div class="sketch-card">{{SketchHtml}}</div>
+                  <div class="section-title">评论</div>
+                  <div class="comments-card">{{CommentsHtml}}</div>
+                </div>
+                <div>
+                  <div class="section-title">属性</div>
+                  <div class="ant-descriptions ant-descriptions-small ant-descriptions-bordered" style="background:#fff">
+                    <table><tbody>{{PropertiesHtml}}</tbody></table>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
+

@@ -96,11 +96,13 @@ namespace PackageManager.Services
             public string ExpectedResult { get; set; }
             public List<WorkItemComment> Comments { get; set; } = new List<WorkItemComment>();
             public Dictionary<string, string> Properties { get; set; } = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            public string PublicImageToken { get; set; }
         }
         
         public class WorkItemComment
         {
             public string AuthorName { get; set; }
+            public string AuthorAvatar { get; set; }
             public string ContentHtml { get; set; }
             public DateTime? CreatedAt { get; set; }
         }
@@ -510,6 +512,13 @@ namespace PackageManager.Services
             }
         }
         
+        public async Task<string> GetAccessTokenAsync()
+        {
+            await EnsureTokenAsync();
+            return _token;
+        }
+        
+        
         private async Task<JObject> GetJsonAsync(string url)
         {
             await EnsureTokenAsync();
@@ -906,6 +915,8 @@ namespace PackageManager.Services
             if (string.IsNullOrWhiteSpace(workItemId)) return null;
             var candidates = new[]
             {
+                $"https://open.pingcode.com/v1/project/work_items/{Uri.EscapeDataString(workItemId)}?include_public_image_token=description,shiyitu",
+                $"https://open.pingcode.com/v1/agile/work_items/{Uri.EscapeDataString(workItemId)}?include_public_image_token=description,shiyitu",
                 $"https://open.pingcode.com/v1/project/work_items/{Uri.EscapeDataString(workItemId)}",
                 $"https://open.pingcode.com/v1/agile/work_items/{Uri.EscapeDataString(workItemId)}",
             };
@@ -940,21 +951,31 @@ namespace PackageManager.Services
                         }
                     }
                     d.VersionName = dto.Version?.Name;
+                    d.ProductName = DictGet(d.Properties, "suoshuchanpin");;
                     d.StartAt = ReadDateTimeFromSeconds(dto.StartAt);
                     d.EndAt = ReadDateTimeFromSeconds(dto.EndAt);
                     d.CompletedAt = ReadDateTimeFromSeconds(dto.CompletedAt);
-                    d.ProductName = null;
                     d.Properties = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                     foreach (var kv in dto.Properties ?? new Dictionary<string, object>())
                     {
                         d.Properties[kv.Key] = kv.Value?.ToString();
                     }
+                    d.SeverityName = FirstNonEmpty(
+                        DictGet(d.Properties, "severity"),
+                        DictGet(d.Properties, "严重程度"),
+                        DictGet(d.Properties, "严重")
+                    );
                     d.ReproduceVersion = DictGet(d.Properties, "复现版本号");
                     d.ReproduceProbability = DictGet(d.Properties, "复现概率");
                     d.DefectCategory = DictGet(d.Properties, "缺陷类别");
                     d.ExpectedResult = DictGet(d.Properties, "预期结果");
                     d.SketchHtml = DictGet(d.Properties, "示意图") ?? DictGet(d.Properties, "shiyitu");
                     d.DescriptionHtml = dto.Description;
+                    d.PublicImageToken = FirstNonEmpty(
+                        json.Value<string>("public_image_token"),
+                        json["fields"]?.Value<string>("public_image_token"),
+                        json["work_item"]?.Value<string>("public_image_token")
+                    );
                     d.Tags = (dto.Tags ?? new List<TagDto>()).Select(t => t?.Name).Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
                     d.Comments = await GetWorkItemCommentsAsync(d.Id) ?? new List<WorkItemComment>();
                     return d;
@@ -987,12 +1008,23 @@ namespace PackageManager.Services
                     {
                         var content = FirstNonEmpty(ExtractString(v["content"]), ExtractString(v["body"]), ExtractString(v["text"]), ExtractString(v["html"]));
                         var authorName = FirstNonEmpty(ExtractString(v["author_name"]), ExtractName(v["author"]), ExtractName(v["user"]), ExtractString(v["created_by_name"]));
+                        var authorAvatar = FirstNonEmpty(
+                            ExtractString(v["author_avatar"]),
+                            ExtractString(v["avatar"]),
+                            ExtractString(v["user"]?["avatar"]),
+                            ExtractString(v["author"]?["avatar"]),
+                            ExtractString(v["created_by"]?["avatar"]),
+                            ExtractString(v["fields"]?["author_avatar"]),
+                            ExtractString(v["author"]?["image_url"]),
+                            ExtractString(v["user"]?["image_url"])
+                        );
                         var createdAt = ReadDateTimeFromSeconds(v["created_at"]) ?? ReadDateTimeFromSeconds(v["timestamp"]);
                         if (!string.IsNullOrWhiteSpace(content))
                         {
                             result.Add(new WorkItemComment
                             {
                                 AuthorName = authorName,
+                                AuthorAvatar = authorAvatar,
                                 ContentHtml = content,
                                 CreatedAt = createdAt
                             });

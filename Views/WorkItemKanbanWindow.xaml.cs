@@ -327,6 +327,33 @@ namespace PackageManager.Views
             DragDrop.DoDragDrop(fe, new DataObject(typeof(PingCodeApiService.WorkItemInfo), item), DragDropEffects.Move);
         }
         
+        private async void Item_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+        {
+            if (!_dragInit) return;
+            _dragInit = false;
+            try
+            {
+                var fe = sender as FrameworkElement;
+                var item = fe?.DataContext as PingCodeApiService.WorkItemInfo;
+                if (item == null) return;
+                Overlay.IsBusy = true;
+                var details = await _api.GetWorkItemDetailsAsync(item.Id);
+                if (details != null)
+                {
+                    var win = new WorkItemDetailsWindow(details, _api);
+                    win.Owner = this;
+                    win.ShowDialog();
+                }
+            }
+            catch
+            {
+            }
+            finally
+            {
+                Overlay.IsBusy = false;
+            }
+        }
+        
         private void Column_DragOver(object sender, DragEventArgs e)
         {
             if (e.Data.GetDataPresent(typeof(PingCodeApiService.WorkItemInfo)))

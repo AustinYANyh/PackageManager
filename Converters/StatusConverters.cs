@@ -6,6 +6,7 @@ using PackageManager.Models;
 using System.Windows;
 using System.Text.RegularExpressions;
 using System.Windows.Media;
+using System.Globalization;
 
 namespace PackageManager.Converters
 {
@@ -127,7 +128,7 @@ namespace PackageManager.Converters
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
         {
             var s = (value as string ?? "").Trim().ToLowerInvariant();
-            if (string.IsNullOrEmpty(s)) return "";
+            if (string.IsNullOrEmpty(s)) return "-";
             if (s == "5cb7e6e2fda1ce4ca0020004") return "致命";
             if (s == "5cb7e6e2fda1ce4ca0020003") return "严重";
             if (s == "5cb7e6e2fda1ce4ca0020002") return "一般";
@@ -136,7 +137,7 @@ namespace PackageManager.Converters
             if (s.Contains("严重") || s.Contains("major")) return "严重";
             if (s.Contains("一般") || s.Contains("normal")) return "一般";
             if (s.Contains("建议") || s.Contains("minor") || s.Contains("suggest")) return "建议";
-            return value?.ToString() ?? "";
+            return "-";
         }
         public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
         {
@@ -164,6 +165,64 @@ namespace PackageManager.Converters
         public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
         {
             throw new NotImplementedException();
+        }
+    }
+    
+    public class StringDashConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            var s = value?.ToString() ?? string.Empty;
+            return string.IsNullOrWhiteSpace(s) ? "-" : s;
+        }
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            return value?.ToString();
+        }
+    }
+    
+    public class DoubleDashConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            if (value == null) return "-";
+            double d;
+            if (value is double dd) d = dd;
+            else if (!double.TryParse(value.ToString(), out d)) return "-";
+            if (Math.Abs(d) < 0.000001) return "-";
+            var f = parameter as string;
+            if (!string.IsNullOrWhiteSpace(f)) return d.ToString(f);
+            return d.ToString("0.##");
+        }
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            double d;
+            return double.TryParse(value?.ToString() ?? "", out d) ? d : 0;
+        }
+    }
+    
+    public class DateDashConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            var fmt = parameter as string ?? "yyyy-MM-dd";
+            if (value == null) return "-";
+            if (value is DateTime dt)
+            {
+                return dt == default ? "-" : dt.ToString(fmt);
+            }
+
+            var ndt = value as DateTime?;
+            if (ndt != null)
+            {
+                return ndt.HasValue ? ndt.Value.ToString(fmt) : "-";
+            }
+            return "-";
+        }
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            DateTime dt;
+            return DateTime.TryParse(value?.ToString() ?? "", out dt) ? (DateTime?)dt : null;
         }
     }
 }

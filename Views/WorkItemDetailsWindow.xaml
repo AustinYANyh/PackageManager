@@ -1,0 +1,305 @@
+<Window x:Class="PackageManager.Views.WorkItemDetailsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
+        xmlns:conv="clr-namespace:PackageManager.Converters"
+        Title="工作项详情" Height="720" Width="1300"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="CanResize">
+    <Window.Resources>
+        <conv:SeverityColorConverter x:Key="SeverityColorConverter" />
+        <conv:SeverityTextConverter x:Key="SeverityTextConverter" />
+    </Window.Resources>
+    <Grid Background="#FFFFFF">
+        <wv2:WebView2 x:Name="DetailsWeb" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" />
+        <Grid x:Name="LoadingOverlay" Background="#80FFFFFF" Visibility="Collapsed">
+            <Grid>
+                <Border CornerRadius="8" Background="#FFFFFFFF" BorderBrush="#E5E7EB" BorderThickness="1" Padding="16"
+                        HorizontalAlignment="Center" VerticalAlignment="Center">
+                    <TextBlock Text="正在加载..." FontSize="14" Foreground="#6B7280" />
+                </Border>
+            </Grid>
+        </Grid>
+    </Grid>
+    <!--     <Grid Background="#FFFFFF"> -->
+    <!--     <Grid.Resources> -->
+    <!--         <conv:StringDashConverter x:Key="StringDash" /> -->
+    <!--         <conv:DoubleDashConverter x:Key="DoubleDash" /> -->
+    <!--         <conv:DateDashConverter x:Key="DateDash" /> -->
+    <!--         <conv:SeverityTextConverter x:Key="SeverityTextConverter" /> -->
+    <!--         <conv:SeverityColorConverter x:Key="SeverityColorConverter" /> -->
+    <!--     </Grid.Resources> -->
+    <!--     <Grid.RowDefinitions> -->
+    <!--         <RowDefinition Height="Auto" /> -->
+    <!--         <RowDefinition Height="Auto" /> -->
+    <!--         <RowDefinition Height="*" /> -->
+    <!--     </Grid.RowDefinitions> -->
+    <!--     <Grid.ColumnDefinitions> -->
+    <!--         <ColumnDefinition Width="2.2*" /> -->
+    <!--         <ColumnDefinition Width="1*" /> -->
+    <!--     </Grid.ColumnDefinitions> -->
+    <!--     <Border Grid.Row="0" Grid.ColumnSpan="2" Background="#F9FAFB" BorderBrush="#E5E7EB" BorderThickness="0,0,0,1" Padding="16"> -->
+    <!--         <Grid> -->
+    <!--             <Grid.ColumnDefinitions> -->
+    <!--                 <ColumnDefinition Width="*" /> -->
+    <!--                 <ColumnDefinition Width="Auto" /> -->
+    <!--             </Grid.ColumnDefinitions> -->
+    <!--             <StackPanel Orientation="Horizontal" VerticalAlignment="Center"> -->
+    <!--                 <TextBlock Text="{Binding Details.Identifier, Converter={StaticResource StringDash}}" Foreground="#6B7280" FontSize="14" FontWeight="SemiBold" /> -->
+    <!--                 <TextBlock Text="  " /> -->
+    <!--                 <TextBlock Text="{Binding Details.Title, Converter={StaticResource StringDash}}" FontSize="18" FontWeight="Bold" /> -->
+    <!--             </StackPanel> -->
+    <!--             <Button Grid.Column="1" Content="返回看板" Padding="10,6" Margin="12,0,0,0" -->
+    <!--                     Background="#F3F4F6" BorderBrush="#D1D5DB" Foreground="#111827" -->
+    <!--                     Click="CloseButton_Click" /> -->
+    <!--         </Grid> -->
+    <!--     </Border> -->
+    <!--     <Grid Grid.Column="0" Grid.Row="1" Margin="16"> -->
+    <!--         <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto"> -->
+    <!--             <StackPanel> -->
+    <!--                 <UniformGrid Columns="4" Margin="0,8,0,16"> -->
+    <!--                     <StackPanel Margin="0,6,16,6"> -->
+    <!--                         <TextBlock Text="负责人" Foreground="#6B7280" /> -->
+    <!--                         <TextBlock Text="{Binding Details.AssigneeName, Converter={StaticResource StringDash}}" FontWeight="SemiBold" /> -->
+    <!--                     </StackPanel> -->
+    <!--                     <StackPanel Margin="0,6,16,6"> -->
+    <!--                         <TextBlock Text="状态" Foreground="#6B7280" /> -->
+    <!--                         <Grid> -->
+    <!--                             <Border Width="70" BorderThickness="1" CornerRadius="10" Padding="8,2" HorizontalAlignment="Left"> -->
+    <!--                                 <Border.Style> -->
+    <!--                                     <Style TargetType="Border"> -->
+    <!--                                         <Setter Property="Visibility" Value="Visible" /> -->
+    <!--                                         <Setter Property="Background" Value="#E5E7EB" /> -->
+    <!--                                         <Setter Property="BorderBrush" Value="#D1D5DB" /> -->
+    <!--                                         <Style.Triggers> -->
+    <!--                                             <DataTrigger Binding="{Binding Details.StateName}" Value="{x:Null}"> -->
+    <!--                                                 <Setter Property="Visibility" Value="Collapsed" /> -->
+    <!--                                             </DataTrigger> -->
+    <!--                                             <DataTrigger Binding="{Binding Details.StateName.Length}" Value="0"> -->
+    <!--                                                 <Setter Property="Visibility" Value="Collapsed" /> -->
+    <!--                                             </DataTrigger> -->
+    <!--                                             <DataTrigger Binding="{Binding Details.StateName}" Value="处理中"> -->
+    <!--                                                 <Setter Property="Background" Value="#F59E0B" /> -->
+    <!--                                                 <Setter Property="BorderBrush" Value="#FDBA74" /> -->
+    <!--                                             </DataTrigger> -->
+    <!--                                             <DataTrigger Binding="{Binding Details.StateName}" Value="进行中"> -->
+    <!--                                                 <Setter Property="Background" Value="#F59E0B" /> -->
+    <!--                                                 <Setter Property="BorderBrush" Value="#FDBA74" /> -->
+    <!--                                             </DataTrigger> -->
+    <!--                                             <DataTrigger Binding="{Binding Details.StateName}" Value="开发中"> -->
+    <!--                                                 <Setter Property="Background" Value="#F59E0B" /> -->
+    <!--                                                 <Setter Property="BorderBrush" Value="#FDBA74" /> -->
+    <!--                                             </DataTrigger> -->
+    <!--                                             <DataTrigger Binding="{Binding Details.StateName}" Value="测试中"> -->
+    <!--                                                 <Setter Property="Background" Value="#A855F7" /> -->
+    <!--                                                 <Setter Property="BorderBrush" Value="#C4B5FD" /> -->
+    <!--                                             </DataTrigger> -->
+    <!--                                             <DataTrigger Binding="{Binding Details.StateName}" Value="可测试"> -->
+    <!--                                                 <Setter Property="Background" Value="#3B82F6" /> -->
+    <!--                                                 <Setter Property="BorderBrush" Value="#93C5FD" /> -->
+    <!--                                             </DataTrigger> -->
+    <!--                                             <DataTrigger Binding="{Binding Details.StateName}" Value="已完成"> -->
+    <!--                                                 <Setter Property="Background" Value="#10B981" /> -->
+    <!--                                                 <Setter Property="BorderBrush" Value="#6EE7B7" /> -->
+    <!--                                             </DataTrigger> -->
+    <!--                                             <DataTrigger Binding="{Binding Details.StateName}" Value="已关闭"> -->
+    <!--                                                 <Setter Property="Background" Value="#9CA3AF" /> -->
+    <!--                                                 <Setter Property="BorderBrush" Value="#D1D5DB" /> -->
+    <!--                                             </DataTrigger> -->
+    <!--                                             <DataTrigger Binding="{Binding Details.StateName}" Value="未开始"> -->
+    <!--                                                 <Setter Property="Background" Value="#E5E7EB" /> -->
+    <!--                                                 <Setter Property="BorderBrush" Value="#D1D5DB" /> -->
+    <!--                                             </DataTrigger> -->
+    <!--                                         </Style.Triggers> -->
+    <!--                                     </Style> -->
+    <!--                                 </Border.Style> -->
+    <!--                                 <TextBlock Text="{Binding Details.StateName}" FontWeight="SemiBold" Foreground="#FFFFFF" /> -->
+    <!--                             </Border> -->
+    <!--                             <TextBlock Text="-" HorizontalAlignment="Left" VerticalAlignment="Center"> -->
+    <!--                                 <TextBlock.Style> -->
+    <!--                                     <Style TargetType="TextBlock"> -->
+    <!--                                         <Setter Property="Visibility" Value="Collapsed" /> -->
+    <!--                                         <Style.Triggers> -->
+    <!--                                             <DataTrigger Binding="{Binding Details.StateName}" Value="{x:Null}"> -->
+    <!--                                                 <Setter Property="Visibility" Value="Visible" /> -->
+    <!--                                             </DataTrigger> -->
+    <!--                                             <DataTrigger Binding="{Binding Details.StateName.Length}" Value="0"> -->
+    <!--                                                 <Setter Property="Visibility" Value="Visible" /> -->
+    <!--                                             </DataTrigger> -->
+    <!--                                         </Style.Triggers> -->
+    <!--                                     </Style> -->
+    <!--                                 </TextBlock.Style> -->
+    <!--                             </TextBlock> -->
+    <!--                         </Grid> -->
+    <!--                     </StackPanel> -->
+    <!--                      -->
+    <!--                     <StackPanel Margin="0,6,16,6"> -->
+    <!--                         <TextBlock Text="开始时间" Foreground="#6B7280" /> -->
+    <!--                         <TextBlock Text="{Binding Details.StartAt, Converter={StaticResource DateDash}, ConverterParameter=yyyy-MM-dd}" FontWeight="SemiBold" /> -->
+    <!--                     </StackPanel> -->
+    <!--                     <StackPanel Margin="0,6,16,6"> -->
+    <!--                         <TextBlock Text="结束时间" Foreground="#6B7280" /> -->
+    <!--                         <TextBlock Text="{Binding Details.EndAt, Converter={StaticResource DateDash}, ConverterParameter=yyyy-MM-dd}" FontWeight="SemiBold" /> -->
+    <!--                     </StackPanel> -->
+    <!--                 </UniformGrid> -->
+    <!--             </StackPanel> -->
+    <!--         </ScrollViewer> -->
+    <!--     </Grid> -->
+    <!--     <Grid  Grid.Column="0" Grid.Row="2" Margin="16"> -->
+    <!--         <ScrollViewer VerticalScrollBarVisibility="Auto"> -->
+    <!--             <StackPanel> -->
+    <!--                 <TextBlock Text="基本信息" FontSize="16" FontWeight="Bold" /> -->
+    <!--                 <UniformGrid Columns="4" Margin="0,8,0,16"> -->
+    <!--                     <StackPanel Margin="0,6,16,6"> -->
+    <!--                         <TextBlock Text="优先级" Foreground="#6B7280" /> -->
+    <!--                         <Grid> -->
+    <!--                             <Border Width="70" BorderThickness="1" CornerRadius="10" Padding="8,2" HorizontalAlignment="Left"> -->
+    <!--                                 <Border.Style> -->
+    <!--                                     <Style TargetType="Border"> -->
+    <!--                                         <Setter Property="Visibility" Value="Visible" /> -->
+    <!--                                         <Setter Property="Background" Value="#E5E7EB" /> -->
+    <!--                                         <Setter Property="BorderBrush" Value="#D1D5DB" /> -->
+    <!--                                         <Style.Triggers> -->
+    <!--                                             <DataTrigger Binding="{Binding Details.PriorityName}" Value="{x:Null}"> -->
+    <!--                                                 <Setter Property="Visibility" Value="Collapsed" /> -->
+    <!--                                             </DataTrigger> -->
+    <!--                                             <DataTrigger Binding="{Binding Details.PriorityName.Length}" Value="0"> -->
+    <!--                                                 <Setter Property="Visibility" Value="Collapsed" /> -->
+    <!--                                             </DataTrigger> -->
+    <!--                                             <DataTrigger Binding="{Binding Details.PriorityName}" Value="最高"> -->
+    <!--                                                 <Setter Property="Background" Value="#FEE2E2" /> -->
+    <!--                                                 <Setter Property="BorderBrush" Value="#FCA5A5" /> -->
+    <!--                                             </DataTrigger> -->
+    <!--                                             <DataTrigger Binding="{Binding Details.PriorityName}" Value="较高"> -->
+    <!--                                                 <Setter Property="Background" Value="#FFEDD5" /> -->
+    <!--                                                 <Setter Property="BorderBrush" Value="#FDBA74" /> -->
+    <!--                                             </DataTrigger> -->
+    <!--                                             <DataTrigger Binding="{Binding Details.PriorityName}" Value="普通"> -->
+    <!--                                                 <Setter Property="Background" Value="#FEF3C7" /> -->
+    <!--                                                 <Setter Property="BorderBrush" Value="#FDE68A" /> -->
+    <!--                                             </DataTrigger> -->
+    <!--                                             <DataTrigger Binding="{Binding Details.PriorityName}" Value="较低"> -->
+    <!--                                                 <Setter Property="Background" Value="#E0F2FE" /> -->
+    <!--                                                 <Setter Property="BorderBrush" Value="#93C5FD" /> -->
+    <!--                                             </DataTrigger> -->
+    <!--                                             <DataTrigger Binding="{Binding Details.PriorityName}" Value="最低"> -->
+    <!--                                                 <Setter Property="Background" Value="#DCFCE7" /> -->
+    <!--                                                 <Setter Property="BorderBrush" Value="#86EFAC" /> -->
+    <!--                                             </DataTrigger> -->
+    <!--                                         </Style.Triggers> -->
+    <!--                                     </Style> -->
+    <!--                                 </Border.Style> -->
+    <!--                                 <TextBlock Text="{Binding Details.PriorityName}" FontWeight="SemiBold" /> -->
+    <!--                             </Border> -->
+    <!--                             <TextBlock Text="-" HorizontalAlignment="Left" VerticalAlignment="Center"> -->
+    <!--                                 <TextBlock.Style> -->
+    <!--                                     <Style TargetType="TextBlock"> -->
+    <!--                                         <Setter Property="Visibility" Value="Collapsed" /> -->
+    <!--                                         <Style.Triggers> -->
+    <!--                                             <DataTrigger Binding="{Binding Details.PriorityName}" Value="{x:Null}"> -->
+    <!--                                                 <Setter Property="Visibility" Value="Visible" /> -->
+    <!--                                             </DataTrigger> -->
+    <!--                                             <DataTrigger Binding="{Binding Details.PriorityName.Length}" Value="0"> -->
+    <!--                                                 <Setter Property="Visibility" Value="Visible" /> -->
+    <!--                                             </DataTrigger> -->
+    <!--                                         </Style.Triggers> -->
+    <!--                                     </Style> -->
+    <!--                                 </TextBlock.Style> -->
+    <!--                             </TextBlock> -->
+    <!--                         </Grid> -->
+    <!--                     </StackPanel> -->
+    <!--                     <StackPanel Margin="0,6,16,6"> -->
+    <!--                         <TextBlock Text="严重程度" Foreground="#6B7280" /> -->
+    <!--                         <StackPanel Orientation="Horizontal"> -->
+    <!--                             <Ellipse Width="10" Height="10" VerticalAlignment="Center" Margin="0,0,6,0" Fill="{Binding Details.SeverityName, Converter={StaticResource SeverityColorConverter}}" /> -->
+    <!--                             <TextBlock Text="{Binding Details.SeverityName, Converter={StaticResource SeverityTextConverter}}" FontWeight="SemiBold" /> -->
+    <!--                         </StackPanel> -->
+    <!--                     </StackPanel> -->
+    <!--                     <StackPanel Margin="0,6,16,6"> -->
+    <!--                         <TextBlock Text="故事点" Foreground="#6B7280" /> -->
+    <!--                         <TextBlock Text="{Binding Details.StoryPoints, Converter={StaticResource DoubleDash}}" FontWeight="SemiBold" /> -->
+    <!--                     </StackPanel> -->
+    <!--                     -->
+    <!--                     <StackPanel Margin="0,6,16,6"> -->
+    <!--                         <TextBlock Text="所属产品" Foreground="#6B7280" /> -->
+    <!--                         <TextBlock Text="{Binding Details.ProductName, Converter={StaticResource StringDash}}" FontWeight="SemiBold" /> -->
+    <!--                     </StackPanel> -->
+    <!--                     <StackPanel Margin="0,6,16,6"> -->
+    <!--                         <TextBlock Text="缺陷类别" Foreground="#6B7280" /> -->
+    <!--                         <TextBlock Text="{Binding Details.DefectCategory, Converter={StaticResource StringDash}}" FontWeight="SemiBold" /> -->
+    <!--                     </StackPanel> -->
+    <!--                     <StackPanel Margin="0,6,16,6"> -->
+    <!--                         <TextBlock Text="复现版本号" Foreground="#6B7280" /> -->
+    <!--                         <TextBlock Text="{Binding Details.ReproduceVersion, Converter={StaticResource StringDash}}" FontWeight="SemiBold" /> -->
+    <!--                     </StackPanel> -->
+    <!--                     <StackPanel Margin="0,6,16,6"> -->
+    <!--                         <TextBlock Text="复现概率" Foreground="#6B7280" /> -->
+    <!--                         <TextBlock Text="{Binding Details.ReproduceProbability, Converter={StaticResource StringDash}}" FontWeight="SemiBold" /> -->
+    <!--                     </StackPanel> -->
+    <!--                 </UniformGrid> -->
+    <!--                  -->
+    <!--                 <TextBlock Text="标签" FontSize="16" FontWeight="Bold" /> -->
+    <!--                 <ItemsControl ItemsSource="{Binding Details.Tags}"> -->
+    <!--                     <ItemsControl.ItemsPanel> -->
+    <!--                         <ItemsPanelTemplate> -->
+    <!--                             <WrapPanel /> -->
+    <!--                         </ItemsPanelTemplate> -->
+    <!--                     </ItemsControl.ItemsPanel> -->
+    <!--                     <ItemsControl.ItemTemplate> -->
+    <!--                         <DataTemplate> -->
+    <!--                             <Border Background="#FFE4E6" BorderBrush="#FDA4AF" BorderThickness="1" CornerRadius="999" Padding="8,2" Margin="0,8,8,0"> -->
+    <!--                                 <TextBlock Text="{Binding}" Foreground="#9D174D" /> -->
+    <!--                             </Border> -->
+    <!--                         </DataTemplate> -->
+    <!--                     </ItemsControl.ItemTemplate> -->
+    <!--                     <ItemsControl.Style> -->
+    <!--                         <Style TargetType="ItemsControl"> -->
+    <!--                             <Setter Property="Visibility" Value="Visible" /> -->
+    <!--                             <Style.Triggers> -->
+    <!--                                 <DataTrigger Binding="{Binding Details.Tags.Count}" Value="0"> -->
+    <!--                                     <Setter Property="Visibility" Value="Collapsed" /> -->
+    <!--                                 </DataTrigger> -->
+    <!--                             </Style.Triggers> -->
+    <!--                         </Style> -->
+    <!--                     </ItemsControl.Style> -->
+    <!--                 </ItemsControl> -->
+    <!--                 <TextBlock Text="-" Margin="0,8,0,0"> -->
+    <!--                     <TextBlock.Style> -->
+    <!--                         <Style TargetType="TextBlock"> -->
+    <!--                             <Setter Property="Visibility" Value="Collapsed" /> -->
+    <!--                             <Style.Triggers> -->
+    <!--                                 <DataTrigger Binding="{Binding Details.Tags.Count}" Value="0"> -->
+    <!--                                     <Setter Property="Visibility" Value="Visible" /> -->
+    <!--                                 </DataTrigger> -->
+    <!--                             </Style.Triggers> -->
+    <!--                         </Style> -->
+    <!--                     </TextBlock.Style> -->
+    <!--                 </TextBlock> -->
+    <!--                  -->
+    <!--                 <TextBlock Text="示意图 / 描述 / 评论" FontSize="16" FontWeight="Bold" Margin="0,16,0,8" /> -->
+    <!--                 <Border BorderBrush="#E5E7EB" BorderThickness="1" CornerRadius="8"> -->
+    <!--                     <wv2:WebView2 x:Name="DetailsWeb" Height="520" /> -->
+    <!--                 </Border> -->
+    <!--             </StackPanel> -->
+    <!--         </ScrollViewer> -->
+    <!--     </Grid> -->
+    <!--      -->
+    <!--     <ScrollViewer Grid.Row="1" Grid.Column="1" Grid.RowSpan="2" VerticalScrollBarVisibility="Auto" Margin="16,0,0,0"> -->
+    <!--         <StackPanel> -->
+    <!--             <TextBlock Text="属性" FontSize="16" FontWeight="Bold" /> -->
+    <!--             <ItemsControl ItemsSource="{Binding Details.Properties}"> -->
+    <!--                 <ItemsControl.ItemTemplate> -->
+    <!--                     <DataTemplate> -->
+    <!--                         <StackPanel Orientation="Horizontal" Margin="0,6,0,6"> -->
+    <!--                             <Border Background="#F9FAFB" BorderBrush="#E5E7EB" BorderThickness="1" CornerRadius="6" Padding="6,2" Margin="0,0,8,0"> -->
+    <!--                                 <TextBlock Text="{Binding Key, Converter={StaticResource StringDash}}" Foreground="#6B7280" /> -->
+    <!--                             </Border> -->
+    <!--                             <TextBlock Text="{Binding Value, Converter={StaticResource StringDash}}" /> -->
+    <!--                         </StackPanel> -->
+    <!--                     </DataTemplate> -->
+    <!--                 </ItemsControl.ItemTemplate> -->
+    <!--             </ItemsControl> -->
+    <!--         </StackPanel> -->
+    <!--     </ScrollViewer> -->
+    <!-- </Grid> -->
+</Window>

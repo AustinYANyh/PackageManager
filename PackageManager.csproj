@@ -160,6 +160,10 @@
           <DependentUpon>WorkItemCard.xaml</DependentUpon>
           <SubType>Code</SubType>
         </Compile>
+        <Compile Include="Views\WorkItemDetailsWindow.xaml.cs">
+          <DependentUpon>WorkItemDetailsWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
         <Page Include="Function\ConfigPreset\AddPresetWindow.xaml" />
         <Page Include="Function\ConfigPreset\ConfigPresetWindow.xaml" />
         <Page Include="Function\CsvTool\CsvCryptoWindow.xaml">
@@ -225,6 +229,7 @@
         <Page Include="Views\ProductLogsPage.xaml" />
         <Page Include="Views\SettingsPage.xaml" />
         <Page Include="Views\Controls\WorkItemCard.xaml" />
+        <Page Include="Views\WorkItemDetailsWindow.xaml" />
     </ItemGroup>
     <ItemGroup>
         <Content Include="Models\json.txt" />
@@ -233,7 +238,7 @@
         </Content>
     </ItemGroup>
     <ItemGroup>
-        <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2210.55" />
+        <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2365.46" />
     </ItemGroup>
     <ItemGroup>
         <Compile Include="Properties\AssemblyInfo.cs">
