@@ -39,7 +39,11 @@ namespace PackageManager.Views
                     ShowLoading(true);
                     InferPublicImageToken();
                     
-                    await DetailsWeb.EnsureCoreWebView2Async();
+                    var dataService = new DataPersistenceService();
+                    var userDataFolder = System.IO.Path.Combine(dataService.GetDataFolderPath(), "WebView2Cache");
+                    System.IO.Directory.CreateDirectory(userDataFolder);
+                    var env = await CoreWebView2Environment.CreateAsync(null, userDataFolder);
+                    await DetailsWeb.EnsureCoreWebView2Async(env);
                     var core = DetailsWeb.CoreWebView2;
                     core.NavigationCompleted += (sender, args) =>
                     {
