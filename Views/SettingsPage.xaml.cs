@@ -104,7 +104,7 @@ namespace PackageManager.Views
 
                 if (dialog.ShowDialog() == true)
                 {
-                    AddinPath = dialog.FileName;
+                    AddinPath = System.IO.Path.GetDirectoryName(dialog.FileName);
                 }
             }
             catch (Exception ex)

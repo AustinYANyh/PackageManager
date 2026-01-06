@@ -19,7 +19,10 @@ namespace PackageManager.Views
     {
         public PingCodeApiService.WorkItemDetails Details { get; }
         private readonly PingCodeApiService _api;
+        private string _accessToken;
         private static readonly Regex ImgTagRegex = new Regex("<img\\b[^>]*>", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Regex AnchorTagRegex = new Regex("<a\\b[^>]*>([\\s\\S]*?)</a>", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        private static readonly Dictionary<string, string> TemplateCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         public event PropertyChangedEventHandler PropertyChanged;
         protected void OnPropertyChanged([CallerMemberName] string name = null) { PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name)); }
         
@@ -34,6 +37,8 @@ namespace PackageManager.Views
                 try
                 {
                     ShowLoading(true);
+                    InferPublicImageToken();
+                    _accessToken = await _api.GetAccessTokenAsync();
                     var htmlTask = Task.Run(() => BuildHtml());
                     await DetailsWeb.EnsureCoreWebView2Async();
                     var core = DetailsWeb.CoreWebView2;
@@ -98,7 +103,7 @@ namespace PackageManager.Views
                 var path = GetTemplatePath();
                 if (File.Exists(path))
                 {
-                    var tpl = File.ReadAllText(path, Encoding.UTF8);
+                    var tpl = ReadFileCached(path);
                     return BuildHtmlFromTemplate(tpl);
                 }
             }
@@ -214,7 +219,8 @@ namespace PackageManager.Views
                     sb.AppendLine($"<div class=\"ant-comment-avatar\">{avatarHtml}</div>");
                     sb.AppendLine("<div class=\"ant-comment-content\"><div class=\"ant-comment-content-detail\">");
                     sb.AppendLine($"<div class=\"ant-comment-content-author\"><span class=\"ant-comment-content-author-name\">{HtmlEscape(c.AuthorName)}</span><span class=\"ant-comment-content-author-time\">{tm}</span></div>");
-                    sb.AppendLine($"<div class=\"ant-comment-content-detail\">{(string.IsNullOrWhiteSpace(c.ContentHtml) ? "-" : c.ContentHtml)}</div>");
+                    var content = string.IsNullOrWhiteSpace(c.ContentHtml) ? "-" : NormalizeImages(c.ContentHtml);
+                    sb.AppendLine($"<div class=\"ant-comment-content-detail\">{content}</div>");
                     sb.AppendLine("</div></div></div></div>");
                     sb.AppendLine("</div>");
                 }
@@ -370,15 +376,23 @@ namespace PackageManager.Views
                 var result = ImgTagRegex.Replace(html, m =>
                 {
                     var tag = m.Value;
-                    var originUrl = Regex.Match(tag, "\\boriginUrl\\s*=\\s*\"([^\"]+)\"", RegexOptions.IgnoreCase).Groups[1].Value;
-                    var src = Regex.Match(tag, "\\bsrc\\s*=\\s*\"([^\"]+)\"", RegexOptions.IgnoreCase).Groups[1].Value;
+                    var originUrl = ExtractAttr(tag, "originUrl");
+                    var src = ExtractAttr(tag, "src");
                     var use = string.IsNullOrWhiteSpace(src) ? originUrl : src;
+                    use = System.Net.WebUtility.HtmlDecode(use ?? "");
                     var withToken = AppendPublicImageTokenIfNeeded(use, Details?.PublicImageToken);
                     var finalUse = string.IsNullOrWhiteSpace(withToken) ? use : withToken;
+                    finalUse = AppendAccessTokenQueryIfNeeded(finalUse, _accessToken);
                     if (string.IsNullOrWhiteSpace(use)) return tag;
+                    var encodedUse = System.Net.WebUtility.HtmlEncode(finalUse ?? "");
                     var updated = tag;
-                    if (string.IsNullOrWhiteSpace(src)) updated = updated.Replace("<img", $"<img src=\"{finalUse}\"");
-                    else updated = Regex.Replace(updated, "\\bsrc\\s*=\\s*\"([^\"]+)\"", $"src=\"{finalUse}\"", RegexOptions.IgnoreCase);
+                    if (string.IsNullOrWhiteSpace(src)) updated = updated.Replace("<img", $"<img src=\"{encodedUse}\"");
+                    else
+                    {
+                        updated = Regex.Replace(updated, "\\bsrc\\s*=\\s*\"([^\"]+)\"", $"src=\"{encodedUse}\"", RegexOptions.IgnoreCase);
+                        updated = Regex.Replace(updated, "\\bsrc\\s*=\\s*'([^']+)'", $"src='{encodedUse}'", RegexOptions.IgnoreCase);
+                        updated = Regex.Replace(updated, "\\bsrc\\s*=\\s*([^\\s>]+)", $"src=\"{encodedUse}\"", RegexOptions.IgnoreCase);
+                    }
                     var host = "";
                     try { host = new Uri(finalUse).Host.ToLowerInvariant(); } catch { }
                     var isAtlasPublic = host.Contains("atlas.pingcode.com") || finalUse.ToLowerInvariant().Contains("/files/public/");
@@ -388,11 +402,42 @@ namespace PackageManager.Views
                     }
                     return updated;
                 });
+                result = AnchorTagRegex.Replace(result, m =>
+                {
+                    var tag = m.Value;
+                    var href = ExtractAttr(tag, "href");
+                    var text = m.Groups[1].Value;
+                    var decodedHref = System.Net.WebUtility.HtmlDecode(href ?? "");
+                    var withToken = AppendPublicImageTokenIfNeeded(decodedHref, Details?.PublicImageToken);
+                    var finalUse = string.IsNullOrWhiteSpace(withToken) ? decodedHref : withToken;
+                    finalUse = AppendAccessTokenQueryIfNeeded(finalUse, _accessToken);
+                    if (string.IsNullOrWhiteSpace(finalUse)) return tag;
+                    if (!LooksLikeImageUrl(finalUse)) return tag;
+                    var encodedUse = System.Net.WebUtility.HtmlEncode(finalUse ?? "");
+                    return $"<img src=\"{encodedUse}\" alt=\"{System.Net.WebUtility.HtmlEncode(text)}\"/>";
+                });
                 return result;
             }
             catch
             {
                 return html;
+            }
+        }
+        
+        private static string ExtractAttr(string tag, string attr)
+        {
+            try
+            {
+                var v = Regex.Match(tag, $"\\b{attr}\\s*=\\s*\"([^\"]+)\"", RegexOptions.IgnoreCase).Groups[1].Value;
+                if (!string.IsNullOrWhiteSpace(v)) return v;
+                v = Regex.Match(tag, $"\\b{attr}\\s*=\\s*'([^']+)'", RegexOptions.IgnoreCase).Groups[1].Value;
+                if (!string.IsNullOrWhiteSpace(v)) return v;
+                v = Regex.Match(tag, $"\\b{attr}\\s*=\\s*([^\\s>]+)", RegexOptions.IgnoreCase).Groups[1].Value;
+                return v;
+            }
+            catch
+            {
+                return null;
             }
         }
         
@@ -425,6 +470,100 @@ namespace PackageManager.Views
             catch
             {
                 return url;
+            }
+        }
+        
+        private static string AppendAccessTokenQueryIfNeeded(string url, string accessToken)
+        {
+            try
+            {
+                var u = (url ?? "").Trim();
+                if (string.IsNullOrWhiteSpace(u)) return u;
+                var lower = u.ToLowerInvariant();
+                if (u.StartsWith("data:", StringComparison.OrdinalIgnoreCase)) return u;
+                var isPingCode = lower.Contains("pingcode.com") || lower.Contains(".pingcode.com");
+                if (!isPingCode) return u;
+                if (lower.Contains("access_token=")) return u;
+                if (string.IsNullOrWhiteSpace(accessToken)) return u;
+                if (u.Contains("?")) return $"{u}&access_token={Uri.EscapeDataString(accessToken)}";
+                return $"{u}?access_token={Uri.EscapeDataString(accessToken)}";
+            }
+            catch
+            {
+                return url;
+            }
+        }
+        
+        private void InferPublicImageToken()
+        {
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(Details?.PublicImageToken)) return;
+                var t = TryExtractTokenFromHtml(Details?.DescriptionHtml);
+                if (string.IsNullOrWhiteSpace(t)) t = TryExtractTokenFromHtml(Details?.SketchHtml);
+                if (string.IsNullOrWhiteSpace(t) && Details?.Comments != null)
+                {
+                    foreach (var c in Details.Comments)
+                    {
+                        t = TryExtractTokenFromHtml(c?.ContentHtml);
+                        if (!string.IsNullOrWhiteSpace(t)) break;
+                    }
+                }
+                if (!string.IsNullOrWhiteSpace(t)) Details.PublicImageToken = t;
+            }
+            catch
+            {
+            }
+        }
+        
+        private static string TryExtractTokenFromHtml(string html)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(html)) return null;
+                var m = Regex.Match(html, "(?:[?&])token=([^&\"'\\s]+)", RegexOptions.IgnoreCase);
+                if (m.Success) return m.Groups[1].Value;
+                return null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+        
+        private static bool LooksLikeImageUrl(string url)
+        {
+            try
+            {
+                var u = (url ?? "").Trim().ToLowerInvariant();
+                if (string.IsNullOrEmpty(u)) return false;
+                if (u.StartsWith("data:image/")) return true;
+                if (u.EndsWith(".png") || u.EndsWith(".jpg") || u.EndsWith(".jpeg") || u.EndsWith(".gif") || u.EndsWith(".bmp") || u.EndsWith(".webp") || u.EndsWith(".svg")) return true;
+                if (u.Contains("atlas.pingcode.com") || u.Contains("/files/public/")) return true;
+                return false;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+        
+        private static string ReadFileCached(string path)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(path)) return null;
+                lock (TemplateCache)
+                {
+                    if (TemplateCache.TryGetValue(path, out var t) && !string.IsNullOrWhiteSpace(t)) return t;
+                    var txt = File.ReadAllText(path, Encoding.UTF8);
+                    TemplateCache[path] = txt ?? "";
+                    return txt ?? "";
+                }
+            }
+            catch
+            {
+                return null;
             }
         }
         
