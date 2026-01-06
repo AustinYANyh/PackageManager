@@ -18,6 +18,7 @@ namespace PackageManager.Models
         private string sizeText;
         private string modifiedText;
 
+        private ICommand openCommand;
         private ICommand openWithLogViewProCommand;
         private ICommand openWithVSCodeCommand;
         private ICommand openWithNotepadCommand;
@@ -50,32 +51,19 @@ namespace PackageManager.Models
             set => SetProperty(ref modifiedText, value);
         }
 
-        [DataGridMultiButton(nameof(OpenButtons), 5, DisplayName = "打开方式", Width = "350", ButtonSpacing = 12)]
+
+        [DataGridMultiButton(nameof(OpenButtons), 5, DisplayName = "操作", Width = "110", ButtonSpacing = 12)]
         public string Open { get; set; }
 
         public List<ButtonConfig> OpenButtons => new List<ButtonConfig>
         {
             new ButtonConfig
             {
-                Text = "LogViewPro",
+                Text = "打开",
                 Width = 100,
                 Height = 26,
-                CommandProperty = nameof(OpenWithLogViewProCommand),
+                CommandProperty = nameof(OpenCommand),
             },
-            new ButtonConfig
-            {
-                Text = "VsCode",
-                Width = 100,
-                Height = 26,
-                CommandProperty = nameof(OpenWithVSCodeCommand),
-            },
-            new ButtonConfig
-            {
-                Text = "记事本",
-                Width = 100,
-                Height = 26,
-                CommandProperty = nameof(OpenWithNotepadCommand),
-            }
         };
         
         public string FullPath
@@ -84,22 +72,26 @@ namespace PackageManager.Models
             set => SetProperty(ref fullPath, value);
         }
 
+        public ICommand OpenCommand
+        {
+            get => openCommand;
+            set => SetProperty(ref openCommand, value);
+        }
+
         public ICommand OpenWithLogViewProCommand
         {
             get => openWithLogViewProCommand;
-            set => SetProperty(ref openWithLogViewProCommand, value);
+            set => SetProperty(ref openCommand, value);
         }
-
         public ICommand OpenWithVSCodeCommand
         {
             get => openWithVSCodeCommand;
-            set => SetProperty(ref openWithVSCodeCommand, value);
+            set => SetProperty(ref openCommand, value);
         }
-
         public ICommand OpenWithNotepadCommand
         {
             get => openWithNotepadCommand;
-            set => SetProperty(ref openWithNotepadCommand, value);
+            set => SetProperty(ref openCommand, value);
         }
 
         public event PropertyChangedEventHandler PropertyChanged;

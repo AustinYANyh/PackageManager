@@ -73,9 +73,7 @@ namespace PackageManager.Views
                         ModifiedText = fi.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss"),
                     };
 
-                    model.OpenWithLogViewProCommand = new RelayCommand(() => OpenWithLogViewPro(model));
-                    model.OpenWithVSCodeCommand = new RelayCommand(() => OpenWithVSCode(model));
-                    model.OpenWithNotepadCommand = new RelayCommand(() => OpenWithNotepad(model));
+                    model.OpenCommand = new RelayCommand(() => Open(model));
 
                     ProductLogs.Add(model);
                 }
@@ -124,9 +122,7 @@ namespace PackageManager.Views
                         ModifiedText = fi.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss"),
                     };
 
-                    model.OpenWithLogViewProCommand = new RelayCommand(() => OpenWithLogViewPro(model));
-                    model.OpenWithVSCodeCommand = new RelayCommand(() => OpenWithVSCode(model));
-                    model.OpenWithNotepadCommand = new RelayCommand(() => OpenWithNotepad(model));
+                    model.OpenCommand = new RelayCommand(() => Open(model));
 
                     RevitLogs.Add(model);
                 }
@@ -136,6 +132,30 @@ namespace PackageManager.Views
             catch (Exception ex)
             {
                 LoggingService.LogError(ex, "刷新Revit日志失败");
+            }
+        }
+
+        private void Open(ProductLogInfo model)
+        {
+            if (_settings.LogTxtReader == "LogViewPro")
+            {
+                OpenWithLogViewPro(model);
+            }
+            else if (_settings.LogTxtReader == "VSCode")
+            {
+                OpenWithVSCode(model);
+            }
+            else if (_settings.LogTxtReader == "Notepad")
+            {
+                OpenWith(model, "notepad.exe");
+            }
+            else if (_settings.LogTxtReader == "NotepadPlusPlus")
+            {
+                OpenWith(model, "notepad++.exe");
+            }
+            else
+            {
+                throw new NotImplementedException("未实现的软件");
             }
         }
 
@@ -237,15 +257,15 @@ namespace PackageManager.Views
             }
         }
 
-        private void OpenWithNotepad(ProductLogInfo item)
+        private void OpenWith(ProductLogInfo item, string exeName)
         {
             try
             {
-                StartProcess("notepad.exe", item.FullPath);
+                StartProcess(exeName, item.FullPath);
             }
             catch (Exception ex)
             {
-                LoggingService.LogError(ex, "使用记事本打开失败");
+                LoggingService.LogError(ex, $"使用{exeName}打开失败");
             }
         }
 
