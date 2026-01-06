@@ -287,7 +287,10 @@
     </ItemGroup>
     <ItemGroup>
       <EmbeddedResource Include="CHANGELOG.md" />
-      <EmbeddedResource Include="Views\Templates\workitem-details.html" />
+        <EmbeddedResource Include="Views\Templates\workitem-details.html" />
+        <EmbeddedResource Include="Assets\Tools\runtimes\win-x64\native\WebView2Loader.dll" />
+        <EmbeddedResource Include="Assets\Tools\runtimes\win-x86\native\WebView2Loader.dll" />
+        <EmbeddedResource Include="Assets\Tools\runtimes\win-arm64\native\WebView2Loader.dll" />
       <Content Include="Assets\Tools\CustomControlLibrary.dll" />
       <Content Include="Assets\Tools\FtpPublisher.exe" />
       <Content Include="README.md" />

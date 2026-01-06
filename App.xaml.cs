@@ -5,6 +5,8 @@ using System.Security.Principal;
 using System.Windows;
 using System.Threading.Tasks;
 using PackageManager.Services;
+using System.Runtime.InteropServices;
+using System.IO;
 
 namespace PackageManager
 {
@@ -17,6 +19,7 @@ namespace PackageManager
         {
             base.OnStartup(e);
 
+            TryEnsureWebView2Loader();
             LoggingService.Initialize();
 
             AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
@@ -26,6 +29,89 @@ namespace PackageManager
             if (TryHandleAdminTask(e.Args))
             {
                 return;
+            }
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern bool SetDllDirectory(string lpPathName);
+        
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern System.IntPtr LoadLibrary(string lpFileName);
+        
+        private static void TryEnsureWebView2Loader()
+        {
+            try
+            {
+                var asm = typeof(App).Assembly;
+                var names = asm.GetManifestResourceNames();
+                var arch = Environment.Is64BitProcess ? "x64" : "x86";
+                try
+                {
+                    var pa = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture;
+                    if (pa == Architecture.Arm64) arch = "arm64";
+                    else if (pa == Architecture.X64) arch = "x64";
+                    else if (pa == Architecture.X86) arch = "x86";
+                }
+                catch { }
+                var name = names.FirstOrDefault(n =>
+                    n.IndexOf("webview2loader", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                    n.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) &&
+                    (n.IndexOf(arch, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     n.IndexOf($"win-{arch}", StringComparison.OrdinalIgnoreCase) >= 0));
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    name = names.FirstOrDefault(n => n.EndsWith("WebView2Loader.dll", StringComparison.OrdinalIgnoreCase));
+                }
+                if (string.IsNullOrWhiteSpace(name))
+                {
+                    try
+                    {
+                        var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                        var candidate = Path.Combine(baseDir, "runtimes", $"win-{arch}", "native", "WebView2Loader.dll");
+                        if (File.Exists(candidate))
+                        {
+                            SetDllDirectory(Path.GetDirectoryName(candidate));
+                            LoadLibrary(candidate);
+                            return;
+                        }
+                        var assetsCandidate = Path.Combine(baseDir, "Assets", "Tools", "runtimes", $"win-{arch}", "native", "WebView2Loader.dll");
+                        if (File.Exists(assetsCandidate))
+                        {
+                            SetDllDirectory(Path.GetDirectoryName(assetsCandidate));
+                            LoadLibrary(assetsCandidate);
+                            return;
+                        }
+                    }
+                    catch
+                    {
+                    }
+                    return;
+                }
+                
+                var targetDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PackageManager", "bin");
+                Directory.CreateDirectory(targetDir);
+                var targetPath = Path.Combine(targetDir, "WebView2Loader.dll");
+                using (var s = asm.GetManifestResourceStream(name))
+                {
+                    if (s != null)
+                    {
+                        using (var fs = new FileStream(targetPath, FileMode.Create, FileAccess.Write, FileShare.Read))
+                        {
+                            s.CopyTo(fs);
+                        }
+                    }
+                }
+                try
+                {
+                    SetDllDirectory(targetDir);
+                    LoadLibrary(targetPath);
+                }
+                catch
+                {
+                }
+            }
+            catch
+            {
             }
         }
 

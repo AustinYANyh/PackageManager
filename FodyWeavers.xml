@@ -1,13 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Weavers xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="FodyWeavers.xsd">
-  <Costura>
+  <Costura IncludeRuntimeReferences="true" CreateTemporaryAssemblies="true" LoadAtModuleInit="true">
     <IncludeAssemblies>
       Newtonsoft.Json
       CustomControlLibrary
       Endelib.v1.0.1
+      Microsoft.Web.WebView2.Core
+      Microsoft.Web.WebView2.Wpf
     </IncludeAssemblies>
-    <Unmanaged32Assemblies />
-    <Unmanaged64Assemblies />
-    <PreloadOrder />
+    <Unmanaged32Assemblies>WebView2Loader</Unmanaged32Assemblies>
+    <Unmanaged64Assemblies>WebView2Loader</Unmanaged64Assemblies>
+    <PreloadOrder>WebView2Loader</PreloadOrder>
   </Costura>
 </Weavers>
