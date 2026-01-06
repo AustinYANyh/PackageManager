@@ -38,8 +38,7 @@ namespace PackageManager.Views
                 {
                     ShowLoading(true);
                     InferPublicImageToken();
-                    _accessToken = await _api.GetAccessTokenAsync();
-                    var htmlTask = Task.Run(() => BuildHtml());
+                    
                     await DetailsWeb.EnsureCoreWebView2Async();
                     var core = DetailsWeb.CoreWebView2;
                     core.NavigationCompleted += (sender, args) =>
@@ -84,7 +83,12 @@ namespace PackageManager.Views
                         {
                         }
                     };
-                    var html = await htmlTask;
+                    
+                    var loadingHtml = BuildLoadingHtml();
+                    DetailsWeb.CoreWebView2.NavigateToString(loadingHtml);
+                    
+                    _accessToken = await _api.GetAccessTokenAsync();
+                    var html = await Task.Run(() => BuildHtml());
                     DetailsWeb.CoreWebView2.NavigateToString(html);
                 }
                 catch
@@ -95,6 +99,22 @@ namespace PackageManager.Views
         }
         
         private string HtmlEscape(string s) => System.Net.WebUtility.HtmlEncode(s ?? "");
+        
+        private static string BuildLoadingHtml()
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"/>");
+            sb.AppendLine("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>");
+            sb.AppendLine("<style>html,body{height:100%}body{margin:0;background:#fff;font-family:'Segoe UI','Microsoft YaHei',Arial,sans-serif;color:#111827;height:100%}");
+            sb.AppendLine(".center{display:flex;align-items:center;justify-content:center;height:100%}");
+            sb.AppendLine(".card{border:1px solid #E5E7EB;border-radius:8px;padding:16px;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.04)}");
+            sb.AppendLine(".spinner{width:16px;height:16px;border:2px solid #93C5FD;border-top-color:#2563EB;border-radius:50%;display:inline-block;animation:spin 0.8s linear infinite;margin-right:8px}");
+            sb.AppendLine("@keyframes spin{to{transform:rotate(360deg)}}");
+            sb.AppendLine("</style></head><body>");
+            sb.AppendLine("<div class=\"center\"><div class=\"card\"><span class=\"spinner\"></span><span>正在加载详情...</span></div></div>");
+            sb.AppendLine("</body></html>");
+            return sb.ToString();
+        }
         
         private string BuildHtml()
         {
@@ -118,7 +138,6 @@ namespace PackageManager.Views
             }
             var sb = new StringBuilder();
             sb.AppendLine("<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"/><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>");
-            sb.AppendLine("<link rel=\"stylesheet\" href=\"https://unpkg.com/antd@4.24.15/dist/antd.min.css\"/>");
             sb.AppendLine("<style>");
             sb.AppendLine("html,body{height:100%}");
             sb.AppendLine("body{margin:0;background:#fff;font-family:'Segoe UI','Microsoft YaHei',Arial,sans-serif;color:#111827;height:100%}");
@@ -135,13 +154,24 @@ namespace PackageManager.Views
             sb.AppendLine(".base-info .item{display:flex;flex-direction:column;gap:6px}");
             sb.AppendLine(".base-info .label{color:#6B7280}");
             sb.AppendLine(".base-info .value{font-weight:600}");
-            sb.AppendLine(".layout{display:grid;grid-template-columns:2.2fr 1fr;gap:16px;padding:16px 24px;background:#fff}");
+            sb.AppendLine(".layout{display:grid;grid-template-columns:1fr;gap:16px;padding:16px 24px;background:#fff}");
             sb.AppendLine(".section-title{font-size:16px;font-weight:700;margin:12px 0 8px}");
             sb.AppendLine(".desc-card,.sketch-card,.comments-card{border:1px solid #f0f0f0;border-radius:8px;padding:12px;background:#fff}");
             sb.AppendLine(".ant-descriptions-item-label{color:#6B7280}");
             sb.AppendLine(".tag{display:inline-block;margin:0 8px 8px 0}");
+            sb.AppendLine(".ant-tag{display:inline-block;border:1px solid #D1D5DB;border-radius:999px;padding:2px 8px;background:#F9FAFB;color:#374151;font-size:12px}");
+            sb.AppendLine(".ant-tag-pink{border-color:#FDA4AF;background:#FFE4E6;color:#9D174D}");
             sb.AppendLine(".comment-item{border-bottom:1px solid #f0f0f0;padding:12px 0}");
             sb.AppendLine(".comment-item:last-child{border-bottom:none}");
+            sb.AppendLine(".comment-row{display:flex;align-items:flex-start;gap:10px}");
+            sb.AppendLine(".comment-avatar{flex:0 0 24px}");
+            sb.AppendLine(".comment-main{flex:1 1 auto}");
+            sb.AppendLine(".comment-meta{color:#6B7280;margin-bottom:6px;font-size:12px}");
+            sb.AppendLine(".comment-time{background:#F3F4F6;border:1px solid #E5E7EB;border-radius:999px;padding:2px 8px}");
+            sb.AppendLine(".comment-avatar .ant-avatar{width:24px;height:24px;line-height:24px}");
+            sb.AppendLine(".comment-avatar img{width:24px;height:24px;border-radius:50%;object-fit:cover}");
+            sb.AppendLine(".comment-body img{max-width:300px;height:auto}");
+            sb.AppendLine(".comment-attachment img{max-width:300px;height:auto}");
             sb.AppendLine(".badge{display:inline-block;border:1px solid #D1D5DB;border-radius:999px;padding:2px 8px;background:#F3F4F6;color:#374151}");
             sb.AppendLine(".state-badge{min-width:70px;display:inline-block;text-align:center}");
             sb.AppendLine(".state-badge.state-inprogress{background:#F59E0B;color:#fff;border-color:#FDBA74}");
@@ -150,8 +180,8 @@ namespace PackageManager.Views
             sb.AppendLine(".state-badge.state-done{background:#10B981;color:#fff;border-color:#6EE7B7}");
             sb.AppendLine(".state-badge.state-closed{background:#9CA3AF;color:#fff;border-color:#D1D5DB}");
             sb.AppendLine(".state-badge.state-pending{background:#E5E7EB;color:#374151;border-color:#D1D5DB}");
-            sb.AppendLine(".ant-comment-avatar .ant-avatar{width:24px;height:24px;line-height:24px}");
-            sb.AppendLine(".ant-comment-avatar img{width:24px;height:24px;border-radius:50%}");
+            sb.AppendLine(".comment-avatar .ant-avatar{width:24px;height:24px;line-height:24px}");
+            sb.AppendLine(".comment-avatar img{width:24px;height:24px;border-radius:50%;object-fit:cover}");
             sb.AppendLine(".ant-comment-content-detail img,.desc-card img,.sketch-card img{max-width:100%;border-radius:8px;border:1px solid #E5E7EB}");
             sb.AppendLine(".ant-comment-content-detail pre, .ant-comment-content-detail code{background:#F7F7F9;border:1px solid #E5E7EB;border-radius:6px}");
             sb.AppendLine(".ant-comment-content-detail pre{padding:10px;overflow:auto}");
@@ -210,42 +240,8 @@ namespace PackageManager.Views
             sb.AppendLine("</div>");
             sb.AppendLine("<div class=\"section-title\">评论</div>");
             sb.AppendLine("<div class=\"comments-card\">");
-            if (Details.Comments != null && Details.Comments.Count > 0)
-            {
-                foreach (var c in Details.Comments)
-                {
-                    var tm = c.CreatedAt.HasValue ? c.CreatedAt.Value.ToString("yyyy-MM-dd HH:mm") : "-";
-                    sb.AppendLine("<div class=\"comment-item\">");
-                    var nm = (c.AuthorName ?? "").Trim();
-                    var initial = string.IsNullOrWhiteSpace(nm) ? "-" : nm.Substring(0, Math.Min(1, nm.Length));
-                    var avatarHtml = string.IsNullOrWhiteSpace(c.AuthorAvatar)
-                        ? $"<span class=\"ant-avatar ant-avatar-circle\"><span class=\"ant-avatar-string\">{HtmlEscape(initial)}</span></span>"
-                        : $"<span class=\"ant-avatar ant-avatar-circle ant-avatar-image\"><img src=\"{HtmlEscape(c.AuthorAvatar)}\"/></span>";
-                    sb.AppendLine("<div class=\"ant-comment\"><div class=\"ant-comment-inner\">");
-                    sb.AppendLine($"<div class=\"ant-comment-avatar\">{avatarHtml}</div>");
-                    sb.AppendLine("<div class=\"ant-comment-content\"><div class=\"ant-comment-content-detail\">");
-                    sb.AppendLine($"<div class=\"ant-comment-content-author\"><span class=\"ant-comment-content-author-name\">{HtmlEscape(c.AuthorName)}</span><span class=\"ant-comment-content-author-time\">{tm}</span></div>");
-                    var content = string.IsNullOrWhiteSpace(c.ContentHtml) ? "-" : NormalizeImages(c.ContentHtml);
-                    sb.AppendLine($"<div class=\"ant-comment-content-detail\">{content}</div>");
-                    sb.AppendLine("</div></div></div></div>");
-                    sb.AppendLine("</div>");
-                }
-            }
-            else
-            {
-                sb.AppendLine("<div>-</div>");
-            }
-            sb.AppendLine("</div>");
-            sb.AppendLine("</div>");
-            sb.AppendLine("<div>");
-            sb.AppendLine("<div class=\"section-title\">属性</div>");
-            sb.AppendLine("<div class=\"ant-descriptions ant-descriptions-small ant-descriptions-bordered\" style=\"background:#fff\">");
-            sb.AppendLine("<table><tbody>");
-            foreach (var kv in Details.Properties ?? new System.Collections.Generic.Dictionary<string, string>())
-            {
-                sb.AppendLine($"<tr class=\"ant-descriptions-row\"><td class=\"ant-descriptions-item-label\">{HtmlEscape(kv.Key)}</td><td class=\"ant-descriptions-item-content\">{HtmlEscape(kv.Value)}</td></tr>");
-            }
-            sb.AppendLine("</tbody></table></div>");
+            var commentsBlock = BuildCommentsHtml(Details.Comments);
+            sb.AppendLine(commentsBlock);
             sb.AppendLine("</div>");
             sb.AppendLine("</div>");
             sb.AppendLine("</div></div></div></div>");
@@ -345,13 +341,13 @@ namespace PackageManager.Views
                     ? $"<span class=\"ant-avatar ant-avatar-circle\"><span class=\"ant-avatar-string\">{HtmlEscape(initial)}</span></span>"
                     : $"<span class=\"ant-avatar ant-avatar-circle ant-avatar-image\"><img src=\"{HtmlEscape(c.AuthorAvatar)}\"/></span>";
                 sb.Append("<div class=\"comment-item\">");
-                sb.Append("<div class=\"ant-comment\"><div class=\"ant-comment-inner\">");
-                sb.Append($"<div class=\"ant-comment-avatar\">{avatarHtml}</div>");
-                sb.Append("<div class=\"ant-comment-content\"><div class=\"ant-comment-content-detail\">");
-                sb.Append($"<div class=\"ant-comment-content-author\"><span class=\"ant-comment-content-author-name\">{HtmlEscape(c.AuthorName)}</span><span class=\"ant-comment-content-author-time\">{tm}</span></div>");
+                sb.Append("<div class=\"comment-row\">");
+                sb.Append($"<div class=\"comment-avatar\">{avatarHtml}</div>");
+                sb.Append("<div class=\"comment-main\">");
+                sb.Append($"<div class=\"comment-meta\"><span class=\"comment-time\">{tm}</span></div>");
                 var content = string.IsNullOrWhiteSpace(c.ContentHtml) ? "-" : NormalizeImages(c.ContentHtml);
-                sb.Append($"<div class=\"ant-comment-content-detail\">{content}</div>");
-                sb.Append("</div></div></div></div>");
+                sb.Append($"<div class=\"comment-body\">{content}</div>");
+                sb.Append("</div></div>");
                 sb.Append("</div>");
             }
             return sb.ToString();
@@ -545,6 +541,10 @@ namespace PackageManager.Views
                     if (!isAtlasPublic && !Regex.IsMatch(updated, "\\breferrerpolicy\\s*=", RegexOptions.IgnoreCase))
                     {
                         updated = updated.Replace("<img", "<img referrerpolicy=\"no-referrer\"");
+                    }
+                    if (!Regex.IsMatch(updated, "\\bloading\\s*=", RegexOptions.IgnoreCase))
+                    {
+                        updated = updated.Replace("<img", "<img loading=\"lazy\"");
                     }
                     return updated;
                 });

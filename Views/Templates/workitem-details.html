@@ -3,8 +3,7 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <meta name="workitem-details-template-version" content="1.0.0"/>
-  <link rel="stylesheet" href="https://unpkg.com/antd@4.24.15/dist/antd.min.css"/>
+  <meta name="workitem-details-template-version" content="1.0.1"/>
   <style>
     html,body{height:100%}
     body{margin:0;background:#fff;font-family:'Segoe UI','Microsoft YaHei',Arial,sans-serif;color:#111827;height:100%}
@@ -21,13 +20,24 @@
     .base-info .item{display:flex;flex-direction:column;gap:6px}
     .base-info .label{color:#6B7280}
     .base-info .value{font-weight:600}
-    .layout{display:grid;grid-template-columns:2.2fr 1fr;gap:16px;padding:16px 24px;background:#fff}
+    .layout{display:grid;grid-template-columns:1fr;gap:16px;padding:16px 24px;background:#fff}
     .section-title{font-size:16px;font-weight:700;margin:12px 0 8px}
     .desc-card,.sketch-card,.comments-card{border:1px solid #f0f0f0;border-radius:8px;padding:12px;background:#fff}
     .ant-descriptions-item-label{color:#6B7280}
     .tag{display:inline-block;margin:0 8px 8px 0}
+    .ant-tag{display:inline-block;border:1px solid #D1D5DB;border-radius:999px;padding:2px 8px;background:#F9FAFB;color:#374151;font-size:12px}
+    .ant-tag-pink{border-color:#FDA4AF;background:#FFE4E6;color:#9D174D}
     .comment-item{border-bottom:1px solid #f0f0f0;padding:12px 0}
     .comment-item:last-child{border-bottom:none}
+    .comment-row{display:flex;align-items:flex-start;gap:10px}
+    .comment-avatar{flex:0 0 24px}
+    .comment-main{flex:1 1 auto}
+    .comment-meta{color:#6B7280;margin-bottom:6px;font-size:12px}
+    .comment-time{background:#F3F4F6;border:1px solid #E5E7EB;border-radius:999px;padding:2px 8px}
+    .comment-avatar .ant-avatar{width:24px;height:24px;line-height:24px}
+    .comment-avatar img{width:24px;height:24px;border-radius:50%;object-fit:cover}
+    .comment-body img{max-width:300px;height:auto}
+    .comment-attachment img{max-width:100%;height:auto}
     .badge{display:inline-block;border:1px solid #D1D5DB;border-radius:999px;padding:2px 8px;background:#F3F4F6;color:#374151}
     .state-badge{min-width:70px;display:inline-block;text-align:center}
     .state-badge.state-inprogress{background:#F59E0B;color:#fff;border-color:#FDBA74}
@@ -80,12 +90,7 @@
                   <div class="section-title">评论</div>
                   <div class="comments-card">{{CommentsHtml}}</div>
                 </div>
-                <div>
-                  <div class="section-title">属性</div>
-                  <div class="ant-descriptions ant-descriptions-small ant-descriptions-bordered" style="background:#fff">
-                    <table><tbody>{{PropertiesHtml}}</tbody></table>
-                  </div>
-                </div>
+                
               </div>
             </div>
           </div>

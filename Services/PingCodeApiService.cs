@@ -1113,7 +1113,7 @@ namespace PackageManager.Services
 
                     if (isImg)
                     {
-                        sb.Append($"<div class=\"comment-attachment\"><img src=\"{WebUtility.HtmlEncode(finalUrl)}\" alt=\"{WebUtility.HtmlEncode(tt)}\"/></div>");
+                        sb.Append($"<div class=\"comment-attachment\"><img loading=\"lazy\" src=\"{WebUtility.HtmlEncode(finalUrl)}\" alt=\"{WebUtility.HtmlEncode(tt)}\"/></div>");
                     }
                     else
                     {
