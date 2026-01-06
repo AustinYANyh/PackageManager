@@ -287,6 +287,7 @@
     </ItemGroup>
     <ItemGroup>
       <EmbeddedResource Include="CHANGELOG.md" />
+      <EmbeddedResource Include="Views\Templates\workitem-details.html" />
       <Content Include="Assets\Tools\CustomControlLibrary.dll" />
       <Content Include="Assets\Tools\FtpPublisher.exe" />
       <Content Include="README.md" />

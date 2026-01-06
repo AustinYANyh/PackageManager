@@ -100,8 +100,14 @@ namespace PackageManager.Views
         {
             try
             {
+                var tplRes = ReadEmbeddedTemplate("workitem-details.html");
+                TryEnsureLatestTemplateExtracted(tplRes, "workitem-details.html");
+                if (!string.IsNullOrWhiteSpace(tplRes))
+                {
+                    return BuildHtmlFromTemplate(tplRes);
+                }
                 var path = GetTemplatePath();
-                if (File.Exists(path))
+                if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
                 {
                     var tpl = ReadFileCached(path);
                     return BuildHtmlFromTemplate(tpl);
@@ -354,14 +360,154 @@ namespace PackageManager.Views
         private static string GetTemplatePath()
         {
             var baseDir = AppDomain.CurrentDomain.BaseDirectory;
-            var p1 = Path.Combine(baseDir, "Views", "Templates", "workitem-details.html");
-            if (File.Exists(p1)) return p1;
-            var devDir = Path.GetFullPath(Path.Combine(baseDir, "..", "..", ".."));
-            var p2 = Path.Combine(devDir, "Views", "Templates", "workitem-details.html");
-            if (File.Exists(p2)) return p2;
-            var p3 = @"e:\PackageManager\Views\Templates\workitem-details.html";
-            if (File.Exists(p3)) return p3;
-            return p1;
+            var rel = Path.Combine("Views", "Templates", "workitem-details.html");
+            var candidates = new List<string>();
+            candidates.Add(Path.Combine(baseDir, rel));
+            try
+            {
+                var dir = new DirectoryInfo(baseDir);
+                for (int i = 0; i < 6 && dir != null; i++)
+                {
+                    var p = Path.Combine(dir.FullName, rel);
+                    candidates.Add(p);
+                    dir = dir.Parent;
+                }
+            }
+            catch
+            {
+            }
+            try
+            {
+                var cwd = Directory.GetCurrentDirectory();
+                candidates.Add(Path.Combine(cwd, rel));
+            }
+            catch
+            {
+            }
+            try
+            {
+                var asmDir = Path.GetDirectoryName(typeof(WorkItemDetailsWindow).Assembly.Location);
+                if (!string.IsNullOrWhiteSpace(asmDir))
+                {
+                    candidates.Add(Path.Combine(asmDir, rel));
+                }
+            }
+            catch
+            {
+            }
+            foreach (var p in candidates)
+            {
+                if (File.Exists(p)) return p;
+            }
+            return Path.Combine(baseDir, rel);
+        }
+        
+        private static string ReadEmbeddedTemplate(string resourceFileName)
+        {
+            try
+            {
+                var asm = System.Reflection.Assembly.GetExecutingAssembly();
+                var name = asm.GetManifestResourceNames()
+                              .FirstOrDefault(n => n.EndsWith(resourceFileName, StringComparison.OrdinalIgnoreCase) ||
+                                                   n.EndsWith($"Views.Templates.{resourceFileName}", StringComparison.OrdinalIgnoreCase));
+                if (!string.IsNullOrEmpty(name))
+                {
+                    using (var s = asm.GetManifestResourceStream(name))
+                    using (var reader = new StreamReader(s, Encoding.UTF8, true))
+                    {
+                        return reader.ReadToEnd();
+                    }
+                }
+            }
+            catch
+            {
+            }
+            return null;
+        }
+        
+        private void TryEnsureLatestTemplateExtracted(string embeddedText, string fileName)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(embeddedText) || string.IsNullOrWhiteSpace(fileName)) return;
+                var data = new DataPersistenceService();
+                var targetDir = Path.Combine(data.GetDataFolderPath(), "Views", "Templates");
+                var targetPath = Path.Combine(targetDir, fileName);
+                Directory.CreateDirectory(targetDir);
+                var verEmbedded = ExtractTemplateVersion(embeddedText);
+                var verLocal = ExtractTemplateVersionFromFile(targetPath);
+                var need = string.IsNullOrWhiteSpace(verLocal) || CompareVersion(verEmbedded, verLocal) > 0 || !File.Exists(targetPath);
+                if (need)
+                {
+                    File.WriteAllText(targetPath, embeddedText, Encoding.UTF8);
+                }
+            }
+            catch
+            {
+            }
+        }
+        
+        private static string ExtractTemplateVersion(string text)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(text)) return null;
+                var m = Regex.Match(text, "<meta\\s+name=\\\"workitem-details-template-version\\\"\\s+content=\\\"([^\\\"]+)\\\"\\s*/?>", RegexOptions.IgnoreCase);
+                if (m.Success) return (m.Groups[1].Value ?? "").Trim();
+                return null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+        
+        private static string ExtractTemplateVersionFromFile(string path)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return null;
+                var txt = File.ReadAllText(path, Encoding.UTF8);
+                return ExtractTemplateVersion(txt);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+        
+        private static int CompareVersion(string a, string b)
+        {
+            try
+            {
+                var sa = (a ?? "").Trim();
+                var sb = (b ?? "").Trim();
+                if (string.IsNullOrWhiteSpace(sa) && string.IsNullOrWhiteSpace(sb)) return 0;
+                if (string.IsNullOrWhiteSpace(sa)) return -1;
+                if (string.IsNullOrWhiteSpace(sb)) return 1;
+                var pa = sa.Split('.');
+                var pb = sb.Split('.');
+                var len = Math.Max(pa.Length, pb.Length);
+                for (int i = 0; i < len; i++)
+                {
+                    var va = i < pa.Length ? pa[i] : "0";
+                    var vb = i < pb.Length ? pb[i] : "0";
+                    if (int.TryParse(va, out var ia) && int.TryParse(vb, out var ib))
+                    {
+                        if (ia != ib) return ia > ib ? 1 : -1;
+                    }
+                    else
+                    {
+                        var c = string.Compare(va, vb, StringComparison.OrdinalIgnoreCase);
+                        if (c != 0) return c > 0 ? 1 : -1;
+                    }
+                }
+                return 0;
+            }
+            catch
+            {
+                return 0;
+            }
         }
         
         private string DashText(string s)
