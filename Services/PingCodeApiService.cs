@@ -1024,7 +1024,7 @@ namespace PackageManager.Services
                         {
                             content = string.IsNullOrWhiteSpace(content) ? attachmentsHtml : (content + attachmentsHtml);
                         }
-                        var authorName = FirstNonEmpty(ExtractString(v["author_name"]), ExtractName(v["author"]), ExtractName(v["user"]), ExtractString(v["created_by_name"]));
+                        var authorName = FirstNonEmpty(ExtractName(v["created_by"]), ExtractString(v["author_name"]), ExtractName(v["author"]), ExtractName(v["user"]), ExtractString(v["created_by_name"]));
                         var authorAvatar = FirstNonEmpty(
                             ExtractString(v["author_avatar"]),
                             ExtractString(v["avatar"]),

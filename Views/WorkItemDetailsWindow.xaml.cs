@@ -149,6 +149,24 @@ namespace PackageManager.Views
                                         }
                                     }
                                 }
+                            } 
+                            else if (u.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || u.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                            {
+                                args.Cancel = true;
+                                var url = u;
+                                try
+                                {
+                                    var lower = url.ToLowerInvariant();
+                                    if ((lower.Contains("pingcode.com") || lower.Contains(".pingcode.com")) && !lower.Contains("access_token=") && !string.IsNullOrWhiteSpace(_accessToken))
+                                    {
+                                        url = url.Contains("?") ? $"{url}&access_token={Uri.EscapeDataString(_accessToken)}" : $"{url}?access_token={Uri.EscapeDataString(_accessToken)}";
+                                    }
+                                    var psi = new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true };
+                                    System.Diagnostics.Process.Start(psi);
+                                }
+                                catch
+                                {
+                                }
                             }
                         }
                         catch
@@ -474,7 +492,7 @@ namespace PackageManager.Views
                 sb.Append("<div class=\"comment-row\">");
                 sb.Append($"<div class=\"comment-avatar\">{avatarHtml}</div>");
                 sb.Append("<div class=\"comment-main\">");
-                sb.Append($"<div class=\"comment-meta\"><span class=\"comment-time\">{tm}</span></div>");
+                sb.Append($"<div class=\"comment-meta\"><span class=\"comment-author\">{HtmlEscape(nm)}</span> <span class=\"comment-time\">{tm}</span></div>");
                 var content = string.IsNullOrWhiteSpace(c.ContentHtml) ? "-" : NormalizeImages(c.ContentHtml);
                 sb.Append($"<div class=\"comment-body\">{content}</div>");
                 sb.Append("</div></div>");
