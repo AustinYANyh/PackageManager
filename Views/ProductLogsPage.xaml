@@ -23,6 +23,7 @@
                     <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,6,0,0">
                         <TextBlock x:Name="BaseDirText" VerticalAlignment="Center" Margin="0,0,12,0"/>
                         <button:CButton Content="刷新" Width="100" Click="RefreshButton_Click"/>
+                        <button:CButton Content="打开目录" Width="100" Margin="12,0,0,0" Click="OpenProductDirButton_Click"/>
                     </StackPanel>
                     <C:CDataGrid x:Name="ProductLogGrid" Grid.Row="1"
                                  TextAlignment="Left"
@@ -48,6 +49,7 @@
                                             SelectedValuePath="DisPlayName"
                                             SelectedValue="{Binding SelectedRevitExecutableVersion}"
                                             Width="280" SelectionChanged="RevitVersionCombo_SelectionChanged"/>
+                        <button:CButton Content="打开目录" Width="100" Margin="12,0,0,0" Click="OpenRevitDirButton_Click"/>
                     </StackPanel>
                     <C:CDataGrid x:Name="RevitLogGrid" Grid.Row="2"
                                  TextAlignment="Left"
