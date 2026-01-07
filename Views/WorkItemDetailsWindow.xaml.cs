@@ -87,6 +87,74 @@ namespace PackageManager.Views
                         {
                         }
                     };
+                    core.NewWindowRequested += (sender, e) =>
+                    {
+                        try
+                        {
+                            var url = e.Uri ?? "";
+                            if (string.IsNullOrWhiteSpace(url)) return;
+                            var lower = url.ToLowerInvariant();
+                            if ((lower.StartsWith("http://") || lower.StartsWith("https://")))
+                            {
+                                if ((lower.Contains("pingcode.com") || lower.Contains(".pingcode.com")) && !lower.Contains("access_token=") && !string.IsNullOrWhiteSpace(_accessToken))
+                                {
+                                    url = url.Contains("?") ? $"{url}&access_token={Uri.EscapeDataString(_accessToken)}" : $"{url}?access_token={Uri.EscapeDataString(_accessToken)}";
+                                }
+                                e.Handled = true;
+                                try
+                                {
+                                    var psi = new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true };
+                                    System.Diagnostics.Process.Start(psi);
+                                }
+                                catch
+                                {
+                                }
+                            }
+                        }
+                        catch
+                        {
+                        }
+                    };
+                    core.NavigationStarting += async (sender, args) =>
+                    {
+                        try
+                        {
+                            var u = args.Uri ?? "";
+                            if (u.StartsWith("pm://", StringComparison.OrdinalIgnoreCase))
+                            {
+                                args.Cancel = true;
+                                var uri = new Uri(u);
+                                var host = (uri.Host ?? "").ToLowerInvariant();
+                                if (host == "workitem")
+                                {
+                                    var id = uri.AbsolutePath.Trim('/');
+                                    if (string.IsNullOrWhiteSpace(id))
+                                    {
+                                        id = GetQueryParam(uri, "id");
+                                    }
+                                    if (!string.IsNullOrWhiteSpace(id))
+                                    {
+                                        try
+                                        {
+                                            var parentDetails = await _api.GetWorkItemDetailsAsync(id);
+                                            if (parentDetails != null)
+                                            {
+                                                var win = new WorkItemDetailsWindow(parentDetails, _api);
+                                                win.Owner = this;
+                                                win.ShowDialog();
+                                            }
+                                        }
+                                        catch
+                                        {
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        catch
+                        {
+                        }
+                    };
                     
                     var loadingHtml = BuildLoadingHtml();
                     DetailsWeb.CoreWebView2.NavigateToString(loadingHtml);
@@ -103,6 +171,32 @@ namespace PackageManager.Views
         }
         
         private string HtmlEscape(string s) => System.Net.WebUtility.HtmlEncode(s ?? "");
+        
+        private static string GetQueryParam(Uri uri, string name)
+        {
+            try
+            {
+                var q = uri?.Query ?? "";
+                if (string.IsNullOrWhiteSpace(q)) return null;
+                if (q.StartsWith("?")) q = q.Substring(1);
+                var parts = q.Split('&');
+                foreach (var part in parts)
+                {
+                    if (string.IsNullOrWhiteSpace(part)) continue;
+                    var kv = part.Split(new[] { '=' }, 2);
+                    var k = Uri.UnescapeDataString(kv[0] ?? "");
+                    if (string.Equals(k, name, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return kv.Length > 1 ? Uri.UnescapeDataString(kv[1] ?? "") : "";
+                    }
+                }
+                return null;
+            }
+            catch
+            {
+                return null;
+            }
+        }
         
         private static string BuildLoadingHtml()
         {
@@ -192,6 +286,11 @@ namespace PackageManager.Views
             sb.AppendLine(".ant-comment-content-detail code{padding:2px 4px}");
             sb.AppendLine("</style></head><body>");
             sb.AppendLine("<div class=\"wrap\">");
+            var crumb = BuildCrumbHtml();
+            if (!string.IsNullOrWhiteSpace(crumb))
+            {
+                sb.AppendLine(crumb);
+            }
             sb.AppendLine("<div class=\"ant-drawer ant-drawer-open ant-drawer-right\">");
             sb.AppendLine("<div class=\"ant-drawer-content-wrapper drawer\"><div class=\"ant-drawer-content\"><div class=\"ant-drawer-wrapper-body\"><div class=\"ant-drawer-body\" style=\"padding:0;height:100%;overflow:auto\">");
             sb.AppendLine("<div class=\"header\"><span class=\"id\">" + HtmlEscape(Details.Identifier) + "</span><span class=\"title\">" + HtmlEscape(Details.Title) + "</span></div>");
@@ -223,6 +322,7 @@ namespace PackageManager.Views
             sb.AppendLine($"<div class=\"item\"><div class=\"label\">缺陷类别</div><div class=\"value\">{DashText(Details.DefectCategory)}</div></div>");
             sb.AppendLine($"<div class=\"item\"><div class=\"label\">复现版本号</div><div class=\"value\">{DashText(Details.ReproduceVersion)}</div></div>");
             sb.AppendLine($"<div class=\"item\"><div class=\"label\">复现概率</div><div class=\"value\">{DashText(Details.ReproduceProbability)}</div></div>");
+            sb.AppendLine($"<div class=\"item\"><div class=\"label\">故事点汇总</div><div class=\"value\">{(Math.Abs(Details.StoryPointsSummary) < 0.000001 ? "-" : Details.StoryPointsSummary.ToString("0.##"))}</div></div>");
             sb.AppendLine("</div>");
             sb.AppendLine("<div class=\"section-title\">标签</div>");
             sb.AppendLine("<div>");
@@ -268,6 +368,7 @@ namespace PackageManager.Views
             var endText = FormatDate(Details.EndAt);
             var severityZh = MapSeverityText(Details.SeverityName);
             var storyPointsText = Math.Abs(Details.StoryPoints) < 0.000001 ? "-" : Details.StoryPoints.ToString("0.##");
+            var storyPointsSumText = Math.Abs(Details.StoryPointsSummary) < 0.000001 ? "-" : Details.StoryPointsSummary.ToString("0.##");
             var tagsHtml = BuildTagsHtml(Details.Tags);
             var descriptionHtml = string.IsNullOrWhiteSpace(Details.DescriptionHtml) ? "<div>-</div>" : NormalizeImages(Details.DescriptionHtml);
             var sketchHtml = string.IsNullOrWhiteSpace(Details.SketchHtml) ? "<div>-</div>" : NormalizeImages(Details.SketchHtml);
@@ -277,6 +378,7 @@ namespace PackageManager.Views
             {
                 ["{{Identifier}}"] = HtmlEscape(Details.Identifier),
                 ["{{Title}}"] = HtmlEscape(Details.Title),
+                ["{{ParentCrumbHtml}}"] = BuildCrumbHtml() ?? "",
                 ["{{AssigneeName}}"] = DashText(Details.AssigneeName),
                 ["{{StateClass}}"] = stateCls,
                 ["{{StateName}}"] = HtmlEscape(Details.StateName),
@@ -289,6 +391,7 @@ namespace PackageManager.Views
                 ["{{DefectCategory}}"] = DashText(Details.DefectCategory),
                 ["{{ReproduceVersion}}"] = DashText(Details.ReproduceVersion),
                 ["{{ReproduceProbability}}"] = DashText(Details.ReproduceProbability),
+                ["{{StoryPointsSum}}"] = storyPointsSumText,
                 ["{{TagsHtml}}"] = tagsHtml,
                 ["{{DescriptionHtml}}"] = descriptionHtml,
                 ["{{SketchHtml}}"] = sketchHtml,
@@ -296,6 +399,29 @@ namespace PackageManager.Views
                 ["{{PropertiesHtml}}"] = propertiesHtml
             };
             return ReplaceTokens(tpl, dict);
+        }
+        
+        private string BuildCrumbHtml()
+        {
+            try
+            {
+                var pid = (Details.ParentId ?? "").Trim();
+                var ptitle = (Details.ParentTitle ?? Details.ParentIdentifier ?? "").Trim();
+                if (string.IsNullOrWhiteSpace(pid) || string.IsNullOrWhiteSpace(ptitle))
+                {
+                    return null;
+                }
+                var link = $"<a class=\"crumb-link\" href=\"pm://workitem/{System.Net.WebUtility.HtmlEncode(pid)}\" title=\"{HtmlEscape(ptitle)}\">{HtmlEscape(ptitle)}</a>";
+                var curUrl = (Details.HtmlUrl ?? "").Trim();
+                var cur = string.IsNullOrWhiteSpace(curUrl)
+                    ? $"<span class=\"crumb-current\">{HtmlEscape(Details.Identifier)}</span>"
+                    : $"<a class=\"crumb-current crumb-link\" target=\"_blank\" rel=\"noopener\" href=\"{HtmlEscape(curUrl)}\">{HtmlEscape(Details.Identifier)}</a>";
+                return $"<div class=\"crumb\"><span class=\"crumb-parent\">{link}</span><span class=\"crumb-sep\">/</span>{cur}</div>";
+            }
+            catch
+            {
+                return null;
+            }
         }
         
         private static string ReplaceTokens(string tpl, Dictionary<string, string> dict)

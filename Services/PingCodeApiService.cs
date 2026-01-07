@@ -75,6 +75,9 @@ namespace PackageManager.Services
             public string Title { get; set; }
             public string HtmlUrl { get; set; }
             public string Type { get; set; }
+            public string ParentId { get; set; }
+            public string ParentIdentifier { get; set; }
+            public string ParentTitle { get; set; }
             public string AssigneeId { get; set; }
             public string AssigneeName { get; set; }
             public string StateName { get; set; }
@@ -82,6 +85,7 @@ namespace PackageManager.Services
             public string PriorityName { get; set; }
             public string SeverityName { get; set; }
             public double StoryPoints { get; set; }
+            public double StoryPointsSummary { get; set; }
             public string VersionName { get; set; }
             public DateTime? StartAt { get; set; }
             public DateTime? EndAt { get; set; }
@@ -934,6 +938,12 @@ namespace PackageManager.Services
                     d.Title = dto.Title ?? dto.Identifier ?? dto.Id;
                     d.HtmlUrl = dto.HtmlUrl;
                     d.Type = dto.Type;
+                    if (dto.Parent != null)
+                    {
+                        d.ParentId = dto.Parent.Id ?? dto.Parent.ShortId ?? dto.Parent.Identifier;
+                        d.ParentIdentifier = dto.Parent.Identifier ?? dto.Parent.ShortId ?? dto.Parent.Id;
+                        d.ParentTitle = dto.Parent.Title ?? d.ParentIdentifier;
+                    }
                     d.AssigneeId = dto.Assignee?.Id;
                     d.AssigneeName = !string.IsNullOrWhiteSpace(dto.Assignee?.DisplayName) ? dto.Assignee.DisplayName : dto.Assignee?.Name;
                     d.StateName = dto.State?.Name;
@@ -941,14 +951,16 @@ namespace PackageManager.Services
                     d.PriorityName = dto.Priority?.Name;
                     d.SeverityName = null;
                     d.StoryPoints = dto.StoryPoints ?? 0;
-                    if (d.StoryPoints == 0 && dto.Properties != null && dto.Properties.TryGetValue("gushidianhuizong", out var g))
+                    if (dto.Properties != null && dto.Properties.TryGetValue("gushidianhuizong", out var g))
                     {
-                        if (g is double gd) d.StoryPoints = gd;
+                        double sum = 0;
+                        if (g is double gd) sum = gd;
                         else if (g != null)
                         {
                             double gg;
-                            if (double.TryParse(g.ToString(), out gg)) d.StoryPoints = gg;
+                            if (double.TryParse(g.ToString(), out gg)) sum = gg;
                         }
+                        d.StoryPointsSummary = sum;
                     }
                     d.VersionName = dto.Version?.Name;
                     d.StartAt = ReadDateTimeFromSeconds(dto.StartAt);

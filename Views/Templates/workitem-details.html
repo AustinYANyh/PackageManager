@@ -9,6 +9,11 @@
     body{margin:0;background:#fff;font-family:'Segoe UI','Microsoft YaHei',Arial,sans-serif;color:#111827;height:100%}
     .wrap{padding:0;height:100%}
     .drawer{width:100%;max-width:100%;margin:0;border-radius:0;box-shadow:none;height:100%}
+    .crumb{padding:8px 24px;border-bottom:1px solid #f0f0f0;background:#fff;display:flex;align-items:center;gap:8px}
+    .crumb-link{color:#2563EB;text-decoration:none}
+    .crumb-link:hover{text-decoration:underline}
+    .crumb-current{color:#111827;font-weight:600}
+    .crumb-sep{color:#6B7280}
     .header{padding:16px 24px;border-bottom:1px solid #f0f0f0;background:#fff;display:flex;align-items:center;gap:10px}
     .id{color:#6B7280;font-weight:600}
     .title{font-size:18px;font-weight:700}
@@ -62,6 +67,7 @@
         <div class="ant-drawer-content">
           <div class="ant-drawer-wrapper-body">
             <div class="ant-drawer-body" style="padding:0;height:100%;overflow:auto">
+              <div class="crumb">{{ParentCrumbHtml}}</div>
               <div class="header"><span class="id">{{Identifier}}</span><span class="title">{{Title}}</span></div>
               <div class="quick">
                 <div class="item"><div class="label">负责人</div><div class="value">{{AssigneeName}}</div></div>
@@ -80,6 +86,7 @@
                     <div class="item"><div class="label">缺陷类别</div><div class="value">{{DefectCategory}}</div></div>
                     <div class="item"><div class="label">复现版本号</div><div class="value">{{ReproduceVersion}}</div></div>
                     <div class="item"><div class="label">复现概率</div><div class="value">{{ReproduceProbability}}</div></div>
+                    <div class="item"><div class="label">故事点汇总</div><div class="value">{{StoryPointsSum}}</div></div>
                   </div>
                   <div class="section-title">标签</div>
                   <div>{{TagsHtml}}</div>
