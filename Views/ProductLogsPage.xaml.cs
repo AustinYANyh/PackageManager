@@ -46,6 +46,17 @@ namespace PackageManager.Views
         {
             RefreshLogs();
         }
+        
+        private void OpenProductDirButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                OpenDirectory(_baseDir);
+            }
+            catch
+            {
+            }
+        }
 
         private void RefreshLogs()
         {
@@ -171,6 +182,17 @@ namespace PackageManager.Views
             var dir = string.IsNullOrWhiteSpace(ver) ? null : Path.Combine(baseLocal, "Autodesk", "Revit", $"Autodesk Revit {ver}", "Journals");
             SetRevitJournalDir(dir);
         }
+        
+        private void OpenRevitDirButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                OpenDirectory(_revitDir);
+            }
+            catch
+            {
+            }
+        }
 
         private void EnsureRevitDirFromCache()
         {
@@ -290,6 +312,42 @@ namespace PackageManager.Views
             {
                 LoggingService.LogError(ex, $"启动外部程序失败: {appPath}");
                 MessageBox.Show($"启动外部程序失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+        
+        private void OpenDirectory(string dir)
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(dir) || !Directory.Exists(dir))
+                {
+                    MessageBox.Show("目录不存在或未选择", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+                
+                if (_settings.LogTxtReader == "VSCode")
+                {
+                    var path = GetOrResolveAppPath(_settings.VsCodePath, "Code", p => _settings.VsCodePath = p);
+                    path = PreferVSCodeExe(path);
+                    if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+                    {
+                        MessageBox.Show("未找到 VsCode，请安装或手动配置路径。", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                        return;
+                    }
+                    StartProcess(path, dir);
+                }
+                else if (_settings.LogTxtReader == "NotepadPlusPlus")
+                {
+                    StartProcess("notepad++.exe", dir);
+                }
+                else
+                {
+                    MessageBox.Show($"当前使用的软件{_settings.LogTxtReader}不支持打开目录", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, "打开目录失败");
             }
         }
 
