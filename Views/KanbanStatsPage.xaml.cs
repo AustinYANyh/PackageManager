@@ -169,21 +169,24 @@ namespace PackageManager.Views
                     {
                         if (b.Total > 0)
                         {
+                            var closedPoints = b.Closed;
+                            var validTotal = b.Total - closedPoints;
                             rows.Add(new MemberStatsItem
                             {
                                 MemberName = u.Name ?? u.Id,
                                 NotStarted = b.NotStarted,
                                 InProgress = b.InProgress,
                                 Done = b.Done,
+                                Closed = closedPoints,
                                 HighestPriorityCount = b.HighestPriorityCount,
                                 HighestPriorityPoints = b.HighestPriorityPoints,
                                 HigherPriorityCount = b.HigherPriorityCount,
                                 HigherPriorityPoints = b.HigherPriorityPoints,
                                 OtherPriorityCount = b.OtherPriorityCount,
                                 OtherPriorityPoints = b.OtherPriorityPoints,
-                                Total = b.Total
+                                Total = validTotal
                             });
-                            total+=b.Total;
+                            total += validTotal;
                         }
                     }
                 }

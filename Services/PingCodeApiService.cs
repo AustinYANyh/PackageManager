@@ -35,6 +35,7 @@ namespace PackageManager.Services
             public double NotStarted { get; set; }
             public double InProgress { get; set; }
             public double Done { get; set; }
+            public double Closed { get; set; }
             public double Total { get; set; }
             
             public int HighestPriorityCount { get; set; }
@@ -770,7 +771,11 @@ namespace PackageManager.Services
                             if (sp == 0) sp = ReadDouble(v["fields"]?["story_points"]);
                             var status = ReadStatus(v);
                             var s = (status ?? "").Trim().ToLowerInvariant();
-                            if (s.Contains("done") || s.Contains("完成") || s.Contains("resolved") || s.Contains("closed") || s.Contains("已完成"))
+                            if (s.Contains("closed") || s.Contains("关闭") || s.Contains("已关闭") || s.Contains("已拒绝"))
+                            {
+                                bd.Closed += sp;
+                            }
+                            else if (s.Contains("done") || s.Contains("完成") || s.Contains("resolved") || s.Contains("已完成"))
                             {
                                 bd.Done += sp;
                             }
