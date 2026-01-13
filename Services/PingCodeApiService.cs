@@ -76,6 +76,7 @@ namespace PackageManager.Services
             public string Title { get; set; }
             public string HtmlUrl { get; set; }
             public string Type { get; set; }
+            public string ProjectId { get; set; }
             public string ParentId { get; set; }
             public string ParentIdentifier { get; set; }
             public string ParentTitle { get; set; }
@@ -83,6 +84,7 @@ namespace PackageManager.Services
             public string AssigneeName { get; set; }
             public string StateName { get; set; }
             public string StateType { get; set; }
+            public string StateId { get; set; }
             public string PriorityName { get; set; }
             public string SeverityName { get; set; }
             public double StoryPoints { get; set; }
@@ -943,6 +945,7 @@ namespace PackageManager.Services
                     d.Title = dto.Title ?? dto.Identifier ?? dto.Id;
                     d.HtmlUrl = dto.HtmlUrl;
                     d.Type = dto.Type;
+                    d.ProjectId = dto.Project?.Id;
                     if (dto.Parent != null)
                     {
                         d.ParentId = dto.Parent.Id ?? dto.Parent.ShortId ?? dto.Parent.Identifier;
@@ -953,6 +956,7 @@ namespace PackageManager.Services
                     d.AssigneeName = !string.IsNullOrWhiteSpace(dto.Assignee?.DisplayName) ? dto.Assignee.DisplayName : dto.Assignee?.Name;
                     d.StateName = dto.State?.Name;
                     d.StateType = dto.State?.Type;
+                    d.StateId = dto.State?.Id;
                     d.PriorityName = dto.Priority?.Name;
                     d.SeverityName = null;
                     d.StoryPoints = dto.StoryPoints ?? 0;
@@ -1208,6 +1212,36 @@ namespace PackageManager.Services
             {
                 // new JObject { ["state"] = new JObject { ["id"] = stateId } },
                 new JObject { ["state_id"] = stateId }
+            };
+            foreach (var url in urls)
+            {
+                foreach (var body in bodies)
+                {
+                    try
+                    {
+                        var resp = await PatchJsonAsync(url, body);
+                        if (resp != null) return true;
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+            return false;
+        }
+        
+        public async Task<bool> UpdateWorkItemStoryPointsAsync(string workItemId, double storyPoints)
+        {
+            if (string.IsNullOrWhiteSpace(workItemId) || storyPoints < 0) return false;
+            var urls = new[]
+            {
+                $"https://open.pingcode.com/v1/project/work_items/{Uri.EscapeDataString(workItemId)}",
+                $"https://open.pingcode.com/v1/agile/work_items/{Uri.EscapeDataString(workItemId)}"
+            };
+            var bodies = new[]
+            {
+                new JObject { ["story_points"] = storyPoints },
+                new JObject { ["story_point"] = storyPoints }
             };
             foreach (var url in urls)
             {

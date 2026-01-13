@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <meta name="workitem-details-template-version" content="1.0.2"/>
+  <meta name="workitem-details-template-version" content="1.0.3"/>
   <style>
     html,body{height:100%}
     body{margin:0;background:#fff;font-family:'Segoe UI','Microsoft YaHei',Arial,sans-serif;color:#111827;height:100%}
@@ -71,7 +71,7 @@
               <div class="header"><span class="id">{{Identifier}}</span><span class="title">{{Title}}</span></div>
               <div class="quick">
                 <div class="item"><div class="label">负责人</div><div class="value">{{AssigneeName}}</div></div>
-                <div class="item"><div class="label">状态</div><div class="value"><span class="badge state-badge {{StateClass}}">{{StateName}}</span></div></div>
+                <div class="item"><div class="label">状态</div><div class="value"><select id="stateSelect" style="width:160px;padding:4px;border:1px solid #D1D5DB;border-radius:6px"><option selected>{{StateName}}</option></select></div></div>
                 <div class="item"><div class="label">开始时间</div><div class="value">{{StartAt}}</div></div>
                 <div class="item"><div class="label">结束时间</div><div class="value">{{EndAt}}</div></div>
               </div>
@@ -81,7 +81,9 @@
                   <div class="base-info">
                     <div class="item"><div class="label">优先级</div><div class="value"><span class="badge">{{PriorityName}}</span></div></div>
                     <div class="item"><div class="label">严重程度</div><div class="value">{{SeverityText}}</div></div>
-                    <div class="item"><div class="label">故事点</div><div class="value">{{StoryPoints}}</div></div>
+                    <div class="item"><div class="label">故事点</div><div class="value">
+                      <input id="spInput" type="number" min="0" step="0.01" style="width:120px;padding:4px;border:1px solid #D1D5DB;border-radius:6px" value="{{StoryPointsInput}}">
+                    </div></div>
                     <div class="item"><div class="label">所属产品</div><div class="value">{{ProductName}}</div></div>
                     <div class="item"><div class="label">缺陷类别</div><div class="value">{{DefectCategory}}</div></div>
                     <div class="item"><div class="label">复现版本号</div><div class="value">{{ReproduceVersion}}</div></div>
@@ -105,5 +107,46 @@
       </div>
     </div>
   </div>
+<script>
+  (function(){
+    function parseVal(v){
+      try{
+        var n=parseFloat(v);
+        if(isNaN(n)||n<0){return 0;}
+        return n;
+      }catch(e){return 0;}
+    }
+    function save(){
+      try{
+        var ip=document.getElementById('spInput');
+        if(!ip){return;}
+        var val=parseVal(ip.value);
+        if(window.chrome&&window.chrome.webview){
+          window.chrome.webview.postMessage({type:'updateStoryPoints', id:'{{WorkItemId}}', value:val});
+        }
+      }catch(e){}
+    }
+    function onStateChange(){
+      try{
+        var sel=document.getElementById('stateSelect');
+        var val=sel&&sel.value;
+        if(val&&window.chrome&&window.chrome.webview){
+          window.chrome.webview.postMessage({type:'updateState', id:'{{WorkItemId}}', stateId:val});
+        }
+      }catch(e){}
+    }
+    try{
+      var ip=document.getElementById('spInput');
+      if(ip){
+        ip.addEventListener('blur', save);
+        ip.addEventListener('keydown', function(e){ if(e.key==='Enter'){ save(); } });
+      }
+      var sel=document.getElementById('stateSelect');
+      if(sel){
+        sel.addEventListener('change', onStateChange);
+      }
+    }catch(e){}
+  })();
+</script>
 </body>
 </html>

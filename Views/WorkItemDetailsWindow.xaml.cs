@@ -20,6 +20,7 @@ namespace PackageManager.Views
         public PingCodeApiService.WorkItemDetails Details { get; }
         private readonly PingCodeApiService _api;
         private string _accessToken;
+        private List<PingCodeApiService.StateDto> _availableStates = new List<PingCodeApiService.StateDto>();
         private static readonly Regex ImgTagRegex = new Regex("<img\\b[^>]*>", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private static readonly Regex AnchorTagRegex = new Regex("<a\\b[^>]*>([\\s\\S]*?)</a>", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private static readonly Dictionary<string, string> TemplateCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -180,6 +181,143 @@ namespace PackageManager.Views
                     _accessToken = await _api.GetAccessTokenAsync();
                     var html = await Task.Run(() => BuildHtml());
                     DetailsWeb.CoreWebView2.NavigateToString(html);
+                    await InitializeStateDropdownAsync();
+                    core.WebMessageReceived += async (sender, args) =>
+                    {
+                        try
+                        {
+                            var msg = args.WebMessageAsJson ?? "";
+                            if (string.IsNullOrWhiteSpace(msg)) return;
+                            double val = 0;
+                            string id = Details.Id;
+                            string type = null;
+                            string stateId = null;
+                            bool handleSP = false;
+                            bool handleState = false;
+                            try
+                            {
+                                var token = Newtonsoft.Json.Linq.JToken.Parse(msg);
+                                if (token is Newtonsoft.Json.Linq.JObject obj)
+                                {
+                                    type = obj.Value<string>("type");
+                                    if (string.Equals(type, "updateStoryPoints", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        id = obj.Value<string>("id") ?? Details.Id;
+                                        val = obj.Value<double?>("value") ?? 0;
+                                        handleSP = true;
+                                    }
+                                    else if (string.Equals(type, "updateState", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        id = obj.Value<string>("id") ?? Details.Id;
+                                        stateId = obj.Value<string>("stateId") ?? obj.Value<string>("state_id");
+                                        handleState = true;
+                                    }
+                                    else
+                                    {
+                                        return;
+                                    }
+                                }
+                                else if (token is Newtonsoft.Json.Linq.JValue jv && jv.Type == Newtonsoft.Json.Linq.JTokenType.String)
+                                {
+                                    var inner = jv.ToString() ?? "";
+                                    var innerTok = Newtonsoft.Json.Linq.JToken.Parse(inner);
+                                    if (innerTok is Newtonsoft.Json.Linq.JObject jobj)
+                                    {
+                                        type = jobj.Value<string>("type");
+                                        if (string.Equals(type, "updateStoryPoints", StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            id = jobj.Value<string>("id") ?? Details.Id;
+                                            val = jobj.Value<double?>("value") ?? 0;
+                                            handleSP = true;
+                                        }
+                                        else if (string.Equals(type, "updateState", StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            id = jobj.Value<string>("id") ?? Details.Id;
+                                            stateId = jobj.Value<string>("stateId") ?? jobj.Value<string>("state_id");
+                                            handleState = true;
+                                        }
+                                        else
+                                        {
+                                            return;
+                                        }
+                                    }
+                                    else
+                                    {
+                                        var parts = inner.Split('|');
+                                        if (parts.Length >= 2 && parts[0] == "updateStoryPoints")
+                                        {
+                                            id = parts[1];
+                                            double.TryParse(parts.Length > 2 ? parts[2] : "0", out val);
+                                            handleSP = true;
+                                        }
+                                        else if (parts.Length >= 2 && parts[0] == "updateState")
+                                        {
+                                            id = parts[1];
+                                            stateId = parts.Length > 2 ? parts[2] : null;
+                                            handleState = true;
+                                        }
+                                        else
+                                        {
+                                            return;
+                                        }
+                                    }
+                                }
+                                else
+                                {
+                                    return;
+                                }
+                            }
+                            catch
+                            {
+                                return;
+                            }
+                            if (handleSP)
+                            {
+                                if (val < 0) val = 0;
+                                if (string.IsNullOrWhiteSpace(id)) id = Details.Id;
+                                if (Math.Abs(Details.StoryPoints - val) < 1e-3) 
+                                    return;
+                                try
+                                {
+                                    var ok = await _api.UpdateWorkItemStoryPointsAsync(id, val);
+                                    if (ok)
+                                    {
+                                        Details.StoryPoints = val;
+                                        var script = "try{var ip=document.getElementById('spInput');if(ip){ip.value='" + val.ToString("0.##") + "';}}catch(e){}";
+                                        await DetailsWeb.CoreWebView2.ExecuteScriptAsync(script);
+                                    }
+                                }
+                                catch
+                                {
+                                }
+                            }
+                            else if (handleState)
+                            {
+                                if (string.IsNullOrWhiteSpace(id)) id = Details.Id;
+                                if (string.IsNullOrWhiteSpace(stateId)) return;
+                                try
+                                {
+                                    var ok = await _api.UpdateWorkItemStateByIdAsync(id, stateId);
+                                    if (ok)
+                                    {
+                                        var st = _availableStates?.FirstOrDefault(s => string.Equals(s?.Id ?? "", stateId ?? "", StringComparison.OrdinalIgnoreCase));
+                                        var newName = st?.Name ?? Details.StateName;
+                                        var newType = st?.Type ?? Details.StateType;
+                                        Details.StateName = newName;
+                                        Details.StateType = newType;
+                                        Details.StateId = stateId;
+                                        await RefreshAvailableStatesAndUpdateDropdownAsync();
+                                    }
+                                }
+                                catch
+                                {
+                                }
+                            }
+                        }
+                        catch
+                        {
+                        }
+                    };
                 }
                 catch
                 {
@@ -189,6 +327,11 @@ namespace PackageManager.Views
         }
         
         private string HtmlEscape(string s) => System.Net.WebUtility.HtmlEncode(s ?? "");
+        private static string JsEscape(string s)
+        {
+            s = s ?? "";
+            return s.Replace("\\", "\\\\").Replace("'", "\\'").Replace("\r", "\\r").Replace("\n", "\\n");
+        }
         
         private static string GetQueryParam(Uri uri, string name)
         {
@@ -324,7 +467,7 @@ namespace PackageManager.Views
             var endText = FormatDate(Details.EndAt);
             sb.AppendLine("<div class=\"quick\">");
             sb.AppendLine($"<div class=\"item\"><div class=\"label\">负责人</div><div class=\"value\">{HtmlEscape(Details.AssigneeName)}</div></div>");
-            sb.AppendLine($"<div class=\"item\"><div class=\"label\">状态</div><div class=\"value\"><span class=\"badge state-badge {stateCls}\">{HtmlEscape(Details.StateName)}</span></div></div>");
+            sb.AppendLine($"<div class=\"item\"><div class=\"label\">状态</div><div class=\"value\"><select id=\"stateSelect\" style=\"width:160px;padding:4px;border:1px solid #D1D5DB;border-radius:6px\"><option selected>{HtmlEscape(Details.StateName)}</option></select></div></div>");
             sb.AppendLine($"<div class=\"item\"><div class=\"label\">开始时间</div><div class=\"value\">{startText}</div></div>");
             sb.AppendLine($"<div class=\"item\"><div class=\"label\">结束时间</div><div class=\"value\">{endText}</div></div>");
             sb.AppendLine("</div>");
@@ -335,7 +478,8 @@ namespace PackageManager.Views
             sb.AppendLine("<div class=\"base-info\">");
             sb.AppendLine($"<div class=\"item\"><div class=\"label\">优先级</div><div class=\"value\"><span class=\"badge\">{HtmlEscape(Details.PriorityName)}</span></div></div>");
             sb.AppendLine($"<div class=\"item\"><div class=\"label\">严重程度</div><div class=\"value\">{HtmlEscape(severityZh)}</div></div>");
-            sb.AppendLine($"<div class=\"item\"><div class=\"label\">故事点</div><div class=\"value\">{(Math.Abs(Details.StoryPoints) < 0.000001 ? "-" : Details.StoryPoints.ToString("0.##"))}</div></div>");
+            var spInputVal = Math.Abs(Details.StoryPoints) < 0.000001 ? "0" : Details.StoryPoints.ToString("0.##");
+            sb.AppendLine($"<div class=\"item\"><div class=\"label\">故事点</div><div class=\"value\"><input id=\"spInput\" type=\"number\" min=\"0\" step=\"0.01\" style=\"width:120px;padding:4px;border:1px solid #D1D5DB;border-radius:6px\" value=\"{spInputVal}\"></div></div>");
             sb.AppendLine($"<div class=\"item\"><div class=\"label\">所属产品</div><div class=\"value\">{DashText(Details.ProductName)}</div></div>");
             sb.AppendLine($"<div class=\"item\"><div class=\"label\">缺陷类别</div><div class=\"value\">{DashText(Details.DefectCategory)}</div></div>");
             sb.AppendLine($"<div class=\"item\"><div class=\"label\">复现版本号</div><div class=\"value\">{DashText(Details.ReproduceVersion)}</div></div>");
@@ -368,8 +512,63 @@ namespace PackageManager.Views
             sb.AppendLine("</div>");
             sb.AppendLine("</div></div></div></div>");
             sb.AppendLine("</div>");
+            sb.AppendLine("<script>(function(){function parseVal(v){try{var n=parseFloat(v);if(isNaN(n)||n<0){return 0;}return n;}catch(e){return 0;}}function save(){try{var ip=document.getElementById('spInput');if(!ip){return;}var val=parseVal(ip.value);if(window.chrome&&window.chrome.webview){window.chrome.webview.postMessage({type:'updateStoryPoints', id:'" + HtmlEscape(Details.Id) + "', value:val});}}catch(e){}}function onStateChange(){try{var sel=document.getElementById('stateSelect');var val=sel&&sel.value;if(val&&window.chrome&&window.chrome.webview){window.chrome.webview.postMessage({type:'updateState', id:'" + HtmlEscape(Details.Id) + "', stateId:val});}}catch(e){}}try{var ip=document.getElementById('spInput');if(ip){ip.addEventListener('blur', save);ip.addEventListener('keydown', function(e){ if(e.key==='Enter'){ save(); } });}var sel=document.getElementById('stateSelect');if(sel){sel.addEventListener('change', onStateChange);}}catch(e){}})();</script>");
             sb.AppendLine("</body></html>");
             return sb.ToString();
+        }
+        
+        private async Task InitializeStateDropdownAsync()
+        {
+            try
+            {
+                var projectId = (Details?.ProjectId ?? "").Trim();
+                var type = (Details?.Type ?? "").Trim();
+                if (string.IsNullOrWhiteSpace(projectId) || string.IsNullOrWhiteSpace(type)) return;
+                var plans = await _api.GetWorkItemStatePlansAsync(projectId);
+                var plan = plans.FirstOrDefault(p => string.Equals((p?.WorkItemType ?? "").Trim(), type, StringComparison.OrdinalIgnoreCase));
+                if (plan == null || string.IsNullOrWhiteSpace(plan.Id)) return;
+                var flows = await _api.GetWorkItemStateFlowsAsync(plan.Id, Details.StateId);
+                _availableStates = flows ?? new List<PingCodeApiService.StateDto>();
+                await RebuildStateSelectOptionsAsync(Details.StateName, _availableStates);
+            }
+            catch
+            {
+            }
+        }
+        
+        private async Task RefreshAvailableStatesAndUpdateDropdownAsync()
+        {
+            try
+            {
+                var projectId = (Details?.ProjectId ?? "").Trim();
+                var type = (Details?.Type ?? "").Trim();
+                if (string.IsNullOrWhiteSpace(projectId) || string.IsNullOrWhiteSpace(type)) return;
+                var plans = await _api.GetWorkItemStatePlansAsync(projectId);
+                var plan = plans.FirstOrDefault(p => string.Equals((p?.WorkItemType ?? "").Trim(), type, StringComparison.OrdinalIgnoreCase));
+                if (plan == null || string.IsNullOrWhiteSpace(plan.Id)) return;
+                var flows = await _api.GetWorkItemStateFlowsAsync(plan.Id, Details.StateId);
+                _availableStates = flows ?? new List<PingCodeApiService.StateDto>();
+                await RebuildStateSelectOptionsAsync(Details.StateName, _availableStates);
+            }
+            catch
+            {
+            }
+        }
+        
+        private async Task RebuildStateSelectOptionsAsync(string currentStateName, IEnumerable<PingCodeApiService.StateDto> flows)
+        {
+            var js = new StringBuilder();
+            var nm = JsEscape(currentStateName ?? "");
+            js.Append("try{var sel=document.getElementById('stateSelect');if(sel){sel.innerHTML='';var first=document.createElement('option');first.selected=true;first.textContent='").Append(nm).Append("';sel.appendChild(first);");
+            foreach (var st in flows ?? Enumerable.Empty<PingCodeApiService.StateDto>())
+            {
+                var id = JsEscape(st?.Id ?? "");
+                var txt = JsEscape(st?.Name ?? "");
+                if (string.IsNullOrWhiteSpace(id)) continue;
+                js.Append("var o=document.createElement('option');o.value='").Append(id).Append("';o.textContent='").Append(txt).Append("';sel.appendChild(o);");
+            }
+            js.Append("sel.selectedIndex=0;}}catch(e){}");
+            await DetailsWeb.CoreWebView2.ExecuteScriptAsync(js.ToString());
         }
         
         private string BuildHtmlFromTemplate(string tpl)
@@ -405,6 +604,8 @@ namespace PackageManager.Views
                 ["{{PriorityName}}"] = HtmlEscape(Details.PriorityName),
                 ["{{SeverityText}}"] = HtmlEscape(severityZh),
                 ["{{StoryPoints}}"] = storyPointsText,
+                ["{{StoryPointsInput}}"] = Math.Abs(Details.StoryPoints) < 0.000001 ? "0" : Details.StoryPoints.ToString("0.##"),
+                ["{{WorkItemId}}"] = HtmlEscape(Details.Id),
                 ["{{ProductName}}"] = DashText(Details.ProductName),
                 ["{{DefectCategory}}"] = DashText(Details.DefectCategory),
                 ["{{ReproduceVersion}}"] = DashText(Details.ReproduceVersion),
