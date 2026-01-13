@@ -46,9 +46,180 @@ namespace PackageManager.Views
                     var env = await CoreWebView2Environment.CreateAsync(null, userDataFolder);
                     await DetailsWeb.EnsureCoreWebView2Async(env);
                     var core = DetailsWeb.CoreWebView2;
-                    core.NavigationCompleted += (sender, args) =>
+                    core.Settings.IsWebMessageEnabled = true;
+                    try
                     {
-                        try { ShowLoading(false); } catch { }
+                        var wi = JsEscape(Details.Id ?? "");
+                        var docJs = "(function(){try{function pv(v){try{var n=parseFloat(v);if(isNaN(n)||n<0){return 0;}return n;}catch(e){return 0;}}function bind(){try{var ip=document.getElementById('spInput');if(ip){ip.addEventListener('blur',function(){try{var val=pv(ip.value);if(window.chrome&&window.chrome.webview){window.chrome.webview.postMessage({type:'updateStoryPoints',id:'" + wi + "',value:val});}}catch(e){}});ip.addEventListener('keydown',function(e){if(e.key==='Enter'){try{var val=pv(ip.value);if(window.chrome&&window.chrome.webview){window.chrome.webview.postMessage({type:'updateStoryPoints',id:'" + wi + "',value:val});}}catch(e){}}});}var sel=document.getElementById('stateSelect');if(sel){sel.addEventListener('change',function(){try{var val=sel&&sel.value;if(val&&window.chrome&&window.chrome.webview){window.chrome.webview.postMessage({type:'updateState',id:'" + wi + "',stateId:val});}}catch(e){}});} }catch(e){}}document.addEventListener('DOMContentLoaded',function(){try{bind();var has=document.getElementById('stateSelect')||document.getElementById('spInput');if(has&&window.chrome&&window.chrome.webview){window.chrome.webview.postMessage({type:'ready',id:'" + wi + "'});}}catch(e){}});document.addEventListener('readystatechange',function(){try{if(document.readyState==='interactive'||document.readyState==='complete'){bind();var has=document.getElementById('stateSelect')||document.getElementById('spInput');if(has&&window.chrome&&window.chrome.webview){window.chrome.webview.postMessage({type:'ready',id:'" + wi + "'});}}}catch(e){}});}catch(e){}})();";
+                        var mi = core.GetType().GetMethod("AddScriptToExecuteOnDocumentCreated");
+                        if (mi != null)
+                        {
+                            mi.Invoke(core, new object[] { docJs });
+                        }
+                        else
+                        {
+                            await DetailsWeb.CoreWebView2.ExecuteScriptAsync(docJs);
+                        }
+                    }
+                    catch
+                    {
+                    }
+                    core.WebMessageReceived += async (sender, args) =>
+                    {
+                        try
+                        {
+                            var msg = args.WebMessageAsJson ?? "";
+                            if (string.IsNullOrWhiteSpace(msg)) return;
+                            double val = 0;
+                            string id = Details.Id;
+                            string type = null;
+                            string stateId = null;
+                            bool handleSP = false;
+                            bool handleState = false;
+                            bool handleReady = false;
+                            try
+                            {
+                                var token = Newtonsoft.Json.Linq.JToken.Parse(msg);
+                                if (token is Newtonsoft.Json.Linq.JObject obj)
+                                {
+                                    type = obj.Value<string>("type");
+                                    if (string.Equals(type, "updateStoryPoints", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        id = obj.Value<string>("id") ?? Details.Id;
+                                        val = obj.Value<double?>("value") ?? 0;
+                                        handleSP = true;
+                                    }
+                                    else if (string.Equals(type, "updateState", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        id = obj.Value<string>("id") ?? Details.Id;
+                                        stateId = obj.Value<string>("stateId") ?? obj.Value<string>("state_id");
+                                        handleState = true;
+                                    }
+                                    else if (string.Equals(type, "ready", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        handleReady = true;
+                                    }
+                                    else
+                                    {
+                                        return;
+                                    }
+                                }
+                                else if (token is Newtonsoft.Json.Linq.JValue jv && jv.Type == Newtonsoft.Json.Linq.JTokenType.String)
+                                {
+                                    var inner = jv.ToString() ?? "";
+                                    var innerTok = Newtonsoft.Json.Linq.JToken.Parse(inner);
+                                    if (innerTok is Newtonsoft.Json.Linq.JObject jobj)
+                                    {
+                                        type = jobj.Value<string>("type");
+                                        if (string.Equals(type, "updateStoryPoints", StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            id = jobj.Value<string>("id") ?? Details.Id;
+                                            val = jobj.Value<double?>("value") ?? 0;
+                                            handleSP = true;
+                                        }
+                                        else if (string.Equals(type, "updateState", StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            id = jobj.Value<string>("id") ?? Details.Id;
+                                            stateId = jobj.Value<string>("stateId") ?? jobj.Value<string>("state_id");
+                                            handleState = true;
+                                        }
+                                        else if (string.Equals(type, "ready", StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            handleReady = true;
+                                        }
+                                        else
+                                        {
+                                            return;
+                                        }
+                                    }
+                                    else
+                                    {
+                                        var parts = inner.Split('|');
+                                        if (parts.Length >= 2 && parts[0] == "updateStoryPoints")
+                                        {
+                                            id = parts[1];
+                                            double.TryParse(parts.Length > 2 ? parts[2] : "0", out val);
+                                            handleSP = true;
+                                        }
+                                        else if (parts.Length >= 2 && parts[0] == "updateState")
+                                        {
+                                            id = parts[1];
+                                            stateId = parts.Length > 2 ? parts[2] : null;
+                                            handleState = true;
+                                        }
+                                        else if (parts.Length >= 1 && parts[0] == "ready")
+                                        {
+                                            handleReady = true;
+                                        }
+                                        else
+                                        {
+                                            return;
+                                        }
+                                    }
+                                }
+                                else
+                                {
+                                    return;
+                                }
+                            }
+                            catch
+                            {
+                                return;
+                            }
+                            if (handleReady)
+                            {
+                                try { await InitializeStateDropdownAsync(); } catch { }
+                            }
+                            if (handleSP)
+                            {
+                                if (val < 0) val = 0;
+                                if (string.IsNullOrWhiteSpace(id)) id = Details.Id;
+                                if (Math.Abs(Details.StoryPoints - val) < 1e-3) 
+                                    return;
+                                try
+                                {
+                                    var ok = await _api.UpdateWorkItemStoryPointsAsync(id, val);
+                                    if (ok)
+                                    {
+                                        Details.StoryPoints = val;
+                                        var script = "try{var ip=document.getElementById('spInput');if(ip){ip.value='" + val.ToString("0.##") + "';}}catch(e){}";
+                                        await DetailsWeb.CoreWebView2.ExecuteScriptAsync(script);
+                                    }
+                                }
+                                catch
+                                {
+                                }
+                            }
+                            else if (handleState)
+                            {
+                                if (string.IsNullOrWhiteSpace(id)) id = Details.Id;
+                                if (string.IsNullOrWhiteSpace(stateId)) return;
+                                try
+                                {
+                                    var ok = await _api.UpdateWorkItemStateByIdAsync(id, stateId);
+                                    if (ok)
+                                    {
+                                        var st = _availableStates?.FirstOrDefault(s => string.Equals(s?.Id ?? "", stateId ?? "", StringComparison.OrdinalIgnoreCase));
+                                        var newName = st?.Name ?? Details.StateName;
+                                        var newType = st?.Type ?? Details.StateType;
+                                        Details.StateName = newName;
+                                        Details.StateType = newType;
+                                        Details.StateId = stateId;
+                                        await RefreshAvailableStatesAndUpdateDropdownAsync();
+                                    }
+                                }
+                                catch
+                                {
+                                }
+                            }
+                        }
+                        catch
+                        {
+                        }
+                    };
+                    core.NavigationCompleted += async (sender, args) =>
+                    {
+                        try { ShowLoading(false); await InitializeStateDropdownAsync(); } catch { }
                     };
                     core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.Image);
                     core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.Media);
@@ -182,142 +353,6 @@ namespace PackageManager.Views
                     var html = await Task.Run(() => BuildHtml());
                     DetailsWeb.CoreWebView2.NavigateToString(html);
                     await InitializeStateDropdownAsync();
-                    core.WebMessageReceived += async (sender, args) =>
-                    {
-                        try
-                        {
-                            var msg = args.WebMessageAsJson ?? "";
-                            if (string.IsNullOrWhiteSpace(msg)) return;
-                            double val = 0;
-                            string id = Details.Id;
-                            string type = null;
-                            string stateId = null;
-                            bool handleSP = false;
-                            bool handleState = false;
-                            try
-                            {
-                                var token = Newtonsoft.Json.Linq.JToken.Parse(msg);
-                                if (token is Newtonsoft.Json.Linq.JObject obj)
-                                {
-                                    type = obj.Value<string>("type");
-                                    if (string.Equals(type, "updateStoryPoints", StringComparison.OrdinalIgnoreCase))
-                                    {
-                                        id = obj.Value<string>("id") ?? Details.Id;
-                                        val = obj.Value<double?>("value") ?? 0;
-                                        handleSP = true;
-                                    }
-                                    else if (string.Equals(type, "updateState", StringComparison.OrdinalIgnoreCase))
-                                    {
-                                        id = obj.Value<string>("id") ?? Details.Id;
-                                        stateId = obj.Value<string>("stateId") ?? obj.Value<string>("state_id");
-                                        handleState = true;
-                                    }
-                                    else
-                                    {
-                                        return;
-                                    }
-                                }
-                                else if (token is Newtonsoft.Json.Linq.JValue jv && jv.Type == Newtonsoft.Json.Linq.JTokenType.String)
-                                {
-                                    var inner = jv.ToString() ?? "";
-                                    var innerTok = Newtonsoft.Json.Linq.JToken.Parse(inner);
-                                    if (innerTok is Newtonsoft.Json.Linq.JObject jobj)
-                                    {
-                                        type = jobj.Value<string>("type");
-                                        if (string.Equals(type, "updateStoryPoints", StringComparison.OrdinalIgnoreCase))
-                                        {
-                                            id = jobj.Value<string>("id") ?? Details.Id;
-                                            val = jobj.Value<double?>("value") ?? 0;
-                                            handleSP = true;
-                                        }
-                                        else if (string.Equals(type, "updateState", StringComparison.OrdinalIgnoreCase))
-                                        {
-                                            id = jobj.Value<string>("id") ?? Details.Id;
-                                            stateId = jobj.Value<string>("stateId") ?? jobj.Value<string>("state_id");
-                                            handleState = true;
-                                        }
-                                        else
-                                        {
-                                            return;
-                                        }
-                                    }
-                                    else
-                                    {
-                                        var parts = inner.Split('|');
-                                        if (parts.Length >= 2 && parts[0] == "updateStoryPoints")
-                                        {
-                                            id = parts[1];
-                                            double.TryParse(parts.Length > 2 ? parts[2] : "0", out val);
-                                            handleSP = true;
-                                        }
-                                        else if (parts.Length >= 2 && parts[0] == "updateState")
-                                        {
-                                            id = parts[1];
-                                            stateId = parts.Length > 2 ? parts[2] : null;
-                                            handleState = true;
-                                        }
-                                        else
-                                        {
-                                            return;
-                                        }
-                                    }
-                                }
-                                else
-                                {
-                                    return;
-                                }
-                            }
-                            catch
-                            {
-                                return;
-                            }
-                            if (handleSP)
-                            {
-                                if (val < 0) val = 0;
-                                if (string.IsNullOrWhiteSpace(id)) id = Details.Id;
-                                if (Math.Abs(Details.StoryPoints - val) < 1e-3) 
-                                    return;
-                                try
-                                {
-                                    var ok = await _api.UpdateWorkItemStoryPointsAsync(id, val);
-                                    if (ok)
-                                    {
-                                        Details.StoryPoints = val;
-                                        var script = "try{var ip=document.getElementById('spInput');if(ip){ip.value='" + val.ToString("0.##") + "';}}catch(e){}";
-                                        await DetailsWeb.CoreWebView2.ExecuteScriptAsync(script);
-                                    }
-                                }
-                                catch
-                                {
-                                }
-                            }
-                            else if (handleState)
-                            {
-                                if (string.IsNullOrWhiteSpace(id)) id = Details.Id;
-                                if (string.IsNullOrWhiteSpace(stateId)) return;
-                                try
-                                {
-                                    var ok = await _api.UpdateWorkItemStateByIdAsync(id, stateId);
-                                    if (ok)
-                                    {
-                                        var st = _availableStates?.FirstOrDefault(s => string.Equals(s?.Id ?? "", stateId ?? "", StringComparison.OrdinalIgnoreCase));
-                                        var newName = st?.Name ?? Details.StateName;
-                                        var newType = st?.Type ?? Details.StateType;
-                                        Details.StateName = newName;
-                                        Details.StateType = newType;
-                                        Details.StateId = stateId;
-                                        await RefreshAvailableStatesAndUpdateDropdownAsync();
-                                    }
-                                }
-                                catch
-                                {
-                                }
-                            }
-                        }
-                        catch
-                        {
-                        }
-                    };
                 }
                 catch
                 {
