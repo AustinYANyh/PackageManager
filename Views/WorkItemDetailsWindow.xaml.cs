@@ -20,6 +20,7 @@ namespace PackageManager.Views
         public PingCodeApiService.WorkItemDetails Details { get; }
         private readonly PingCodeApiService _api;
         private string _accessToken;
+        private bool _docBridgeInjectedOnDocumentCreated;
         private List<PingCodeApiService.StateDto> _availableStates = new List<PingCodeApiService.StateDto>();
         private static readonly Regex ImgTagRegex = new Regex("<img\\b[^>]*>", RegexOptions.IgnoreCase | RegexOptions.Compiled);
         private static readonly Regex AnchorTagRegex = new Regex("<a\\b[^>]*>([\\s\\S]*?)</a>", RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -39,326 +40,363 @@ namespace PackageManager.Views
                 {
                     ShowLoading(true);
                     InferPublicImageToken();
-                    
-                    var dataService = new DataPersistenceService();
-                    var userDataFolder = System.IO.Path.Combine(dataService.GetDataFolderPath(), "WebView2Cache");
-                    System.IO.Directory.CreateDirectory(userDataFolder);
-                    var env = await CoreWebView2Environment.CreateAsync(null, userDataFolder);
-                    await DetailsWeb.EnsureCoreWebView2Async(env);
-                    var core = DetailsWeb.CoreWebView2;
-                    core.Settings.IsWebMessageEnabled = true;
-                    try
-                    {
-                        var wi = JsEscape(Details.Id ?? "");
-                        var docJs = "(function(){try{function pv(v){try{var n=parseFloat(v);if(isNaN(n)||n<0){return 0;}return n;}catch(e){return 0;}}function bind(){try{var ip=document.getElementById('spInput');if(ip){ip.addEventListener('blur',function(){try{var val=pv(ip.value);if(window.chrome&&window.chrome.webview){window.chrome.webview.postMessage({type:'updateStoryPoints',id:'" + wi + "',value:val});}}catch(e){}});ip.addEventListener('keydown',function(e){if(e.key==='Enter'){try{var val=pv(ip.value);if(window.chrome&&window.chrome.webview){window.chrome.webview.postMessage({type:'updateStoryPoints',id:'" + wi + "',value:val});}}catch(e){}}});}var sel=document.getElementById('stateSelect');if(sel){sel.addEventListener('change',function(){try{var val=sel&&sel.value;if(val&&window.chrome&&window.chrome.webview){window.chrome.webview.postMessage({type:'updateState',id:'" + wi + "',stateId:val});}}catch(e){}});} }catch(e){}}document.addEventListener('DOMContentLoaded',function(){try{bind();var has=document.getElementById('stateSelect')||document.getElementById('spInput');if(has&&window.chrome&&window.chrome.webview){window.chrome.webview.postMessage({type:'ready',id:'" + wi + "'});}}catch(e){}});document.addEventListener('readystatechange',function(){try{if(document.readyState==='interactive'||document.readyState==='complete'){bind();var has=document.getElementById('stateSelect')||document.getElementById('spInput');if(has&&window.chrome&&window.chrome.webview){window.chrome.webview.postMessage({type:'ready',id:'" + wi + "'});}}}catch(e){}});}catch(e){}})();";
-                        var mi = core.GetType().GetMethod("AddScriptToExecuteOnDocumentCreated");
-                        if (mi != null)
-                        {
-                            mi.Invoke(core, new object[] { docJs });
-                        }
-                        else
-                        {
-                            await DetailsWeb.CoreWebView2.ExecuteScriptAsync(docJs);
-                        }
-                    }
-                    catch
-                    {
-                    }
-                    core.WebMessageReceived += async (sender, args) =>
-                    {
-                        try
-                        {
-                            var msg = args.WebMessageAsJson ?? "";
-                            if (string.IsNullOrWhiteSpace(msg)) return;
-                            double val = 0;
-                            string id = Details.Id;
-                            string type = null;
-                            string stateId = null;
-                            bool handleSP = false;
-                            bool handleState = false;
-                            bool handleReady = false;
-                            try
-                            {
-                                var token = Newtonsoft.Json.Linq.JToken.Parse(msg);
-                                if (token is Newtonsoft.Json.Linq.JObject obj)
-                                {
-                                    type = obj.Value<string>("type");
-                                    if (string.Equals(type, "updateStoryPoints", StringComparison.OrdinalIgnoreCase))
-                                    {
-                                        id = obj.Value<string>("id") ?? Details.Id;
-                                        val = obj.Value<double?>("value") ?? 0;
-                                        handleSP = true;
-                                    }
-                                    else if (string.Equals(type, "updateState", StringComparison.OrdinalIgnoreCase))
-                                    {
-                                        id = obj.Value<string>("id") ?? Details.Id;
-                                        stateId = obj.Value<string>("stateId") ?? obj.Value<string>("state_id");
-                                        handleState = true;
-                                    }
-                                    else if (string.Equals(type, "ready", StringComparison.OrdinalIgnoreCase))
-                                    {
-                                        handleReady = true;
-                                    }
-                                    else
-                                    {
-                                        return;
-                                    }
-                                }
-                                else if (token is Newtonsoft.Json.Linq.JValue jv && jv.Type == Newtonsoft.Json.Linq.JTokenType.String)
-                                {
-                                    var inner = jv.ToString() ?? "";
-                                    var innerTok = Newtonsoft.Json.Linq.JToken.Parse(inner);
-                                    if (innerTok is Newtonsoft.Json.Linq.JObject jobj)
-                                    {
-                                        type = jobj.Value<string>("type");
-                                        if (string.Equals(type, "updateStoryPoints", StringComparison.OrdinalIgnoreCase))
-                                        {
-                                            id = jobj.Value<string>("id") ?? Details.Id;
-                                            val = jobj.Value<double?>("value") ?? 0;
-                                            handleSP = true;
-                                        }
-                                        else if (string.Equals(type, "updateState", StringComparison.OrdinalIgnoreCase))
-                                        {
-                                            id = jobj.Value<string>("id") ?? Details.Id;
-                                            stateId = jobj.Value<string>("stateId") ?? jobj.Value<string>("state_id");
-                                            handleState = true;
-                                        }
-                                        else if (string.Equals(type, "ready", StringComparison.OrdinalIgnoreCase))
-                                        {
-                                            handleReady = true;
-                                        }
-                                        else
-                                        {
-                                            return;
-                                        }
-                                    }
-                                    else
-                                    {
-                                        var parts = inner.Split('|');
-                                        if (parts.Length >= 2 && parts[0] == "updateStoryPoints")
-                                        {
-                                            id = parts[1];
-                                            double.TryParse(parts.Length > 2 ? parts[2] : "0", out val);
-                                            handleSP = true;
-                                        }
-                                        else if (parts.Length >= 2 && parts[0] == "updateState")
-                                        {
-                                            id = parts[1];
-                                            stateId = parts.Length > 2 ? parts[2] : null;
-                                            handleState = true;
-                                        }
-                                        else if (parts.Length >= 1 && parts[0] == "ready")
-                                        {
-                                            handleReady = true;
-                                        }
-                                        else
-                                        {
-                                            return;
-                                        }
-                                    }
-                                }
-                                else
-                                {
-                                    return;
-                                }
-                            }
-                            catch
-                            {
-                                return;
-                            }
-                            if (handleReady)
-                            {
-                                try { await InitializeStateDropdownAsync(); } catch { }
-                            }
-                            if (handleSP)
-                            {
-                                if (val < 0) val = 0;
-                                if (string.IsNullOrWhiteSpace(id)) id = Details.Id;
-                                if (Math.Abs(Details.StoryPoints - val) < 1e-3) 
-                                    return;
-                                try
-                                {
-                                    var ok = await _api.UpdateWorkItemStoryPointsAsync(id, val);
-                                    if (ok)
-                                    {
-                                        Details.StoryPoints = val;
-                                        var script = "try{var ip=document.getElementById('spInput');if(ip){ip.value='" + val.ToString("0.##") + "';}}catch(e){}";
-                                        await DetailsWeb.CoreWebView2.ExecuteScriptAsync(script);
-                                    }
-                                }
-                                catch
-                                {
-                                }
-                            }
-                            else if (handleState)
-                            {
-                                if (string.IsNullOrWhiteSpace(id)) id = Details.Id;
-                                if (string.IsNullOrWhiteSpace(stateId)) return;
-                                try
-                                {
-                                    var ok = await _api.UpdateWorkItemStateByIdAsync(id, stateId);
-                                    if (ok)
-                                    {
-                                        var st = _availableStates?.FirstOrDefault(s => string.Equals(s?.Id ?? "", stateId ?? "", StringComparison.OrdinalIgnoreCase));
-                                        var newName = st?.Name ?? Details.StateName;
-                                        var newType = st?.Type ?? Details.StateType;
-                                        Details.StateName = newName;
-                                        Details.StateType = newType;
-                                        Details.StateId = stateId;
-                                        await RefreshAvailableStatesAndUpdateDropdownAsync();
-                                    }
-                                }
-                                catch
-                                {
-                                }
-                            }
-                        }
-                        catch
-                        {
-                        }
-                    };
-                    core.NavigationCompleted += async (sender, args) =>
-                    {
-                        try { ShowLoading(false); await InitializeStateDropdownAsync(); } catch { }
-                    };
-                    core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.Image);
-                    core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.Media);
-                    core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.XmlHttpRequest);
-                    core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
-                    core.WebResourceRequested += async (sender, args) =>
-                    {
-                        try
-                        {
-                            var uri = new Uri(args.Request.Uri);
-                            var host = (uri.Host ?? "").ToLowerInvariant();
-                            var path = (uri.AbsolutePath ?? "").ToLowerInvariant();
-                            var isAtlasPublic = host.Contains("atlas.pingcode.com") || path.Contains("/files/public/");
-                            if (isAtlasPublic && args.ResourceContext == CoreWebView2WebResourceContext.Image)
-                            {
-                                try
-                                {
-                                    args.Request.Headers.SetHeader("Referer", "https://pingcode.com/");
-                                    args.Request.Headers.SetHeader("Origin", "https://pingcode.com");
-                                    args.Request.Headers.SetHeader("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8");
-                                }
-                                catch
-                                {
-                                }
-                            }
-                            var isPingCodeDomain = host.Equals("pingcode.com") || host.EndsWith(".pingcode.com");
-                            if (isPingCodeDomain)
-                            {
-                                var tk = await _api.GetAccessTokenAsync();
-                                if (!string.IsNullOrWhiteSpace(tk))
-                                {
-                                    args.Request.Headers.SetHeader("Authorization", $"Bearer {tk}");
-                                }
-                            }
-                        }
-                        catch
-                        {
-                        }
-                    };
-                    core.NewWindowRequested += (sender, e) =>
-                    {
-                        try
-                        {
-                            var url = e.Uri ?? "";
-                            if (string.IsNullOrWhiteSpace(url)) return;
-                            var lower = url.ToLowerInvariant();
-                            if ((lower.StartsWith("http://") || lower.StartsWith("https://")))
-                            {
-                                if ((lower.Contains("pingcode.com") || lower.Contains(".pingcode.com")) && !lower.Contains("access_token=") && !string.IsNullOrWhiteSpace(_accessToken))
-                                {
-                                    url = url.Contains("?") ? $"{url}&access_token={Uri.EscapeDataString(_accessToken)}" : $"{url}?access_token={Uri.EscapeDataString(_accessToken)}";
-                                }
-                                e.Handled = true;
-                                try
-                                {
-                                    var psi = new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true };
-                                    System.Diagnostics.Process.Start(psi);
-                                }
-                                catch
-                                {
-                                }
-                            }
-                        }
-                        catch
-                        {
-                        }
-                    };
-                    core.NavigationStarting += async (sender, args) =>
-                    {
-                        try
-                        {
-                            var u = args.Uri ?? "";
-                            if (u.StartsWith("pm://", StringComparison.OrdinalIgnoreCase))
-                            {
-                                args.Cancel = true;
-                                var uri = new Uri(u);
-                                var host = (uri.Host ?? "").ToLowerInvariant();
-                                if (host == "workitem")
-                                {
-                                    var id = uri.AbsolutePath.Trim('/');
-                                    if (string.IsNullOrWhiteSpace(id))
-                                    {
-                                        id = GetQueryParam(uri, "id");
-                                    }
-                                    if (!string.IsNullOrWhiteSpace(id))
-                                    {
-                                        try
-                                        {
-                                            var parentDetails = await _api.GetWorkItemDetailsAsync(id);
-                                            if (parentDetails != null)
-                                            {
-                                                var win = new WorkItemDetailsWindow(parentDetails, _api);
-                                                win.Owner = this;
-                                                win.ShowDialog();
-                                            }
-                                        }
-                                        catch
-                                        {
-                                        }
-                                    }
-                                }
-                            } 
-                            else if (u.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || u.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
-                            {
-                                args.Cancel = true;
-                                var url = u;
-                                try
-                                {
-                                    var lower = url.ToLowerInvariant();
-                                    if ((lower.Contains("pingcode.com") || lower.Contains(".pingcode.com")) && !lower.Contains("access_token=") && !string.IsNullOrWhiteSpace(_accessToken))
-                                    {
-                                        url = url.Contains("?") ? $"{url}&access_token={Uri.EscapeDataString(_accessToken)}" : $"{url}?access_token={Uri.EscapeDataString(_accessToken)}";
-                                    }
-                                    var psi = new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true };
-                                    System.Diagnostics.Process.Start(psi);
-                                }
-                                catch
-                                {
-                                }
-                            }
-                        }
-                        catch
-                        {
-                        }
-                    };
-                    
-                    var loadingHtml = BuildLoadingHtml();
-                    DetailsWeb.CoreWebView2.NavigateToString(loadingHtml);
-                    
-                    _accessToken = await _api.GetAccessTokenAsync();
-                    var html = await Task.Run(() => BuildHtml());
-                    DetailsWeb.CoreWebView2.NavigateToString(html);
-                    await InitializeStateDropdownAsync();
+                    var core = await InitializeWebViewAsync();
+                    await InjectDomReadyBridgeScript(core);
+                    RegisterCoreEvents(core);
+                    await NavigateAndInitAsync();
                 }
                 catch
                 {
                     try { ShowLoading(false); } catch { }
                 }
             };
+        }
+        
+        private async Task<CoreWebView2> InitializeWebViewAsync()
+        {
+            var dataService = new DataPersistenceService();
+            var userDataFolder = System.IO.Path.Combine(dataService.GetDataFolderPath(), "WebView2Cache");
+            System.IO.Directory.CreateDirectory(userDataFolder);
+            var env = await CoreWebView2Environment.CreateAsync(null, userDataFolder);
+            await DetailsWeb.EnsureCoreWebView2Async(env);
+            var core = DetailsWeb.CoreWebView2;
+            core.Settings.IsWebMessageEnabled = true;
+            return core;
+        }
+        
+        private string BuildDocBridgeScript()
+        {
+            var wi = JsEscape(Details.Id ?? "");
+            var docJs = "(function(){try{function pv(v){try{var n=parseFloat(v);if(isNaN(n)||n<0){return 0;}return n;}catch(e){return 0;}}function bind(){try{if(window.__pm_bind_done){return;}window.__pm_bind_done=true;var ip=document.getElementById('spInput');if(ip){ip.addEventListener('blur',function(){try{var val=pv(ip.value);if(window.chrome&&window.chrome.webview){window.chrome.webview.postMessage({type:'updateStoryPoints',id:'" + wi + "',value:val});}}catch(e){}});ip.addEventListener('keydown',function(e){if(e.key==='Enter'){try{var val=pv(ip.value);if(window.chrome&&window.chrome.webview){window.chrome.webview.postMessage({type:'updateStoryPoints',id:'" + wi + "',value:val});}}catch(e){}}});}var sel=document.getElementById('stateSelect');if(sel){sel.addEventListener('change',function(){try{var val=sel&&sel.value;if(val&&window.chrome&&window.chrome.webview){window.chrome.webview.postMessage({type:'updateState',id:'" + wi + "',stateId:val});}}catch(e){}});} }catch(e){}}document.addEventListener('DOMContentLoaded',function(){try{bind();var has=document.getElementById('stateSelect')||document.getElementById('spInput');if(has&&window.chrome&&window.chrome.webview){window.chrome.webview.postMessage({type:'ready',id:'" + wi + "'});}}catch(e){}});document.addEventListener('readystatechange',function(){try{if(document.readyState==='interactive'||document.readyState==='complete'){bind();var has=document.getElementById('stateSelect')||document.getElementById('spInput');if(has&&window.chrome&&window.chrome.webview){window.chrome.webview.postMessage({type:'ready',id:'" + wi + "'});}}}catch(e){}});}catch(e){}})();";
+            return docJs;
+        }
+        
+        private async Task InjectDomReadyBridgeScript(CoreWebView2 core)
+        {
+            try
+            {
+                var mi = core.GetType().GetMethod("AddScriptToExecuteOnDocumentCreated");
+                var docJs = BuildDocBridgeScript();
+                if (mi != null)
+                {
+                    mi.Invoke(core, new object[] { docJs });
+                    _docBridgeInjectedOnDocumentCreated = true;
+                }
+                else
+                {
+                    await DetailsWeb.CoreWebView2.ExecuteScriptAsync(docJs);
+                    _docBridgeInjectedOnDocumentCreated = false;
+                }
+            }
+            catch
+            {
+            }
+        }
+        
+        private void RegisterCoreEvents(CoreWebView2 core)
+        {
+            core.WebMessageReceived += async (sender, args) =>
+            {
+                try
+                {
+                    var msg = args.WebMessageAsJson ?? "";
+                    if (string.IsNullOrWhiteSpace(msg)) return;
+                    double val = 0;
+                    string id = Details.Id;
+                    string type = null;
+                    string stateId = null;
+                    bool handleSP = false;
+                    bool handleState = false;
+                    bool handleReady = false;
+                    try
+                    {
+                        var token = Newtonsoft.Json.Linq.JToken.Parse(msg);
+                        if (token is Newtonsoft.Json.Linq.JObject obj)
+                        {
+                            type = obj.Value<string>("type");
+                            if (string.Equals(type, "updateStoryPoints", StringComparison.OrdinalIgnoreCase))
+                            {
+                                id = obj.Value<string>("id") ?? Details.Id;
+                                val = obj.Value<double?>("value") ?? 0;
+                                handleSP = true;
+                            }
+                            else if (string.Equals(type, "updateState", StringComparison.OrdinalIgnoreCase))
+                            {
+                                id = obj.Value<string>("id") ?? Details.Id;
+                                stateId = obj.Value<string>("stateId") ?? obj.Value<string>("state_id");
+                                handleState = true;
+                            }
+                            else if (string.Equals(type, "ready", StringComparison.OrdinalIgnoreCase))
+                            {
+                                handleReady = true;
+                            }
+                            else
+                            {
+                                return;
+                            }
+                        }
+                        else if (token is Newtonsoft.Json.Linq.JValue jv && jv.Type == Newtonsoft.Json.Linq.JTokenType.String)
+                        {
+                            var inner = jv.ToString() ?? "";
+                            var innerTok = Newtonsoft.Json.Linq.JToken.Parse(inner);
+                            if (innerTok is Newtonsoft.Json.Linq.JObject jobj)
+                            {
+                                type = jobj.Value<string>("type");
+                                if (string.Equals(type, "updateStoryPoints", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    id = jobj.Value<string>("id") ?? Details.Id;
+                                    val = jobj.Value<double?>("value") ?? 0;
+                                    handleSP = true;
+                                }
+                                else if (string.Equals(type, "updateState", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    id = jobj.Value<string>("id") ?? Details.Id;
+                                    stateId = jobj.Value<string>("stateId") ?? jobj.Value<string>("state_id");
+                                    handleState = true;
+                                }
+                                else if (string.Equals(type, "ready", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    handleReady = true;
+                                }
+                                else
+                                {
+                                    return;
+                                }
+                            }
+                            else
+                            {
+                                var parts = inner.Split('|');
+                                if (parts.Length >= 2 && parts[0] == "updateStoryPoints")
+                                {
+                                    id = parts[1];
+                                    double.TryParse(parts.Length > 2 ? parts[2] : "0", out val);
+                                    handleSP = true;
+                                }
+                                else if (parts.Length >= 2 && parts[0] == "updateState")
+                                {
+                                    id = parts[1];
+                                    stateId = parts.Length > 2 ? parts[2] : null;
+                                    handleState = true;
+                                }
+                                else if (parts.Length >= 1 && parts[0] == "ready")
+                                {
+                                    handleReady = true;
+                                }
+                                else
+                                {
+                                    return;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            return;
+                        }
+                    }
+                    catch
+                    {
+                        return;
+                    }
+                    if (handleReady)
+                    {
+                        try { await InitializeStateDropdownAsync(); } catch { }
+                    }
+                    if (handleSP)
+                    {
+                        if (val < 0) val = 0;
+                        if (string.IsNullOrWhiteSpace(id)) id = Details.Id;
+                        if (Math.Abs(Details.StoryPoints - val) < 1e-3) 
+                            return;
+                        try
+                        {
+                            var ok = await _api.UpdateWorkItemStoryPointsAsync(id, val);
+                            if (ok)
+                            {
+                                Details.StoryPoints = val;
+                                var script = "try{var ip=document.getElementById('spInput');if(ip){ip.value='" + val.ToString("0.##") + "';}}catch(e){}";
+                                await DetailsWeb.CoreWebView2.ExecuteScriptAsync(script);
+                            }
+                        }
+                        catch
+                        {
+                        }
+                    }
+                    else if (handleState)
+                    {
+                        if (string.IsNullOrWhiteSpace(id)) id = Details.Id;
+                        if (string.IsNullOrWhiteSpace(stateId)) return;
+                        try
+                        {
+                            var ok = await _api.UpdateWorkItemStateByIdAsync(id, stateId);
+                            if (ok)
+                            {
+                                var st = _availableStates?.FirstOrDefault(s => string.Equals(s?.Id ?? "", stateId ?? "", StringComparison.OrdinalIgnoreCase));
+                                var newName = st?.Name ?? Details.StateName;
+                                var newType = st?.Type ?? Details.StateType;
+                                Details.StateName = newName;
+                                Details.StateType = newType;
+                                Details.StateId = stateId;
+                                await RefreshAvailableStatesAndUpdateDropdownAsync();
+                            }
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }
+                catch
+                {
+                }
+            };
+            core.NavigationCompleted += async (sender, args) =>
+            {
+                try 
+                { 
+                    ShowLoading(false); 
+                    if (!_docBridgeInjectedOnDocumentCreated)
+                    {
+                        try { await DetailsWeb.CoreWebView2.ExecuteScriptAsync(BuildDocBridgeScript()); } catch { }
+                    }
+                    await InitializeStateDropdownAsync(); 
+                } 
+                catch 
+                { 
+                }
+            };
+            core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.Image);
+            core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.Media);
+            core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.XmlHttpRequest);
+            core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
+            core.WebResourceRequested += async (sender, args) =>
+            {
+                try
+                {
+                    var uri = new Uri(args.Request.Uri);
+                    var host = (uri.Host ?? "").ToLowerInvariant();
+                    var path = (uri.AbsolutePath ?? "").ToLowerInvariant();
+                    var isAtlasPublic = host.Contains("atlas.pingcode.com") || path.Contains("/files/public/");
+                    if (isAtlasPublic && args.ResourceContext == CoreWebView2WebResourceContext.Image)
+                    {
+                        try
+                        {
+                            args.Request.Headers.SetHeader("Referer", "https://pingcode.com/");
+                            args.Request.Headers.SetHeader("Origin", "https://pingcode.com");
+                            args.Request.Headers.SetHeader("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8");
+                        }
+                        catch
+                        {
+                        }
+                    }
+                    var isPingCodeDomain = host.Equals("pingcode.com") || host.EndsWith(".pingcode.com");
+                    if (isPingCodeDomain)
+                    {
+                        var tk = await _api.GetAccessTokenAsync();
+                        if (!string.IsNullOrWhiteSpace(tk))
+                        {
+                            args.Request.Headers.SetHeader("Authorization", $"Bearer {tk}");
+                        }
+                    }
+                }
+                catch
+                {
+                }
+            };
+            core.NewWindowRequested += (sender, e) =>
+            {
+                try
+                {
+                    var url = e.Uri ?? "";
+                    if (string.IsNullOrWhiteSpace(url)) return;
+                    var lower = url.ToLowerInvariant();
+                    if ((lower.StartsWith("http://") || lower.StartsWith("https://")))
+                    {
+                        if ((lower.Contains("pingcode.com") || lower.Contains(".pingcode.com")) && !lower.Contains("access_token=") && !string.IsNullOrWhiteSpace(_accessToken))
+                        {
+                            url = url.Contains("?") ? $"{url}&access_token={Uri.EscapeDataString(_accessToken)}" : $"{url}?access_token={Uri.EscapeDataString(_accessToken)}";
+                        }
+                        e.Handled = true;
+                        try
+                        {
+                            var psi = new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true };
+                            System.Diagnostics.Process.Start(psi);
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }
+                catch
+                {
+                }
+            };
+            core.NavigationStarting += async (sender, args) =>
+            {
+                try
+                {
+                    var u = args.Uri ?? "";
+                    if (u.StartsWith("pm://", StringComparison.OrdinalIgnoreCase))
+                    {
+                        args.Cancel = true;
+                        var uri = new Uri(u);
+                        var host = (uri.Host ?? "").ToLowerInvariant();
+                        if (host == "workitem")
+                        {
+                            var id = uri.AbsolutePath.Trim('/');
+                            if (string.IsNullOrWhiteSpace(id))
+                            {
+                                id = GetQueryParam(uri, "id");
+                            }
+                            if (!string.IsNullOrWhiteSpace(id))
+                            {
+                                try
+                                {
+                                    var parentDetails = await _api.GetWorkItemDetailsAsync(id);
+                                    if (parentDetails != null)
+                                    {
+                                        var win = new WorkItemDetailsWindow(parentDetails, _api);
+                                        win.Owner = this;
+                                        win.ShowDialog();
+                                    }
+                                }
+                                catch
+                                {
+                                }
+                            }
+                        }
+                    } 
+                    else if (u.StartsWith("http://", StringComparison.OrdinalIgnoreCase) || u.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                    {
+                        args.Cancel = true;
+                        var url = u;
+                        try
+                        {
+                            var lower = url.ToLowerInvariant();
+                            if ((lower.Contains("pingcode.com") || lower.Contains(".pingcode.com")) && !lower.Contains("access_token=") && !string.IsNullOrWhiteSpace(_accessToken))
+                            {
+                                url = url.Contains("?") ? $"{url}&access_token={Uri.EscapeDataString(_accessToken)}" : $"{url}?access_token={Uri.EscapeDataString(_accessToken)}";
+                            }
+                            var psi = new System.Diagnostics.ProcessStartInfo(url) { UseShellExecute = true };
+                            System.Diagnostics.Process.Start(psi);
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }
+                catch
+                {
+                }
+            };
+        }
+        
+        private async Task NavigateAndInitAsync()
+        {
+            var loadingHtml = BuildLoadingHtml();
+            DetailsWeb.CoreWebView2.NavigateToString(loadingHtml);
+            _accessToken = await _api.GetAccessTokenAsync();
+            var html = await Task.Run(() => BuildHtml());
+            DetailsWeb.CoreWebView2.NavigateToString(html);
+            await InitializeStateDropdownAsync();
         }
         
         private string HtmlEscape(string s) => System.Net.WebUtility.HtmlEncode(s ?? "");
