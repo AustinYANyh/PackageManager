@@ -375,13 +375,63 @@ namespace PackageManager.Services
                 var url = UpdateSummaryBaseUrl.TrimEnd('/') + "/UpdateSummary.txt";
                 using (var client = new WebClient())
                 {
-                    return await client.DownloadStringTaskAsync(new Uri(url));
+                    var data = await client.DownloadDataTaskAsync(new Uri(url));
+                    return DecodeSummaryBytes(data);
                 }
             }
             catch
             {
                 return null;
             }
+        }
+        
+        private static string DecodeSummaryBytes(byte[] bytes)
+        {
+            if (bytes == null || bytes.Length == 0) return null;
+            if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF)
+            {
+                return Encoding.UTF8.GetString(bytes, 3, bytes.Length - 3);
+            }
+            if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE)
+            {
+                return Encoding.Unicode.GetString(bytes, 2, bytes.Length - 2);
+            }
+            if (bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF)
+            {
+                return Encoding.BigEndianUnicode.GetString(bytes, 2, bytes.Length - 2);
+            }
+            try
+            {
+                var utf8Strict = new UTF8Encoding(false, true);
+                return utf8Strict.GetString(bytes);
+            }
+            catch
+            {
+            }
+            try
+            {
+                return Encoding.Default.GetString(bytes);
+            }
+            catch
+            {
+            }
+            try
+            {
+                var enc = Encoding.GetEncoding(936);
+                return enc.GetString(bytes);
+            }
+            catch
+            {
+            }
+            try
+            {
+                var enc = Encoding.GetEncoding(54936);
+                return enc.GetString(bytes);
+            }
+            catch
+            {
+            }
+            return Encoding.UTF8.GetString(bytes);
         }
     }
 }
