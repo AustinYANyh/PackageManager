@@ -61,6 +61,7 @@ namespace PackageManager.Views
         private bool _refreshing;
         
         public ObservableCollection<PingCodeApiService.Entity> Members { get; } = new ObservableCollection<PingCodeApiService.Entity>();
+        public ObservableCollection<string> Participants { get; } = new ObservableCollection<string>();
         
         private PingCodeApiService.Entity _selectedMember;
         public PingCodeApiService.Entity SelectedMember
@@ -72,6 +73,21 @@ namespace PackageManager.Views
                 {
                     _selectedMember = value;
                     OnPropertyChanged(nameof(SelectedMember));
+                    ApplyFilterAndBuildColumns();
+                }
+            }
+        }
+        
+        private string _selectedParticipant;
+        public string SelectedParticipant
+        {
+            get => _selectedParticipant;
+            set
+            {
+                if (!string.Equals(_selectedParticipant, value, StringComparison.Ordinal))
+                {
+                    _selectedParticipant = value;
+                    OnPropertyChanged(nameof(SelectedParticipant));
                     ApplyFilterAndBuildColumns();
                 }
             }
@@ -119,6 +135,8 @@ namespace PackageManager.Views
                 _allItems = await _api.GetIterationWorkItemsAsync(_iterationId);
                 RebuildMembersFromItems();
                 SelectedMember = Members.FirstOrDefault();
+                RebuildParticipantsFromItems();
+                SelectedParticipant = Participants.FirstOrDefault();
                 ApplyFilterAndBuildColumns();
                 
             }
@@ -171,22 +189,56 @@ namespace PackageManager.Views
             }
         }
         
+        private void RebuildParticipantsFromItems()
+        {
+            try
+            {
+                var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var it in _allItems ?? Enumerable.Empty<PingCodeApiService.WorkItemInfo>())
+                {
+                    foreach (var nm in it.ParticipantNames ?? new List<string>())
+                    {
+                        var name = (nm ?? "").Trim();
+                        if (!string.IsNullOrWhiteSpace(name)) set.Add(name);
+                    }
+                }
+                var list = new List<string> { "无" };
+                list.AddRange(set.OrderBy(x => x));
+                Participants.Clear();
+                foreach (var p in list)
+                {
+                    Participants.Add(p);
+                }
+            }
+            catch
+            {
+            }
+        }
+        
         
         
         private IEnumerable<PingCodeApiService.WorkItemInfo> ApplyCurrentFilter(IEnumerable<PingCodeApiService.WorkItemInfo> items)
         {
-            if (SelectedMember == null || SelectedMember.Id == "*" || (SelectedMember.Name ?? "").Trim() == "全部")
+            IEnumerable<PingCodeApiService.WorkItemInfo> filtered = items;
+            var participantActive = !string.IsNullOrWhiteSpace(SelectedParticipant) && !string.Equals(SelectedParticipant.Trim(), "无", StringComparison.OrdinalIgnoreCase);
+            if (participantActive)
             {
-                return items;
+                var target = SelectedParticipant.Trim();
+                filtered = filtered.Where(i => (i.ParticipantNames ?? new List<string>()).Any(n => string.Equals((n ?? "").Trim(), target, StringComparison.OrdinalIgnoreCase)));
+                return filtered;
             }
-            var id = (SelectedMember.Id ?? "").Trim().ToLowerInvariant();
-            var nm = (SelectedMember.Name ?? "").Trim().ToLowerInvariant();
-            return items.Where(i =>
+            if (!(SelectedMember == null || SelectedMember.Id == "*" || (SelectedMember.Name ?? "").Trim() == "全部"))
             {
-                var iid = (i.AssigneeId ?? "").Trim().ToLowerInvariant();
-                var inm = (i.AssigneeName ?? "").Trim().ToLowerInvariant();
-                return (!string.IsNullOrEmpty(iid) && iid == id) || (!string.IsNullOrEmpty(inm) && inm == nm);
-            });
+                var id = (SelectedMember.Id ?? "").Trim().ToLowerInvariant();
+                var nm = (SelectedMember.Name ?? "").Trim().ToLowerInvariant();
+                filtered = filtered.Where(i =>
+                {
+                    var iid = (i.AssigneeId ?? "").Trim().ToLowerInvariant();
+                    var inm = (i.AssigneeName ?? "").Trim().ToLowerInvariant();
+                    return (!string.IsNullOrEmpty(iid) && iid == id) || (!string.IsNullOrEmpty(inm) && inm == nm);
+                });
+            }
+            return filtered;
         }
         private async Task RefreshWorkItemsAsync()
         {
@@ -201,6 +253,12 @@ namespace PackageManager.Views
                 if (prev != null && Members.Any(m => string.Equals(m.Id, prev.Id, StringComparison.OrdinalIgnoreCase)))
                 {
                     SelectedMember = Members.First(m => string.Equals(m.Id, prev.Id, StringComparison.OrdinalIgnoreCase));
+                }
+                var prevP = SelectedParticipant;
+                RebuildParticipantsFromItems();
+                if (!string.IsNullOrWhiteSpace(prevP) && Participants.Any(p => string.Equals(p, prevP, StringComparison.OrdinalIgnoreCase)))
+                {
+                    SelectedParticipant = prevP;
                 }
                 ApplyFilterAndBuildColumns();
             }
@@ -299,6 +357,7 @@ namespace PackageManager.Views
         }
         
         private void MemberCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e) { }
+        private void ParticipantCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e) { }
         
         private void CloseButton_Click(object sender, RoutedEventArgs e)
         {

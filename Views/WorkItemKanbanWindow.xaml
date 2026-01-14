@@ -28,6 +28,11 @@
                                             DisplayMemberPath="Name"
                                             SelectedItem="{Binding SelectedMember, Mode=TwoWay}"
                                             SelectionChanged="MemberCombo_SelectionChanged" />
+                        <controls:CTextBlock Text="参与者" Width="60" VerticalAlignment="Center" Margin="12,0,0,0" />
+                        <controls:CComboBox Width="220" Height="35"
+                                            ItemsSource="{Binding Participants}"
+                                            SelectedValue="{Binding SelectedParticipant, Mode=TwoWay}"
+                                            SelectionChanged="ParticipantCombo_SelectionChanged" />
                     </StackPanel>
                 </StackPanel>
                 

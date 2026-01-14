@@ -67,6 +67,8 @@ namespace PackageManager.Services
             public DateTime? EndAt { get; set; }
             public int CommentCount { get; set; }
             public List<string> Tags { get; set; } = new List<string>();
+            public List<string> ParticipantIds { get; set; } = new List<string>();
+            public List<string> ParticipantNames { get; set; } = new List<string>();
         }
         
         public class WorkItemDetails
@@ -884,6 +886,16 @@ namespace PackageManager.Services
                             var type = d.Type;
                             var htmlUrl = d.HtmlUrl;
                             var tagNames = (d.Tags ?? new List<TagDto>()).Select(t => t?.Name).Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
+                            var partIds = (d.Participants ?? new List<ParticipantDto>())
+                                          .Select(p => FirstNonEmpty(p?.User?.Id, p?.Id))
+                                          .Where(s => !string.IsNullOrWhiteSpace(s))
+                                          .Distinct(StringComparer.OrdinalIgnoreCase)
+                                          .ToList();
+                            var partNames = (d.Participants ?? new List<ParticipantDto>())
+                                            .Select(p => FirstNonEmpty(p?.User?.DisplayName, p?.User?.Name))
+                                            .Where(s => !string.IsNullOrWhiteSpace(s))
+                                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                                            .ToList();
                             var wi = new WorkItemInfo
                             {
                                 Id = d.Id ?? d.ShortId,
@@ -904,7 +916,9 @@ namespace PackageManager.Services
                                 StartAt = startAt,
                                 EndAt = endAt,
                                 CommentCount = commentCount,
-                                Tags = tagNames
+                                Tags = tagNames,
+                                ParticipantIds = partIds,
+                                ParticipantNames = partNames
                             };
                             result.Add(wi);
                         }
