@@ -201,6 +201,11 @@ namespace PackageManager.Views
                         var name = (nm ?? "").Trim();
                         if (!string.IsNullOrWhiteSpace(name)) set.Add(name);
                     }
+                    foreach (var nm in it.WatcherNames ?? new List<string>())
+                    {
+                        var name = (nm ?? "").Trim();
+                        if (!string.IsNullOrWhiteSpace(name)) set.Add(name);
+                    }
                 }
                 var list = new List<string> { "无" };
                 list.AddRange(set.OrderBy(x => x));
@@ -224,7 +229,10 @@ namespace PackageManager.Views
             if (participantActive)
             {
                 var target = SelectedParticipant.Trim();
-                filtered = filtered.Where(i => (i.ParticipantNames ?? new List<string>()).Any(n => string.Equals((n ?? "").Trim(), target, StringComparison.OrdinalIgnoreCase)));
+                filtered = filtered.Where(i =>
+                    (i.ParticipantNames ?? new List<string>()).Any(n => string.Equals((n ?? "").Trim(), target, StringComparison.OrdinalIgnoreCase)) ||
+                    (i.WatcherNames ?? new List<string>()).Any(n => string.Equals((n ?? "").Trim(), target, StringComparison.OrdinalIgnoreCase))
+                );
                 return filtered;
             }
             if (!(SelectedMember == null || SelectedMember.Id == "*" || (SelectedMember.Name ?? "").Trim() == "全部"))

@@ -69,6 +69,8 @@ namespace PackageManager.Services
             public List<string> Tags { get; set; } = new List<string>();
             public List<string> ParticipantIds { get; set; } = new List<string>();
             public List<string> ParticipantNames { get; set; } = new List<string>();
+            public List<string> WatcherIds { get; set; } = new List<string>();
+            public List<string> WatcherNames { get; set; } = new List<string>();
         }
         
         public class WorkItemDetails
@@ -420,7 +422,7 @@ namespace PackageManager.Services
             {
                 return "测试中";
             }
-            if (s.Contains("progress") || s.Contains("进行中") || s.Contains("doing") || s.Contains("开发中") || s.Contains("处理中") ||
+            if (s.Contains("progress") || s.Contains("进行中") || s.Contains("doing") || s.Contains("开发中") || s.Contains("处理中") || s.Contains("挂起") ||
                 s.Contains("in_progress"))
             {
                 return "进行中";
@@ -828,6 +830,8 @@ namespace PackageManager.Services
         public async Task<List<WorkItemInfo>> GetIterationWorkItemsAsync(string iterationOrSprintId)
         {
             var result = new List<WorkItemInfo>();
+            var idNameMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var loadedProjects = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             if (string.IsNullOrWhiteSpace(iterationOrSprintId))
             {
                 return result;
@@ -858,11 +862,33 @@ namespace PackageManager.Services
                         var dtos = values.ToObject<List<WorkItemDto>>() ?? new List<WorkItemDto>();
                         foreach (var d in dtos)
                         {
+                            var projId = d.Project?.Id;
+                            if (!string.IsNullOrWhiteSpace(projId) && !loadedProjects.Contains(projId))
+                            {
+                                try
+                                {
+                                    var members = await GetProjectMembersAsync(projId);
+                                    foreach (var m in members ?? new List<Entity>())
+                                    {
+                                        var mid = (m?.Id ?? "").Trim();
+                                        var mname = (m?.Name ?? "").Trim();
+                                        if (!string.IsNullOrWhiteSpace(mid) && !string.IsNullOrWhiteSpace(mname))
+                                        {
+                                            idNameMap[mid] = mname;
+                                        }
+                                    }
+                                    loadedProjects.Add(projId);
+                                }
+                                catch
+                                {
+                                }
+                            }
                             var status = d.State?.Name;
                             var stateId = d.State?.Id;
                             var assigneeId = d.Assignee?.Id;
                             var assigneeName = !string.IsNullOrWhiteSpace(d.Assignee?.DisplayName) ? d.Assignee.DisplayName : d.Assignee?.Name;
                             var assigneeAvatar = d.Assignee?.Avatar;
+                            if (!string.IsNullOrWhiteSpace(assigneeId) && !string.IsNullOrWhiteSpace(assigneeName)) idNameMap[assigneeId] = assigneeName;
                             var prio = d.Priority?.Name;
                             var sp = d.StoryPoints ?? 0;
                             var severity = "";
@@ -896,6 +922,133 @@ namespace PackageManager.Services
                                             .Where(s => !string.IsNullOrWhiteSpace(s))
                                             .Distinct(StringComparer.OrdinalIgnoreCase)
                                             .ToList();
+                            foreach (var p in d.Participants ?? new List<ParticipantDto>())
+                            {
+                                var uid = p?.User?.Id;
+                                var pid = p?.Id;
+                                var pnm = FirstNonEmpty(p?.User?.DisplayName, p?.User?.Name);
+                                if (!string.IsNullOrWhiteSpace(pnm))
+                                {
+                                    if (!string.IsNullOrWhiteSpace(uid)) idNameMap[uid] = pnm;
+                                    if (!string.IsNullOrWhiteSpace(pid)) idNameMap[pid] = pnm;
+                                }
+                            }
+                            if (!string.IsNullOrWhiteSpace(d.CreatedBy?.Id))
+                            {
+                                var nm = FirstNonEmpty(d.CreatedBy?.DisplayName, d.CreatedBy?.Name);
+                                if (!string.IsNullOrWhiteSpace(nm)) idNameMap[d.CreatedBy.Id] = nm;
+                            }
+                            if (!string.IsNullOrWhiteSpace(d.UpdatedBy?.Id))
+                            {
+                                var nm = FirstNonEmpty(d.UpdatedBy?.DisplayName, d.UpdatedBy?.Name);
+                                if (!string.IsNullOrWhiteSpace(nm)) idNameMap[d.UpdatedBy.Id] = nm;
+                            }
+                            var watcherIds = (d.Participants ?? new List<ParticipantDto>())
+                                .Where(p => !string.IsNullOrWhiteSpace(p?.Type) && (
+                                    string.Equals(p.Type, "watcher", StringComparison.OrdinalIgnoreCase) ||
+                                    string.Equals(p.Type, "关注者", StringComparison.OrdinalIgnoreCase) ||
+                                    p.Type.IndexOf("watch", StringComparison.OrdinalIgnoreCase) >= 0))
+                                .Select(p => FirstNonEmpty(p?.User?.Id, p?.Id))
+                                .Where(s => !string.IsNullOrWhiteSpace(s))
+                                .Distinct(StringComparer.OrdinalIgnoreCase)
+                                .ToList();
+                            var watcherNames = watcherIds.Select(id =>
+                            {
+                                string nm;
+                                return idNameMap.TryGetValue(id, out nm) ? nm : id;
+                            }).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                            var propPartIds = new List<string>();
+                            var propPartNames = new List<string>();
+                            if (d.Properties != null && d.Properties.TryGetValue("canyuzhe", out var pv) && pv != null)
+                            {
+                                try
+                                {
+                                    if (pv is JArray ja)
+                                    {
+                                        foreach (var x in ja)
+                                        {
+                                            var id = ExtractId(x);
+                                            var name = ExtractName(x);
+                                            if (!string.IsNullOrWhiteSpace(id))
+                                            {
+                                                propPartIds.Add(id);
+                                                string nm;
+                                                if (idNameMap.TryGetValue(id, out nm)) propPartNames.Add(nm);
+                                            }
+                                            else if (!string.IsNullOrWhiteSpace(name))
+                                            {
+                                                propPartNames.Add(name);
+                                            }
+                                        }
+                                    }
+                                    else
+                                    {
+                                        var txt = pv.ToString();
+                                        JArray parsed = null;
+                                        try { parsed = JArray.Parse(txt); } catch { }
+                                        if (parsed != null)
+                                        {
+                                            foreach (var x in parsed)
+                                            {
+                                                var id = ExtractId(x);
+                                                var name = ExtractName(x);
+                                                if (!string.IsNullOrWhiteSpace(id))
+                                                {
+                                                    propPartIds.Add(id);
+                                                    string nm;
+                                                    if (!string.IsNullOrWhiteSpace(name)) propPartNames.Add(name);
+                                                    else if (idNameMap.TryGetValue(id, out nm)) propPartNames.Add(nm);
+                                                }
+                                                else if (!string.IsNullOrWhiteSpace(name))
+                                                {
+                                                    propPartNames.Add(name);
+                                                }
+                                            }
+                                        }
+                                        else
+                                        {
+                                            var parts = txt.Split(new[] { ',', ';', '|', '\n', '\r', '\t', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                                            foreach (var s in parts.Select(x => x.Trim()).Where(x => !string.IsNullOrWhiteSpace(x)))
+                                            {
+                                                string nm;
+                                                if (idNameMap.TryGetValue(s, out nm))
+                                                {
+                                                    propPartIds.Add(s);
+                                                    propPartNames.Add(nm);
+                                                }
+                                                else
+                                                {
+                                                    if (s.Length >= 20)
+                                                    {
+                                                        propPartIds.Add(s);
+                                                        if (idNameMap.TryGetValue(s, out nm)) propPartNames.Add(nm);
+                                                    }
+                                                    else
+                                                    {
+                                                        propPartNames.Add(s);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                catch
+                                {
+                                }
+                            }
+                            foreach (var id in propPartIds)
+                            {
+                                string nm;
+                                if (!string.IsNullOrWhiteSpace(id) && idNameMap.TryGetValue(id, out nm))
+                                {
+                                    if (!partNames.Contains(nm, StringComparer.OrdinalIgnoreCase)) partNames.Add(nm);
+                                    if (!partIds.Contains(id)) partIds.Add(id);
+                                }
+                            }
+                            foreach (var nm in propPartNames.Where(x => !string.IsNullOrWhiteSpace(x)))
+                            {
+                                if (!partNames.Contains(nm, StringComparer.OrdinalIgnoreCase)) partNames.Add(nm);
+                            }
                             var wi = new WorkItemInfo
                             {
                                 Id = d.Id ?? d.ShortId,
@@ -918,7 +1071,9 @@ namespace PackageManager.Services
                                 CommentCount = commentCount,
                                 Tags = tagNames,
                                 ParticipantIds = partIds,
-                                ParticipantNames = partNames
+                                ParticipantNames = partNames,
+                                WatcherIds = watcherIds,
+                                WatcherNames = watcherNames
                             };
                             result.Add(wi);
                         }
