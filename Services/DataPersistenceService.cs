@@ -646,5 +646,10 @@ namespace PackageManager.Services
         /// 日志文本查看器
         /// </summary>
         public string LogTxtReader { get; set; } = "LogViewPro";
+        
+        /// <summary>
+        /// 产品日志页的日志等级选择
+        /// </summary>
+        public string ProductLogLevel { get; set; } = "ERROR";
     }
 }

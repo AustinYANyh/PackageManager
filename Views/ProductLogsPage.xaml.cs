@@ -40,7 +40,16 @@ namespace PackageManager.Views
             _applicationFinderService = new ApplicationFinderService();
             _settings = _dataPersistenceService.LoadSettings();
 
+            try
+            {
+                SelectedLogLevel = string.IsNullOrWhiteSpace(_settings?.ProductLogLevel) ? "ERROR" : _settings.ProductLogLevel;
+            }
+            catch
+            {
+                SelectedLogLevel = "ERROR";
+            }
             DataContext = this;
+            
             BaseDirText.Text = $"日志目录: {_baseDir}";
             RefreshLogs();
 
@@ -112,6 +121,16 @@ namespace PackageManager.Views
                 {
                     LoggingService.LogWarning("日志等级为空，未进行更新");
                     return;
+                }
+                
+                try
+                {
+                    _settings.ProductLogLevel = level;
+                    _dataPersistenceService.SaveSettings(_settings);
+                }
+                catch (Exception saveEx)
+                {
+                    LoggingService.LogError(saveEx,$"保存日志等级到设置失败：{saveEx.Message}");
                 }
                 var main = Application.Current?.MainWindow as PackageManager.MainWindow;
                 var packages = main?.Packages;
