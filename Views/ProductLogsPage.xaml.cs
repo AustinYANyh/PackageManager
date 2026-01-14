@@ -8,6 +8,7 @@ using System.Windows.Controls;
 using PackageManager.Models;
 using PackageManager.Services;
 using System.Text.RegularExpressions;
+using CustomControlLibrary.CustomControl.Attribute.ComboBox;
 
 namespace PackageManager.Views
 {
@@ -23,8 +24,12 @@ namespace PackageManager.Views
         public ObservableCollection<ProductLogInfo> ProductLogs { get; } = new ObservableCollection<ProductLogInfo>();
         public ObservableCollection<ProductLogInfo> RevitLogs { get; } = new ObservableCollection<ProductLogInfo>();
         public ObservableCollection<ApplicationVersion> RevitExecutableVersions { get; } = new ObservableCollection<ApplicationVersion>();
+        public ObservableCollection<string> LogLevels { get; } = new ObservableCollection<string>();
 
         public string SelectedRevitExecutableVersion { get; set; }
+
+        [ComboBox(["ALL", "ERROR", "WARN", "INFO"])]
+        public string SelectedLogLevel { get; set; } = "ERROR";
         
 
         public ProductLogsPage(string baseDir)
@@ -95,6 +100,72 @@ namespace PackageManager.Views
             {
                 LoggingService.LogError(ex, "刷新产品日志失败");
                 MessageBox.Show($"刷新产品日志失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void LogLevelCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            try
+            {
+                var level = SelectedLogLevel;
+                if (string.IsNullOrWhiteSpace(level))
+                {
+                    LoggingService.LogWarning("日志等级为空，未进行更新");
+                    return;
+                }
+                var main = Application.Current?.MainWindow as PackageManager.MainWindow;
+                var packages = main?.Packages;
+                if (packages == null)
+                {
+                    LoggingService.LogWarning("未获取包列表，无法更新日志等级");
+                    return;
+                }
+                foreach (var pkg in packages)
+                {
+                    var local = pkg?.EffectiveLocalPath;
+                    if (string.IsNullOrWhiteSpace(local))
+                    {
+                        LoggingService.LogWarning($"包 {pkg?.ProductName} 本地路径为空，跳过");
+                        continue;
+                    }
+                    if (!Directory.Exists(local))
+                    {
+                        LoggingService.LogWarning($"包 {pkg?.ProductName} 本地路径不存在：{local}，跳过");
+                        continue;
+                    }
+                    var configDir = Path.Combine(local, "config");
+                    if (!Directory.Exists(configDir))
+                    {
+                        LoggingService.LogWarning($"包 {pkg?.ProductName} 缺少 config 目录：{configDir}，跳过");
+                        continue;
+                    }
+                    var configPath = Path.Combine(configDir, "log4net.config");
+                    if (!File.Exists(configPath))
+                    {
+                        LoggingService.LogWarning($"包 {pkg?.ProductName} 缺少 log4net.config 文件：{configPath}，跳过");
+                        continue;
+                    }
+                    try
+                    {
+                        var text = File.ReadAllText(configPath);
+                        var replaced = Regex.Replace(text, "<\\s*level\\s+value\\s*=\\s*\"[^\"]+\"\\s*/\\s*>", $"<level value=\"{level}\" />", RegexOptions.IgnoreCase);
+                        if (!string.Equals(text, replaced, StringComparison.Ordinal))
+                        {
+                            File.WriteAllText(configPath, replaced);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        LoggingService.LogError(ex, $"更新 {pkg?.ProductName} 的 log4net.config 失败");
+                    }
+                    
+                    pkg.StatusText = $"已更新 {pkg.ProductName} 的日志等级为 {level}";
+                }
+                LoggingService.LogInfo($"已将所有包的日志等级设置为 {level}");
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, "切换日志等级时发生异常");
             }
         }
 
