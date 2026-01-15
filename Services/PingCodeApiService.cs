@@ -465,7 +465,7 @@ namespace PackageManager.Services
             {
                 return "已关闭";
             }
-            if (s.Contains("done") || s.Contains("完成") || s.Contains("resolved") || s.Contains("已完成"))
+            if (s.Contains("done") || s.Contains("完成") || s.Contains("resolved") || s.Contains("已完成") || s.Contains("已发布"))
             {
                 return "已完成";
             }
@@ -477,12 +477,12 @@ namespace PackageManager.Services
             {
                 return "测试中";
             }
-            if (s.Contains("progress") || s.Contains("进行中") || s.Contains("doing") || s.Contains("开发中") || s.Contains("处理中") || s.Contains("挂起") ||
+            if (s.Contains("重新打开") || s.Contains("progress") || s.Contains("进行中") || s.Contains("doing") || s.Contains("开发中") || s.Contains("处理中") || s.Contains("挂起") ||
                 s.Contains("in_progress"))
             {
                 return "进行中";
             }
-            if (s.Contains("未开始") || s.Contains("新建") || s.Contains("待处理") || s.Contains("todo"))
+            if (s.Contains("新提交") || s.Contains("打开") || s.Contains("未开始") || s.Contains("新建") || s.Contains("待处理") || s.Contains("todo"))
             {
                 return "未开始";
             }

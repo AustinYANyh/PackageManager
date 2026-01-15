@@ -59,6 +59,9 @@ namespace PackageManager.Views
         private List<PingCodeApiService.WorkItemInfo> _allItems = new List<PingCodeApiService.WorkItemInfo>();
         private readonly DispatcherTimer _refreshTimer;
         private bool _refreshing;
+        private readonly TimeSpan _baseRefreshInterval = TimeSpan.FromSeconds(20);
+        private readonly TimeSpan _fastRefreshInterval = TimeSpan.FromSeconds(5);
+        private DateTime _fastRefreshUntil = DateTime.MinValue;
         
         public ObservableCollection<PingCodeApiService.Entity> Members { get; } = new ObservableCollection<PingCodeApiService.Entity>();
         public ObservableCollection<string> Participants { get; } = new ObservableCollection<string>();
@@ -121,10 +124,15 @@ namespace PackageManager.Views
             WindowState = WindowState.Maximized;
             DataContext = this;
             Loaded += async (s, e) => await LoadWorkItemsAsync();
-            _refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(20) };
+            _refreshTimer = new DispatcherTimer { Interval = _baseRefreshInterval };
             _refreshTimer.Tick += async (s, e) => await RefreshWorkItemsAsync();
             _refreshTimer.Start();
             Closed += (s, e) => _refreshTimer.Stop();
+        }
+        
+        private void SetRefreshInterval(TimeSpan interval)
+        {
+            if (_refreshTimer != null) _refreshTimer.Interval = interval;
         }
         
         private Point _dragStart;
@@ -258,6 +266,7 @@ namespace PackageManager.Views
             _refreshing = true;
             try
             {
+                if (!IsVisible || WindowState == WindowState.Minimized) return;
                 var latest = await _api.GetIterationWorkItemsAsync(_iterationId);
                 _allItems = latest ?? new List<PingCodeApiService.WorkItemInfo>();
                 var prev = SelectedMember;
@@ -273,6 +282,11 @@ namespace PackageManager.Views
                     SelectedParticipant = prevP;
                 }
                 ApplyFilterAndBuildColumns();
+                
+                if (DateTime.UtcNow > _fastRefreshUntil)
+                {
+                    SetRefreshInterval(_baseRefreshInterval);
+                }
             }
             catch
             {
@@ -465,6 +479,31 @@ namespace PackageManager.Views
             return "pending";
         }
         
+        private static string MapStateNameToCategory(string name)
+        {
+            var s = (name ?? "").Trim().ToLowerInvariant();
+            if (string.IsNullOrEmpty(s)) return "未开始";
+            if (s.Contains("关闭") || s.Contains("已拒绝")) return "已关闭";
+            if (s.Contains("已完成") || s.Contains("已发布")) return "已完成";
+            if (s.Contains("测试中")) return "测试中";
+            if (s.Contains("可测试") || s.Contains("已修复")) return "可测试";
+            if (s.Contains("重新打开") || s.Contains("进行中") || s.Contains("处理中") || s.Contains("待完善") || s.Contains("开发中") || s.Contains("挂起")) return "进行中";
+            if (s.Contains("新提交") || s.Contains("打开") || s.Contains("未开始") || s.Contains("新建") || s.Contains("待处理") || s.Contains("todo")) return "未开始";
+            return "未开始";
+        }
+        
+        private static List<string> GetPriorityNamesForCategory(string category)
+        {
+            var c = (category ?? "").Trim();
+            if (string.Equals(c, "未开始", StringComparison.OrdinalIgnoreCase)) return new List<string> { "新提交", "打开", "未开始", "新建", "待处理" };
+            if (string.Equals(c, "进行中", StringComparison.OrdinalIgnoreCase)) return new List<string> { "待完善", "处理中", "重新打开", "进行中" };
+            if (string.Equals(c, "可测试", StringComparison.OrdinalIgnoreCase)) return new List<string> { "已修复", "可测试" };
+            if (string.Equals(c, "测试中", StringComparison.OrdinalIgnoreCase)) return new List<string> { "测试中" };
+            if (string.Equals(c, "已完成", StringComparison.OrdinalIgnoreCase)) return new List<string> { "已完成", "已发布" };
+            if (string.Equals(c, "已关闭", StringComparison.OrdinalIgnoreCase)) return new List<string> { "关闭", "已拒绝" };
+            return new List<string>();
+        }
+        
         private async void Column_Drop(object sender, DragEventArgs e)
         {
             if (_handlingDrop) { e.Handled = true; return; }
@@ -501,6 +540,9 @@ namespace PackageManager.Views
 
                     src.UpdateCountAndTotalPoints();
                     dest.UpdateCountAndTotalPoints();
+                    
+                    _fastRefreshUntil = DateTime.UtcNow.AddSeconds(30);
+                    SetRefreshInterval(_fastRefreshInterval);
                 }
                 else
                 {
@@ -542,18 +584,17 @@ namespace PackageManager.Views
                 _flowsCache[flowsKey] = flows ?? new List<PingCodeApiService.StateDto>();
             }
             if (flows == null || flows.Count == 0) return null;
-            flows.RemoveAll(x => x.Name.Contains("挂起") || x.Name.Contains("受阻"));
-            PingCodeApiService.StateDto firstOrDefault = flows.FirstOrDefault(x=>x.Name == targetCategory);
-            if (firstOrDefault == null || string.IsNullOrWhiteSpace(firstOrDefault.Id))
+            flows.RemoveAll(x => (x?.Name ?? "").Contains("挂起") || (x?.Name ?? "").Contains("受阻"));
+            var candidates = flows.Where(f => string.Equals(MapStateNameToCategory(f?.Name), targetCategory, StringComparison.OrdinalIgnoreCase)).ToList();
+            var priority = GetPriorityNamesForCategory(targetCategory);
+            foreach (var pn in priority)
             {
-                firstOrDefault = flows.FirstOrDefault(x => x.Type == targetType);
-                if (firstOrDefault == null || string.IsNullOrWhiteSpace(firstOrDefault.Id))
-                {
-                    return null;    
-                }
+                var m = candidates.FirstOrDefault(f => string.Equals(f?.Name ?? "", pn, StringComparison.OrdinalIgnoreCase));
+                if (m != null && !string.IsNullOrWhiteSpace(m.Id)) return (m.Id, m.Name);
             }
-            var candidate = firstOrDefault.Id;
-            return (candidate, firstOrDefault.Name);   
+            // var byType = flows.FirstOrDefault(s => string.Equals(s?.Type ?? "", targetType, StringComparison.OrdinalIgnoreCase));
+            // if (byType != null && !string.IsNullOrWhiteSpace(byType.Id)) return (byType.Id, byType.Name);
+            return null;   
         }
     }
 }
