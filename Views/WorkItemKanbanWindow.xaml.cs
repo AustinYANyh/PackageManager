@@ -76,9 +76,10 @@ namespace PackageManager.Views
         private List<PingCodeApiService.WorkItemInfo> _allItems = new List<PingCodeApiService.WorkItemInfo>();
         private readonly DispatcherTimer _refreshTimer;
         private bool _refreshing;
-        private readonly TimeSpan _baseRefreshInterval = TimeSpan.FromSeconds(20);
+        private readonly TimeSpan _baseRefreshInterval = TimeSpan.FromSeconds(5);
         private readonly TimeSpan _fastRefreshInterval = TimeSpan.FromSeconds(5);
         private DateTime _fastRefreshUntil = DateTime.MinValue;
+        private string _lastItemsSignature = null;
         
         public ObservableCollection<PingCodeApiService.Entity> Members { get; } = new ObservableCollection<PingCodeApiService.Entity>();
         public ObservableCollection<string> Participants { get; } = new ObservableCollection<string>();
@@ -207,10 +208,28 @@ namespace PackageManager.Views
                         list.Add(new PingCodeApiService.Entity { Id = id, Name = nm });
                     }
                 }
-                Members.Clear();
-                foreach (var m in list.OrderBy(x => (string.Equals(x.Name, "全部", StringComparison.OrdinalIgnoreCase) || string.Equals(x.Id, "*", StringComparison.OrdinalIgnoreCase)) ? "\0" : (x.Name ?? x.Id)))
+                var desired = list.OrderBy(x => (string.Equals(x.Name, "全部", StringComparison.OrdinalIgnoreCase) || string.Equals(x.Id, "*", StringComparison.OrdinalIgnoreCase)) ? "\0" : (x.Name ?? x.Id)).ToList();
+                var indexByKey = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                for (int i = 0; i < Members.Count; i++)
                 {
-                    Members.Add(m);
+                    var k = (Members[i]?.Id ?? Members[i]?.Name ?? "") ?? "";
+                    indexByKey[k] = i;
+                }
+                var desiredKeys = new HashSet<string>(desired.Select(x => (x.Id ?? x.Name ?? "")), StringComparer.OrdinalIgnoreCase);
+                var toRemove = Members.Where(m => !desiredKeys.Contains((m?.Id ?? m?.Name ?? ""))).ToList();
+                foreach (var r in toRemove) Members.Remove(r);
+                for (int di = 0; di < desired.Count; di++)
+                {
+                    var key = (desired[di].Id ?? desired[di].Name ?? "");
+                    if (indexByKey.TryGetValue(key, out var idx))
+                    {
+                        if (idx != di) Members.Move(idx, di);
+                    }
+                    else
+                    {
+                        Members.Insert(di, desired[di]);
+                    }
+                    indexByKey[(Members[di]?.Id ?? Members[di]?.Name ?? "")] = di;
                 }
             }
             catch
@@ -236,12 +255,29 @@ namespace PackageManager.Views
                         if (!string.IsNullOrWhiteSpace(name)) set.Add(name);
                     }
                 }
-                var list = new List<string> { "无" };
-                list.AddRange(set.OrderBy(x => x));
-                Participants.Clear();
-                foreach (var p in list)
+                var desired = new List<string> { "无" };
+                desired.AddRange(set.OrderBy(x => x));
+                var indexByVal = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                for (int i = 0; i < Participants.Count; i++)
                 {
-                    Participants.Add(p);
+                    var k = Participants[i] ?? "";
+                    indexByVal[k] = i;
+                }
+                var desiredKeys = new HashSet<string>(desired, StringComparer.OrdinalIgnoreCase);
+                var toRemove = Participants.Where(p => !desiredKeys.Contains(p ?? "")).ToList();
+                foreach (var r in toRemove) Participants.Remove(r);
+                for (int di = 0; di < desired.Count; di++)
+                {
+                    var key = desired[di] ?? "";
+                    if (indexByVal.TryGetValue(key, out var idx))
+                    {
+                        if (idx != di) Participants.Move(idx, di);
+                    }
+                    else
+                    {
+                        Participants.Insert(di, key);
+                    }
+                    indexByVal[Participants[di] ?? ""] = di;
                 }
             }
             catch
@@ -285,7 +321,18 @@ namespace PackageManager.Views
             {
                 if (!IsVisible || WindowState == WindowState.Minimized) return;
                 var latest = await _api.GetIterationWorkItemsAsync(_iterationId);
-                _allItems = latest ?? new List<PingCodeApiService.WorkItemInfo>();
+                var latestList = latest ?? new List<PingCodeApiService.WorkItemInfo>();
+                var latestSig = ComputeItemsSignature(latestList);
+                if (string.Equals(latestSig, _lastItemsSignature, StringComparison.Ordinal))
+                {
+                    if (DateTime.UtcNow > _fastRefreshUntil)
+                    {
+                        SetRefreshInterval(_baseRefreshInterval);
+                    }
+                    return;
+                }
+                _lastItemsSignature = latestSig;
+                _allItems = latestList;
                 var prev = SelectedMember;
                 RebuildMembersFromItems();
                 if (prev != null && Members.Any(m => string.Equals(m.Id, prev.Id, StringComparison.OrdinalIgnoreCase)))
@@ -312,6 +359,23 @@ namespace PackageManager.Views
             {
                 _refreshing = false;
             }
+        }
+        private static string ComputeItemsSignature(IEnumerable<PingCodeApiService.WorkItemInfo> items)
+        {
+            var list = new List<string>();
+            foreach (var it in items ?? Enumerable.Empty<PingCodeApiService.WorkItemInfo>())
+            {
+                var id = it?.Id ?? it?.Identifier ?? "";
+                var cat = it?.StateCategory ?? "";
+                var st = it?.Status ?? "";
+                var aid = it?.AssigneeId ?? "";
+                var sp = it?.StoryPoints ?? 0;
+                var pn = it?.ParticipantNames?.Count ?? 0;
+                var wn = it?.WatcherNames?.Count ?? 0;
+                list.Add($"{id}|{cat}|{st}|{aid}|{sp}|{pn}|{wn}");
+            }
+            list.Sort(StringComparer.OrdinalIgnoreCase);
+            return string.Join(";", list);
         }
         
         private void ApplyFilterAndBuildColumns()
