@@ -31,6 +31,7 @@ namespace PackageManager.Views
                     OnPropertyChanged();
                     OnPropertyChanged(nameof(Count));
                     OnPropertyChanged(nameof(TotalPoints));
+                    OnPropertyChanged(nameof(TotalPointsText));
                 }
             }
         }
@@ -38,18 +39,34 @@ namespace PackageManager.Views
         {
             OnPropertyChanged(nameof(Count));
             OnPropertyChanged(nameof(TotalPoints));
+            OnPropertyChanged(nameof(TotalPointsText));
         }
 
         public void UpdateCountAndTotalPoints()
         {
             OnPropertyChanged(nameof(Count));
             OnPropertyChanged(nameof(TotalPoints));
+            OnPropertyChanged(nameof(TotalPointsText));
         }
         
         public int Count => _items?.Count ?? 0;
         public double TotalPoints => _items?.Sum(i => i?.StoryPoints ?? 0) ?? 0;
+        public string TotalPointsText => FormatPoints(TotalPoints);
         public event PropertyChangedEventHandler PropertyChanged;
         protected void OnPropertyChanged([CallerMemberName] string name = null) { PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name)); }
+        private static string FormatPoints(double v)
+        {
+            try
+            {
+                var r = System.Math.Round(v, 1, System.MidpointRounding.AwayFromZero);
+                if (System.Math.Abs(r % 1) < 1e-9) return r.ToString("0");
+                return r.ToString("0.0");
+            }
+            catch
+            {
+                return v.ToString("0.0");
+            }
+        }
     }
     
     public partial class WorkItemKanbanWindow : Window, INotifyPropertyChanged
