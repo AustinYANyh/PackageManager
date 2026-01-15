@@ -134,13 +134,41 @@
         <Compile Include="Services\DebugSettingsService.cs" />
         <Compile Include="Services\EmbeddedToolRunnerService.cs" />
         <Compile Include="Services\LoggingService.cs" />
-        <Compile Include="Services\PingCodeApiService.cs" />
+        <Compile Include="Services\PingCode\Dto\ParticipantDto.cs" />
+        <Compile Include="Services\PingCode\Dto\PriorityDto.cs" />
+        <Compile Include="Services\PingCode\Dto\ProjectDto.cs" />
+        <Compile Include="Services\PingCode\Dto\SprintDto.cs" />
+        <Compile Include="Services\PingCode\Dto\StageDto.cs" />
+        <Compile Include="Services\PingCode\Dto\StateDto.cs" />
+        <Compile Include="Services\PingCode\Dto\TagDto.cs" />
+        <Compile Include="Services\PingCode\Dto\UserDto.cs" />
+        <Compile Include="Services\PingCode\Dto\VersionDto.cs" />
+        <Compile Include="Services\PingCode\Dto\WorkItemDto.cs" />
+        <Compile Include="Services\PingCode\Dto\WorkItemInfo.cs" />
+        <Compile Include="Services\PingCode\Exception\ApiAuthException.cs" />
+        <Compile Include="Services\PingCode\Exception\ApiForbiddenException.cs" />
+        <Compile Include="Services\PingCode\Exception\ApiNotFoundException.cs" />
+        <Compile Include="Services\PingCode\Model\Entity.cs" />
+        <Compile Include="Services\PingCode\Model\StatePlanInfo.cs" />
+        <Compile Include="Services\PingCode\Model\StoryPointBreakdown.cs" />
+        <Compile Include="Services\PingCode\Model\WorkItemComment.cs" />
+        <Compile Include="Services\PingCode\Model\WorkItemDetails.cs" />
+        <Compile Include="Services\PingCode\PingCodeApiService.cs" />
         <Compile Include="Services\ToastService.cs" />
         <Compile Include="Services\AppUpdateService.cs" />
         <Compile Include="Views\CommonLinksPage.xaml.cs" />
         <Compile Include="Views\CommonLinksWindow.xaml.cs" />
         <Compile Include="Views\ICentralPage.cs" />
         <Compile Include="Views\KanbanStatsPage.xaml.cs" />
+        <Compile Include="Views\KanBan\KanbanColumn.cs" />
+        <Compile Include="Views\KanBan\WorkItemDetailsWindow.xaml.cs">
+          <DependentUpon>WorkItemDetailsWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Compile Include="Views\KanBan\WorkItemKanbanWindow.xaml.cs">
+          <DependentUpon>WorkItemKanbanWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
         <Compile Include="Views\LocalPathSettingsPage.xaml.cs" />
         <Compile Include="Views\LogViewerPage.xaml.cs" />
         <Compile Include="Views\NavigationPanel.xaml.cs" />
@@ -149,19 +177,11 @@
           <DependentUpon>ChangelogPage.xaml</DependentUpon>
           <SubType>Code</SubType>
         </Compile>
-        <Compile Include="Views\WorkItemKanbanWindow.xaml.cs">
-          <DependentUpon>WorkItemKanbanWindow.xaml</DependentUpon>
-          <SubType>Code</SubType>
-        </Compile>
         <Compile Include="Views\PackageConfigPage.xaml.cs" />
         <Compile Include="Views\ProductLogsPage.xaml.cs" />
         <Compile Include="Views\SettingsPage.xaml.cs" />
         <Compile Include="Views\Controls\WorkItemCard.xaml.cs">
           <DependentUpon>WorkItemCard.xaml</DependentUpon>
-          <SubType>Code</SubType>
-        </Compile>
-        <Compile Include="Views\WorkItemDetailsWindow.xaml.cs">
-          <DependentUpon>WorkItemDetailsWindow.xaml</DependentUpon>
           <SubType>Code</SubType>
         </Compile>
         <Page Include="Function\ConfigPreset\AddPresetWindow.xaml" />
@@ -216,6 +236,8 @@
         <Page Include="Views\CommonLinksPage.xaml" />
         <Page Include="Views\CommonLinksWindow.xaml" />
         <Page Include="Views\KanbanStatsPage.xaml" />
+        <Page Include="Views\KanBan\WorkItemDetailsWindow.xaml" />
+        <Page Include="Views\KanBan\WorkItemKanbanWindow.xaml" />
         <Page Include="Views\LocalPathSettingsPage.xaml" />
         <Page Include="Views\LogViewerPage.xaml" />
         <Page Include="Views\NavigationPanel.xaml" />
@@ -224,12 +246,10 @@
           <Generator>MSBuild:Compile</Generator>
           <SubType>Designer</SubType>
         </Page>
-        <Page Include="Views\WorkItemKanbanWindow.xaml" />
         <Page Include="Views\PackageConfigPage.xaml" />
         <Page Include="Views\ProductLogsPage.xaml" />
         <Page Include="Views\SettingsPage.xaml" />
         <Page Include="Views\Controls\WorkItemCard.xaml" />
-        <Page Include="Views\WorkItemDetailsWindow.xaml" />
     </ItemGroup>
     <ItemGroup>
         <Content Include="Models\json.txt" />
