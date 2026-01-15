@@ -477,8 +477,8 @@ namespace PackageManager.Services
             {
                 return "测试中";
             }
-            if (s.Contains("重新打开") || s.Contains("progress") || s.Contains("进行中") || s.Contains("doing") || s.Contains("开发中") || s.Contains("处理中") || s.Contains("挂起") ||
-                s.Contains("in_progress"))
+            if (s.Contains("重新打开") || s.Contains("progress") || s.Contains("进行中") || s.Contains("doing") || s.Contains("开发中") || s.Contains("处理中") || s.Contains("挂起")  
+                || s.Contains("待完善")|| s.Contains("in_progress"))
             {
                 return "进行中";
             }
