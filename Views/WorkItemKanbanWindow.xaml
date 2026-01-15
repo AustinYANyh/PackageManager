@@ -17,7 +17,6 @@
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
-                    <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
                 <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,12">
                     <TextBlock Text="迭代看板" FontSize="18" FontWeight="Bold" />
@@ -36,7 +35,7 @@
                     </StackPanel>
                 </StackPanel>
                 
-                <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Disabled">
+                <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
                     <ItemsControl ItemsSource="{Binding Columns}">
                         <ItemsControl.ItemsPanel>
                             <ItemsPanelTemplate>
@@ -46,8 +45,12 @@
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
                                 <Border BorderBrush="#E5E7EB" BorderThickness="1" CornerRadius="10" Margin="0,0,16,0" MinWidth="240" AllowDrop="True" Drop="Column_Drop" DragOver="Column_DragOver">
-                                    <DockPanel>
-                                        <StackPanel DockPanel.Dock="Top" Background="#F9FAFB" >
+                                    <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="*" />
+                                        </Grid.RowDefinitions>
+                                        <StackPanel Grid.Row="0" Background="#F9FAFB" >
                                             <TextBlock Text="{Binding Title}" FontSize="14" FontWeight="Bold" />
                                             <StackPanel Orientation="Horizontal" Margin="0,4,0,0">
                                                 <TextBlock Text="{Binding Count, StringFormat=数量 · {0}}" Foreground="#6B7280" />
@@ -55,26 +58,21 @@
                                                 <TextBlock Text="{Binding TotalPoints, StringFormat=故事点 · {0}}" Foreground="#6B7280" />
                                             </StackPanel>
                                         </StackPanel>
-                                        <ScrollViewer VerticalScrollBarVisibility="Auto">
-                                            <ItemsControl ItemsSource="{Binding Items}">
-                                                <ItemsControl.ItemTemplate>
-                                                    <DataTemplate>
-                                                        <pc:WorkItemCard PreviewMouseLeftButtonDown="Item_PreviewMouseLeftButtonDown"
-                                                                         MouseMove="Item_MouseMove"
-                                                                         MouseLeftButtonUp="Item_MouseLeftButtonUp" />
-                                                    </DataTemplate>
-                                                </ItemsControl.ItemTemplate>
-                                            </ItemsControl>
-                                        </ScrollViewer>
-                                    </DockPanel>
+                                        <ItemsControl Grid.Row="1" ItemsSource="{Binding Items}">
+                                            <ItemsControl.ItemTemplate>
+                                                <DataTemplate>
+                                                    <pc:WorkItemCard PreviewMouseLeftButtonDown="Item_PreviewMouseLeftButtonDown"
+                                                                     MouseMove="Item_MouseMove"
+                                                                     MouseLeftButtonUp="Item_MouseLeftButtonUp" />
+                                                </DataTemplate>
+                                            </ItemsControl.ItemTemplate>
+                                        </ItemsControl>
+                                    </Grid>
                                 </Border>
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
                 </ScrollViewer>
-                <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
-                    <button:CButton Content="关闭" Width="100" Click="CloseButton_Click" />
-                </StackPanel>
                 </Grid>
             </AdornerDecorator>
         </controls:CLoadingOverlay>

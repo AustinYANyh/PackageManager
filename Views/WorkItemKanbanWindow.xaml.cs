@@ -118,7 +118,7 @@ namespace PackageManager.Views
             WindowState = WindowState.Maximized;
             DataContext = this;
             Loaded += async (s, e) => await LoadWorkItemsAsync();
-            _refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(20) };
+            _refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
             _refreshTimer.Tick += async (s, e) => await RefreshWorkItemsAsync();
             _refreshTimer.Start();
             Closed += (s, e) => _refreshTimer.Stop();
