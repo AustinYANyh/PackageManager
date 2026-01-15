@@ -107,6 +107,9 @@ namespace PackageManager.Views
             }
         }
         
+        private readonly Dictionary<string, PingCodeApiService.StatePlanInfo> _planCache = new Dictionary<string, PingCodeApiService.StatePlanInfo>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<string, List<PingCodeApiService.StateDto>> _flowsCache = new Dictionary<string, List<PingCodeApiService.StateDto>>(StringComparer.OrdinalIgnoreCase);
+        
         public event PropertyChangedEventHandler PropertyChanged;
         protected void OnPropertyChanged([CallerMemberName] string name = null) { PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name)); }
         
@@ -126,6 +129,7 @@ namespace PackageManager.Views
         
         private Point _dragStart;
         private bool _dragInit;
+        private bool _handlingDrop;
         
         private async Task LoadWorkItemsAsync()
         {
@@ -452,8 +456,10 @@ namespace PackageManager.Views
         {
             var c = (category ?? "").Trim();
             if (string.Equals(c, "进行中", StringComparison.OrdinalIgnoreCase)) return "in_progress";
+            if (string.Equals(c, "已修复", StringComparison.OrdinalIgnoreCase)) return "in_progress";
             if (string.Equals(c, "可测试", StringComparison.OrdinalIgnoreCase)) return "in_progress";
             if (string.Equals(c, "测试中", StringComparison.OrdinalIgnoreCase)) return "in_progress";
+            if (string.Equals(c, "待完善", StringComparison.OrdinalIgnoreCase)) return "in_progress";
             if (string.Equals(c, "已完成", StringComparison.OrdinalIgnoreCase)) return "done";
             if (string.Equals(c, "已关闭", StringComparison.OrdinalIgnoreCase)) return "closed";
             return "pending";
@@ -461,6 +467,7 @@ namespace PackageManager.Views
         
         private async void Column_Drop(object sender, DragEventArgs e)
         {
+            if (_handlingDrop) { e.Handled = true; return; }
             if (!e.Data.GetDataPresent(typeof(PingCodeApiService.WorkItemInfo))) return;
             var item = e.Data.GetData(typeof(PingCodeApiService.WorkItemInfo)) as PingCodeApiService.WorkItemInfo;
             var dest = (sender as FrameworkElement)?.DataContext as KanbanColumn;
@@ -472,6 +479,7 @@ namespace PackageManager.Views
             if (src == null) return;
             try
             {
+                _handlingDrop = true;
                 Overlay.IsBusy = true;
                 var targetStateId = await ResolveTargetStateIdAsync(item, target);
                 var ok = false;
@@ -506,6 +514,8 @@ namespace PackageManager.Views
             finally
             {
                 Overlay.IsBusy = false;
+                _handlingDrop = false;
+                e.Handled = true;
             }
         }
         
@@ -517,15 +527,33 @@ namespace PackageManager.Views
             var projectId = (item.ProjectId ?? "").Trim();
            
             var targetType = MapCategoryToStateTypeForPatch(targetCategory);
-            var plans = await _api.GetWorkItemStatePlansAsync(projectId);
-            var plan = plans.FirstOrDefault(p => string.Equals((p?.WorkItemType ?? "").Trim(), type, StringComparison.OrdinalIgnoreCase));
-            if (plan == null || string.IsNullOrWhiteSpace(plan.Id)) return null;
-            var flows = await _api.GetWorkItemStateFlowsAsync(plan.Id, item.StateId);
-            PingCodeApiService.StateDto firstOrDefault = flows.FirstOrDefault(s => string.Equals(s?.Type ?? "", targetType, StringComparison.OrdinalIgnoreCase));
-            if (firstOrDefault == null || string.IsNullOrWhiteSpace(firstOrDefault.Id)) return null;
-            
-            var candidate = firstOrDefault?.Id;
-            return (candidate, firstOrDefault.Name);
+            var planKey = $"{projectId}|{type}";
+            if (!_planCache.TryGetValue(planKey, out var plan))
+            {
+                var plans = await _api.GetWorkItemStatePlansAsync(projectId);
+                plan = plans.FirstOrDefault(p => string.Equals((p?.WorkItemType ?? "").Trim(), type, StringComparison.OrdinalIgnoreCase));
+                if (plan == null || string.IsNullOrWhiteSpace(plan.Id)) return null;
+                _planCache[planKey] = plan;
+            }
+            var flowsKey = $"{plan.Id}|{item.StateId}";
+            if (!_flowsCache.TryGetValue(flowsKey, out var flows))
+            {
+                flows = await _api.GetWorkItemStateFlowsAsync(plan.Id, item.StateId);
+                _flowsCache[flowsKey] = flows ?? new List<PingCodeApiService.StateDto>();
+            }
+            if (flows == null || flows.Count == 0) return null;
+            flows.RemoveAll(x => x.Name.Contains("挂起") || x.Name.Contains("受阻"));
+            PingCodeApiService.StateDto firstOrDefault = flows.FirstOrDefault(x=>x.Name == targetCategory);
+            if (firstOrDefault == null || string.IsNullOrWhiteSpace(firstOrDefault.Id))
+            {
+                firstOrDefault = flows.FirstOrDefault(x => x.Type == targetType);
+                if (firstOrDefault == null || string.IsNullOrWhiteSpace(firstOrDefault.Id))
+                {
+                    return null;    
+                }
+            }
+            var candidate = firstOrDefault.Id;
+            return (candidate, firstOrDefault.Name);   
         }
     }
 }
