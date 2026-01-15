@@ -118,7 +118,7 @@ namespace PackageManager.Views
             WindowState = WindowState.Maximized;
             DataContext = this;
             Loaded += async (s, e) => await LoadWorkItemsAsync();
-            _refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
+            _refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(20) };
             _refreshTimer.Tick += async (s, e) => await RefreshWorkItemsAsync();
             _refreshTimer.Start();
             Closed += (s, e) => _refreshTimer.Stop();
@@ -352,12 +352,30 @@ namespace PackageManager.Views
                         col.Items.Remove(it);
                     }
                 }
+                var indexByKey = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+                for (int ii = 0; ii < col.Items.Count; ii++)
+                {
+                    var k = col.Items[ii]?.Id ?? col.Items[ii]?.Identifier ?? "";
+                    if (!string.IsNullOrWhiteSpace(k)) indexByKey[k] = ii;
+                }
                 foreach (var it in target)
                 {
                     var key = it?.Id ?? it?.Identifier ?? "";
-                    if (!existing.Contains(key))
+                    if (string.IsNullOrWhiteSpace(key)) continue;
+                    int idx;
+                    if (indexByKey.TryGetValue(key, out idx))
+                    {
+                        var existingItem = col.Items[idx];
+                        if (!ReferenceEquals(existingItem, it) && existingItem != null)
+                        {
+                            existingItem.UpdateFrom(it);
+                        }
+                        indexByKey[key] = idx;
+                    }
+                    else
                     {
                         col.Items.Add(it);
+                        indexByKey[key] = col.Items.Count - 1;
                     }
                 }
                 col.UpdateCountAndTotalPoints();

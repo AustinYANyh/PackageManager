@@ -58,7 +58,7 @@
                                                 <TextBlock Text="{Binding TotalPoints, StringFormat=故事点 · {0}}" Foreground="#6B7280" />
                                             </StackPanel>
                                         </StackPanel>
-                                        <ItemsControl Grid.Row="1" ItemsSource="{Binding Items}">
+                                        <ItemsControl Grid.Row="1" ItemsSource="{Binding Items}" AllowDrop="True" Drop="Column_Drop" DragOver="Column_DragOver" Background="Transparent">
                                             <ItemsControl.ItemTemplate>
                                                 <DataTemplate>
                                                     <pc:WorkItemCard PreviewMouseLeftButtonDown="Item_PreviewMouseLeftButtonDown"
