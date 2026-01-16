@@ -942,7 +942,6 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                     if (string.IsNullOrWhiteSpace(commentHtml))
                     {
                         commentHtml = "PingCode必须要评论要有文本内容，如果你没有它就把文件名当评论内容，真的蠢";
-                        return;
                     }
 
                     try
