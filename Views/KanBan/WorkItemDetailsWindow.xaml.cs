@@ -958,40 +958,66 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                                          ?? created?["data"]?.Value<string>("id")
                                          ?? created?["value"]?.Value<string>("id")
                                          ?? created?["comment"]?.Value<string>("id");
-                        if (!string.IsNullOrWhiteSpace(commentId))
+
+                        var uploadResults = new List<Newtonsoft.Json.Linq.JObject>();
+                        if (!string.IsNullOrWhiteSpace(commentId) && dataUrls.Count > 0)
                         {
+                            var tasks = new List<Task<Newtonsoft.Json.Linq.JObject>>();
                             foreach (var du in dataUrls)
                             {
-                                try
+                                string mime;
+                                byte[] bytes;
+                                if (!TryParseDataUrl(du, out mime, out bytes) || (bytes == null) || (bytes.Length == 0)) { continue; }
+                                var ext = "png";
+                                var ct = (mime ?? "").ToLowerInvariant();
+                                if (ct.Contains("jpeg") || ct.Contains("jpg")) ext = "jpg";
+                                else if (ct.Contains("gif")) ext = "gif";
+                                else if (ct.Contains("bmp")) ext = "bmp";
+                                else if (ct.Contains("webp")) ext = "webp";
+                                else if (ct.Contains("svg")) ext = "svg";
+                                var name = $"image_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.{ext}";
+                                tasks.Add(UploadAttachmentViaApiAsync(bytes, name, mime, id, commentId));
+                            }
+                            var results = await Task.WhenAll(tasks);
+                            foreach (var r in results)
+                            {
+                                if (r != null)
                                 {
-                                    string mime;
-                                    byte[] bytes;
-                                    if (!TryParseDataUrl(du, out mime, out bytes) || (bytes == null) || (bytes.Length == 0)) { continue; }
-                                    var ext = "png";
-                                    var ct = (mime ?? "").ToLowerInvariant();
-                                    if (ct.Contains("jpeg") || ct.Contains("jpg")) ext = "jpg";
-                                    else if (ct.Contains("gif")) ext = "gif";
-                                    else if (ct.Contains("bmp")) ext = "bmp";
-                                    else if (ct.Contains("webp")) ext = "webp";
-                                    else if (ct.Contains("svg")) ext = "svg";
-                                    var name = $"image_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.{ext}";
-                                    await UploadAttachmentViaApiAsync(bytes, name, mime, id, commentId);
-                                }
-                                catch
-                                {
+                                    RememberUploadedAttachment(r);
+                                    uploadResults.Add(r);
                                 }
                             }
                         }
 
-                        try { uploadedAttachmentMap.Clear(); } catch { }
-                        var list = await api.GetWorkItemCommentsAsync(id) ?? new List<WorkItemComment>();
-                        Details.Comments = list;
-                        var block = BuildCommentsHtml(list);
-                        var escaped = JsEscape(block);
-                        var script =
-                            "try{var c=document.querySelector('.comments-card');if(c){c.innerHTML='" + escaped +
-                            "';}var ed=document.getElementById('commentEdit');if(ed){ed.innerHTML='';}var pre=document.getElementById('attachmentsPreview');if(pre){pre.innerHTML='';}try{if(typeof pendingAttachments!=='undefined'){pendingAttachments=[];}}catch(ex){}if(window.pendingAttachments){try{window.pendingAttachments=[];}catch(ex){}}var col=document.getElementById('commentCollapsed');var exp=document.getElementById('commentExpanded');if(col&&exp){col.style.display='flex';exp.style.display='none';}var body=document.querySelector('.ant-drawer-body');if(body){body.scrollTop=body.scrollHeight;}else{try{window.scrollTo(0,document.body.scrollHeight);}catch(e){}}}catch(e){}";
-                        await DetailsWeb.CoreWebView2.ExecuteScriptAsync(script);
+                        if (!string.IsNullOrWhiteSpace(commentId))
+                        {
+                            var createdObj = created?["data"] ?? created?["value"] ?? created?["comment"] ?? created;
+                            var authorName = FirstNonEmpty(
+                                createdObj?["created_by"]?.Value<string>("name"),
+                                createdObj?["author"]?.Value<string>("name"),
+                                createdObj?.Value<string>("created_by_name"),
+                                createdObj?.Value<string>("author_name"),
+                                createdObj?["user"]?.Value<string>("name")
+                            );
+                            var authorAvatar = FirstNonEmpty(
+                                createdObj?.Value<string>("author_avatar"),
+                                createdObj?.Value<string>("avatar"),
+                                createdObj?.Value<string>("image_url"),
+                                createdObj?["created_by"]?.Value<string>("avatar"),
+                                createdObj?["created_by"]?.Value<string>("image_url"),
+                                createdObj?["author"]?.Value<string>("avatar"),
+                                createdObj?["author"]?.Value<string>("image_url"),
+                                createdObj?["user"]?.Value<string>("avatar"),
+                                createdObj?["user"]?.Value<string>("image_url")
+                            );
+                            DateTime? createdAt = ReadDateTimeFromSecondsLocal(createdObj?["created_at"]) ?? ReadDateTimeFromSecondsLocal(createdObj?["timestamp"]) ?? DateTime.Now;
+                            var appended = BuildSingleCommentHtml(processed?.Html ?? "", uploadResults, authorName, authorAvatar, createdAt);
+                            var escaped = JsEscape(appended);
+                            var script =
+                                "try{var c=document.querySelector('.comments-card');if(c){c.insertAdjacentHTML('beforeend','" + escaped +
+                                "');}var ed=document.getElementById('commentEdit');if(ed){ed.innerHTML='';}var pre=document.getElementById('attachmentsPreview');if(pre){pre.innerHTML='';}try{if(typeof pendingAttachments!=='undefined'){pendingAttachments=[];}}catch(ex){}if(window.pendingAttachments){try{window.pendingAttachments=[];}catch(ex){}}var body=document.querySelector('.ant-drawer-body');var doScroll=function(){try{var expanded=document.getElementById('commentExpanded');var submit=document.getElementById('commentSubmitBtn');var cancel=document.getElementById('commentCancelBtn');var editor=document.getElementById('commentEditor');var target=submit||cancel||expanded||editor;if(target&&target.scrollIntoView){ target.scrollIntoView({block:'end'}); }if(body&&typeof body.scrollTo==='function'){ body.scrollTo({top: body.scrollHeight}); }else if(body){ body.scrollTop=body.scrollHeight; }var sc=document.scrollingElement||document.documentElement;if(sc){ sc.scrollTop=sc.scrollHeight; } else { window.scrollTo(0, (document.documentElement&&document.documentElement.scrollHeight)||document.body.scrollHeight); }}catch(e){}};var collapse=function(){try{var col=document.getElementById('commentCollapsed');var exp=document.getElementById('commentExpanded');if(col&&exp){col.style.display='flex';exp.style.display='none';}var ed2=document.getElementById('commentEdit');if(ed2){ed2.innerHTML='';}var pre2=document.getElementById('attachmentsPreview');if(pre2){pre2.innerHTML='';}if(window.pendingAttachments){try{window.pendingAttachments=[];}catch(ex){}}}catch(e){}};try{if(window.requestAnimationFrame){window.requestAnimationFrame(function(){window.requestAnimationFrame(doScroll);});}else{setTimeout(doScroll,30);}}catch(e){};try{setTimeout(doScroll,60);}catch(e){};try{setTimeout(doScroll,160);}catch(e){};try{setTimeout(doScroll,360);}catch(e){};try{setTimeout(collapse,100);}catch(e){};try{setTimeout(collapse,180);}catch(e){} }catch(e){}";
+                            await DetailsWeb.CoreWebView2.ExecuteScriptAsync(script);
+                        }
                     }
                     catch
                     {
@@ -1562,6 +1588,113 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
             sb.Append("</div>");
         }
 
+        return sb.ToString();
+    }
+
+    private static string FirstNonEmpty(params string[] arr)
+    {
+        try
+        {
+            foreach (var s in arr ?? Array.Empty<string>())
+            {
+                var t = (s ?? "").Trim();
+                if (!string.IsNullOrWhiteSpace(t))
+                {
+                    return s;
+                }
+            }
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private string BuildAttachmentsHtmlFromUploads(List<Newtonsoft.Json.Linq.JObject> uploads)
+    {
+        try
+        {
+            var list = uploads ?? new List<Newtonsoft.Json.Linq.JObject>();
+            if (list.Count == 0)
+            {
+                return "";
+            }
+            var sb = new StringBuilder();
+            foreach (var a in list)
+            {
+                if (a == null) { continue; }
+                var url = a.Value<string>("download_url");
+                if (string.IsNullOrWhiteSpace(url)) { url = a.Value<string>("url"); }
+                if (string.IsNullOrWhiteSpace(url)) { continue; }
+                var title = FirstNonEmpty(a.Value<string>("title"), a.Value<string>("name"), a.Value<string>("filename"));
+                var fileType = FirstNonEmpty(a.Value<string>("file_type"), a.Value<string>("content_type"));
+                var tt = string.IsNullOrWhiteSpace(title) ? url : title;
+                var u = AppendAccessTokenQueryIfNeeded(url, accessToken);
+                var typeLower = (fileType ?? "").Trim().ToLowerInvariant();
+                var isImg = (!string.IsNullOrWhiteSpace(typeLower) && typeLower.StartsWith("image/")) || GuessAttachmentTypeByUrl(u) == "image";
+                if (isImg)
+                {
+                    sb.Append($"<div class=\"comment-attachment\"><img loading=\"lazy\" src=\"{System.Net.WebUtility.HtmlEncode(u)}\" alt=\"{System.Net.WebUtility.HtmlEncode(tt)}\"/></div>");
+                }
+                else
+                {
+                    sb.Append($"<div class=\"comment-attachment\"><a href=\"{System.Net.WebUtility.HtmlEncode(u)}\" target=\"_blank\" rel=\"noopener\">{System.Net.WebUtility.HtmlEncode(tt)}</a></div>");
+                }
+            }
+            return sb.ToString();
+        }
+        catch
+        {
+            return "";
+        }
+    }
+
+    private static DateTime? ReadDateTimeFromSecondsLocal(Newtonsoft.Json.Linq.JToken t)
+    {
+        try
+        {
+            if (t == null) return null;
+            var s = t.ToString();
+            if (string.IsNullOrWhiteSpace(s)) return null;
+            if (double.TryParse(s, out var dv))
+            {
+                var sec = (long)Math.Round(dv);
+                return DateTimeOffset.FromUnixTimeSeconds(sec).LocalDateTime;
+            }
+            if (long.TryParse(s, out var lv))
+            {
+                return DateTimeOffset.FromUnixTimeSeconds(lv).LocalDateTime;
+            }
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private string BuildSingleCommentHtml(string contentHtml, List<Newtonsoft.Json.Linq.JObject> uploads, string authorName, string authorAvatar, DateTime? createdAt)
+    {
+        var tm = (createdAt ?? DateTime.Now).ToString("yyyy-MM-dd HH:mm");
+        var nm = (authorName ?? "").Trim();
+        var initial = string.IsNullOrWhiteSpace(nm) ? "-" : nm.Substring(0, Math.Min(1, nm.Length));
+        var avatarUrl = string.IsNullOrWhiteSpace(authorAvatar) ? null : AppendAccessTokenQueryIfNeeded(authorAvatar, accessToken);
+        var avatarHtml = string.IsNullOrWhiteSpace(avatarUrl)
+                             ? $"<span class=\"ant-avatar ant-avatar-circle\"><span class=\"ant-avatar-string\">{HtmlEscape(initial)}</span></span>"
+                             : $"<span class=\"ant-avatar ant-avatar-circle ant-avatar-image\"><img src=\"{HtmlEscape(avatarUrl)}\"/></span>";
+        var body = NormalizeImages(contentHtml ?? "");
+        var attachmentsHtml = BuildAttachmentsHtmlFromUploads(uploads);
+        var finalContent = string.IsNullOrWhiteSpace(attachmentsHtml) ? body : (string.IsNullOrWhiteSpace(body) ? attachmentsHtml : body + attachmentsHtml);
+        var sb = new StringBuilder();
+        sb.Append("<div class=\"comment-item\">");
+        sb.Append("<div class=\"comment-row\">");
+        sb.Append($"<div class=\"comment-avatar\">{avatarHtml}</div>");
+        sb.Append("<div class=\"comment-main\">");
+        sb.Append($"<div class=\"comment-meta\"><span class=\"comment-author\">{HtmlEscape(nm)}</span> <span class=\"comment-time\">{tm}</span></div>");
+        sb.Append($"<div class=\"comment-body\">{finalContent}</div>");
+        sb.Append("</div></div>");
+        sb.Append("</div>");
         return sb.ToString();
     }
 
