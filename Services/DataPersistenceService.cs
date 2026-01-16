@@ -194,6 +194,13 @@ namespace PackageManager.Services
                 },
                 new()
                 {
+                    ProductName = "MaxiBIM（SH）Develop", FtpServerPath = "http://doc-dev.hongwa.cc:8001/HWMaxiBIMSH/",
+                    FinalizeFtpServerPath = "http://192.168.0.215:8001/Publish/MaxiBIM(SH)", 
+                    LocalPath = @"C:\红瓦科技\MaxiBIM（PMEP）Develop",
+                    SupportsConfigOps = true,
+                },
+                new()
+                {
                     ProductName = "MaxiBIM（Duct）Develop", FtpServerPath = "http://doc-dev.hongwa.cc:8001/HWMaxiBIMDUCT/",
                     FinalizeFtpServerPath = "http://192.168.0.215:8001/Publish/MaxiBim（风管）",
                     LocalPath = @"C:\红瓦科技\MaxiBIM（Duct）Develop", SupportsConfigOps = true,
