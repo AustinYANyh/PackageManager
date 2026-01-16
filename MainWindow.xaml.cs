@@ -897,6 +897,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             // 重新初始化包集合
             InitializePackages();
 
+            // 重新初始化可执行文件版本
+            _ = LoadExecutableVersionsAsync();
+            
             // 更新左侧分类导航
             BuildCategoryTree();
 
