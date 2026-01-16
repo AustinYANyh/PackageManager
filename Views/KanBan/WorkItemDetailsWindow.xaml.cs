@@ -685,6 +685,9 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                     if (token is Newtonsoft.Json.Linq.JObject obj)
                     {
                         type = obj.Value<string>("type");
+                        string localId = null;
+                        string dataUrl = null;
+                        string contentType = null;
                         if (string.Equals(type, "updateStoryPoints", StringComparison.OrdinalIgnoreCase))
                         {
                             id = obj.Value<string>("id") ?? Details.Id;
@@ -707,6 +710,52 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                             commentHtml = obj.Value<string>("html") ?? obj.Value<string>("content") ?? obj.Value<string>("body");
                             handleSubmit = true;
                         }
+                        else if (string.Equals(type, "uploadImageData", StringComparison.OrdinalIgnoreCase))
+                        {
+                            id = obj.Value<string>("id") ?? Details.Id;
+                            localId = obj.Value<string>("localId");
+                            dataUrl = obj.Value<string>("dataUrl");
+                            contentType = obj.Value<string>("contentType");
+                            if (!string.IsNullOrWhiteSpace(localId) && !string.IsNullOrWhiteSpace(dataUrl))
+                            {
+                                try
+                                {
+                                    string mime;
+                                    byte[] bytes;
+                                    if (TryParseDataUrl(dataUrl, out mime, out bytes) && (bytes != null) && (bytes.Length > 0))
+                                    {
+                                        var ct = !string.IsNullOrWhiteSpace(contentType) ? contentType : mime;
+                                        var ext = "png";
+                                        var lc = (ct ?? "").ToLowerInvariant();
+                                        if (lc.Contains("jpeg") || lc.Contains("jpg")) ext = "jpg";
+                                        else if (lc.Contains("gif")) ext = "gif";
+                                        else if (lc.Contains("bmp")) ext = "bmp";
+                                        else if (lc.Contains("webp")) ext = "webp";
+                                        else if (lc.Contains("svg")) ext = "svg";
+                                        var name = $"image_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.{ext}";
+                                        Newtonsoft.Json.Linq.JObject uploaded = await UploadAttachmentViaApiAsync(bytes, name, ct);
+                                        var finalUrl = uploaded?.Value<string>("download_url");
+                                        if (string.IsNullOrWhiteSpace(finalUrl))
+                                        {
+                                            finalUrl = uploaded?.Value<string>("url");
+                                        }
+                                        if (!string.IsNullOrWhiteSpace(finalUrl))
+                                        {
+                                            var safe = AppendAccessTokenQueryIfNeeded(finalUrl, accessToken);
+                                            var escUrl = JsEscape(safe);
+                                            var escId = JsEscape(localId);
+                                            var script =
+                                                "try{var im=document.querySelector('img[data-local-id=\""+escId+"\"]');if(im){im.setAttribute('src','"+escUrl+"');im.removeAttribute('data-local-id');}}catch(e){}";
+                                            await DetailsWeb.CoreWebView2.ExecuteScriptAsync(script);
+                                        }
+                                    }
+                                }
+                                catch
+                                {
+                                }
+                            }
+                            return;
+                        }
                         else
                         {
                             return;
@@ -719,6 +768,9 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                         if (innerTok is Newtonsoft.Json.Linq.JObject jobj)
                         {
                             type = jobj.Value<string>("type");
+                            string localId = null;
+                            string dataUrl = null;
+                            string contentType = null;
                             if (string.Equals(type, "updateStoryPoints", StringComparison.OrdinalIgnoreCase))
                             {
                                 id = jobj.Value<string>("id") ?? Details.Id;
@@ -740,6 +792,52 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                                 id = jobj.Value<string>("id") ?? Details.Id;
                                 commentHtml = jobj.Value<string>("html") ?? jobj.Value<string>("content") ?? jobj.Value<string>("body");
                                 handleSubmit = true;
+                            }
+                            else if (string.Equals(type, "uploadImageData", StringComparison.OrdinalIgnoreCase))
+                            {
+                                id = jobj.Value<string>("id") ?? Details.Id;
+                                localId = jobj.Value<string>("localId");
+                                dataUrl = jobj.Value<string>("dataUrl");
+                                contentType = jobj.Value<string>("contentType");
+                                if (!string.IsNullOrWhiteSpace(localId) && !string.IsNullOrWhiteSpace(dataUrl))
+                                {
+                                    try
+                                    {
+                                        string mime;
+                                        byte[] bytes;
+                                        if (TryParseDataUrl(dataUrl, out mime, out bytes) && (bytes != null) && (bytes.Length > 0))
+                                        {
+                                            var ct = !string.IsNullOrWhiteSpace(contentType) ? contentType : mime;
+                                            var ext = "png";
+                                            var lc = (ct ?? "").ToLowerInvariant();
+                                            if (lc.Contains("jpeg") || lc.Contains("jpg")) ext = "jpg";
+                                            else if (lc.Contains("gif")) ext = "gif";
+                                            else if (lc.Contains("bmp")) ext = "bmp";
+                                            else if (lc.Contains("webp")) ext = "webp";
+                                            else if (lc.Contains("svg")) ext = "svg";
+                                            var name = $"image_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.{ext}";
+                                            Newtonsoft.Json.Linq.JObject uploaded = await UploadAttachmentViaApiAsync(bytes, name, ct, id);
+                                            var finalUrl = uploaded?.Value<string>("download_url");
+                                            if (string.IsNullOrWhiteSpace(finalUrl))
+                                            {
+                                                finalUrl = uploaded?.Value<string>("url");
+                                            }
+                                            if (!string.IsNullOrWhiteSpace(finalUrl))
+                                            {
+                                                var safe = AppendAccessTokenQueryIfNeeded(finalUrl, accessToken);
+                                                var escUrl = JsEscape(safe);
+                                                var escId = JsEscape(localId);
+                                                var script =
+                                                    "try{var im=document.querySelector('img[data-local-id=\""+escId+"\"]');if(im){im.setAttribute('src','"+escUrl+"');im.removeAttribute('data-local-id');}}catch(e){}";
+                                                await DetailsWeb.CoreWebView2.ExecuteScriptAsync(script);
+                                            }
+                                        }
+                                    }
+                                    catch
+                                    {
+                                    }
+                                }
+                                return;
                             }
                             else
                             {
@@ -875,7 +973,8 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
 
                     try
                     {
-                        var ok = await api.AddWorkItemCommentAsync(id, commentHtml);
+                        var processed = await ProcessCommentHtmlAsync(commentHtml, id);
+                        var ok = await api.AddGenericWorkItemCommentAsync(id, processed.Html, processed.AttachmentUrls);
                         if (ok)
                         {
                             var list = await api.GetWorkItemCommentsAsync(id) ?? new List<WorkItemComment>();
@@ -1638,5 +1737,163 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
     private void CloseButton_Click(object sender, RoutedEventArgs e)
     {
         Close();
+    }
+
+    private class ProcessedComment
+    {
+        public string Html { get; }
+        public List<string> AttachmentUrls { get; }
+        public ProcessedComment(string html, List<string> attachmentUrls)
+        {
+            Html = html ?? "";
+            AttachmentUrls = attachmentUrls ?? new List<string>();
+        }
+    }
+
+    private static bool TryParseDataUrl(string src, out string mime, out byte[] bytes)
+    {
+        mime = null;
+        bytes = null;
+        try
+        {
+            var s = (src ?? "").Trim();
+            if (!s.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+            var idx = s.IndexOf(",");
+            if (idx <= 0)
+            {
+                return false;
+            }
+            var meta = s.Substring(0, idx);
+            var payload = s.Substring(idx + 1);
+            var m = Regex.Match(meta, @"^data:([^;]+);base64", RegexOptions.IgnoreCase);
+            if (!m.Success)
+            {
+                return false;
+            }
+            mime = m.Groups[1].Value;
+            bytes = Convert.FromBase64String(payload);
+            return (bytes != null) && (bytes.Length > 0);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private async Task<ProcessedComment> ProcessCommentHtmlAsync(string html, string workItemId)
+    {
+        try
+        {
+            var h = html ?? "";
+            var attachments = new List<string>();
+            var matches = ImgTagRegex.Matches(h);
+            if ((matches != null) && (matches.Count > 0))
+            {
+                foreach (Match m in matches)
+                {
+                    var tag = m.Value ?? "";
+                    var src = ExtractAttr(tag, "src");
+                    if (string.IsNullOrWhiteSpace(src))
+                    {
+                        continue;
+                    }
+                    if (!src.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+                    string mime;
+                    byte[] bytes;
+                    if (!TryParseDataUrl(src, out mime, out bytes) || (bytes == null) || (bytes.Length == 0))
+                    {
+                        continue;
+                    }
+                    var ext = "png";
+                    var ct = (mime ?? "").ToLowerInvariant();
+                    if (ct.Contains("jpeg") || ct.Contains("jpg")) ext = "jpg";
+                    else if (ct.Contains("gif")) ext = "gif";
+                    else if (ct.Contains("bmp")) ext = "bmp";
+                    else if (ct.Contains("webp")) ext = "webp";
+                    else if (ct.Contains("svg")) ext = "svg";
+                    var name = $"image_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.{ext}";
+                    var uploaded = await UploadAttachmentViaApiAsync(bytes, name, mime, workItemId);
+                    var finalUrl = uploaded?.Value<string>("download_url");
+                    if (string.IsNullOrWhiteSpace(finalUrl))
+                    {
+                        finalUrl = uploaded?.Value<string>("url");
+                    }
+                    if (!string.IsNullOrWhiteSpace(finalUrl))
+                    {
+                        attachments.Add(finalUrl);
+                        var safe = AppendAccessTokenQueryIfNeeded(finalUrl, accessToken);
+                        var encodedSafe = System.Net.WebUtility.HtmlEncode(safe);
+                        var newTag = Regex.Replace(tag, @"\bsrc\s*=\s*(""([^""]+)""|'([^']+)'|([^\s>]+))", $"src=\"{encodedSafe}\"", RegexOptions.IgnoreCase);
+                        h = h.Replace(tag, newTag);
+                    }
+                }
+            }
+            return new ProcessedComment(h, attachments);
+        }
+        catch
+        {
+            return new ProcessedComment(html ?? "", new List<string>());
+        }
+    }
+
+    private async Task<Newtonsoft.Json.Linq.JObject> UploadAttachmentViaApiAsync(byte[] data, string fileName, string contentType, string workItemId = null)
+    {
+        try
+        {
+            if ((data == null) || (data.Length == 0))
+            {
+                return null;
+            }
+            var tk = await api.GetAccessTokenAsync();
+            var url = "https://open.pingcode.com/v1/attachments";
+            if (!string.IsNullOrWhiteSpace(workItemId))
+            {
+                url = $"{url}?principal_type=work_item&principal_id={Uri.EscapeDataString(workItemId)}";
+            }
+            using var http = new System.Net.Http.HttpClient();
+            var req = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Post, url);
+            var mp = new System.Net.Http.MultipartFormDataContent();
+            var fc = new System.Net.Http.ByteArrayContent(data);
+            if (!string.IsNullOrWhiteSpace(contentType))
+            {
+                fc.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(contentType);
+            }
+            var name = string.IsNullOrWhiteSpace(fileName) ? $"image_{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}.png" : fileName;
+            mp.Add(fc, "file", name);
+            if (!string.IsNullOrWhiteSpace(workItemId))
+            {
+                mp.Add(new System.Net.Http.StringContent("work_item"), "principal_type");
+                mp.Add(new System.Net.Http.StringContent(workItemId), "principal_id");
+            }
+            req.Content = mp;
+            if (!string.IsNullOrWhiteSpace(tk))
+            {
+                req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", tk);
+            }
+            using var resp = await http.SendAsync(req);
+            var txt = await resp.Content.ReadAsStringAsync();
+            if (!resp.IsSuccessStatusCode)
+            {
+                return null;
+            }
+            try
+            {
+                return string.IsNullOrWhiteSpace(txt) ? new Newtonsoft.Json.Linq.JObject() : Newtonsoft.Json.Linq.JObject.Parse(txt);
+            }
+            catch
+            {
+                return new Newtonsoft.Json.Linq.JObject();
+            }
+        }
+        catch
+        {
+            return null;
+        }
     }
 }

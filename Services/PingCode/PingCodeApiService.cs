@@ -878,6 +878,47 @@ public class PingCodeApiService
         return false;
     }
 
+    public async Task<bool> AddGenericWorkItemCommentAsync(string workItemId, string contentHtml, List<string> attachmentUrls = null)
+    {
+        if (string.IsNullOrWhiteSpace(workItemId))
+        {
+            return false;
+        }
+        var url = "https://open.pingcode.com/v1/comments";
+        var body = new JObject
+        {
+            ["principal_type"] = "work_item",
+            ["principal_id"] = workItemId,
+            ["content"] = contentHtml ?? ""
+        };
+        if ((attachmentUrls != null) && (attachmentUrls.Count > 0))
+        {
+            var arr = new JArray();
+            foreach (var u in attachmentUrls.Where(x => !string.IsNullOrWhiteSpace(x)))
+            {
+                var it = new JObject
+                {
+                    ["url"] = u,
+                    ["type"] = "image"
+                };
+                arr.Add(it);
+            }
+            if (arr.Count > 0)
+            {
+                body["attachments"] = arr;
+            }
+        }
+        try
+        {
+            var resp = await PostJsonAsync(url, body);
+            return resp != null;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     public async Task<bool> UpdateWorkItemStateByIdAsync(string workItemId, string stateId)
     {
         if (string.IsNullOrWhiteSpace(workItemId) || string.IsNullOrWhiteSpace(stateId))

@@ -222,6 +222,7 @@
         edit.addEventListener('paste', function(e){
           try{
             var items=(e.clipboardData&&e.clipboardData.items)||[];
+            var handled=false;
             for(var i=0;i<items.length;i++){
               var it=items[i];
               if(it&&it.type&&it.type.indexOf('image/')===0){
@@ -232,18 +233,25 @@
                     try{
                       var url=evt.target.result;
                       if(url){
+                        var localId='local_'+Math.random().toString(36).substr(2,9);
                         var img=document.createElement('img');
                         img.src=url;
                         img.alt='image';
+                        img.setAttribute('data-local-id', localId);
                         img.style.maxWidth='100%';
                         edit.appendChild(img);
+                        if(window.chrome&&window.chrome.webview){
+                          window.chrome.webview.postMessage({type:'uploadImageData', id:'{{WorkItemId}}', localId: localId, dataUrl: url, contentType: file.type});
+                        }
                       }
                     }catch(ex){}
                   };
                   reader.readAsDataURL(file);
+                  handled=true;
                 }
               }
             }
+            if(handled){ e.preventDefault(); }
           }catch(ex){}
         });
       }
