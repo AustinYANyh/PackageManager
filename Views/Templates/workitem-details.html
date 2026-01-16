@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <meta name="workitem-details-template-version" content="1.0.3"/>
+  <meta name="workitem-details-template-version" content="1.1.0"/>
   <style>
     html,body{height:100%}
     body{margin:0;background:#fff;font-family:'Segoe UI','Microsoft YaHei',Arial,sans-serif;color:#111827;height:100%}
@@ -57,6 +57,16 @@
     .ant-comment-content-detail pre, .ant-comment-content-detail code{background:#F7F7F9;border:1px solid #E5E7EB;border-radius:6px}
     .ant-comment-content-detail pre{padding:10px;overflow:auto}
     .ant-comment-content-detail code{padding:2px 4px}
+    .comment-editor{border:1px solid #E5E7EB;border-radius:8px;padding:8px;margin-bottom:12px;background:#FAFAFA}
+    .comment-collapsed{display:flex;align-items:center;gap:8px}
+    .comment-collapsed input{flex:1 1 auto;padding:8px 10px;border:1px solid #D1D5DB;border-radius:6px}
+    .comment-expanded{display:none}
+    .edit-area{min-height:180px;border:1px solid #D1D5DB;border-radius:6px;padding:8px;background:#fff;overflow:auto}
+    .toolbar{display:flex;align-items:center;justify-content:space-between;margin-top:8px}
+    .toolbar .tips{color:#6B7280;font-size:12px}
+    .actions{display:flex;gap:8px;margin-top:8px}
+    .actions button{padding:6px 12px;border:1px solid #D1D5DB;border-radius:6px;background:#fff;cursor:pointer}
+    .actions button:hover{background:#F3F4F6}
   </style>
   <title>工作项详情</title>
   </head>
@@ -98,6 +108,22 @@
                   <div class="sketch-card">{{SketchHtml}}</div>
                   <div class="section-title">评论</div>
                   <div class="comments-card">{{CommentsHtml}}</div>
+                  <div class="comment-editor" id="commentEditor">
+                    <div id="commentCollapsed" class="comment-collapsed">
+                      <input id="commentCollapsedInput" type="text" placeholder="添加评论..."/>
+                    </div>
+                    <div id="commentExpanded" class="comment-expanded">
+                      <div id="commentEdit" class="edit-area" contenteditable="true"></div>
+                      <div class="toolbar">
+                        <button id="insertImageLinkBtn" type="button">插入图片链接</button>
+                        <span class="tips">Ctrl+Enter 提交</span>
+                      </div>
+                      <div class="actions">
+                        <button id="commentSubmitBtn" type="button">提交</button>
+                        <button id="commentCancelBtn" type="button">取消</button>
+                      </div>
+                    </div>
+                  </div>
                 </div>
                 
               </div>
@@ -144,6 +170,96 @@
       var sel=document.getElementById('stateSelect');
       if(sel){
         sel.addEventListener('change', onStateChange);
+      }
+      var collapsed=document.getElementById('commentCollapsed');
+      var collapsedInput=document.getElementById('commentCollapsedInput');
+      var expanded=document.getElementById('commentExpanded');
+      var edit=document.getElementById('commentEdit');
+      var submitBtn=document.getElementById('commentSubmitBtn');
+      var cancelBtn=document.getElementById('commentCancelBtn');
+      var insertImgBtn=document.getElementById('insertImageLinkBtn');
+      function expandEditor(){
+        if(collapsed&&expanded){
+          collapsed.style.display='none';
+          expanded.style.display='block';
+        }
+        if(edit){ edit.focus(); }
+        if(collapsedInput&&edit&&collapsedInput.value){
+          edit.innerText=collapsedInput.value;
+          collapsedInput.value='';
+        }
+      }
+      function collapseEditor(){
+        if(collapsed&&expanded){
+          expanded.style.display='none';
+          collapsed.style.display='flex';
+        }
+        if(edit){ edit.innerHTML=''; }
+      }
+      function submitComment(){
+        try{
+          var html=(edit&&edit.innerHTML||'').trim();
+          if(!html){ return; }
+          if(window.chrome&&window.chrome.webview){
+            window.chrome.webview.postMessage({type:'submitComment', id:'{{WorkItemId}}', html:html});
+          }
+        }catch(e){}
+      }
+      if(collapsedInput){
+        collapsedInput.addEventListener('focus', expandEditor);
+        collapsedInput.addEventListener('click', expandEditor);
+      }
+      if(cancelBtn){
+        cancelBtn.addEventListener('click', collapseEditor);
+      }
+      if(submitBtn){
+        submitBtn.addEventListener('click', submitComment);
+      }
+      if(edit){
+        edit.addEventListener('keydown', function(e){
+          if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){ submitComment(); }
+        });
+        edit.addEventListener('paste', function(e){
+          try{
+            var items=(e.clipboardData&&e.clipboardData.items)||[];
+            for(var i=0;i<items.length;i++){
+              var it=items[i];
+              if(it&&it.type&&it.type.indexOf('image/')===0){
+                var file=it.getAsFile();
+                if(file){
+                  var reader=new FileReader();
+                  reader.onload=function(evt){
+                    try{
+                      var url=evt.target.result;
+                      if(url){
+                        var img=document.createElement('img');
+                        img.src=url;
+                        img.alt='image';
+                        img.style.maxWidth='100%';
+                        edit.appendChild(img);
+                      }
+                    }catch(ex){}
+                  };
+                  reader.readAsDataURL(file);
+                }
+              }
+            }
+          }catch(ex){}
+        });
+      }
+      if(insertImgBtn){
+        insertImgBtn.addEventListener('click', function(){
+          try{
+            var u=window.prompt('图片链接');
+            if(u){
+              var img=document.createElement('img');
+              img.src=u;
+              img.alt='image';
+              img.style.maxWidth='100%';
+              if(edit){ edit.appendChild(img); }
+            }
+          }catch(e){}
+        });
       }
     }catch(e){}
   })();

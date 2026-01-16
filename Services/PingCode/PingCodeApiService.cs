@@ -841,6 +841,43 @@ public class PingCodeApiService
         return result;
     }
 
+    public async Task<bool> AddWorkItemCommentAsync(string workItemId, string contentHtml)
+    {
+        if (string.IsNullOrWhiteSpace(workItemId) || string.IsNullOrWhiteSpace(contentHtml))
+        {
+            return false;
+        }
+        var urls = new[]
+        {
+            $"https://open.pingcode.com/v1/project/work_items/{Uri.EscapeDataString(workItemId)}/comments",
+            $"https://open.pingcode.com/v1/agile/work_items/{Uri.EscapeDataString(workItemId)}/comments",
+        };
+        var bodies = new[]
+        {
+            new JObject { ["content"] = contentHtml },
+            new JObject { ["html"] = contentHtml },
+            new JObject { ["body"] = contentHtml },
+        };
+        foreach (var url in urls)
+        {
+            foreach (var body in bodies)
+            {
+                try
+                {
+                    var resp = await PostJsonAsync(url, body);
+                    if (resp != null)
+                    {
+                        return true;
+                    }
+                }
+                catch
+                {
+                }
+            }
+        }
+        return false;
+    }
+
     public async Task<bool> UpdateWorkItemStateByIdAsync(string workItemId, string stateId)
     {
         if (string.IsNullOrWhiteSpace(workItemId) || string.IsNullOrWhiteSpace(stateId))
@@ -1793,6 +1830,40 @@ public class PingCodeApiService
             throw new InvalidOperationException($"PATCH 失败: {(int)resp.StatusCode} {resp.StatusCode} {txt}");
         }
 
+        try
+        {
+            return string.IsNullOrWhiteSpace(txt) ? new JObject() : JObject.Parse(txt);
+        }
+        catch
+        {
+            return new JObject();
+        }
+    }
+
+    private async Task<JObject> PostJsonAsync(string url, JObject body)
+    {
+        await EnsureTokenAsync();
+        var req = new HttpRequestMessage(HttpMethod.Post, url);
+        var payload = body ?? new JObject();
+        req.Content = new StringContent(payload.ToString(Formatting.None), Encoding.UTF8, "application/json");
+        using var resp = await http.SendAsync(req);
+        var txt = await resp.Content.ReadAsStringAsync();
+        if (!resp.IsSuccessStatusCode)
+        {
+            if (resp.StatusCode == HttpStatusCode.Unauthorized)
+            {
+                throw new ApiAuthException($"POST 失败: {(int)resp.StatusCode} {resp.StatusCode} {txt}");
+            }
+            if (resp.StatusCode == HttpStatusCode.Forbidden)
+            {
+                throw new ApiForbiddenException($"POST 失败: {(int)resp.StatusCode} {resp.StatusCode} {txt}");
+            }
+            if (resp.StatusCode == HttpStatusCode.NotFound)
+            {
+                throw new ApiNotFoundException($"POST 失败: {(int)resp.StatusCode} {resp.StatusCode} {txt}");
+            }
+            throw new InvalidOperationException($"POST 失败: {(int)resp.StatusCode} {resp.StatusCode} {txt}");
+        }
         try
         {
             return string.IsNullOrWhiteSpace(txt) ? new JObject() : JObject.Parse(txt);

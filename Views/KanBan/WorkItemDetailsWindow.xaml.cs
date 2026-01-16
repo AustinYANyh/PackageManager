@@ -677,6 +677,8 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                 bool handleSp = false;
                 bool handleState = false;
                 bool handleReady = false;
+                bool handleSubmit = false;
+                string commentHtml = null;
                 try
                 {
                     var token = Newtonsoft.Json.Linq.JToken.Parse(msg);
@@ -698,6 +700,12 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                         else if (string.Equals(type, "ready", StringComparison.OrdinalIgnoreCase))
                         {
                             handleReady = true;
+                        }
+                        else if (string.Equals(type, "submitComment", StringComparison.OrdinalIgnoreCase))
+                        {
+                            id = obj.Value<string>("id") ?? Details.Id;
+                            commentHtml = obj.Value<string>("html") ?? obj.Value<string>("content") ?? obj.Value<string>("body");
+                            handleSubmit = true;
                         }
                         else
                         {
@@ -727,6 +735,12 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                             {
                                 handleReady = true;
                             }
+                            else if (string.Equals(type, "submitComment", StringComparison.OrdinalIgnoreCase))
+                            {
+                                id = jobj.Value<string>("id") ?? Details.Id;
+                                commentHtml = jobj.Value<string>("html") ?? jobj.Value<string>("content") ?? jobj.Value<string>("body");
+                                handleSubmit = true;
+                            }
                             else
                             {
                                 return;
@@ -750,6 +764,12 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                             else if ((parts.Length >= 1) && (parts[0] == "ready"))
                             {
                                 handleReady = true;
+                            }
+                            else if ((parts.Length >= 2) && (parts[0] == "submitComment"))
+                            {
+                                id = parts[1];
+                                commentHtml = parts.Length > 2 ? parts[2] : null;
+                                handleSubmit = true;
                             }
                             else
                             {
@@ -835,6 +855,37 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                             Details.StateType = newType;
                             Details.StateId = stateId;
                             await RefreshAvailableStatesAndUpdateDropdownAsync();
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
+                else if (handleSubmit)
+                {
+                    if (string.IsNullOrWhiteSpace(id))
+                    {
+                        id = Details.Id;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(commentHtml))
+                    {
+                        return;
+                    }
+
+                    try
+                    {
+                        var ok = await api.AddWorkItemCommentAsync(id, commentHtml);
+                        if (ok)
+                        {
+                            var list = await api.GetWorkItemCommentsAsync(id) ?? new List<WorkItemComment>();
+                            Details.Comments = list;
+                            var block = BuildCommentsHtml(list);
+                            var escaped = JsEscape(block);
+                            var script =
+                                "try{var c=document.querySelector('.comments-card');if(c){c.innerHTML='" + escaped +
+                                "';}var ed=document.getElementById('commentEdit');if(ed){ed.innerHTML='';}var col=document.getElementById('commentCollapsed');var exp=document.getElementById('commentExpanded');if(col&&exp){col.style.display='flex';exp.style.display='none';}}catch(e){}";
+                            await DetailsWeb.CoreWebView2.ExecuteScriptAsync(script);
                         }
                     }
                     catch
@@ -1200,8 +1251,7 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         sb.AppendLine("</div>");
         sb.AppendLine("</div></div></div></div>");
         sb.AppendLine("</div>");
-        sb.AppendLine(
-                      "<script>(function(){function parseVal(v){try{var n=parseFloat(v);if(isNaN(n)||n<0){return 0;}return n;}catch(e){return 0;}}function save(){try{var ip=document.getElementById('spInput');if(!ip){return;}var val=parseVal(ip.value);if(window.chrome&&window.chrome.webview){window.chrome.webview.postMessage({type:'updateStoryPoints', id:'" +
+        sb.AppendLine("<script>(function(){function parseVal(v){try{var n=parseFloat(v);if(isNaN(n)||n<0){return 0;}return n;}catch(e){return 0;}}function save(){try{var ip=document.getElementById('spInput');if(!ip){return;}var val=parseVal(ip.value);if(window.chrome&&window.chrome.webview){window.chrome.webview.postMessage({type:'updateStoryPoints', id:'" +
                       HtmlEscape(Details.Id) +
                       "', value:val});}}catch(e){}}function onStateChange(){try{var sel=document.getElementById('stateSelect');var val=sel&&sel.value;if(val&&window.chrome&&window.chrome.webview){window.chrome.webview.postMessage({type:'updateState', id:'" +
                       HtmlEscape(Details.Id) +
