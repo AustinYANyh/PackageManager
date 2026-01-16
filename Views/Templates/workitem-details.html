@@ -163,9 +163,34 @@
           img.style.borderRadius='4px';
           pre.appendChild(img);
         }
+        scrollToBottomDeferred();
       }catch(e){}
     }
     window.addAttachment=addAttachment;
+    function scrollToBottom(){
+      try{
+        var body=document.querySelector('.ant-drawer-body');
+        var expanded=document.getElementById('commentExpanded');
+        var submit=document.getElementById('commentSubmitBtn');
+        var cancel=document.getElementById('commentCancelBtn');
+        var editor=document.getElementById('commentEditor');
+        var target=submit||cancel||expanded||editor;
+        if(target&&target.scrollIntoView){ target.scrollIntoView({block:'end'}); }
+        if(body&&typeof body.scrollTo==='function'){ body.scrollTo({top: body.scrollHeight}); }
+        else if(body){ body.scrollTop=body.scrollHeight; }
+        var sc=document.scrollingElement||document.documentElement;
+        if(sc){ sc.scrollTop=sc.scrollHeight; } else { window.scrollTo(0, (document.documentElement&&document.documentElement.scrollHeight)||document.body.scrollHeight); }
+      }catch(e){}
+    }
+    function scrollToBottomDeferred(){
+      try{
+        if(window.requestAnimationFrame){
+          window.requestAnimationFrame(function(){ window.requestAnimationFrame(scrollToBottom); });
+        }else{
+          setTimeout(scrollToBottom,30);
+        }
+      }catch(e){}
+    }
     function save(){
       try{
         var ip=document.getElementById('spInput');
@@ -217,6 +242,7 @@
           edit.innerText=collapsedInput.value;
           collapsedInput.value='';
         }
+        scrollToBottomDeferred();
       }
       function collapseEditor(){
         if(collapsed&&expanded){
@@ -238,6 +264,7 @@
           if(window.chrome&&window.chrome.webview){
             window.chrome.webview.postMessage({type:'submitComment', id:'{{WorkItemId}}', content:text, attachments: list.slice(0)});
           }
+          scrollToBottom();
         }catch(e){}
       }
       if(collapsedInput){
