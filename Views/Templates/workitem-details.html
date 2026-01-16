@@ -115,9 +115,9 @@
                     <div id="commentExpanded" class="comment-expanded">
                       <div id="commentEdit" class="edit-area" contenteditable="true"></div>
                       <div class="toolbar">
-                        <button id="insertImageLinkBtn" type="button">插入图片链接</button>
                         <span class="tips">Ctrl+Enter 提交</span>
                       </div>
+                      <div id="attachmentsPreview" class="attachments-preview" style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 6px 0;"></div>
                       <div class="actions">
                         <button id="commentSubmitBtn" type="button">提交</button>
                         <button id="commentCancelBtn" type="button">取消</button>
@@ -142,6 +142,30 @@
         return n;
       }catch(e){return 0;}
     }
+    window.pendingAttachments=[];
+    function addAttachment(url){
+      try{
+        if(!url){return;}
+        var u=(url||'').trim();
+        if(!u){return;}
+        var list=window.pendingAttachments||(window.pendingAttachments=[]);
+        if(list.indexOf(u)>=0){return;}
+        list.push(u);
+        var pre=document.getElementById('attachmentsPreview');
+        if(pre){
+          var img=document.createElement('img');
+          img.src=u;
+          img.alt='image';
+          img.style.maxWidth='120px';
+          img.style.maxHeight='90px';
+          img.style.objectFit='contain';
+          img.style.border='1px solid #e5e5e5';
+          img.style.borderRadius='4px';
+          pre.appendChild(img);
+        }
+      }catch(e){}
+    }
+    window.addAttachment=addAttachment;
     function save(){
       try{
         var ip=document.getElementById('spInput');
@@ -183,6 +207,11 @@
           collapsed.style.display='none';
           expanded.style.display='block';
         }
+        try{
+          var pre=document.getElementById('attachmentsPreview');
+          if(pre){ pre.innerHTML=''; }
+          if(window.pendingAttachments){ window.pendingAttachments=[]; }
+        }catch(e){}
         if(edit){ edit.focus(); }
         if(collapsedInput&&edit&&collapsedInput.value){
           edit.innerText=collapsedInput.value;
@@ -195,13 +224,19 @@
           collapsed.style.display='flex';
         }
         if(edit){ edit.innerHTML=''; }
+        try{
+          var pre=document.getElementById('attachmentsPreview');
+          if(pre){ pre.innerHTML=''; }
+          if(window.pendingAttachments){ window.pendingAttachments=[]; }
+        }catch(e){}
       }
       function submitComment(){
         try{
-          var html=(edit&&edit.innerHTML||'').trim();
-          if(!html){ return; }
+          var text=(edit&&edit.innerText||'').trim();
+          var list=window.pendingAttachments||[];
+          if(!text && list.length===0){ return; }
           if(window.chrome&&window.chrome.webview){
-            window.chrome.webview.postMessage({type:'submitComment', id:'{{WorkItemId}}', html:html});
+            window.chrome.webview.postMessage({type:'submitComment', id:'{{WorkItemId}}', content:text, attachments: list.slice(0)});
           }
         }catch(e){}
       }
@@ -233,14 +268,8 @@
                     try{
                       var url=evt.target.result;
                       if(url){
-                        var localId='local_'+Math.random().toString(36).substr(2,9);
-                        var img=document.createElement('img');
-                        img.src=url;
-                        img.alt='image';
-                        img.setAttribute('data-local-id', localId);
-                        img.style.maxWidth='100%';
-                        edit.appendChild(img);
                         if(window.chrome&&window.chrome.webview){
+                          var localId='local_'+Math.random().toString(36).substr(2,9);
                           window.chrome.webview.postMessage({type:'uploadImageData', id:'{{WorkItemId}}', localId: localId, dataUrl: url, contentType: file.type});
                         }
                       }
@@ -253,20 +282,6 @@
             }
             if(handled){ e.preventDefault(); }
           }catch(ex){}
-        });
-      }
-      if(insertImgBtn){
-        insertImgBtn.addEventListener('click', function(){
-          try{
-            var u=window.prompt('图片链接');
-            if(u){
-              var img=document.createElement('img');
-              img.src=u;
-              img.alt='image';
-              img.style.maxWidth='100%';
-              if(edit){ edit.appendChild(img); }
-            }
-          }catch(e){}
         });
       }
     }catch(e){}

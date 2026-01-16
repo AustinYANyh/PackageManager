@@ -878,11 +878,21 @@ public class PingCodeApiService
         return false;
     }
 
-    public async Task<bool> AddGenericWorkItemCommentAsync(string workItemId, string contentHtml, List<string> attachmentUrls = null)
+    public async Task<bool> AddGenericWorkItemCommentAsync(string workItemId, string contentHtml, List<JObject> attachments = null)
     {
         if (string.IsNullOrWhiteSpace(workItemId))
         {
             return false;
+        }
+        var resp = await CreateGenericWorkItemCommentAsync(workItemId, contentHtml);
+        return resp != null;
+    }
+
+    public async Task<JObject> CreateGenericWorkItemCommentAsync(string workItemId, string contentHtml)
+    {
+        if (string.IsNullOrWhiteSpace(workItemId))
+        {
+            return null;
         }
         var url = "https://open.pingcode.com/v1/comments";
         var body = new JObject
@@ -891,31 +901,14 @@ public class PingCodeApiService
             ["principal_id"] = workItemId,
             ["content"] = contentHtml ?? ""
         };
-        if ((attachmentUrls != null) && (attachmentUrls.Count > 0))
-        {
-            var arr = new JArray();
-            foreach (var u in attachmentUrls.Where(x => !string.IsNullOrWhiteSpace(x)))
-            {
-                var it = new JObject
-                {
-                    ["url"] = u,
-                    ["type"] = "image"
-                };
-                arr.Add(it);
-            }
-            if (arr.Count > 0)
-            {
-                body["attachments"] = arr;
-            }
-        }
         try
         {
             var resp = await PostJsonAsync(url, body);
-            return resp != null;
+            return resp;
         }
         catch
         {
-            return false;
+            return null;
         }
     }
 
@@ -2043,6 +2036,67 @@ public class PingCodeApiService
         }
     }
 
+    private static string TryExtractAttachmentIdFromUrl(string url)
+    {
+        try
+        {
+            var u = (url ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(u))
+            {
+                return null;
+            }
+            Uri uri;
+            if (!Uri.TryCreate(u, UriKind.Absolute, out uri))
+            {
+                return null;
+            }
+            var path = (uri.AbsolutePath ?? "").ToLowerInvariant();
+            var idx = path.IndexOf("/v1/attachments/");
+            if (idx >= 0)
+            {
+                var start = idx + "/v1/attachments/".Length;
+                if (start < path.Length)
+                {
+                    var rest = path.Substring(start);
+                    var slash = rest.IndexOf('/');
+                    var id = (slash >= 0) ? rest.Substring(0, slash) : rest;
+                    id = (id ?? "").Trim();
+                    if (!string.IsNullOrWhiteSpace(id))
+                    {
+                        return id;
+                    }
+                }
+            }
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string GuessAttachmentType(string url)
+    {
+        try
+        {
+            var u = (url ?? "").Trim().ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(u))
+            {
+                return "file";
+            }
+            if (u.EndsWith(".png") || u.EndsWith(".jpg") || u.EndsWith(".jpeg") || u.EndsWith(".gif") ||
+                u.EndsWith(".bmp") || u.EndsWith(".webp") || u.EndsWith(".svg") || u.EndsWith(".tif") ||
+                u.EndsWith(".tiff") || u.Contains("content_type=image") || u.Contains("file_type=image"))
+            {
+                return "image";
+            }
+            return "file";
+        }
+        catch
+        {
+            return "file";
+        }
+    }
     private enum PriorityCategory
     {
         Highest,

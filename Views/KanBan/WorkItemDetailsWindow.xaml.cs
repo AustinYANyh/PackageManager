@@ -32,6 +32,8 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
 
     private List<StateDto> availableStates = new();
 
+    private readonly Dictionary<string, Newtonsoft.Json.Linq.JObject> uploadedAttachmentMap = new(StringComparer.OrdinalIgnoreCase);
+
     public WorkItemDetailsWindow(WorkItemDetails details, PingCodeApiService api)
     {
         Details = details ?? new WorkItemDetails();
@@ -679,6 +681,7 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                 bool handleReady = false;
                 bool handleSubmit = false;
                 string commentHtml = null;
+                List<string> attachmentsFromClient = null;
                 try
                 {
                     var token = Newtonsoft.Json.Linq.JToken.Parse(msg);
@@ -708,6 +711,15 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                         {
                             id = obj.Value<string>("id") ?? Details.Id;
                             commentHtml = obj.Value<string>("html") ?? obj.Value<string>("content") ?? obj.Value<string>("body");
+                            var arr = obj["attachments"] as Newtonsoft.Json.Linq.JArray;
+                            if (arr != null)
+                            {
+                                attachmentsFromClient = arr
+                                    .Select(x => ReadUrlFromAttachmentToken(x))
+                                    .Where(s => !string.IsNullOrWhiteSpace(s))
+                                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                                    .ToList();
+                            }
                             handleSubmit = true;
                         }
                         else if (string.Equals(type, "uploadImageData", StringComparison.OrdinalIgnoreCase))
@@ -720,35 +732,11 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                             {
                                 try
                                 {
-                                    string mime;
-                                    byte[] bytes;
-                                    if (TryParseDataUrl(dataUrl, out mime, out bytes) && (bytes != null) && (bytes.Length > 0))
-                                    {
-                                        var ct = !string.IsNullOrWhiteSpace(contentType) ? contentType : mime;
-                                        var ext = "png";
-                                        var lc = (ct ?? "").ToLowerInvariant();
-                                        if (lc.Contains("jpeg") || lc.Contains("jpg")) ext = "jpg";
-                                        else if (lc.Contains("gif")) ext = "gif";
-                                        else if (lc.Contains("bmp")) ext = "bmp";
-                                        else if (lc.Contains("webp")) ext = "webp";
-                                        else if (lc.Contains("svg")) ext = "svg";
-                                        var name = $"image_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.{ext}";
-                                        Newtonsoft.Json.Linq.JObject uploaded = await UploadAttachmentViaApiAsync(bytes, name, ct);
-                                        var finalUrl = uploaded?.Value<string>("download_url");
-                                        if (string.IsNullOrWhiteSpace(finalUrl))
-                                        {
-                                            finalUrl = uploaded?.Value<string>("url");
-                                        }
-                                        if (!string.IsNullOrWhiteSpace(finalUrl))
-                                        {
-                                            var safe = AppendAccessTokenQueryIfNeeded(finalUrl, accessToken);
-                                            var escUrl = JsEscape(safe);
-                                            var escId = JsEscape(localId);
-                                            var script =
-                                                "try{var im=document.querySelector('img[data-local-id=\""+escId+"\"]');if(im){im.setAttribute('src','"+escUrl+"');im.removeAttribute('data-local-id');}}catch(e){}";
-                                            await DetailsWeb.CoreWebView2.ExecuteScriptAsync(script);
-                                        }
-                                    }
+                                    var escUrl = JsEscape(dataUrl);
+                                    var escId = JsEscape(localId);
+                                    var script =
+                                        "try{if(window.addAttachment){window.addAttachment('"+escUrl+"');}var im=document.querySelector('img[data-local-id=\""+escId+"\"]');if(im){im.remove();}}catch(e){}";
+                                    await DetailsWeb.CoreWebView2.ExecuteScriptAsync(script);
                                 }
                                 catch
                                 {
@@ -791,6 +779,15 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                             {
                                 id = jobj.Value<string>("id") ?? Details.Id;
                                 commentHtml = jobj.Value<string>("html") ?? jobj.Value<string>("content") ?? jobj.Value<string>("body");
+                                var arr = jobj["attachments"] as Newtonsoft.Json.Linq.JArray;
+                                if (arr != null)
+                                {
+                                    attachmentsFromClient = arr
+                                        .Select(x => ReadUrlFromAttachmentToken(x))
+                                        .Where(s => !string.IsNullOrWhiteSpace(s))
+                                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                                        .ToList();
+                                }
                                 handleSubmit = true;
                             }
                             else if (string.Equals(type, "uploadImageData", StringComparison.OrdinalIgnoreCase))
@@ -803,35 +800,11 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                                 {
                                     try
                                     {
-                                        string mime;
-                                        byte[] bytes;
-                                        if (TryParseDataUrl(dataUrl, out mime, out bytes) && (bytes != null) && (bytes.Length > 0))
-                                        {
-                                            var ct = !string.IsNullOrWhiteSpace(contentType) ? contentType : mime;
-                                            var ext = "png";
-                                            var lc = (ct ?? "").ToLowerInvariant();
-                                            if (lc.Contains("jpeg") || lc.Contains("jpg")) ext = "jpg";
-                                            else if (lc.Contains("gif")) ext = "gif";
-                                            else if (lc.Contains("bmp")) ext = "bmp";
-                                            else if (lc.Contains("webp")) ext = "webp";
-                                            else if (lc.Contains("svg")) ext = "svg";
-                                            var name = $"image_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.{ext}";
-                                            Newtonsoft.Json.Linq.JObject uploaded = await UploadAttachmentViaApiAsync(bytes, name, ct, id);
-                                            var finalUrl = uploaded?.Value<string>("download_url");
-                                            if (string.IsNullOrWhiteSpace(finalUrl))
-                                            {
-                                                finalUrl = uploaded?.Value<string>("url");
-                                            }
-                                            if (!string.IsNullOrWhiteSpace(finalUrl))
-                                            {
-                                                var safe = AppendAccessTokenQueryIfNeeded(finalUrl, accessToken);
-                                                var escUrl = JsEscape(safe);
-                                                var escId = JsEscape(localId);
-                                                var script =
-                                                    "try{var im=document.querySelector('img[data-local-id=\""+escId+"\"]');if(im){im.setAttribute('src','"+escUrl+"');im.removeAttribute('data-local-id');}}catch(e){}";
-                                                await DetailsWeb.CoreWebView2.ExecuteScriptAsync(script);
-                                            }
-                                        }
+                                        var escUrl = JsEscape(dataUrl);
+                                        var escId = JsEscape(localId);
+                                        var script =
+                                            "try{if(window.addAttachment){window.addAttachment('"+escUrl+"');}var im=document.querySelector('img[data-local-id=\""+escId+"\"]');if(im){im.remove();}}catch(e){}";
+                                        await DetailsWeb.CoreWebView2.ExecuteScriptAsync(script);
                                     }
                                     catch
                                     {
@@ -968,24 +941,58 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
 
                     if (string.IsNullOrWhiteSpace(commentHtml))
                     {
+                        commentHtml = "PingCode必须要评论要有文本内容，如果你没有它就把文件名当评论内容，真的蠢";
                         return;
                     }
 
                     try
                     {
                         var processed = await ProcessCommentHtmlAsync(commentHtml, id);
-                        var ok = await api.AddGenericWorkItemCommentAsync(id, processed.Html, processed.AttachmentUrls);
-                        if (ok)
+                        var dataUrls = new List<string>();
+                        if (attachmentsFromClient != null) { dataUrls.AddRange(attachmentsFromClient); }
+                        if (processed?.AttachmentUrls != null) { dataUrls.AddRange(processed.AttachmentUrls); }
+                        dataUrls = dataUrls.Where(s => !string.IsNullOrWhiteSpace(s) && s.StartsWith("data:", StringComparison.OrdinalIgnoreCase)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                        if (string.IsNullOrWhiteSpace(processed.Html) && dataUrls.Count == 0) { return; }
+
+                        var created = await api.CreateGenericWorkItemCommentAsync(id, processed.Html);
+                        var commentId = created?.Value<string>("id")
+                                         ?? created?["data"]?.Value<string>("id")
+                                         ?? created?["value"]?.Value<string>("id")
+                                         ?? created?["comment"]?.Value<string>("id");
+                        if (!string.IsNullOrWhiteSpace(commentId))
                         {
-                            var list = await api.GetWorkItemCommentsAsync(id) ?? new List<WorkItemComment>();
-                            Details.Comments = list;
-                            var block = BuildCommentsHtml(list);
-                            var escaped = JsEscape(block);
-                            var script =
-                                "try{var c=document.querySelector('.comments-card');if(c){c.innerHTML='" + escaped +
-                                "';}var ed=document.getElementById('commentEdit');if(ed){ed.innerHTML='';}var col=document.getElementById('commentCollapsed');var exp=document.getElementById('commentExpanded');if(col&&exp){col.style.display='flex';exp.style.display='none';}}catch(e){}";
-                            await DetailsWeb.CoreWebView2.ExecuteScriptAsync(script);
+                            foreach (var du in dataUrls)
+                            {
+                                try
+                                {
+                                    string mime;
+                                    byte[] bytes;
+                                    if (!TryParseDataUrl(du, out mime, out bytes) || (bytes == null) || (bytes.Length == 0)) { continue; }
+                                    var ext = "png";
+                                    var ct = (mime ?? "").ToLowerInvariant();
+                                    if (ct.Contains("jpeg") || ct.Contains("jpg")) ext = "jpg";
+                                    else if (ct.Contains("gif")) ext = "gif";
+                                    else if (ct.Contains("bmp")) ext = "bmp";
+                                    else if (ct.Contains("webp")) ext = "webp";
+                                    else if (ct.Contains("svg")) ext = "svg";
+                                    var name = $"image_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.{ext}";
+                                    await UploadAttachmentViaApiAsync(bytes, name, mime, id, commentId);
+                                }
+                                catch
+                                {
+                                }
+                            }
                         }
+
+                        try { uploadedAttachmentMap.Clear(); } catch { }
+                        var list = await api.GetWorkItemCommentsAsync(id) ?? new List<WorkItemComment>();
+                        Details.Comments = list;
+                        var block = BuildCommentsHtml(list);
+                        var escaped = JsEscape(block);
+                        var script =
+                            "try{var c=document.querySelector('.comments-card');if(c){c.innerHTML='" + escaped +
+                            "';}var ed=document.getElementById('commentEdit');if(ed){ed.innerHTML='';}var pre=document.getElementById('attachmentsPreview');if(pre){pre.innerHTML='';}try{if(typeof pendingAttachments!=='undefined'){pendingAttachments=[];}}catch(ex){}if(window.pendingAttachments){try{window.pendingAttachments=[];}catch(ex){}}var col=document.getElementById('commentCollapsed');var exp=document.getElementById('commentExpanded');if(col&&exp){col.style.display='flex';exp.style.display='none';}}catch(e){}";
+                        await DetailsWeb.CoreWebView2.ExecuteScriptAsync(script);
                     }
                     catch
                     {
@@ -1783,6 +1790,73 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         }
     }
 
+    private static string ReadUrlFromAttachmentToken(Newtonsoft.Json.Linq.JToken x)
+    {
+        try
+        {
+            if (x == null) return null;
+            if (x.Type == Newtonsoft.Json.Linq.JTokenType.String) return x.ToString();
+            var xo = x as Newtonsoft.Json.Linq.JObject;
+            if (xo != null)
+            {
+                var u = xo.Value<string>("url") ?? xo.Value<string>("download_url") ?? xo.Value<string>("src");
+                if (!string.IsNullOrWhiteSpace(u)) return u;
+            }
+            var jv = x as Newtonsoft.Json.Linq.JValue;
+            if (jv != null)
+            {
+                var obj = jv.Value;
+                return obj?.ToString();
+            }
+            return x.ToString();
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private void RememberUploadedAttachment(Newtonsoft.Json.Linq.JObject uploaded)
+    {
+        try
+        {
+            if (uploaded == null) return;
+            var urls = new List<string>();
+            var u1 = uploaded.Value<string>("url");
+            var u2 = uploaded.Value<string>("download_url");
+            if (!string.IsNullOrWhiteSpace(u1)) urls.Add(u1);
+            if (!string.IsNullOrWhiteSpace(u2)) urls.Add(u2);
+            foreach (var u in urls)
+            {
+                uploadedAttachmentMap[u] = uploaded;
+                var safe = AppendAccessTokenQueryIfNeeded(u, accessToken);
+                uploadedAttachmentMap[safe] = uploaded;
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private static string GuessAttachmentTypeByUrl(string url)
+    {
+        try
+        {
+            var u = (url ?? "").Trim().ToLowerInvariant();
+            if (string.IsNullOrWhiteSpace(u)) return "file";
+            if (u.EndsWith(".png") || u.EndsWith(".jpg") || u.EndsWith(".jpeg") || u.EndsWith(".gif") ||
+                u.EndsWith(".bmp") || u.EndsWith(".webp") || u.EndsWith(".svg") || u.Contains("file_type=image") || u.Contains("content_type=image"))
+            {
+                return "image";
+            }
+            return "file";
+        }
+        catch
+        {
+            return "file";
+        }
+    }
+
     private async Task<ProcessedComment> ProcessCommentHtmlAsync(string html, string workItemId)
     {
         try
@@ -1800,37 +1874,10 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                     {
                         continue;
                     }
-                    if (!src.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                    if (src.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
                     {
-                        continue;
-                    }
-                    string mime;
-                    byte[] bytes;
-                    if (!TryParseDataUrl(src, out mime, out bytes) || (bytes == null) || (bytes.Length == 0))
-                    {
-                        continue;
-                    }
-                    var ext = "png";
-                    var ct = (mime ?? "").ToLowerInvariant();
-                    if (ct.Contains("jpeg") || ct.Contains("jpg")) ext = "jpg";
-                    else if (ct.Contains("gif")) ext = "gif";
-                    else if (ct.Contains("bmp")) ext = "bmp";
-                    else if (ct.Contains("webp")) ext = "webp";
-                    else if (ct.Contains("svg")) ext = "svg";
-                    var name = $"image_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.{ext}";
-                    var uploaded = await UploadAttachmentViaApiAsync(bytes, name, mime, workItemId);
-                    var finalUrl = uploaded?.Value<string>("download_url");
-                    if (string.IsNullOrWhiteSpace(finalUrl))
-                    {
-                        finalUrl = uploaded?.Value<string>("url");
-                    }
-                    if (!string.IsNullOrWhiteSpace(finalUrl))
-                    {
-                        attachments.Add(finalUrl);
-                        var safe = AppendAccessTokenQueryIfNeeded(finalUrl, accessToken);
-                        var encodedSafe = System.Net.WebUtility.HtmlEncode(safe);
-                        var newTag = Regex.Replace(tag, @"\bsrc\s*=\s*(""([^""]+)""|'([^']+)'|([^\s>]+))", $"src=\"{encodedSafe}\"", RegexOptions.IgnoreCase);
-                        h = h.Replace(tag, newTag);
+                        attachments.Add(src);
+                        h = h.Replace(tag, "");
                     }
                 }
             }
@@ -1842,7 +1889,7 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         }
     }
 
-    private async Task<Newtonsoft.Json.Linq.JObject> UploadAttachmentViaApiAsync(byte[] data, string fileName, string contentType, string workItemId = null)
+    private async Task<Newtonsoft.Json.Linq.JObject> UploadAttachmentViaApiAsync(byte[] data, string fileName, string contentType, string workItemId = null, string commentId = null)
     {
         try
         {
@@ -1852,9 +1899,19 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
             }
             var tk = await api.GetAccessTokenAsync();
             var url = "https://open.pingcode.com/v1/attachments";
+            var qs = new List<string>();
             if (!string.IsNullOrWhiteSpace(workItemId))
             {
-                url = $"{url}?principal_type=work_item&principal_id={Uri.EscapeDataString(workItemId)}";
+                qs.Add("principal_type=work_item");
+                qs.Add($"principal_id={Uri.EscapeDataString(workItemId)}");
+            }
+            if (!string.IsNullOrWhiteSpace(commentId))
+            {
+                qs.Add($"comment_id={Uri.EscapeDataString(commentId)}");
+            }
+            if (qs.Count > 0)
+            {
+                url = $"{url}?{string.Join("&", qs)}";
             }
             using var http = new System.Net.Http.HttpClient();
             var req = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Post, url);
@@ -1866,11 +1923,7 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
             }
             var name = string.IsNullOrWhiteSpace(fileName) ? $"image_{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}.png" : fileName;
             mp.Add(fc, "file", name);
-            if (!string.IsNullOrWhiteSpace(workItemId))
-            {
-                mp.Add(new System.Net.Http.StringContent("work_item"), "principal_type");
-                mp.Add(new System.Net.Http.StringContent(workItemId), "principal_id");
-            }
+            // parameters already in query; do not duplicate in form
             req.Content = mp;
             if (!string.IsNullOrWhiteSpace(tk))
             {
