@@ -877,6 +877,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                     {
                         grid.FilterManager.FilterConditions.Add(condition);
                     }
+
+                    grid.FilterManager.UseOrLogic = stateData.UseOrLogic;
                 }
             }
         }
@@ -1484,7 +1486,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         ObservableCollection<FilterCondition> filterManagerFilterConditions = grid.FilterManager.FilterConditions;
 
         // 保存筛选条件集合到持久化服务的缓存，并写入主界面状态文件
-        if (_dataPersistenceService.SaveMainWindowFilterCondition(filterManagerFilterConditions))
+        if (_dataPersistenceService.SaveMainWindowFilterCondition(filterManagerFilterConditions, grid.FilterManager.UseOrLogic))
         {
             SaveCurrentState();
         }

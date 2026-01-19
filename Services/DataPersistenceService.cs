@@ -35,6 +35,8 @@ namespace PackageManager.Services
         
         // 主界面筛选条件集合用于精确还原各列筛选
         public List<FilterCondition> PackageGridFilterConditions { get; set; } = new List<FilterCondition>();
+        
+        public bool UseOrLogic { get; set; }
     }
 
     /// <summary>
@@ -56,6 +58,8 @@ namespace PackageManager.Services
         private readonly JsonSerializerSettings _jsonSettings;
 
         private List<FilterCondition> _lastGridFilterConditions;
+
+        private bool useOrLogic;
 
         public DataPersistenceService()
         {
@@ -404,6 +408,7 @@ namespace PackageManager.Services
 
                 // 包含最近一次提取的筛选条件集合
                 stateData.PackageGridFilterConditions = _lastGridFilterConditions ?? new List<FilterCondition>();
+                stateData.UseOrLogic = useOrLogic;
 
                 var json = JsonConvert.SerializeObject(stateData, _jsonSettings);
                 File.WriteAllText(_mainWindowStateFilePath, json);
@@ -420,12 +425,14 @@ namespace PackageManager.Services
         /// 保存主界面筛选条件集合（仅更新缓存，持久化由 SaveMainWindowState 统一执行）
         /// </summary>
         /// <param name="filterConditions">筛选条件集合</param>
+        /// <param name="filterManagerUseOrLogic"></param>
         /// <returns>是否保存成功（更新缓存成功）</returns>
-        public bool SaveMainWindowFilterCondition(ObservableCollection<FilterCondition> filterConditions)
+        public bool SaveMainWindowFilterCondition(ObservableCollection<FilterCondition> filterConditions, bool filterManagerUseOrLogic)
         {
             try
             {
                 _lastGridFilterConditions = filterConditions?.ToList() ?? new List<FilterCondition>();
+                useOrLogic = filterManagerUseOrLogic;
                 return true;
             }
             catch (Exception ex)
@@ -453,6 +460,7 @@ namespace PackageManager.Services
 
                 // 读取筛选条件集合
                 _lastGridFilterConditions = stateData?.PackageGridFilterConditions ?? new List<FilterCondition>();
+                useOrLogic = stateData?.UseOrLogic ?? false;
                 return stateData;
             }
             catch (Exception ex)
