@@ -862,10 +862,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                     {
                         savedState = match;
                     }
-                    else if (index < stateData.Packages.Count)
-                    {
-                        savedState = stateData.Packages[index];
-                    }
 
                     if (savedState != null)
                     {
