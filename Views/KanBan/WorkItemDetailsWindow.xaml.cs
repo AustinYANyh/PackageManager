@@ -606,7 +606,8 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
             return "-";
         }
 
-        return v.ToString("yyyy-MM-dd");
+        var local = v.Kind == DateTimeKind.Utc ? v.ToLocalTime() : v;
+        return local.ToString("yyyy-MM-dd HH:mm");
     }
 
     private async Task<CoreWebView2> InitializeWebViewAsync()
