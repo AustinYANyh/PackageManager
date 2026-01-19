@@ -14,6 +14,7 @@ namespace PackageManager.Services
     /// </summary>
     public class PackageStateData
     {
+        public string ProductName { get; set; }
         public string LocalPath { get; set; }
         public string UploadPackageName { get; set; }
         public string SelectedExecutableVersion { get; set; }
@@ -389,6 +390,7 @@ namespace PackageManager.Services
                 {
                     var packageState = new PackageStateData
                     {
+                        ProductName = package.ProductName,
                         LocalPath = package.LocalPath,
                         UploadPackageName = package.UploadPackageName,
                         SelectedExecutableVersion = package.SelectedExecutableVersion,

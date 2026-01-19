@@ -844,15 +844,29 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             var stateData = _dataPersistenceService.LoadMainWindowState();
             if (stateData?.Packages != null)
             {
+                var byName = new Dictionary<string, PackageStateData>(StringComparer.OrdinalIgnoreCase);
+                foreach (var s in stateData.Packages)
+                {
+                    var key = (s?.ProductName ?? "").Trim();
+                    if (!string.IsNullOrWhiteSpace(key) && !byName.ContainsKey(key))
+                    {
+                        byName[key] = s;
+                    }
+                }
+
                 for (var index = 0; index < Packages.Count; index++)
                 {
                     var package = Packages[index];
-                    if (index >= stateData.Packages.Count)
+                    PackageStateData savedState = null;
+                    if (!string.IsNullOrWhiteSpace(package?.ProductName) && byName.TryGetValue(package.ProductName, out var match))
                     {
-                        continue;
+                        savedState = match;
+                    }
+                    else if (index < stateData.Packages.Count)
+                    {
+                        savedState = stateData.Packages[index];
                     }
 
-                    var savedState = stateData.Packages[index];
                     if (savedState != null)
                     {
                         _dataPersistenceService.ApplyStateToPackage(package, savedState);
