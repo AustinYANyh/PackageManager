@@ -196,7 +196,7 @@ namespace PackageManager.Services
                 {
                     ProductName = "MaxiBIM（SH）Develop", FtpServerPath = "http://doc-dev.hongwa.cc:8001/HWMaxiBIMSH/",
                     FinalizeFtpServerPath = "http://192.168.0.215:8001/Publish/MaxiBIM(SH)", 
-                    LocalPath = @"C:\红瓦科技\MaxiBIM（PMEP）Develop",
+                    LocalPath = @"C:\红瓦科技\MaxiBIM（SH）Develop",
                     SupportsConfigOps = true,
                 },
                 new()
