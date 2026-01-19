@@ -9,11 +9,15 @@
             <RowDefinition Height="*"/>
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
-        <controls:CPropertyGrid x:Name="PropertyGrid" />
+        <ScrollViewer Grid.Row="0"
+                      VerticalScrollBarVisibility="Auto"
+                      HorizontalScrollBarVisibility="Auto"
+                      CanContentScroll="True">
+            <controls:CPropertyGrid x:Name="PropertyGrid" />
+        </ScrollViewer>
         <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
             <button:CButton Content="保存" Width="100" Margin="0,0,8,0" Click="SaveButton_Click"/>
             <button:CButton Content="取消" Width="100" Click="CancelButton_Click"/>
         </StackPanel>
     </Grid>
 </Window>
-
