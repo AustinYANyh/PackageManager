@@ -307,16 +307,24 @@
       function updateMentionQueryFromSelection(){
         try{
           var sel = window.getSelection();
-          if(!sel || sel.rangeCount===0){ return; }
+          if(!sel || sel.rangeCount===0){ closeMentionPanel(); return; }
           var node = sel.anchorNode;
-          var text = (node && node.nodeType===Node.TEXT_NODE) ? node.nodeValue : '';
-          var idx = text ? text.lastIndexOf('@') : -1;
-          if(idx>=0){
-            mentionState.query = text.substring(idx+1).trim();
+          var offset = sel.anchorOffset;
+          if(node && node.nodeType===Node.TEXT_NODE){
+            var text = node.nodeValue.substring(0, offset);
+            var idx = text.lastIndexOf('@');
+            if(idx>=0){
+              // Ensure @ is not preceded by text (unless it's a space) to avoid email confusion, or just simple check
+              // Check if @ is deleted? No, this function runs on selection change/input
+              // If text does not contain @ before cursor, idx will be -1 and we close panel
+              mentionState.query = text.substring(idx+1);
+            }else{
+              closeMentionPanel();
+            }
           }else{
             closeMentionPanel();
           }
-        }catch(e){}
+        }catch(e){ closeMentionPanel(); }
       }
       function getMentionItems(){
         var q = (mentionState.query||'').toLowerCase();
@@ -326,6 +334,11 @@
         }).slice(0,50);
       }
       function renderMentionList(){
+        if(!mentionState.active){
+          var panel = document.getElementById('mentionPanel');
+          if(panel) panel.style.display='none';
+          return;
+        }
         var panel = document.getElementById('mentionPanel');
         var listEl = document.getElementById('mentionList');
         if(!panel || !listEl){ return; }
@@ -440,6 +453,12 @@
       function genKey(){
         return Math.random().toString(36).slice(2,7) + Math.random().toString(36).slice(2,5);
       }
+      var body = document.querySelector('.ant-drawer-body');
+      if(body){
+        body.addEventListener('scroll', function(){
+          closeMentionPanel();
+        }, {passive: true});
+      }
       if(collapsedInput){
         collapsedInput.addEventListener('focus', expandEditor);
         collapsedInput.addEventListener('click', expandEditor);
@@ -451,6 +470,15 @@
         submitBtn.addEventListener('click', submitComment);
       }
       if(edit){
+        edit.addEventListener('blur', function(){
+          setTimeout(closeMentionPanel, 200);
+        });
+        edit.addEventListener('click', function(){
+          if(mentionState.active){
+            updateMentionQueryFromSelection();
+            renderMentionList();
+          }
+        });
         edit.addEventListener('keydown', function(e){
           if(mentionState.active){
             if(e.key==='ArrowDown'){
@@ -481,8 +509,15 @@
           }
           if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){ submitComment(); }
         });
+        edit.addEventListener('input', function(e){
+          if(e.data === '@'){
+             openMentionPanel();
+          } else if(mentionState.active) {
+             updateMentionQueryFromSelection();
+             renderMentionList();
+          }
+        });
         edit.addEventListener('keyup', function(e){
-          if(e.key==='@'){ openMentionPanel(); return; }
           if(mentionState.active){
             updateMentionQueryFromSelection();
             renderMentionList();
