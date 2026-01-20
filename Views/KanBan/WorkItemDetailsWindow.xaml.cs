@@ -682,6 +682,8 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                 bool handleReady = false;
                 bool handleSubmit = false;
                 string commentHtml = null;
+                Newtonsoft.Json.Linq.JArray contentPayload = null;
+                string plainText = null;
                 List<string> attachmentsFromClient = null;
                 try
                 {
@@ -711,7 +713,9 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                         else if (string.Equals(type, "submitComment", StringComparison.OrdinalIgnoreCase))
                         {
                             id = obj.Value<string>("id") ?? Details.Id;
-                            commentHtml = obj.Value<string>("html") ?? obj.Value<string>("content") ?? obj.Value<string>("body");
+                            commentHtml = obj.Value<string>("html") ?? obj.Value<string>("body") ?? obj.Value<string>("text");
+                            contentPayload = obj["content"] as Newtonsoft.Json.Linq.JArray;
+                            plainText = obj.Value<string>("text");
                             var arr = obj["attachments"] as Newtonsoft.Json.Linq.JArray;
                             if (arr != null)
                             {
@@ -779,7 +783,9 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                             else if (string.Equals(type, "submitComment", StringComparison.OrdinalIgnoreCase))
                             {
                                 id = jobj.Value<string>("id") ?? Details.Id;
-                                commentHtml = jobj.Value<string>("html") ?? jobj.Value<string>("content") ?? jobj.Value<string>("body");
+                                commentHtml = jobj.Value<string>("html") ?? jobj.Value<string>("body") ?? jobj.Value<string>("text");
+                                contentPayload = jobj["content"] as Newtonsoft.Json.Linq.JArray;
+                                plainText = jobj.Value<string>("text");
                                 var arr = jobj["attachments"] as Newtonsoft.Json.Linq.JArray;
                                 if (arr != null)
                                 {
@@ -864,6 +870,7 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                     try
                     {
                         await InitializeStateDropdownAsync();
+                        await InitializeProjectMembersAsync();
                     }
                     catch
                     {
@@ -954,7 +961,16 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                         dataUrls = dataUrls.Where(s => !string.IsNullOrWhiteSpace(s) && s.StartsWith("data:", StringComparison.OrdinalIgnoreCase)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
                         if (string.IsNullOrWhiteSpace(processed.Html) && dataUrls.Count == 0) { return; }
 
-                        var created = await api.CreateGenericWorkItemCommentAsync(id, processed.Html);
+                        Newtonsoft.Json.Linq.JObject created = null;
+                        if (contentPayload != null && ContainsMention(contentPayload))
+                        {
+                            created = await api.CreateWorkItemCommentWithPayloadAsync(id, contentPayload);
+                        }
+                        else
+                        {
+                            created = await api.CreateGenericWorkItemCommentAsync(id, processed.Html);
+                        }
+
                         var commentId = created?.Value<string>("id")
                                          ?? created?["data"]?.Value<string>("id")
                                          ?? created?["value"]?.Value<string>("id")
@@ -1046,6 +1062,7 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                 }
 
                 await InitializeStateDropdownAsync();
+                await InitializeProjectMembersAsync();
             }
             catch
             {
@@ -1199,6 +1216,37 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         var html = await Task.Run(() => BuildHtml());
         DetailsWeb.CoreWebView2.NavigateToString(html);
         await InitializeStateDropdownAsync();
+        await InitializeProjectMembersAsync();
+    }
+
+    private async Task InitializeProjectMembersAsync()
+    {
+        try
+        {
+            var projectId = (Details?.ProjectId ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(projectId))
+            {
+                return;
+            }
+            var members = await api.GetProjectMembersAsync(projectId);
+            var arr = new Newtonsoft.Json.Linq.JArray();
+            foreach (var m in members ?? new List<PackageManager.Services.PingCode.Model.Entity>())
+            {
+                var id = (m?.Id ?? "").Trim();
+                var nm = (m?.Name ?? "").Trim();
+                if (!string.IsNullOrWhiteSpace(id) && !string.IsNullOrWhiteSpace(nm))
+                {
+                    var o = new Newtonsoft.Json.Linq.JObject { ["id"] = id, ["name"] = nm };
+                    arr.Add(o);
+                }
+            }
+            var json = arr.ToString(Newtonsoft.Json.Formatting.None);
+            var script = "try{if(window.setProjectMembers){window.setProjectMembers(" + json + ");}}catch(e){}";
+            await DetailsWeb.CoreWebView2.ExecuteScriptAsync(script);
+        }
+        catch
+        {
+        }
     }
 
     private string HtmlEscape(string s)
@@ -2081,5 +2129,67 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         {
             return null;
         }
+    }
+
+    private Newtonsoft.Json.Linq.JArray BuildStructuredContentFromText(string text)
+    {
+        var arr = new Newtonsoft.Json.Linq.JArray();
+        var para = new Newtonsoft.Json.Linq.JObject();
+        para["type"] = "paragraph";
+        para["key"] = Guid.NewGuid().ToString("N").Substring(0, 5);
+        var children = new Newtonsoft.Json.Linq.JArray();
+        var t = new Newtonsoft.Json.Linq.JObject();
+        t["text"] = text ?? "";
+        children.Add(t);
+        para["children"] = children;
+        arr.Add(para);
+        return arr;
+    }
+
+    private string RenderHtmlFromStructuredContent(Newtonsoft.Json.Linq.JArray content)
+    {
+        if (content == null) return "";
+        var sb = new StringBuilder();
+        foreach (var block in content)
+        {
+            if (block is Newtonsoft.Json.Linq.JObject obj)
+            {
+                var type = obj.Value<string>("type");
+                if (string.Equals(type, "paragraph", StringComparison.OrdinalIgnoreCase))
+                {
+                    sb.Append("<p>");
+                    var children = obj["children"] as Newtonsoft.Json.Linq.JArray;
+                    if (children != null)
+                    {
+                        foreach (var child in children)
+                        {
+                            if (child is Newtonsoft.Json.Linq.JObject cObj)
+                            {
+                                var cType = cObj.Value<string>("type");
+                                if (string.Equals(cType, "mention", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    var name = cObj["data"]?.Value<string>("name") ?? "unknown";
+                                    sb.Append($"<span class=\"mention\">@{System.Net.WebUtility.HtmlEncode(name)}</span>");
+                                }
+                                else
+                                {
+                                    var txt = cObj.Value<string>("text") ?? "";
+                                    sb.Append(System.Net.WebUtility.HtmlEncode(txt).Replace("\n", "<br>"));
+                                }
+                            }
+                        }
+                    }
+                    sb.Append("</p>");
+                }
+            }
+        }
+        return sb.ToString();
+    }
+
+    private bool ContainsMention(Newtonsoft.Json.Linq.JArray content)
+    {
+        if (content == null) return false;
+        var s = content.ToString();
+        return s.Contains("\"type\": \"mention\"") || s.Contains("\"type\":\"mention\"");
     }
 }

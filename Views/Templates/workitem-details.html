@@ -43,6 +43,12 @@
     .comment-avatar img{width:24px;height:24px;border-radius:50%;object-fit:cover}
     .comment-body img{max-width:300px;height:auto}
     .comment-attachment img{max-width:100%;height:auto}
+    .comment-body .mention{display:inline-block;border:1px solid #E5E7EB;border-radius:999px;padding:0 6px;margin:0 2px;background:#F3F4F6;color:#374151}
+    .mention-panel{position:absolute;display:none;z-index:9999;max-height:220px;overflow:auto;background:#fff;border:1px solid #D1D5DB;border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,0.12)}
+    .mention-panel ul{list-style:none;margin:0;padding:6px 0;min-width:220px}
+    .mention-panel li{padding:6px 12px;cursor:pointer}
+    .mention-panel li:hover,.mention-panel li.active{background:#F3F4F6}
+    .mention{color:#2563EB;background:#EFF6FF;border-radius:4px;padding:0 4px;margin:0 2px;display:inline-block}
     .badge{display:inline-block;border:1px solid #D1D5DB;border-radius:999px;padding:2px 8px;background:#F3F4F6;color:#374151}
     .state-badge{min-width:70px;display:inline-block;text-align:center}
     .state-badge.state-inprogress{background:#F59E0B;color:#fff;border-color:#FDBA74}
@@ -118,6 +124,9 @@
                         <span class="tips">Ctrl+Enter 提交</span>
                       </div>
                       <div id="attachmentsPreview" class="attachments-preview" style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 6px 0;"></div>
+                      <div id="mentionPanel" class="mention-panel">
+                        <ul id="mentionList"></ul>
+                      </div>
                       <div class="actions">
                         <button id="commentSubmitBtn" type="button">提交</button>
                         <button id="commentCancelBtn" type="button">取消</button>
@@ -260,12 +269,176 @@
         try{
           var text=(edit&&edit.innerText||'').trim();
           var list=window.pendingAttachments||[];
-          if(!text && list.length===0){ return; }
+          var payload = buildStructuredContent(edit);
+          var contentArr = (payload && payload.content) ? payload.content : [];
+          if(contentArr.length===0 && !text && list.length===0){ return; }
           if(window.chrome&&window.chrome.webview){
-            window.chrome.webview.postMessage({type:'submitComment', id:'{{WorkItemId}}', content:text, attachments: list.slice(0)});
+            window.chrome.webview.postMessage({type:'submitComment', id:'{{WorkItemId}}', content: contentArr, text: text, attachments: list.slice(0)});
           }
           scrollToBottom();
         }catch(e){}
+      }
+      var members = [];
+      var mentionState = { active:false, query:'', anchorRect:null, index:0 };
+      window.setProjectMembers = function(list){
+        try{ members = Array.isArray(list) ? list : []; }catch(e){}
+      };
+      function getCaretRect(){
+        try{
+          var sel = window.getSelection();
+          if(!sel || sel.rangeCount===0){ return null; }
+          var r = sel.getRangeAt(0).cloneRange();
+          var rect = r.getBoundingClientRect();
+          return rect;
+        }catch(e){ return null; }
+      }
+      function openMentionPanel(){
+        mentionState.active = true;
+        mentionState.query = '';
+        mentionState.anchorRect = getCaretRect();
+        mentionState.index = 0;
+        renderMentionList();
+      }
+      function closeMentionPanel(){
+        mentionState.active = false;
+        var panel = document.getElementById('mentionPanel');
+        if(panel){ panel.style.display='none'; }
+      }
+      function updateMentionQueryFromSelection(){
+        try{
+          var sel = window.getSelection();
+          if(!sel || sel.rangeCount===0){ return; }
+          var node = sel.anchorNode;
+          var text = (node && node.nodeType===Node.TEXT_NODE) ? node.nodeValue : '';
+          var idx = text ? text.lastIndexOf('@') : -1;
+          if(idx>=0){
+            mentionState.query = text.substring(idx+1).trim();
+          }else{
+            closeMentionPanel();
+          }
+        }catch(e){}
+      }
+      function getMentionItems(){
+        var q = (mentionState.query||'').toLowerCase();
+        return members.filter(function(m){
+          var nm = (m.name||'').toLowerCase();
+          return q? nm.indexOf(q)>=0 : true;
+        }).slice(0,50);
+      }
+      function renderMentionList(){
+        var panel = document.getElementById('mentionPanel');
+        var listEl = document.getElementById('mentionList');
+        if(!panel || !listEl){ return; }
+        var rect = mentionState.anchorRect || getCaretRect();
+        if(rect){
+          panel.style.display='block';
+          var top = rect.bottom + window.scrollY + 4;
+          var left = rect.left + window.scrollX;
+          panel.style.top = top+'px';
+          panel.style.left = left+'px';
+        }else{
+          panel.style.display='block';
+        }
+        var items = getMentionItems();
+        if(mentionState.index < 0){ mentionState.index = 0; }
+        if(mentionState.index >= items.length){ mentionState.index = items.length - 1; }
+        listEl.innerHTML='';
+        items.forEach(function(m, idx){
+          var li = document.createElement('li');
+          if(idx===mentionState.index){
+            li.style.background='#F3F4F6';
+          }
+          li.textContent = m.name;
+          li.addEventListener('mousedown', function(e){ e.preventDefault(); });
+          li.addEventListener('click', function(){ insertMention(m); });
+          listEl.appendChild(li);
+        });
+        if(items.length===0){
+          var li = document.createElement('li');
+          li.textContent = '无匹配成员';
+          listEl.appendChild(li);
+        }
+      }
+      function insertMention(m){
+        try{
+          closeMentionPanel();
+          var sel = window.getSelection();
+          if(!sel || sel.rangeCount===0){ return; }
+          var range = sel.getRangeAt(0);
+          var edit = document.getElementById('commentEdit');
+          if(edit && !edit.contains(range.commonAncestorContainer) && edit !== range.commonAncestorContainer){ return; }
+
+          var node = range.endContainer;
+          var offset = range.endOffset;
+          if(node.nodeType === Node.TEXT_NODE){
+            var text = node.nodeValue || '';
+            var atIdx = text.lastIndexOf('@', offset - 1);
+            if(atIdx >= 0){
+               var deleteRange = document.createRange();
+               deleteRange.setStart(node, atIdx);
+               deleteRange.setEnd(node, offset);
+               deleteRange.deleteContents();
+               
+               var span = document.createElement('span');
+               span.className = 'mention';
+               span.setAttribute('data-uid', m.id||m.uid||'');
+               span.setAttribute('data-name', m.name||'');
+               span.contentEditable = 'false';
+               span.textContent = '@'+(m.name||'');
+               deleteRange.insertNode(span);
+               
+               var space = document.createTextNode('\u00A0');
+               var afterRange = document.createRange();
+               afterRange.setStartAfter(span);
+               afterRange.collapse(true);
+               afterRange.insertNode(space);
+               
+               var newRange = document.createRange();
+               newRange.setStartAfter(space);
+               newRange.collapse(true);
+               sel.removeAllRanges();
+               sel.addRange(newRange);
+            }
+          }
+        }catch(e){}
+      }
+      function buildStructuredContent(edit){
+        try{
+          var para = { type:'paragraph', key: genKey(), children: [] };
+          var nodes = edit ? edit.childNodes : [];
+          function appendText(txt){
+            if(!txt) return;
+            if(para.children.length>0){
+              var last = para.children[para.children.length-1];
+              if(last && typeof last.text==='string' && !last.type){
+                last.text += txt;
+                return;
+              }
+            }
+            para.children.push({ text: txt });
+          }
+          for(var i=0;i<nodes.length;i++){
+            var n = nodes[i];
+            if(n.nodeType===Node.TEXT_NODE){
+              appendText(n.nodeValue||'');
+            }else if(n.nodeType===Node.ELEMENT_NODE && n.classList.contains('mention')){
+              var uid = n.getAttribute('data-uid')||'';
+              var nm = n.getAttribute('data-name')||'';
+              if(para.children.length===0){ para.children.push({ text: '' }); }
+              para.children.push({ type:'mention', uid: uid, data: { name: nm }, children:[{text:''}], key: genKey() });
+              para.children.push({ text: '' });
+            }else{
+              appendText(n.textContent||'');
+            }
+          }
+          if(para.children.length===0){ para.children.push({ text: '' }); }
+          return { content: [para], attachments: [], pages: [] };
+        }catch(e){
+          return null;
+        }
+      }
+      function genKey(){
+        return Math.random().toString(36).slice(2,7) + Math.random().toString(36).slice(2,5);
       }
       if(collapsedInput){
         collapsedInput.addEventListener('focus', expandEditor);
@@ -279,7 +452,41 @@
       }
       if(edit){
         edit.addEventListener('keydown', function(e){
+          if(mentionState.active){
+            if(e.key==='ArrowDown'){
+              mentionState.index = mentionState.index + 1;
+              renderMentionList();
+              e.preventDefault();
+              return;
+            }
+            if(e.key==='ArrowUp'){
+              mentionState.index = mentionState.index - 1;
+              renderMentionList();
+              e.preventDefault();
+              return;
+            }
+            if(e.key==='Enter'){
+              var items = getMentionItems();
+              if(items.length>0 && mentionState.index>=0){
+                insertMention(items[mentionState.index]);
+                e.preventDefault();
+                return;
+              }
+            }
+            if(e.key==='Escape'){
+              closeMentionPanel();
+              e.preventDefault();
+              return;
+            }
+          }
           if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){ submitComment(); }
+        });
+        edit.addEventListener('keyup', function(e){
+          if(e.key==='@'){ openMentionPanel(); return; }
+          if(mentionState.active){
+            updateMentionQueryFromSelection();
+            renderMentionList();
+          }
         });
         edit.addEventListener('paste', function(e){
           try{

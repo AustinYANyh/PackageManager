@@ -890,6 +890,30 @@ public class PingCodeApiService
         return result;
     }
 
+    public async Task<JObject> CreateWorkItemCommentWithPayloadAsync(string workItemId, JArray contentPayload)
+    {
+        if (string.IsNullOrWhiteSpace(workItemId) || contentPayload == null)
+        {
+            return null;
+        }
+        var url = "https://open.pingcode.com/v1/comments";
+        var body = new JObject
+        {
+            ["principal_type"] = "work_item",
+            ["principal_id"] = workItemId,
+            ["content"] = contentPayload
+        };
+        try
+        {
+            var resp = await PostJsonAsync(url, body);
+            return resp;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     public async Task<bool> AddWorkItemCommentAsync(string workItemId, string contentHtml)
     {
         if (string.IsNullOrWhiteSpace(workItemId) || string.IsNullOrWhiteSpace(contentHtml))
