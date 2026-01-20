@@ -159,8 +159,8 @@
         <Compile Include="Views\CommonLinksPage.xaml.cs" />
         <Compile Include="Views\CommonLinksWindow.xaml.cs" />
         <Compile Include="Views\ICentralPage.cs" />
-        <Compile Include="Views\KanbanStatsPage.xaml.cs" />
         <Compile Include="Views\KanBan\KanbanColumn.cs" />
+        <Compile Include="Views\KanBan\KanbanStatsPage.xaml.cs" />
         <Compile Include="Views\KanBan\WorkItemDetailsWindow.xaml.cs">
           <DependentUpon>WorkItemDetailsWindow.xaml</DependentUpon>
           <SubType>Code</SubType>
@@ -235,7 +235,7 @@
         <Compile Include="Converters\PresetToIniConverter.cs" />
         <Page Include="Views\CommonLinksPage.xaml" />
         <Page Include="Views\CommonLinksWindow.xaml" />
-        <Page Include="Views\KanbanStatsPage.xaml" />
+        <Page Include="Views\KanBan\KanbanStatsPage.xaml" />
         <Page Include="Views\KanBan\WorkItemDetailsWindow.xaml" />
         <Page Include="Views\KanBan\WorkItemKanbanWindow.xaml" />
         <Page Include="Views\LocalPathSettingsPage.xaml" />

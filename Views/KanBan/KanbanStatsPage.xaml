@@ -1,4 +1,4 @@
-<Page x:Class="PackageManager.Views.KanbanStatsPage"
+<Page x:Class="PackageManager.Views.KanBan.KanbanStatsPage"
       xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
       xmlns:button="clr-namespace:CustomControlLibrary.CustomControl.Controls.Button;assembly=CustomControlLibrary"

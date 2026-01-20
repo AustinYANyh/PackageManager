@@ -70,6 +70,55 @@ public class PingCodeApiService
         return new List<Entity>();
     }
 
+    public async Task<List<Entity>> GetNotCompletedIterationsByProjectAsync(string projectId)
+    {
+        var result = new List<Entity>();
+        var baseUrl = $"https://open.pingcode.com/v1/project/projects/{Uri.EscapeDataString(projectId)}/sprints";
+        var pageIndex = 0;
+        var pageSize = 100;
+        var seen = new HashSet<string>();
+        while (true)
+        {
+            var url = $"{baseUrl}?page_size={pageSize}&page_index={pageIndex}";
+            var json = await GetJsonAsync(url);
+            var values = GetValuesArray(json);
+            if ((values == null) || (values.Count == 0))
+            {
+                break;
+            }
+
+            foreach (var v in values)
+            {
+                var id = v.Value<string>("id");
+                var nm = v.Value<string>("name");
+                var statusText = ReadStatus(v);
+                var statusNormalized = (statusText ?? "").Trim().ToLowerInvariant();
+                var isCompleted = statusNormalized == "completed" ||
+                                  statusNormalized == "done" ||
+                                  statusNormalized == "closed" ||
+                                  statusNormalized == "finish" ||
+                                  statusNormalized == "finished";
+                if (isCompleted)
+                {
+                    continue;
+                }
+                if (!string.IsNullOrWhiteSpace(id) && seen.Add(id))
+                {
+                    result.Add(new Entity { Id = id, Name = nm ?? id });
+                }
+            }
+
+            var total = json.Value<int?>("total") ?? 0;
+            pageIndex++;
+            if ((pageIndex * pageSize) >= total)
+            {
+                break;
+            }
+        }
+
+        return result;
+    }
+    
     public async Task<List<Entity>> GetOngoingIterationsByProjectAsync(string projectId)
     {
         var result = new List<Entity>();

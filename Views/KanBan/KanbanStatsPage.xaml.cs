@@ -10,9 +10,8 @@ using PackageManager.Models;
 using PackageManager.Services;
 using PackageManager.Services.PingCode;
 using PackageManager.Services.PingCode.Model;
-using PackageManager.Views.KanBan;
 
-namespace PackageManager.Views;
+namespace PackageManager.Views.KanBan;
 
 public partial class KanbanStatsPage : Page, ICentralPage, INotifyPropertyChanged
 {
@@ -305,7 +304,8 @@ public partial class KanbanStatsPage : Page, ICentralPage, INotifyPropertyChange
                 return;
             }
 
-            var iters = await api.GetOngoingIterationsByProjectAsync(proj.Id);
+            // var iters = await api.GetOngoingIterationsByProjectAsync(proj.Id);
+            var iters = await api.GetNotCompletedIterationsByProjectAsync(proj.Id);
             Iterations.Clear();
             foreach (var it in iters.GroupBy(x => x.Id).Select(g => g.First()).OrderBy(x => x.Name ?? x.Id))
             {

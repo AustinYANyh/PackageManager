@@ -20,6 +20,7 @@ using PackageManager.Function.DnsTool;
 using PackageManager.Models;
 using PackageManager.Services;
 using PackageManager.Views;
+using PackageManager.Views.KanBan;
 
 namespace PackageManager;
 
