@@ -610,6 +610,21 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         return local.ToString("yyyy-MM-dd HH:mm");
     }
 
+    private static string FormatFriendlyTime(DateTime? dt)
+    {
+        if (!dt.HasValue)
+        {
+            return "-";
+        }
+        var v = dt.Value;
+        if (v == default)
+        {
+            return "-";
+        }
+        var local = v.Kind == DateTimeKind.Utc ? v.ToLocalTime() : v;
+        return local.ToString("yyyy-MM-dd HH:mm");
+    }
+
     private async Task<CoreWebView2> InitializeWebViewAsync()
     {
         var dataService = new DataPersistenceService();
@@ -1619,7 +1634,7 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         var sb = new StringBuilder();
         foreach (var c in list)
         {
-            var tm = c.CreatedAt.HasValue ? c.CreatedAt.Value.ToString("yyyy-MM-dd HH:mm") : "-";
+            var tm = FormatFriendlyTime(c.CreatedAt);
             var nm = (c.AuthorName ?? "").Trim();
             var initial = string.IsNullOrWhiteSpace(nm) ? "-" : nm.Substring(0, Math.Min(1, nm.Length));
             var avatarHtml = string.IsNullOrWhiteSpace(c.AuthorAvatar)
@@ -1724,7 +1739,7 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
 
     private string BuildSingleCommentHtml(string contentHtml, List<Newtonsoft.Json.Linq.JObject> uploads, string authorName, string authorAvatar, DateTime? createdAt)
     {
-        var tm = (createdAt ?? DateTime.Now).ToString("yyyy-MM-dd HH:mm");
+        var tm = FormatFriendlyTime(createdAt ?? DateTime.Now);
         var nm = (authorName ?? "").Trim();
         var initial = string.IsNullOrWhiteSpace(nm) ? "-" : nm.Substring(0, Math.Min(1, nm.Length));
         var avatarUrl = string.IsNullOrWhiteSpace(authorAvatar) ? null : AppendAccessTokenQueryIfNeeded(authorAvatar, accessToken);
