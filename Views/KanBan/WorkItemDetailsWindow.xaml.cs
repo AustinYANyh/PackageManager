@@ -1590,17 +1590,16 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         {
             var pid = (Details.ParentId ?? "").Trim();
             var ptitle = (Details.ParentTitle ?? Details.ParentIdentifier ?? "").Trim();
-            if (string.IsNullOrWhiteSpace(pid) || string.IsNullOrWhiteSpace(ptitle))
-            {
-                return null;
-            }
-
-            var link =
-                $"<a class=\"crumb-link\" href=\"pm://workitem/{System.Net.WebUtility.HtmlEncode(pid)}\" title=\"{HtmlEscape(ptitle)}\">{HtmlEscape(ptitle)}</a>";
             var curUrl = (Details.HtmlUrl ?? "").Trim();
             var cur = string.IsNullOrWhiteSpace(curUrl)
                           ? $"<span class=\"crumb-current\">{HtmlEscape(Details.Identifier)}</span>"
                           : $"<a class=\"crumb-current crumb-link\" target=\"_blank\" rel=\"noopener\" href=\"{HtmlEscape(curUrl)}\">{HtmlEscape(Details.Identifier)}</a>";
+            if (string.IsNullOrWhiteSpace(pid) || string.IsNullOrWhiteSpace(ptitle))
+            {
+                return $"<div class=\"crumb\">{cur}</div>";
+            }
+            var link =
+                $"<a class=\"crumb-link\" href=\"pm://workitem/{System.Net.WebUtility.HtmlEncode(pid)}\" title=\"{HtmlEscape(ptitle)}\">{HtmlEscape(ptitle)}</a>";
             return $"<div class=\"crumb\"><span class=\"crumb-parent\">{link}</span><span class=\"crumb-sep\">/</span>{cur}</div>";
         }
         catch
