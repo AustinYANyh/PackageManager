@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <meta name="workitem-details-template-version" content="1.3.1"/>
+  <meta name="workitem-details-template-version" content="1.3.2"/>
   <style>
     html,body{height:100%}
     body{margin:0;background:#fff;font-family:'Segoe UI','Microsoft YaHei',Arial,sans-serif;color:#111827;height:100%}
@@ -578,6 +578,22 @@
         });
         edit.addEventListener('input', function(e){
           if(e.data === '@'){
+             try{
+               var sel = window.getSelection();
+               if(sel && sel.rangeCount>0){
+                 var node = sel.anchorNode;
+                 var offset = sel.anchorOffset;
+                 if(node && node.nodeType===Node.TEXT_NODE){
+                   var txt = node.nodeValue||'';
+                   if(offset>=2 && txt.substring(offset-2, offset)==='@@'){
+                     var del = document.createRange();
+                     del.setStart(node, offset-1);
+                     del.setEnd(node, offset);
+                     del.deleteContents();
+                   }
+                 }
+               }
+             }catch(ex){}
              openMentionPanel();
           } else if(mentionState.active) {
              updateMentionQueryFromSelection();
