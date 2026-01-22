@@ -886,6 +886,7 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                     {
                         await InitializeStateDropdownAsync();
                         await InitializeProjectMembersAsync();
+                        await InitializeChildWorkItemsAsync();
                     }
                     catch
                     {
@@ -1078,6 +1079,7 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
 
                 await InitializeStateDropdownAsync();
                 await InitializeProjectMembersAsync();
+                await InitializeChildWorkItemsAsync();
             }
             catch
             {
@@ -1262,6 +1264,67 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         catch
         {
         }
+    }
+
+    private async Task InitializeChildWorkItemsAsync()
+    {
+        try
+        {
+            var list = await api.GetChildWorkItemsAsync(Details.Id);
+            var html = BuildChildrenTableHtml(list);
+            var escaped = JsEscape(html);
+            var show = (list?.Count ?? 0) > 0;
+            var showVal = show ? "" : "none";
+            var cnt = list?.Count ?? 0;
+            var script =
+                "try{var c=document.getElementById('childrenList');if(c){c.innerHTML='" + escaped +
+                "';}var tb=document.getElementById('tabChildren');if(tb){tb.style.display='" + showVal +
+                "';tb.textContent='子工作项 " + cnt + "';}}catch(e){}";
+            await DetailsWeb.CoreWebView2.ExecuteScriptAsync(script);
+        }
+        catch
+        {
+        }
+    }
+
+    private string BuildChildrenTableHtml(List<WorkItemInfo> list)
+    {
+        var items = list ?? new List<WorkItemInfo>();
+        if (items.Count == 0)
+        {
+            return "<div>-</div>";
+        }
+
+        var sb = new StringBuilder();
+        sb.Append("<div class=\"children-rows\">");
+        foreach (var c in items)
+        {
+            var id = c?.Id ?? "";
+            var identifier = HtmlEscape(c?.Identifier ?? id);
+            var title = HtmlEscape(c?.Title ?? "");
+            var statusText = DashText(c?.Status);
+            var assignee = DashText(c?.AssigneeName);
+            var sa = FormatDate(c?.StartAt);
+            var ea = FormatDate(c?.EndAt);
+            var linkId = System.Net.WebUtility.HtmlEncode(id);
+            var s = (c?.Status ?? "").Trim().ToLowerInvariant();
+            var cls = "state-pending";
+            if (s.Contains("完成")) { cls = "state-done"; }
+            else if (s.Contains("关闭")) { cls = "state-closed"; }
+            else if (s.Contains("测试中")) { cls = "state-testing"; }
+            else if (s.Contains("可测试")) { cls = "state-testable"; }
+            else if (s.Contains("进行中") || s.Contains("开发中") || s.Contains("处理中") || s.Contains("progress") || s.Contains("in_progress")) { cls = "state-inprogress"; }
+            sb.Append("<div class=\"children-row\">");
+            sb.Append("<div class=\"id\"><a href=\"pm://workitem/" + linkId + "\">" + identifier + "</a></div>");
+            sb.Append("<div class=\"title\"><a href=\"pm://workitem/" + linkId + "\">" + title + "</a></div>");
+            sb.Append("<div class=\"status\"><span class=\"state-badge " + cls + "\">" + statusText + "</span></div>");
+            sb.Append("<div class=\"assignee\">" + assignee + "</div>");
+            sb.Append("<div class=\"start\">" + sa + "</div>");
+            sb.Append("<div class=\"end\">" + ea + "</div>");
+            sb.Append("</div>");
+        }
+        sb.Append("</div>");
+        return sb.ToString();
     }
 
     private string HtmlEscape(string s)

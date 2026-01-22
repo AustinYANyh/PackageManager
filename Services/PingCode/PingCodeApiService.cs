@@ -890,6 +890,81 @@ public class PingCodeApiService
         return result;
     }
 
+    public async Task<List<WorkItemInfo>> GetChildWorkItemsAsync(string parentWorkItemId)
+    {
+        var result = new List<WorkItemInfo>();
+        if (string.IsNullOrWhiteSpace(parentWorkItemId))
+        {
+            return result;
+        }
+
+        var baseUrlCandidates = new[]
+        {
+            "https://open.pingcode.com/v1/project/work_items",
+            "https://open.pingcode.com/v1/agile/work_items",
+        };
+        foreach (var baseUrl in baseUrlCandidates)
+        {
+            try
+            {
+                var pageIndex = 0;
+                var pageSize = 100;
+                while (true)
+                {
+                    var url = $"{baseUrl}?parent_id={Uri.EscapeDataString(parentWorkItemId)}&page_size={pageSize}&page_index={pageIndex}";
+                    var json = await GetJsonAsync(url);
+                    var values = GetValuesArray(json);
+                    if ((values == null) || (values.Count == 0))
+                    {
+                        url = $"{baseUrl}/{Uri.EscapeDataString(parentWorkItemId)}/children";
+                        json = await GetJsonAsync(url);
+                        values = GetValuesArray(json);
+                        if ((values == null) || (values.Count == 0))
+                        {
+                            break;
+                        }
+                    }
+
+                    var dtos = values.ToObject<List<WorkItemDto>>() ?? new List<WorkItemDto>();
+                    foreach (var d in dtos)
+                    {
+                        var wi = new WorkItemInfo
+                        {
+                            Id = d.Id ?? d.ShortId,
+                            ProjectId = d.Project?.Id,
+                            Identifier = d.Identifier ?? d.ShortId ?? d.Id,
+                            Title = d.Title ?? d.Identifier ?? d.Id,
+                            Status = d.State?.Name,
+                            AssigneeId = d.Assignee?.Id,
+                            AssigneeName = !string.IsNullOrWhiteSpace(d.Assignee?.DisplayName) ? d.Assignee.DisplayName : d.Assignee?.Name,
+                            HtmlUrl = d.HtmlUrl,
+                            StartAt = ReadDateTimeFromSeconds(d.StartAt),
+                            EndAt = ReadDateTimeFromSeconds(d.EndAt),
+                        };
+                        result.Add(wi);
+                    }
+
+                    var totalCount = json.Value<int?>("total") ?? 0;
+                    pageIndex++;
+                    if ((pageIndex * pageSize) >= totalCount)
+                    {
+                        break;
+                    }
+                }
+
+                if (result.Count > 0)
+                {
+                    return result;
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        return result;
+    }
+
     public async Task<JObject> CreateWorkItemCommentWithPayloadAsync(string workItemId, JArray contentPayload)
     {
         if (string.IsNullOrWhiteSpace(workItemId) || contentPayload == null)
