@@ -109,7 +109,7 @@
               </div>
               <div class="tabs">
                 <button class="tab active" data-tab="base">基本信息</button>
-                <button id="tabChildren" class="tab" data-tab="children" style="display:none">子工作项</button>
+                <button id="tabChildren" class="tab" data-tab="children" style="{{ChildrenTabStyle}}">{{ChildrenTabText}}</button>
               </div>
               <div id="tab-base" class="tab-panel active">
                 <div class="section-title">基本信息</div>
@@ -189,6 +189,13 @@
         tabButtons[i].addEventListener('click', function(){
           var name = this.getAttribute('data-tab');
           activateTab(name||'base');
+          try{
+            if(name==='children'){
+              if(window.chrome && window.chrome.webview){
+                window.chrome.webview.postMessage({type:'loadChildren', id:'{{WorkItemId}}'});
+              }
+            }
+          }catch(ex){}
         });
       }
       activateTab('base');

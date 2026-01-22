@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 
 namespace PackageManager.Services.PingCode.Model;
@@ -70,4 +70,6 @@ public class WorkItemDetails
     public Dictionary<string, string> Properties { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     public string PublicImageToken { get; set; }
+
+    public int ChildrenCount { get; set; }
 }

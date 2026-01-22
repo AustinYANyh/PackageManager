@@ -34,6 +34,8 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
 
     private readonly Dictionary<string, Newtonsoft.Json.Linq.JObject> uploadedAttachmentMap = new(StringComparer.OrdinalIgnoreCase);
 
+    private bool childrenLoaded;
+
     public WorkItemDetailsWindow(WorkItemDetails details, PingCodeApiService api)
     {
         Details = details ?? new WorkItemDetails();
@@ -764,6 +766,14 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                             }
                             return;
                         }
+                        else if (string.Equals(type, "loadChildren", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (!childrenLoaded)
+                            {
+                                await InitializeChildWorkItemsAsync();
+                            }
+                            return;
+                        }
                         else
                         {
                             return;
@@ -834,6 +844,14 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                                 }
                                 return;
                             }
+                            else if (string.Equals(type, "loadChildren", StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (!childrenLoaded)
+                                {
+                                    await InitializeChildWorkItemsAsync();
+                                }
+                                return;
+                            }
                             else
                             {
                                 return;
@@ -886,7 +904,6 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                     {
                         await InitializeStateDropdownAsync();
                         await InitializeProjectMembersAsync();
-                        await InitializeChildWorkItemsAsync();
                     }
                     catch
                     {
@@ -954,6 +971,13 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                     }
                     catch
                     {
+                    }
+                }
+                else if (string.Equals(type, "loadChildren", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!childrenLoaded)
+                    {
+                        await InitializeChildWorkItemsAsync();
                     }
                 }
                 else if (handleSubmit)
@@ -1079,7 +1103,6 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
 
                 await InitializeStateDropdownAsync();
                 await InitializeProjectMembersAsync();
-                await InitializeChildWorkItemsAsync();
             }
             catch
             {
@@ -1230,6 +1253,14 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         var loadingHtml = BuildLoadingHtml();
         DetailsWeb.CoreWebView2.NavigateToString(loadingHtml);
         accessToken = await api.GetAccessTokenAsync();
+        try
+        {
+            var cnt = await api.GetChildWorkItemCountAsync(Details.Id);
+            Details.ChildrenCount = cnt;
+        }
+        catch
+        {
+        }
         var html = await Task.Run(() => BuildHtml());
         DetailsWeb.CoreWebView2.NavigateToString(html);
         await InitializeStateDropdownAsync();
@@ -1273,14 +1304,9 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
             var list = await api.GetChildWorkItemsAsync(Details.Id);
             var html = BuildChildrenTableHtml(list);
             var escaped = JsEscape(html);
-            var show = (list?.Count ?? 0) > 0;
-            var showVal = show ? "" : "none";
-            var cnt = list?.Count ?? 0;
-            var script =
-                "try{var c=document.getElementById('childrenList');if(c){c.innerHTML='" + escaped +
-                "';}var tb=document.getElementById('tabChildren');if(tb){tb.style.display='" + showVal +
-                "';tb.textContent='子工作项 " + cnt + "';}}catch(e){}";
+            var script = "try{var c=document.getElementById('childrenList');if(c){c.innerHTML='" + escaped + "';}}catch(e){}";
             await DetailsWeb.CoreWebView2.ExecuteScriptAsync(script);
+            childrenLoaded = true;
         }
         catch
         {
@@ -1292,7 +1318,7 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         var items = list ?? new List<WorkItemInfo>();
         if (items.Count == 0)
         {
-            return "<div>-</div>";
+            return "<div>无子工作项</div>";
         }
 
         var sb = new StringBuilder();
@@ -1658,6 +1684,8 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
             ["{{SketchHtml}}"] = sketchHtml,
             ["{{CommentsHtml}}"] = commentsHtml,
             ["{{PropertiesHtml}}"] = propertiesHtml,
+            ["{{ChildrenTabStyle}}"] = (Details.ChildrenCount > 0) ? "" : "display:none",
+            ["{{ChildrenTabText}}"] = (Details.ChildrenCount > 0) ? ("子工作项 " + Details.ChildrenCount) : "子工作项",
         };
         return ReplaceTokens(tpl, dict);
     }

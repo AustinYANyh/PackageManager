@@ -965,6 +965,43 @@ public class PingCodeApiService
         return result;
     }
 
+    public async Task<int> GetChildWorkItemCountAsync(string parentWorkItemId)
+    {
+        if (string.IsNullOrWhiteSpace(parentWorkItemId))
+        {
+            return 0;
+        }
+        var baseUrlCandidates = new[]
+        {
+            "https://open.pingcode.com/v1/project/work_items",
+            "https://open.pingcode.com/v1/agile/work_items",
+        };
+        foreach (var baseUrl in baseUrlCandidates)
+        {
+            try
+            {
+                var url = $"{baseUrl}?parent_id={Uri.EscapeDataString(parentWorkItemId)}&page_size=1&page_index=0";
+                var json = await GetJsonAsync(url);
+                var total = json?.Value<int?>("total") ?? 0;
+                if (total > 0)
+                {
+                    return total;
+                }
+                url = $"{baseUrl}/{Uri.EscapeDataString(parentWorkItemId)}/children?page_size=1&page_index=0";
+                json = await GetJsonAsync(url);
+                total = json?.Value<int?>("total") ?? 0;
+                if (total > 0)
+                {
+                    return total;
+                }
+            }
+            catch
+            {
+            }
+        }
+        return 0;
+    }
+
     public async Task<JObject> CreateWorkItemCommentWithPayloadAsync(string workItemId, JArray contentPayload)
     {
         if (string.IsNullOrWhiteSpace(workItemId) || contentPayload == null)
