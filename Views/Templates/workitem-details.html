@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <meta name="workitem-details-template-version" content="1.3.0"/>
+  <meta name="workitem-details-template-version" content="1.3.1"/>
   <style>
     html,body{height:100%}
     body{margin:0;background:#fff;font-family:'Segoe UI','Microsoft YaHei',Arial,sans-serif;color:#111827;height:100%}
@@ -83,12 +83,22 @@
     .children-summary .count{font-weight:600;color:#111827}
     .children-progress{flex:0 0 160px;height:8px;background:#E5E7EB;border-radius:4px;overflow:hidden}
     .children-progress .bar{height:100%;background:#10B981;width:0}
-    .children-rows{border:1px solid #f0f0f0;border-radius:8px;overflow:hidden;background:#fff}
-    .children-row{display:grid;grid-template-columns:160px 1fr 140px 160px 160px 160px;align-items:center;padding:10px 12px;border-bottom:1px solid #f0f0f0}
+    .children-rows{border:1px solid #E5E7EB;border-radius:10px;overflow:hidden;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,0.04)}
+    .children-row{display:grid;grid-template-columns:140px 1fr 120px 140px 140px 160px;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid #F3F4F6}
     .children-row:last-child{border-bottom:none}
     .children-row .id a,.children-row .title a{color:#2563EB;text-decoration:none}
     .children-row .id a:hover,.children-row .title a:hover{text-decoration:underline}
-    .children-row .status .state-badge{min-width:68px}
+    .children-row .id{font-size:12px;color:#374151}
+    .children-row .title a{font-size:14px;color:#111827}
+    .children-row .assignee,.children-row .start,.children-row .end{font-size:12px;color:#374151}
+    .children-row .status .state-badge{min-width:auto}
+    .state-badge{border:1px solid #E5E7EB;border-radius:999px;padding:2px 10px;display:inline-block;text-align:center;font-size:12px;line-height:1}
+    .state-badge.state-inprogress{border-color:#FDBA74}
+    .state-badge.state-testable{border-color:#93C5FD}
+    .state-badge.state-testing{border-color:#C4B5FD}
+    .state-badge.state-done{border-color:#6EE7B7}
+    .state-badge.state-closed{border-color:#D1D5DB}
+    .state-badge.state-pending{border-color:#D1D5DB}
   </style>
   <title>工作项详情</title>
   </head>
