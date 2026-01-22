@@ -363,7 +363,7 @@ public partial class KanbanStatsPage : Page, ICentralPage, INotifyPropertyChange
             }
 
             var win = new WorkItemKanbanWindow(iter.Id, Users.ToList(), SelectedUser);
-            win.Owner = Application.Current?.MainWindow;
+            // win.Owner = Application.Current?.MainWindow;
             win.Show();
         }
         catch (Exception ex)
