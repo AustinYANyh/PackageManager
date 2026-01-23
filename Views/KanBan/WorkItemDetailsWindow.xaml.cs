@@ -24,6 +24,10 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
 
     private static readonly Dictionary<string, string> TemplateCache = new(StringComparer.OrdinalIgnoreCase);
 
+    private static readonly Dictionary<string, string> MembersJsonCache = new(StringComparer.OrdinalIgnoreCase);
+
+    private static readonly Dictionary<string, List<StateDto>> StateFlowsCache = new(StringComparer.OrdinalIgnoreCase);
+
     private readonly PingCodeApiService api;
 
     private string accessToken;
@@ -35,6 +39,8 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
     private readonly Dictionary<string, Newtonsoft.Json.Linq.JObject> uploadedAttachmentMap = new(StringComparer.OrdinalIgnoreCase);
 
     private bool childrenLoaded;
+
+    private string cachedMembersJson;
 
     public WorkItemDetailsWindow(WorkItemDetails details, PingCodeApiService api)
     {
@@ -1101,8 +1107,23 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                     }
                 }
 
-                await InitializeStateDropdownAsync();
-                await InitializeProjectMembersAsync();
+                if ((availableStates?.Count ?? 0) > 0)
+                {
+                    await RebuildStateSelectOptionsAsync(Details.StateName, availableStates);
+                }
+                else
+                {
+                    await InitializeStateDropdownAsync();
+                }
+                if (!string.IsNullOrWhiteSpace(cachedMembersJson))
+                {
+                    var script = "try{if(window.setProjectMembers){window.setProjectMembers(" + cachedMembersJson + ");}}catch(e){}";
+                    await DetailsWeb.CoreWebView2.ExecuteScriptAsync(script);
+                }
+                else
+                {
+                    await InitializeProjectMembersAsync();
+                }
             }
             catch
             {
@@ -1250,21 +1271,96 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
 
     private async Task NavigateAndInitAsync()
     {
-        var loadingHtml = BuildLoadingHtml();
-        DetailsWeb.CoreWebView2.NavigateToString(loadingHtml);
-        accessToken = await api.GetAccessTokenAsync();
         try
         {
-            var cnt = await api.GetChildWorkItemCountAsync(Details.Id);
-            Details.ChildrenCount = cnt;
+            var tokenTask = api.GetAccessTokenAsync();
+            var countTask = api.GetChildWorkItemCountAsync(Details.Id);
+            var membersTask = PreloadProjectMembersJsonAsync();
+            var statesTask = PreloadAvailableStatesAsync();
+            await Task.WhenAll(tokenTask, countTask, membersTask, statesTask);
+            accessToken = tokenTask.Result;
+            Details.ChildrenCount = countTask.Result;
+            cachedMembersJson = membersTask.Result;
+            if (statesTask.Result != null && statesTask.Result.Count > 0)
+            {
+                availableStates = statesTask.Result;
+            }
         }
         catch
         {
         }
         var html = await Task.Run(() => BuildHtml());
         DetailsWeb.CoreWebView2.NavigateToString(html);
-        await InitializeStateDropdownAsync();
-        await InitializeProjectMembersAsync();
+    }
+
+    private async Task<string> PreloadProjectMembersJsonAsync()
+    {
+        try
+        {
+            var projectId = (Details?.ProjectId ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(projectId))
+            {
+                return null;
+            }
+            if (MembersJsonCache.TryGetValue(projectId, out var cached) && !string.IsNullOrWhiteSpace(cached))
+            {
+                return cached;
+            }
+            var members = await api.GetProjectMembersAsync(projectId);
+            var arr = new Newtonsoft.Json.Linq.JArray();
+            foreach (var m in members ?? new List<PackageManager.Services.PingCode.Model.Entity>())
+            {
+                var id = (m?.Id ?? "").Trim();
+                var nm = (m?.Name ?? "").Trim();
+                if (!string.IsNullOrWhiteSpace(id) && !string.IsNullOrWhiteSpace(nm))
+                {
+                    var o = new Newtonsoft.Json.Linq.JObject { ["id"] = id, ["name"] = nm };
+                    arr.Add(o);
+                }
+            }
+            var json = arr.ToString(Newtonsoft.Json.Formatting.None);
+            MembersJsonCache[projectId] = json;
+            return json;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private async Task<List<StateDto>> PreloadAvailableStatesAsync()
+    {
+        try
+        {
+            var projectId = (Details?.ProjectId ?? "").Trim();
+            var type = (Details?.Type ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(projectId) || string.IsNullOrWhiteSpace(type))
+            {
+                return new List<StateDto>();
+            }
+            var cacheKey = $"{projectId}::{type}::{Details.StateId ?? ""}";
+            if (StateFlowsCache.TryGetValue(cacheKey, out var cachedFlows) && (cachedFlows?.Count ?? 0) > 0)
+            {
+                return cachedFlows;
+            }
+            var plans = await api.GetWorkItemStatePlansAsync(projectId);
+            var plan = plans.FirstOrDefault(p => string.Equals((p?.WorkItemType ?? "").Trim(), type, StringComparison.OrdinalIgnoreCase));
+            if ((plan == null) || string.IsNullOrWhiteSpace(plan.Id))
+            {
+                return new List<StateDto>();
+            }
+            var flows = await api.GetWorkItemStateFlowsAsync(plan.Id, Details.StateId);
+            flows = flows ?? new List<StateDto>();
+            if (flows.Count > 0)
+            {
+                StateFlowsCache[cacheKey] = flows;
+            }
+            return flows;
+        }
+        catch
+        {
+            return new List<StateDto>();
+        }
     }
 
     private async Task InitializeProjectMembersAsync()
