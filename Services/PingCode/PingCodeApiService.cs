@@ -827,6 +827,7 @@ public class PingCodeApiService
 
         var candidates = new[]
         {
+            $"https://open.pingcode.com/v1/comments/?principal_type=work_item&principal_id={workItemId}",
             $"https://open.pingcode.com/v1/project/work_items/{Uri.EscapeDataString(workItemId)}/comments",
             $"https://open.pingcode.com/v1/agile/work_items/{Uri.EscapeDataString(workItemId)}/comments",
             $"https://open.pingcode.com/v1/project/work_items/{Uri.EscapeDataString(workItemId)}/activities",
@@ -844,6 +845,7 @@ public class PingCodeApiService
 
                 foreach (var v in values)
                 {
+                    var id = FirstNonEmpty(ExtractString(v["id"]), ExtractString(v["comment_id"]));
                     var content = FirstNonEmpty(ExtractString(v["content"]),
                                                 ExtractString(v["body"]),
                                                 ExtractString(v["text"]),
@@ -852,6 +854,63 @@ public class PingCodeApiService
                     if (!string.IsNullOrWhiteSpace(attachmentsHtml))
                     {
                         content = string.IsNullOrWhiteSpace(content) ? attachmentsHtml : content + attachmentsHtml;
+                    }
+
+                    var repliedObj = v?["replied_comment"];
+                    string repliedContent = null;
+                    string repliedAuthor = null;
+                    string repliedId = null;
+                    try
+                    {
+                        if (repliedObj != null)
+                        {
+                            if (repliedObj.Type == JTokenType.Object)
+                            {
+                                repliedContent = FirstNonEmpty(ExtractString(repliedObj["content"]),
+                                                               ExtractString(repliedObj["body"]),
+                                                               ExtractString(repliedObj["text"]),
+                                                               ExtractString(repliedObj["html"]));
+                                repliedId = FirstNonEmpty(ExtractString(repliedObj["id"]), ExtractString(repliedObj["comment_id"]));
+                                repliedAuthor = FirstNonEmpty(ExtractString(repliedObj.Value<string>("author_name")),
+                                                              ExtractName(repliedObj["author"]),
+                                                              ExtractName(repliedObj["created_by"]),
+                                                              ExtractString(repliedObj.Value<string>("display_name")),
+                                                              ExtractString(repliedObj["user"]?["name"]),
+                                                              ExtractString(repliedObj.Value<string>("created_by_name")));
+                            }
+                            else if (repliedObj.Type == JTokenType.Array)
+                            {
+                                var first = (repliedObj as JArray)?.First;
+                                if (first != null)
+                                {
+                                    if (first.Type == JTokenType.Object)
+                                    {
+                                        repliedContent = FirstNonEmpty(ExtractString(first["content"]),
+                                                                       ExtractString(first["body"]),
+                                                                       ExtractString(first["text"]),
+                                                                       ExtractString(first["html"]));
+                                        repliedId = FirstNonEmpty(ExtractString(first["id"]), ExtractString(first["comment_id"]));
+                                        repliedAuthor = FirstNonEmpty(ExtractString(first.Value<string>("author_name")),
+                                                                      ExtractName(first["author"]),
+                                                                      ExtractName(first["created_by"]),
+                                                                      ExtractString(first.Value<string>("display_name")),
+                                                                      ExtractString(first["user"]?["name"]),
+                                                                      ExtractString(first.Value<string>("created_by_name")));
+                                    }
+                                    else
+                                    {
+                                        repliedContent = ExtractString(first);
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                repliedContent = ExtractString(repliedObj);
+                            }
+                        }
+                    }
+                    catch
+                    {
                     }
 
                     var authorName = FirstNonEmpty(ExtractName(v["created_by"]),
@@ -872,12 +931,43 @@ public class PingCodeApiService
                     {
                         result.Add(new WorkItemComment
                         {
+                            Id = id,
                             AuthorName = authorName,
                             AuthorAvatar = authorAvatar,
                             ContentHtml = content,
                             CreatedAt = createdAt,
+                            RepliedAuthorName = repliedAuthor,
+                            RepliedContentHtml = repliedContent,
+                            RepliedCommentId = repliedId,
                         });
                     }
+                }
+
+                try
+                {
+                    var map = new Dictionary<string, WorkItemComment>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var c in result)
+                    {
+                        var cid = (c?.Id ?? "").Trim();
+                        if (!string.IsNullOrWhiteSpace(cid) && !map.ContainsKey(cid))
+                        {
+                            map[cid] = c;
+                        }
+                    }
+                    foreach (var c in result)
+                    {
+                        if ((c != null) && string.IsNullOrWhiteSpace(c.RepliedAuthorName))
+                        {
+                            var rid = (c.RepliedCommentId ?? "").Trim();
+                            if (!string.IsNullOrWhiteSpace(rid) && map.TryGetValue(rid, out var target))
+                            {
+                                c.RepliedAuthorName = target?.AuthorName;
+                            }
+                        }
+                    }
+                }
+                catch
+                {
                 }
 
                 return result;

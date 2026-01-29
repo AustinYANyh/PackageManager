@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <meta name="workitem-details-template-version" content="1.3.2"/>
+  <meta name="workitem-details-template-version" content="1.3.3"/>
   <style>
     html,body{height:100%}
     body{margin:0;background:#fff;font-family:'Segoe UI','Microsoft YaHei',Arial,sans-serif;color:#111827;height:100%}
@@ -425,9 +425,7 @@
         listEl.innerHTML='';
         items.forEach(function(m, idx){
           var li = document.createElement('li');
-          if(idx===mentionState.index){
-            li.style.background='#F3F4F6';
-          }
+          if(idx===mentionState.index){ li.classList.add('active'); }
           li.textContent = m.name;
           li.addEventListener('mousedown', function(e){ e.preventDefault(); });
           li.addEventListener('click', function(){ insertMention(m); });
@@ -437,6 +435,17 @@
           var li = document.createElement('li');
           li.textContent = '无匹配成员';
           listEl.appendChild(li);
+        }
+        if(items.length>0 && mentionState.index>=0){
+          var activeEl = listEl.children[mentionState.index];
+          if(activeEl){
+            var elTop = activeEl.offsetTop;
+            var elBottom = elTop + activeEl.offsetHeight;
+            var viewTop = panel.scrollTop;
+            var viewBottom = viewTop + panel.clientHeight;
+            if(elTop < viewTop){ panel.scrollTop = elTop; }
+            else if(elBottom > viewBottom){ panel.scrollTop = elBottom - panel.clientHeight; }
+          }
         }
       }
       function insertMention(m){

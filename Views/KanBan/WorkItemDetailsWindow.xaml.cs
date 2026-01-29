@@ -1736,6 +1736,18 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
             sb.Append($"<div class=\"comment-avatar\">{avatarHtml}</div>");
             sb.Append("<div class=\"comment-main\">");
             sb.Append($"<div class=\"comment-meta\"><span class=\"comment-author\">{HtmlEscape(nm)}</span> <span class=\"comment-time\">{tm}</span></div>");
+            if (!string.IsNullOrWhiteSpace(c.RepliedContentHtml) || !string.IsNullOrWhiteSpace(c.RepliedAuthorName))
+            {
+                var head = string.IsNullOrWhiteSpace(c.RepliedAuthorName) ? "" : HtmlEscape(c.RepliedAuthorName) + "：";
+                var body = NormalizeImages(c.RepliedContentHtml ?? "");
+                sb.Append("<div class=\"comment-replied\" style=\"background:#F7F7F9;border:1px solid #E5E7EB;border-radius:6px;padding:8px 10px;margin:6px 0;\">");
+                if (!string.IsNullOrWhiteSpace(head))
+                {
+                    sb.Append($"<div class=\"comment-replied-head\" style=\"color:#6B7280;margin-bottom:4px;\">{head}</div>");
+                }
+                sb.Append($"<div class=\"comment-replied-body\">{body}</div>");
+                sb.Append("</div>");
+            }
             var content = string.IsNullOrWhiteSpace(c.ContentHtml) ? "-" : NormalizeImages(c.ContentHtml);
             sb.Append($"<div class=\"comment-body\">{content}</div>");
             sb.Append("</div></div>");
