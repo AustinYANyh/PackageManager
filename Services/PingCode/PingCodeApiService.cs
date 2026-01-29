@@ -309,7 +309,7 @@ public class PingCodeApiService
                             bd.Done += sp;
                         }
                         else if (s.Contains("progress") || s.Contains("进行中") || s.Contains("doing") || s.Contains("开发中") || s.Contains("处理中") ||
-                                 s.Contains("in_progress") || s.Contains("可测试") || s.Contains("测试中") || s.Contains("已修复"))
+                                 s.Contains("in_progress") || s.Contains("可测试") || s.Contains("测试中") || s.Contains("已修复") || s.Contains("挂起"))
                         {
                             bd.InProgress += sp;
                         }
