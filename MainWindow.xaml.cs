@@ -452,9 +452,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             LoggingService.LogError(ex, "启动更新检查失败");
         }
 
-        // 应用筛选与排序到主页网格（如果已创建）
-        GetPackageDataGrid()?.ApplyFiltersAndSorts();
-
         // await LoadVersionsFromFtpAsync();
         await LoadVersionsWhichVisiableFromFtpAsync();
         
@@ -492,7 +489,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             var names = new List<string> { "全部" };
             if (Packages != null)
             {
-                names.AddRange(Packages.Select(p => p.ProductName).Distinct());
+                names.AddRange(Packages.Select(p => p.ProductName).Distinct().Where(IsProductVisible));
             }
 
             foreach (var name in names)
@@ -708,7 +705,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         try
         {
-            dataGrid.ApplyFiltersAndSorts();
             var filteredPackages = new System.Collections.Generic.List<PackageInfo>();
             var view = CollectionViewSource.GetDefaultView(dataGrid.ItemsSource);
             if (view != null)
@@ -723,6 +719,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 foreach (var obj in dataGrid.Items)
                 {
                     if (obj is PackageInfo pkg) filteredPackages.Add(pkg);
+                }
+            }
+
+            if (filteredPackages.Count == 0)
+            {
+                foreach (var obj in Packages)
+                {
+                    if (obj is PackageInfo pkg && IsProductVisible(pkg.ProductName)) filteredPackages.Add(pkg);
                 }
             }
 
@@ -870,16 +874,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                     }
                 }
 
-                var grid = GetPackageDataGrid();
-                if (grid != null)
+                var view = CollectionViewSource.GetDefaultView(Packages);
+                if (view != null)
                 {
-                    grid.FilterManager.FilterConditions.Clear();
-                    foreach (FilterCondition condition in stateData.PackageGridFilterConditions)
+                    view.Filter = obj =>
                     {
-                        grid.FilterManager.FilterConditions.Add(condition);
-                    }
-
-                    grid.FilterManager.UseOrLogic = stateData.UseOrLogic;
+                        var p = obj as PackageInfo;
+                        return (p != null) && IsProductVisible(p.ProductName);
+                    };
                 }
             }
         }
@@ -1131,20 +1133,24 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                 return;
             }
 
-            if (string.IsNullOrWhiteSpace(SelectedCategory) || string.Equals(SelectedCategory, "全部", StringComparison.Ordinal))
+        if (string.IsNullOrWhiteSpace(SelectedCategory) || string.Equals(SelectedCategory, "全部", StringComparison.Ordinal))
+        {
+            view.Filter = obj =>
             {
-                view.Filter = null;
-            }
-            else
+                var p = obj as PackageInfo;
+                return (p != null) && IsProductVisible(p.ProductName);
+            };
+        }
+        else
+        {
+            view.Filter = obj =>
             {
-                view.Filter = obj =>
-                {
-                    var p = obj as PackageInfo;
-                    return (p != null) && string.Equals(p.ProductName, SelectedCategory, StringComparison.OrdinalIgnoreCase);
-                };
-            }
-
-            GetPackageDataGrid()?.ApplyFiltersAndSorts();
+                var p = obj as PackageInfo;
+                return (p != null)
+                       && string.Equals(p.ProductName, SelectedCategory, StringComparison.OrdinalIgnoreCase)
+                       && IsProductVisible(p.ProductName);
+            };
+        }
         }
         catch (Exception ex)
         {
@@ -1477,21 +1483,15 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void FilterButton_Click(object sender, RoutedEventArgs e)
     {
-        var grid = GetPackageDataGrid();
-        if (grid == null)
-        {
-            return;
-        }
+        return;
+    }
 
-        grid.ShowFilterEditor();
-        ObservableCollection<FilterCondition> filterManagerFilterConditions = grid.FilterManager.FilterConditions;
-
-        // 保存筛选条件集合到持久化服务的缓存，并写入主界面状态文件
-        if (_dataPersistenceService.SaveMainWindowFilterCondition(filterManagerFilterConditions, grid.FilterManager.UseOrLogic))
-        {
-            SaveCurrentState();
-        }
-
-        _ = LoadVersionsWhichVisiableFromFtpAsync();
+    private bool IsProductVisible(string name)
+    {
+        var vis = _dataPersistenceService.GetProductVisibility();
+        if (vis == null || vis.Count == 0) return true;
+        if (string.IsNullOrWhiteSpace(name)) return true;
+        if (vis.TryGetValue(name, out var flag)) return flag;
+        return true;
     }
 }

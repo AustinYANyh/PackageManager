@@ -18,6 +18,7 @@
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="12,0,0,0">
                 <button:CButton Content="新增" Width="80" Click="AddButton_Click"/>
                 <button:CButton Content="保存" Width="80" Margin="8,0,0,0" Click="SaveButton_Click"/>
+                <button:CButton Content="可见性控制" Width="100" Margin="8,0,0,0" Click="OpenVisibilityPanel_Click"/>
                 <button:CButton Content="返回" Width="80" Margin="8,0,0,0" Click="BackButton_Click"/>
             </StackPanel>
         </StackPanel>
@@ -27,6 +28,25 @@
                      EnableAutoTemplateSelection="True"
                      ItemsSource="{Binding AllItems}"
                      SelectedItem="{Binding SelectedItem}"/>
+
+        <Grid x:Name="VisibilityPanel" Grid.RowSpan="2" Background="#80000000" Visibility="Collapsed">
+            <Border Background="White" Padding="16" Margin="80" CornerRadius="6">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <TextBlock Grid.Row="0" Text="产品包可见性设置" FontSize="18" FontWeight="Bold" Margin="0,0,0,12"/>
+                    <C:CDataGrid x:Name="VisibilityGrid" Grid.Row="1"
+                                 EnableAutoTemplateSelection="True"
+                                 ItemsSource="{Binding VisibilityItems}"/>
+                    <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+                        <button:CButton Content="确定" Width="80" Click="ConfirmVisibilityButton_Click"/>
+                        <button:CButton Content="取消" Width="80" Margin="8,0,0,0" Click="CancelVisibilityButton_Click"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
     </Grid>
 </Page>
-

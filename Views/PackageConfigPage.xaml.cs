@@ -1,10 +1,12 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
+using CustomControlLibrary.CustomControl.Attribute.DataGrid;
 using PackageManager.Function.PackageManage;
 using PackageManager.Models;
 using PackageManager.Services;
@@ -20,12 +22,16 @@ public partial class PackageConfigPage : Page, INotifyPropertyChanged, ICentralP
 
     private PackageItem selectedItem;
 
+    public ObservableCollection<VisibilityItem> VisibilityItems { get; } = new();
+
     public PackageConfigPage()
     {
         InitializeComponent();
         dataService = new DataPersistenceService();
         DataContext = this;
         LoadData();
+        dataService.LoadMainWindowState();
+        LoadVisibilityData();
     }
 
     public event Action RequestExit;
@@ -153,5 +159,66 @@ public partial class PackageConfigPage : Page, INotifyPropertyChanged, ICentralP
     private void BackButton_Click(object sender, RoutedEventArgs e)
     {
         RequestExit?.Invoke();
+    }
+
+    private void OpenVisibilityPanel_Click(object sender, RoutedEventArgs e)
+    {
+        VisibilityPanel.Visibility = Visibility.Visible;
+        // LoadVisibilityData();
+    }
+
+    private void LoadVisibilityData()
+    {
+        try
+        {
+            
+            VisibilityItems.Clear();
+            var names = dataService.GetBuiltInPackageConfigs().Select(i => i.ProductName)
+                                   .Concat(dataService.LoadPackageConfigs().Select(i => i.ProductName))
+                                   .Distinct()
+                                   .ToList();
+            var vis = dataService.GetProductVisibility();
+            foreach (var name in names)
+            {
+                var flag = true;
+                if (!string.IsNullOrWhiteSpace(name) && vis != null && vis.TryGetValue(name, out var v))
+                {
+                    flag = v;
+                }
+                VisibilityItems.Add(new VisibilityItem { ProductName = name, IsVisible = flag });
+            }
+        }
+        catch (Exception ex)
+        {
+            LoggingService.LogError(ex, "打开可见性设置失败");
+        }
+    }
+
+    private void ConfirmVisibilityButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var map = VisibilityItems
+                .Where(i => !string.IsNullOrWhiteSpace(i.ProductName))
+                .ToDictionary(i => i.ProductName, i => i.IsVisible);
+            var main = Application.Current?.MainWindow as MainWindow;
+            dataService.SaveProductVisibility(map);
+            if (main != null)
+            {
+                dataService.SaveMainWindowState(main.Packages);
+            }
+            VisibilityPanel.Visibility = Visibility.Collapsed;
+            main?.ReloadPackagesFromConfig();
+        }
+        catch (Exception ex)
+        {
+            LoggingService.LogError(ex, "保存可见性设置失败");
+            MessageBox.Show($"保存可见性设置失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void CancelVisibilityButton_Click(object sender, RoutedEventArgs e)
+    {
+        VisibilityPanel.Visibility = Visibility.Collapsed;
     }
 }

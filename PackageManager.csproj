@@ -129,6 +129,7 @@
         <Compile Include="Models\ConfigPreset.cs" />
         <Compile Include="Models\PackageItem.cs" />
         <Compile Include="Models\ProductLogInfo.cs" />
+        <Compile Include="Models\VisibilityItem.cs" />
         <Compile Include="Services\AdminElevationService.cs" />
         <Compile Include="Services\ConfigPresetStore.cs" />
         <Compile Include="Services\DebugSettingsService.cs" />

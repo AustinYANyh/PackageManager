@@ -37,6 +37,8 @@ namespace PackageManager.Services
         public List<FilterCondition> PackageGridFilterConditions { get; set; } = new List<FilterCondition>();
         
         public bool UseOrLogic { get; set; }
+
+        public Dictionary<string, bool> ProductVisibility { get; set; } = new Dictionary<string, bool>();
     }
 
     /// <summary>
@@ -60,6 +62,8 @@ namespace PackageManager.Services
         private List<FilterCondition> _lastGridFilterConditions;
 
         private bool useOrLogic;
+
+        private Dictionary<string, bool> _productVisibility = new Dictionary<string, bool>();
 
         public DataPersistenceService()
         {
@@ -409,6 +413,7 @@ namespace PackageManager.Services
                 // 包含最近一次提取的筛选条件集合
                 stateData.PackageGridFilterConditions = _lastGridFilterConditions ?? new List<FilterCondition>();
                 stateData.UseOrLogic = useOrLogic;
+                stateData.ProductVisibility = _productVisibility ?? new Dictionary<string, bool>();
 
                 var json = JsonConvert.SerializeObject(stateData, _jsonSettings);
                 File.WriteAllText(_mainWindowStateFilePath, json);
@@ -461,6 +466,7 @@ namespace PackageManager.Services
                 // 读取筛选条件集合
                 _lastGridFilterConditions = stateData?.PackageGridFilterConditions ?? new List<FilterCondition>();
                 useOrLogic = stateData?.UseOrLogic ?? false;
+                _productVisibility = stateData?.ProductVisibility ?? new Dictionary<string, bool>();
                 return stateData;
             }
             catch (Exception ex)
@@ -635,6 +641,26 @@ namespace PackageManager.Services
         public string GetDataFolderPath()
         {
             return _appFolder;
+        }
+
+        public bool SaveProductVisibility(Dictionary<string, bool> visibility)
+        {
+            try
+            {
+                _productVisibility = visibility?.ToDictionary(kv => kv.Key ?? string.Empty, kv => kv.Value)
+                                   ?? new Dictionary<string, bool>();
+                return true;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"保存产品可见性失败: {ex.Message}");
+                return false;
+            }
+        }
+
+        public Dictionary<string, bool> GetProductVisibility()
+        {
+            return _productVisibility ?? new Dictionary<string, bool>();
         }
     }
 
