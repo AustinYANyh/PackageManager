@@ -154,7 +154,12 @@
         <Compile Include="Services\PingCode\Model\StoryPointBreakdown.cs" />
         <Compile Include="Services\PingCode\Model\WorkItemComment.cs" />
         <Compile Include="Services\PingCode\Model\WorkItemDetails.cs" />
+        <Compile Include="Services\PingCode\PingCodeApiService.Attachments.cs" />
+        <Compile Include="Services\PingCode\PingCodeApiService.Authentication.cs" />
         <Compile Include="Services\PingCode\PingCodeApiService.cs" />
+        <Compile Include="Services\PingCode\PingCodeApiService.Http.cs" />
+        <Compile Include="Services\PingCode\PingCodeApiService.Parsing.cs" />
+        <Compile Include="Services\PingCode\PingCodeApiService.Partials.cs" />
         <Compile Include="Services\ToastService.cs" />
         <Compile Include="Services\AppUpdateService.cs" />
         <Compile Include="Views\CommonLinksPage.xaml.cs" />

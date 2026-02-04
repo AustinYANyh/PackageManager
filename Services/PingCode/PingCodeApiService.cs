@@ -14,7 +14,10 @@ using PackageManager.Services.PingCode.Model;
 
 namespace PackageManager.Services.PingCode;
 
-public class PingCodeApiService
+/// <summary>
+/// PingCode 开放接口客户端，封装项目、迭代、工作项、评论等查询与操作。
+/// </summary>
+public partial class PingCodeApiService
 {
     private readonly HttpClient http;
 
@@ -24,18 +27,27 @@ public class PingCodeApiService
 
     private DateTime tokenExpiresAt;
 
+    /// <summary>
+    /// 初始化服务实例，创建 HTTP 客户端并载入持久化服务。
+    /// </summary>
     public PingCodeApiService()
     {
         http = new HttpClient();
         data = new DataPersistenceService();
     }
 
+    /// <summary>
+    /// 获取当前访问令牌（自动刷新且返回最新有效令牌）。
+    /// </summary>
     public async Task<string> GetAccessTokenAsync()
     {
         await EnsureTokenAsync();
         return token;
     }
 
+    /// <summary>
+    /// 获取项目列表（兼容多种端点，优先返回首个非空结果）。
+    /// </summary>
     public async Task<List<Entity>> GetProjectsAsync()
     {
         var candidates = new[]
@@ -70,6 +82,9 @@ public class PingCodeApiService
         return new List<Entity>();
     }
 
+    /// <summary>
+    /// 获取指定项目未完成的迭代（过滤 Completed/Done/Closed 等状态）。
+    /// </summary>
     public async Task<List<Entity>> GetNotCompletedIterationsByProjectAsync(string projectId)
     {
         var result = new List<Entity>();
@@ -119,6 +134,9 @@ public class PingCodeApiService
         return result;
     }
     
+    /// <summary>
+    /// 获取指定项目进行中的迭代（status=in_progress）。
+    /// </summary>
     public async Task<List<Entity>> GetOngoingIterationsByProjectAsync(string projectId)
     {
         var result = new List<Entity>();
@@ -157,6 +175,9 @@ public class PingCodeApiService
         return result;
     }
 
+    /// <summary>
+    /// 获取项目成员（去重并返回 Id/Name）。
+    /// </summary>
     public async Task<List<Entity>> GetProjectMembersAsync(string projectId)
     {
         var result = new List<Entity>();
@@ -196,6 +217,9 @@ public class PingCodeApiService
         return result;
     }
 
+    /// <summary>
+    /// 获取迭代内按处理人聚合的故事点拆分（Closed/Done/InProgress/NotStarted 及优先级分布）。
+    /// </summary>
     public async Task<Dictionary<string, StoryPointBreakdown>> GetIterationStoryPointsBreakdownByAssigneeAsync(string iterationOrSprintId)
     {
         var result = new Dictionary<string, StoryPointBreakdown>(StringComparer.OrdinalIgnoreCase);
@@ -357,6 +381,9 @@ public class PingCodeApiService
         return result;
     }
 
+    /// <summary>
+    /// 获取迭代内工作项列表（补充参与者与成员映射、状态/优先级/故事点等信息）。
+    /// </summary>
     public async Task<List<WorkItemInfo>> GetIterationWorkItemsAsync(string iterationOrSprintId)
     {
         var result = new List<WorkItemInfo>();
@@ -1055,6 +1082,9 @@ public class PingCodeApiService
         return result;
     }
 
+    /// <summary>
+    /// 获取子工作项数量（优先 parent_id 查询，回退 children 端点）。
+    /// </summary>
     public async Task<int> GetChildWorkItemCountAsync(string parentWorkItemId)
     {
         if (string.IsNullOrWhiteSpace(parentWorkItemId))
@@ -1092,6 +1122,9 @@ public class PingCodeApiService
         return 0;
     }
 
+    /// <summary>
+    /// 创建结构化评论（content 为结构化 payload，支持 @提及）。
+    /// </summary>
     public async Task<JObject> CreateWorkItemCommentWithPayloadAsync(string workItemId, JArray contentPayload)
     {
         if (string.IsNullOrWhiteSpace(workItemId) || contentPayload == null)
@@ -1116,6 +1149,9 @@ public class PingCodeApiService
         }
     }
 
+    /// <summary>
+    /// 创建普通评论（content 为 HTML 字符串），兼容不同字段名。
+    /// </summary>
     public async Task<bool> AddWorkItemCommentAsync(string workItemId, string contentHtml)
     {
         if (string.IsNullOrWhiteSpace(workItemId) || string.IsNullOrWhiteSpace(contentHtml))
@@ -1153,6 +1189,9 @@ public class PingCodeApiService
         return false;
     }
 
+    /// <summary>
+    /// 创建通用评论（仅发送正文），返回是否成功。
+    /// </summary>
     public async Task<bool> AddGenericWorkItemCommentAsync(string workItemId, string contentHtml, List<JObject> attachments = null)
     {
         if (string.IsNullOrWhiteSpace(workItemId))
@@ -1163,6 +1202,9 @@ public class PingCodeApiService
         return resp != null;
     }
 
+    /// <summary>
+    /// 创建通用评论并返回响应对象。
+    /// </summary>
     public async Task<JObject> CreateGenericWorkItemCommentAsync(string workItemId, string contentHtml)
     {
         if (string.IsNullOrWhiteSpace(workItemId))
@@ -1187,6 +1229,9 @@ public class PingCodeApiService
         }
     }
 
+    /// <summary>
+    /// 更新工作项状态（兼容 state_id 字段写入）。
+    /// </summary>
     public async Task<bool> UpdateWorkItemStateByIdAsync(string workItemId, string stateId)
     {
         if (string.IsNullOrWhiteSpace(workItemId) || string.IsNullOrWhiteSpace(stateId))
@@ -1225,6 +1270,9 @@ public class PingCodeApiService
         return false;
     }
 
+    /// <summary>
+    /// 更新工作项故事点（兼容 story_points/story_point 字段）。
+    /// </summary>
     public async Task<bool> UpdateWorkItemStoryPointsAsync(string workItemId, double storyPoints)
     {
         if (string.IsNullOrWhiteSpace(workItemId) || (storyPoints < 0))
@@ -1263,6 +1311,9 @@ public class PingCodeApiService
         return false;
     }
 
+    /// <summary>
+    /// 获取某工作项类型下的状态列表（兼容多个端点与参数键）。
+    /// </summary>
     public async Task<List<StateDto>> GetWorkItemStatesByTypeAsync(string projectId, string workItemTypeIdOrName)
     {
         var result = new List<StateDto>();
@@ -1307,6 +1358,9 @@ public class PingCodeApiService
         return result;
     }
 
+    /// <summary>
+    /// 获取从指定状态可迁移到的目标状态列表（兼容多个端点与参数键）。
+    /// </summary>
     public async Task<List<StateDto>> GetWorkItemStateTransitionsAsync(string projectId, string workItemTypeIdOrName, string fromStateId)
     {
         var result = new List<StateDto>();
@@ -1371,6 +1425,9 @@ public class PingCodeApiService
         return result;
     }
 
+    /// <summary>
+    /// 获取项目下的状态方案列表（返回方案 Id 与项目/工作项类型信息）。
+    /// </summary>
     public async Task<List<StatePlanInfo>> GetWorkItemStatePlansAsync(string projectId)
     {
         var result = new List<StatePlanInfo>();
@@ -1421,6 +1478,9 @@ public class PingCodeApiService
         return result;
     }
 
+    /// <summary>
+    /// 获取状态方案内的状态流转（可指定 fromStateId 过滤）。
+    /// </summary>
     public async Task<List<StateDto>> GetWorkItemStateFlowsAsync(string statePlanId, string fromStateId)
     {
         var result = new List<StateDto>();
@@ -1481,6 +1541,9 @@ public class PingCodeApiService
         return result;
     }
 
+    /// <summary>
+    /// 计算用户在迭代内的故事点总和（迭代/冲刺 + 指派过滤）。
+    /// </summary>
     public async Task<double> GetUserStoryPointsSumAsync(string iterationOrSprintId, string userId)
     {
         if (string.IsNullOrWhiteSpace(iterationOrSprintId) || string.IsNullOrWhiteSpace(userId))
@@ -1552,832 +1615,59 @@ public class PingCodeApiService
         return 0;
     }
 
-    private static double ReadDouble(JToken t)
-    {
-        if (t == null)
-        {
-            return 0;
-        }
+    
 
-        if ((t.Type == JTokenType.Float) || (t.Type == JTokenType.Integer))
-        {
-            return t.Value<double>();
-        }
+    
 
-        double d;
-        return double.TryParse(t.ToString(), out d) ? d : 0;
-    }
+    
 
-    private static int ReadInt(object o)
-    {
-        if (o == null)
-        {
-            return 0;
-        }
+    
 
-        if (o is int i)
-        {
-            return i;
-        }
+    
 
-        if (o is long l)
-        {
-            return (int)l;
-        }
+    
 
-        if (o is double d)
-        {
-            return (int)d;
-        }
+    
 
-        int r;
-        return int.TryParse(o.ToString(), out r) ? r : 0;
-    }
+    
 
-    private static string ExtractString(JToken t)
-    {
-        if (t == null)
-        {
-            return null;
-        }
+    
 
-        if (t.Type == JTokenType.Object)
-        {
-            var name = t["name"]?.ToString();
-            if (!string.IsNullOrWhiteSpace(name))
-            {
-                return name;
-            }
+    
 
-            var value = t["value"]?.ToString();
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                return value;
-            }
+    
 
-            return t.ToString();
-        }
+    
 
-        return t.ToString();
-    }
+    
 
-    private static string DictGet(Dictionary<string, string> dict, string key)
-    {
-        if ((dict == null) || string.IsNullOrEmpty(key))
-        {
-            return null;
-        }
+    
 
-        string v;
-        return dict.TryGetValue(key, out v) ? v : null;
-    }
+    
 
-    private static string ExtractId(JToken t)
-    {
-        if (t == null)
-        {
-            return null;
-        }
+    
 
-        if (t.Type == JTokenType.Object)
-        {
-            var id = t.Value<string>("id");
-            if (!string.IsNullOrWhiteSpace(id))
-            {
-                return id;
-            }
+    
 
-            var value = t.Value<string>("value");
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                return value;
-            }
+    
 
-            var name = t.Value<string>("name");
-            if (!string.IsNullOrWhiteSpace(name))
-            {
-                return name;
-            }
+    
 
-            return t.ToString();
-        }
+    
 
-        if (t.Type == JTokenType.String)
-        {
-            return t.Value<string>();
-        }
+    
 
-        return t.ToString();
-    }
+    
 
-    private static string ExtractName(JToken t)
-    {
-        if (t == null)
-        {
-            return null;
-        }
+    
 
-        if (t.Type == JTokenType.Object)
-        {
-            var display = t.Value<string>("display_name");
-            if (!string.IsNullOrWhiteSpace(display))
-            {
-                return display;
-            }
+    
 
-            var name = t.Value<string>("name");
-            if (!string.IsNullOrWhiteSpace(name))
-            {
-                return name;
-            }
+    
 
-            var value = t.Value<string>("value");
-            if (!string.IsNullOrWhiteSpace(value))
-            {
-                return value;
-            }
+    
 
-            return t.ToString();
-        }
+    
 
-        if (t.Type == JTokenType.String)
-        {
-            return t.Value<string>();
-        }
-
-        return t.ToString();
-    }
-
-    private static string FirstNonEmpty(params string[] values)
-    {
-        if (values == null)
-        {
-            return null;
-        }
-
-        foreach (var v in values)
-        {
-            if (!string.IsNullOrWhiteSpace(v))
-            {
-                return v;
-            }
-        }
-
-        return null;
-    }
-
-    private static string ReadStatus(JToken v)
-    {
-        var s = ExtractString(v["status"]);
-        if (string.IsNullOrWhiteSpace(s))
-        {
-            s = ExtractString(v["state"]);
-        }
-
-        if (string.IsNullOrWhiteSpace(s))
-        {
-            s = ExtractString(v["fields"]?["status"]);
-        }
-
-        if (string.IsNullOrWhiteSpace(s))
-        {
-            s = ExtractString(v["fields"]?["state"]);
-        }
-
-        return s;
-    }
-
-    private static string ReadHtmlUrl(JToken v)
-    {
-        return FirstNonEmpty(ExtractString(v?["html_url"]),
-                             ExtractString(v?["web_url"]),
-                             ExtractString(v?["url"]),
-                             ExtractString(v?["fields"]?["html_url"]),
-                             ExtractString(v?["links"]?["html_url"]));
-    }
-
-    private static string ReadPriorityText(JToken v)
-    {
-        var p = ExtractString(v?["priority"]);
-        if (string.IsNullOrWhiteSpace(p))
-        {
-            p = ExtractString(v?["fields"]?["priority"]);
-        }
-
-        if (string.IsNullOrWhiteSpace(p))
-        {
-            p = ExtractString(v?["severity"]);
-        }
-
-        if (string.IsNullOrWhiteSpace(p))
-        {
-            p = ExtractString(v?["fields"]?["severity"]);
-        }
-
-        return p;
-    }
-
-    private static DateTime? ReadDateTimeFromSeconds(JToken t)
-    {
-        if ((t == null) || (t.Type == JTokenType.Null))
-        {
-            return null;
-        }
-
-        long secs;
-        if ((t.Type == JTokenType.Integer) || (t.Type == JTokenType.Float))
-        {
-            secs = t.Value<long>();
-        }
-        else
-        {
-            if (!long.TryParse(t.ToString(), out secs))
-            {
-                return null;
-            }
-        }
-
-        try
-        {
-            // PingCode 使用秒为单位的时间戳（UTC）
-            var dt = DateTimeOffset.FromUnixTimeSeconds(secs).UtcDateTime;
-            return dt;
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private static DateTime? FromUnixSeconds(long? secs)
-    {
-        if (!secs.HasValue)
-        {
-            return null;
-        }
-
-        try
-        {
-            return DateTimeOffset.FromUnixTimeSeconds(secs.Value).UtcDateTime;
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private static PriorityCategory ClassifyPriority(string p)
-    {
-        var s = (p ?? "").Trim().ToLowerInvariant();
-        if (string.IsNullOrEmpty(s))
-        {
-            return PriorityCategory.Other;
-        }
-
-        // Highest first to avoid "高" being matched by "最高"
-        if (s.Contains("最高") || s.Contains("极高") || s.Contains("p0") || s.Contains("critical") || s.Contains("blocker") || s.Contains("urgent") ||
-            s.Contains("very high") || (s == "0") || (s == "1"))
-        {
-            return PriorityCategory.Highest;
-        }
-
-        if (s.Contains("较高") || s.Contains("高") || s.Contains("p1") || s.Contains("high") || (s == "2"))
-        {
-            return PriorityCategory.Higher;
-        }
-
-        return PriorityCategory.Other;
-    }
-
-    private static string CategorizeState(string status)
-    {
-        var s = (status ?? "").Trim().ToLowerInvariant();
-        if (string.IsNullOrEmpty(s))
-        {
-            return "未开始";
-        }
-
-        if (s.Contains("关闭") || s.Contains("closed") || s.Contains("已拒绝"))
-        {
-            return "已关闭";
-        }
-
-        if (s.Contains("done") || s.Contains("完成") || s.Contains("resolved") || s.Contains("已完成") || s.Contains("已发布"))
-        {
-            return "已完成";
-        }
-
-        if (s.Contains("可测试") || s.Contains("已修复"))
-        {
-            return "可测试";
-        }
-
-        if (s.Contains("测试中") || s.Contains("测试"))
-        {
-            return "测试中";
-        }
-
-        if (s.Contains("重新打开") || s.Contains("progress") || s.Contains("进行中") || s.Contains("doing") || s.Contains("开发中") || s.Contains("处理中") ||
-            s.Contains("挂起")
-            || s.Contains("待完善") || s.Contains("in_progress"))
-        {
-            return "进行中";
-        }
-
-        if (s.Contains("新提交") || s.Contains("打开") || s.Contains("未开始") || s.Contains("新建") || s.Contains("待处理") || s.Contains("todo"))
-        {
-            return "未开始";
-        }
-
-        return "未开始";
-    }
-
-    private static string MapCategoryToStateType(string category)
-    {
-        var c = (category ?? "").Trim();
-        if (string.Equals(c, "进行中", StringComparison.OrdinalIgnoreCase))
-        {
-            return "in_progress";
-        }
-
-        if (string.Equals(c, "可测试", StringComparison.OrdinalIgnoreCase))
-        {
-            return "testable";
-        }
-
-        if (string.Equals(c, "测试中", StringComparison.OrdinalIgnoreCase))
-        {
-            return "testing";
-        }
-
-        if (string.Equals(c, "已完成", StringComparison.OrdinalIgnoreCase))
-        {
-            return "done";
-        }
-
-        if (string.Equals(c, "已关闭", StringComparison.OrdinalIgnoreCase))
-        {
-            return "closed";
-        }
-
-        return "todo";
-    }
-
-    private static JArray GetValuesArray(JObject json)
-    {
-        if (json == null)
-        {
-            return null;
-        }
-
-        var v = json["values"];
-        var arr = v as JArray;
-        if (arr != null)
-        {
-            return arr;
-        }
-
-        if (v is JObject vo)
-        {
-            arr = vo["items"] as JArray ?? vo["work_items"] as JArray ?? vo["users"] as JArray ?? vo["projects"] as JArray ??
-                  vo["iterations"] as JArray ?? vo["sprints"] as JArray ?? vo["members"] as JArray ?? vo["list"] as JArray;
-            if (arr != null)
-            {
-                return arr;
-            }
-        }
-
-        arr = json["items"] as JArray ?? json["work_items"] as JArray ?? json["users"] as JArray ?? json["projects"] as JArray ??
-              json["iterations"] as JArray ?? json["sprints"] as JArray ??
-              json["members"] as JArray ?? json["list"] as JArray ?? json["data"] as JArray ?? json["results"] as JArray;
-        return arr;
-    }
-
-    private static List<Entity> ParseEntities(JObject jobj)
-    {
-        var result = new List<Entity>();
-        var values = GetValuesArray(jobj);
-        if (values == null)
-        {
-            return result;
-        }
-
-        foreach (var v in values)
-        {
-            var id = v.Value<string>("id") ?? v["user"]?.Value<string>("id") ?? v["iteration"]?.Value<string>("id");
-            var name = v.Value<string>("name") ?? v["user"]?.Value<string>("name") ?? v["iteration"]?.Value<string>("name");
-            if (!string.IsNullOrWhiteSpace(id))
-            {
-                result.Add(new Entity { Id = id, Name = name ?? id });
-            }
-        }
-
-        return result;
-    }
-
-    private static bool LooksLikeImageUrl(string url)
-    {
-        try
-        {
-            var u = (url ?? "").Trim().ToLowerInvariant();
-            if (string.IsNullOrEmpty(u))
-            {
-                return false;
-            }
-
-            if (u.StartsWith("data:image/"))
-            {
-                return true;
-            }
-
-            if (u.EndsWith(".png") || u.EndsWith(".jpg") || u.EndsWith(".jpeg") || u.EndsWith(".gif") || u.EndsWith(".bmp") ||
-                u.EndsWith(".webp") || u.EndsWith(".svg"))
-            {
-                return true;
-            }
-
-            return false;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private string GetClientId()
-    {
-        var settings = data.LoadSettings();
-        var env = Environment.GetEnvironmentVariable("PINGCODE_CLIENT_ID");
-        if (!string.IsNullOrWhiteSpace(settings?.PingCodeClientId))
-        {
-            return settings.PingCodeClientId;
-        }
-
-        if (!string.IsNullOrWhiteSpace(env))
-        {
-            return env;
-        }
-
-        return null;
-    }
-
-    private string GetClientSecret()
-    {
-        var settings = data.LoadSettings();
-        var env = Environment.GetEnvironmentVariable("PINGCODE_CLIENT_SECRET");
-        if (!string.IsNullOrWhiteSpace(settings?.PingCodeClientSecret))
-        {
-            return settings.PingCodeClientSecret;
-        }
-
-        if (!string.IsNullOrWhiteSpace(env))
-        {
-            return env;
-        }
-
-        return null;
-    }
-
-    private async Task EnsureTokenAsync()
-    {
-        if (!string.IsNullOrWhiteSpace(token) && (tokenExpiresAt > DateTime.UtcNow.AddMinutes(1)))
-        {
-            return;
-        }
-
-        var clientId = GetClientId();
-        var clientSecret = GetClientSecret();
-        if (string.IsNullOrWhiteSpace(clientId) || string.IsNullOrWhiteSpace(clientSecret))
-        {
-            throw new InvalidOperationException("未配置 PingCode ClientId 或 Secret");
-        }
-
-        var authGetUrl =
-            $"https://open.pingcode.com/v1/auth/token?grant_type=client_credentials&client_id={Uri.EscapeDataString(clientId)}&client_secret={Uri.EscapeDataString(clientSecret)}";
-        try
-        {
-            using var resp = await http.GetAsync(authGetUrl);
-            var txt = await resp.Content.ReadAsStringAsync();
-            if (resp.IsSuccessStatusCode)
-            {
-                var jobj = JObject.Parse(txt);
-                var access = jobj.Value<string>("access_token");
-                var expires = jobj.Value<int?>("expires_in");
-                if (!string.IsNullOrWhiteSpace(access))
-                {
-                    token = access;
-                    tokenExpiresAt = DateTime.UtcNow.AddSeconds(expires ?? 3600);
-                    http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
-                }
-            }
-            else
-            {
-                if ((resp.StatusCode == HttpStatusCode.Unauthorized) || (resp.StatusCode == HttpStatusCode.BadRequest))
-                {
-                    throw new ApiAuthException($"Token 请求失败: {(int)resp.StatusCode} {resp.StatusCode} {txt}");
-                }
-            }
-        }
-        catch (System.Exception)
-        {
-        }
-    }
-
-    private async Task<JObject> GetJsonAsync(string url)
-    {
-        await EnsureTokenAsync();
-        using var resp = await http.GetAsync(url);
-        var txt = await resp.Content.ReadAsStringAsync();
-        if (!resp.IsSuccessStatusCode)
-        {
-            if (resp.StatusCode == HttpStatusCode.Unauthorized)
-            {
-                throw new ApiAuthException($"GET 失败: {(int)resp.StatusCode} {resp.StatusCode} {txt}");
-            }
-
-            if (resp.StatusCode == HttpStatusCode.Forbidden)
-            {
-                throw new ApiForbiddenException($"GET 失败: {(int)resp.StatusCode} {resp.StatusCode} {txt}");
-            }
-
-            if (resp.StatusCode == HttpStatusCode.NotFound)
-            {
-                throw new ApiNotFoundException($"GET 失败: {(int)resp.StatusCode} {resp.StatusCode} {txt}");
-            }
-
-            throw new InvalidOperationException($"GET 失败: {(int)resp.StatusCode} {resp.StatusCode} {txt}");
-        }
-
-        return JObject.Parse(txt);
-    }
-
-    private async Task<JObject> PatchJsonAsync(string url, JObject body)
-    {
-        await EnsureTokenAsync();
-        var req = new HttpRequestMessage(new HttpMethod("PATCH"), url);
-        var payload = body ?? new JObject();
-        req.Content = new StringContent(payload.ToString(Formatting.None), Encoding.UTF8, "application/json");
-        using var resp = await http.SendAsync(req);
-        var txt = await resp.Content.ReadAsStringAsync();
-        if (!resp.IsSuccessStatusCode)
-        {
-            if (resp.StatusCode == HttpStatusCode.Unauthorized)
-            {
-                throw new ApiAuthException($"PATCH 失败: {(int)resp.StatusCode} {resp.StatusCode} {txt}");
-            }
-
-            if (resp.StatusCode == HttpStatusCode.Forbidden)
-            {
-                throw new ApiForbiddenException($"PATCH 失败: {(int)resp.StatusCode} {resp.StatusCode} {txt}");
-            }
-
-            if (resp.StatusCode == HttpStatusCode.NotFound)
-            {
-                throw new ApiNotFoundException($"PATCH 失败: {(int)resp.StatusCode} {resp.StatusCode} {txt}");
-            }
-
-            throw new InvalidOperationException($"PATCH 失败: {(int)resp.StatusCode} {resp.StatusCode} {txt}");
-        }
-
-        try
-        {
-            return string.IsNullOrWhiteSpace(txt) ? new JObject() : JObject.Parse(txt);
-        }
-        catch
-        {
-            return new JObject();
-        }
-    }
-
-    private async Task<JObject> PostJsonAsync(string url, JObject body)
-    {
-        await EnsureTokenAsync();
-        var req = new HttpRequestMessage(HttpMethod.Post, url);
-        var payload = body ?? new JObject();
-        req.Content = new StringContent(payload.ToString(Formatting.None), Encoding.UTF8, "application/json");
-        using var resp = await http.SendAsync(req);
-        var txt = await resp.Content.ReadAsStringAsync();
-        if (!resp.IsSuccessStatusCode)
-        {
-            if (resp.StatusCode == HttpStatusCode.Unauthorized)
-            {
-                throw new ApiAuthException($"POST 失败: {(int)resp.StatusCode} {resp.StatusCode} {txt}");
-            }
-            if (resp.StatusCode == HttpStatusCode.Forbidden)
-            {
-                throw new ApiForbiddenException($"POST 失败: {(int)resp.StatusCode} {resp.StatusCode} {txt}");
-            }
-            if (resp.StatusCode == HttpStatusCode.NotFound)
-            {
-                throw new ApiNotFoundException($"POST 失败: {(int)resp.StatusCode} {resp.StatusCode} {txt}");
-            }
-            throw new InvalidOperationException($"POST 失败: {(int)resp.StatusCode} {resp.StatusCode} {txt}");
-        }
-        try
-        {
-            return string.IsNullOrWhiteSpace(txt) ? new JObject() : JObject.Parse(txt);
-        }
-        catch
-        {
-            return new JObject();
-        }
-    }
-
-    private async Task<string> BuildAttachmentsHtmlAsync(JToken v)
-    {
-        try
-        {
-            var arr = v?["attachments"] as JArray;
-            if ((arr == null) || (arr.Count == 0))
-            {
-                return null;
-            }
-
-            var sb = new StringBuilder();
-            foreach (var a in arr)
-            {
-                var url = ExtractString(a?["url"]);
-                var title = FirstNonEmpty(ExtractString(a?["title"]), ExtractString(a?["name"]), ExtractString(a?["filename"]));
-                var type = FirstNonEmpty(ExtractString(a?["type"]), ExtractString(a?["content_type"]), ExtractString(a?["file_type"]));
-                if (string.IsNullOrWhiteSpace(url))
-                {
-                    continue;
-                }
-
-                var tt = string.IsNullOrWhiteSpace(title) ? url : title;
-                var typeLower = (type ?? "").Trim().ToLowerInvariant();
-                var nameLower = (tt ?? "").Trim().ToLowerInvariant();
-                var extImg = nameLower.EndsWith(".png") || nameLower.EndsWith(".jpg") || nameLower.EndsWith(".jpeg") || nameLower.EndsWith(".gif") ||
-                             nameLower.EndsWith(".bmp") || nameLower.EndsWith(".webp") || nameLower.EndsWith(".svg") || nameLower.EndsWith(".tif") ||
-                             nameLower.EndsWith(".tiff") || nameLower.EndsWith(".avif");
-
-                var isOpenAttachment = false;
-                string finalUrl = null;
-                bool isImg = false;
-
-                try
-                {
-                    var uri = new Uri(url);
-                    var host = (uri.Host ?? "").ToLowerInvariant();
-                    var path = (uri.AbsolutePath ?? "").ToLowerInvariant();
-                    isOpenAttachment = host.EndsWith(".pingcode.com") && path.Contains("/v1/attachments");
-                }
-                catch
-                {
-                }
-
-                if (isOpenAttachment)
-                {
-                    try
-                    {
-                        var meta = await GetJsonAsync(AppendAccessTokenIfNeeded(url));
-                        var fileType = FirstNonEmpty(meta.Value<string>("file_type"), type);
-                        var dl = meta.Value<string>("download_url");
-                        var ftLower = (fileType ?? "").Trim().ToLowerInvariant();
-                        isImg = (ftLower == "image") || ftLower.StartsWith("image/");
-                        if (isImg && !string.IsNullOrWhiteSpace(dl))
-                        {
-                            finalUrl = dl;
-                        }
-                    }
-                    catch
-                    {
-                    }
-                }
-
-                if (string.IsNullOrWhiteSpace(finalUrl))
-                {
-                    var u = AppendAccessTokenIfNeeded(url);
-                    isImg = (!string.IsNullOrWhiteSpace(typeLower) && typeLower.StartsWith("image/")) || extImg || LooksLikeImageUrl(u);
-                    finalUrl = u;
-                }
-
-                if (isImg)
-                {
-                    sb.Append($"<div class=\"comment-attachment\"><img loading=\"lazy\" src=\"{WebUtility.HtmlEncode(finalUrl)}\" alt=\"{WebUtility.HtmlEncode(tt)}\"/></div>");
-                }
-                else
-                {
-                    sb.Append($"<div class=\"comment-attachment\"><a href=\"{WebUtility.HtmlEncode(finalUrl)}\" target=\"_blank\" rel=\"noopener\">{WebUtility.HtmlEncode(tt)}</a></div>");
-                }
-            }
-
-            return sb.ToString();
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private string AppendAccessTokenIfNeeded(string url)
-    {
-        try
-        {
-            var u = (url ?? "").Trim();
-            if (string.IsNullOrWhiteSpace(u))
-            {
-                return u;
-            }
-
-            var lower = u.ToLowerInvariant();
-            var need = lower.Contains("pingcode.com") || lower.Contains(".pingcode.com");
-            if (!need)
-            {
-                return u;
-            }
-
-            if (lower.Contains("access_token="))
-            {
-                return u;
-            }
-
-            var tk = token;
-            if (string.IsNullOrWhiteSpace(tk))
-            {
-                return u;
-            }
-
-            if (u.Contains("?"))
-            {
-                return $"{u}&access_token={Uri.EscapeDataString(tk)}";
-            }
-
-            return $"{u}?access_token={Uri.EscapeDataString(tk)}";
-        }
-        catch
-        {
-            return url;
-        }
-    }
-
-    private static string TryExtractAttachmentIdFromUrl(string url)
-    {
-        try
-        {
-            var u = (url ?? "").Trim();
-            if (string.IsNullOrWhiteSpace(u))
-            {
-                return null;
-            }
-            Uri uri;
-            if (!Uri.TryCreate(u, UriKind.Absolute, out uri))
-            {
-                return null;
-            }
-            var path = (uri.AbsolutePath ?? "").ToLowerInvariant();
-            var idx = path.IndexOf("/v1/attachments/");
-            if (idx >= 0)
-            {
-                var start = idx + "/v1/attachments/".Length;
-                if (start < path.Length)
-                {
-                    var rest = path.Substring(start);
-                    var slash = rest.IndexOf('/');
-                    var id = (slash >= 0) ? rest.Substring(0, slash) : rest;
-                    id = (id ?? "").Trim();
-                    if (!string.IsNullOrWhiteSpace(id))
-                    {
-                        return id;
-                    }
-                }
-            }
-            return null;
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private static string GuessAttachmentType(string url)
-    {
-        try
-        {
-            var u = (url ?? "").Trim().ToLowerInvariant();
-            if (string.IsNullOrWhiteSpace(u))
-            {
-                return "file";
-            }
-            if (u.EndsWith(".png") || u.EndsWith(".jpg") || u.EndsWith(".jpeg") || u.EndsWith(".gif") ||
-                u.EndsWith(".bmp") || u.EndsWith(".webp") || u.EndsWith(".svg") || u.EndsWith(".tif") ||
-                u.EndsWith(".tiff") || u.Contains("content_type=image") || u.Contains("file_type=image"))
-            {
-                return "image";
-            }
-            return "file";
-        }
-        catch
-        {
-            return "file";
-        }
-    }
-    private enum PriorityCategory
-    {
-        Highest,
-
-        Higher,
-
-        Other,
-    }
+    
 }
