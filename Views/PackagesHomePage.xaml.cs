@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
+using System.Diagnostics;
 
 namespace PackageManager.Views
 {
@@ -145,6 +146,60 @@ namespace PackageManager.Views
             catch
             {
                 MessageBox.Show("打开编译顺序窗口失败", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private void OpenRevitActivationToolButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var asm = typeof(PackagesHomePage).Assembly;
+                var names = asm.GetManifestResourceNames();
+                var suffixes = new[]
+                {
+                    "AdskUAT.exe",
+                    "BDGroupCore.bpf",
+                    "Uninstall.exe",
+                    "启用日志跟踪EnableLogTrack.cmd",
+                    "疑难解答Faqs.txt",
+                    "禁用日志跟踪DisableLogTrack.cmd"
+                };
+                var targetDir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PackageManager", "AutodeskActivation");
+                System.IO.Directory.CreateDirectory(targetDir);
+                try { System.IO.Directory.CreateDirectory(System.IO.Path.Combine(targetDir, "Logs")); } catch { }
+                foreach (var suffix in suffixes)
+                {
+                    var name = names.FirstOrDefault(n =>
+                        n.EndsWith(suffix, StringComparison.OrdinalIgnoreCase) &&
+                        n.Contains("Assets.Tools.Autodesk.Universal.Activation.Tools"));
+                    if (string.IsNullOrEmpty(name)) continue;
+                    var path = System.IO.Path.Combine(targetDir, suffix);
+                    if (!System.IO.File.Exists(path))
+                    {
+                        using (var s = asm.GetManifestResourceStream(name))
+                        using (var fs = new System.IO.FileStream(path, System.IO.FileMode.Create, System.IO.FileAccess.Write, System.IO.FileShare.Read))
+                        {
+                            s.CopyTo(fs);
+                        }
+                    }
+                }
+                var exePath = System.IO.Path.Combine(targetDir, "AdskUAT.exe");
+                if (!System.IO.File.Exists(exePath))
+                {
+                    MessageBox.Show("未找到资源：AdskUAT.exe", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+                var psi = new ProcessStartInfo
+                {
+                    FileName = exePath,
+                    UseShellExecute = true,
+                    WorkingDirectory = targetDir
+                };
+                Process.Start(psi);
+            }
+            catch
+            {
+                MessageBox.Show("运行Revit破解工具失败", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
     }

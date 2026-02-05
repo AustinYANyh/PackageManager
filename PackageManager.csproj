@@ -309,9 +309,11 @@
         <EmbeddedResource Include="Assets\Tools\签名加密校验20251112.exe" />
     </ItemGroup>
     <ItemGroup>
+      <Folder Include="Assets\Tools\Autodesk.Universal.Activation.Tools_1.3.3.1_x64_CHS_BDGroup-lab.com\Logs\" />
       <Folder Include="packages\" />
     </ItemGroup>
     <ItemGroup>
+      <EmbeddedResource Include="Assets\Tools\Autodesk.Universal.Activation.Tools_1.3.3.1_x64_CHS_BDGroup-lab.com\**\*" />
       <EmbeddedResource Include="CHANGELOG.md" />
         <EmbeddedResource Include="Views\Templates\workitem-details.html" />
         <EmbeddedResource Include="Assets\Tools\runtimes\win-x64\native\WebView2Loader.dll" />

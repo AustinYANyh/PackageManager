@@ -115,6 +115,7 @@
                                 <button:CButton Content="DNS" Width="80" Margin="0,0,8,0" Click="OpenDnsSettingsWindowButton_Click" IsEnabled="{Binding LatestActivePackage.IsTeamworkMasterDevelop}"/>
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
+                                <button:CButton Content="Revit破解" Width="100" Click="OpenRevitActivationToolButton_Click" Margin="0,0,8,0"/>
                                 <button:CButton Content="解除占用" Width="80" Click="OpenUnlockFilesWindowButton_Click" Margin="0,0,8,0"/>
                                 <button:CButton Content="编译顺序" Width="80" Click="OpenSlnUpdateWindowButton_Click" Margin="0,0,8,0"/>
                             </StackPanel>
