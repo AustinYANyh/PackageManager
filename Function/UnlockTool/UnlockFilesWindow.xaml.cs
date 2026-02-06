@@ -87,7 +87,115 @@ namespace PackageManager.Function.UnlockTool
 
         private async void UnlockButton_Click(object sender, RoutedEventArgs e)
         {
-            await UnlockAsync();
+            if (_items.Count == 0)
+            {
+                ToastService.ShowToast("解除占用", "请先添加目标", "Warning");
+                return;
+            }
+            foreach (var i in _items)
+            {
+                i.Status = "处理中";
+                i.Message = string.Empty;
+            }
+            var targets = _items.Select(i => i.FilePath).Where(p => !string.IsNullOrWhiteSpace(p)).ToArray();
+            try
+            {
+                var list = await _updateService.ListLockingProcessesForTargetsAsync(targets, _cts.Token);
+                if (list == null || list.Count == 0)
+                {
+                    foreach (var i in _items)
+                    {
+                        i.Status = "完成";
+                        i.Message = "未发现占用";
+                    }
+                    ToastService.ShowToast("解除占用", "未发现占用", "Info");
+                    return;
+                }
+                var pids = list.Select(p => p.Id).Where(id => id > 0).Distinct().ToArray();
+                var resultPath = await AdminElevationService.RunElevatedUnlockUiWithResultAsync(targets, pids);
+                foreach (var i in _items)
+                {
+                    i.Status = string.IsNullOrEmpty(resultPath) ? "失败" : "已启动解除占用程序";
+                    i.Message = string.IsNullOrEmpty(resultPath) ? "无法启动解除占用程序" : "请在解除占用窗口中终止占用进程";
+                }
+                if (!string.IsNullOrEmpty(resultPath))
+                {
+                    StartResultWatcher(resultPath);
+                }
+            }
+            catch (Exception ex)
+            {
+                foreach (var i in _items)
+                {
+                    i.Status = "失败";
+                    i.Message = ex.Message;
+                }
+            }
+        }
+        
+        private void StartResultWatcher(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path)) return;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var tries = 0;
+                    while (!_cts.IsCancellationRequested && !File.Exists(path) && tries < 50)
+                    {
+                        await Task.Delay(200);
+                        tries++;
+                    }
+                    if (!File.Exists(path)) return;
+                    using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    using (var reader = new StreamReader(fs))
+                    {
+                        string line;
+                        while (!_cts.IsCancellationRequested)
+                        {
+                            line = reader.ReadLine();
+                            if (line == null)
+                            {
+                                await Task.Delay(200);
+                                continue;
+                            }
+                            try
+                            {
+                                var obj = Newtonsoft.Json.Linq.JObject.Parse(line);
+                                var pid = (int?)obj["pid"];
+                                var success = (bool?)obj["success"];
+                                var message = (string)obj["message"];
+                                var completed = (bool?)obj["completed"];
+                                if (pid.HasValue)
+                                {
+                                    Application.Current.Dispatcher.BeginInvoke(new Action(() =>
+                                    {
+                                        foreach (var i in _items)
+                                        {
+                                            i.Message = success == true
+                                                ? $"已终止 PID {pid.Value}"
+                                                : string.IsNullOrWhiteSpace(message) ? $"终止失败 PID {pid.Value}" : message;
+                                        }
+                                    }));
+                                }
+                                if (completed == true)
+                                {
+                                    Application.Current.Dispatcher.BeginInvoke(new Action(() =>
+                                    {
+                                        foreach (var i in _items) i.Status = "完成";
+                                    }));
+                                }
+                            }
+                            catch
+                            {
+                            }
+                        }
+                    }
+                }
+                catch
+                {
+                }
+            });
         }
 
         private void CloseButton_Click(object sender, RoutedEventArgs e)
@@ -182,34 +290,6 @@ namespace PackageManager.Function.UnlockTool
             }
         }
 
-        private async Task UnlockAsync()
-        {
-            foreach (var item in _items)
-            {
-                item.Status = "处理中";
-                item.Message = string.Empty;
-            }
-
-            var targets = _items.Select(i => i.FilePath).ToArray();
-            try
-            {
-                var count = await _updateService.UnlockLocksForTargetsAsync(targets, _cts.Token);
-                foreach (var item in _items)
-                {
-                    item.Status = "完成";
-                    item.Message = count > 0 ? "已尝试解除占用" : "未发现占用";
-                }
-                ToastService.ShowToast("解除占用", count > 0 ? $"已处理 {count} 个进程" : "未发现占用", count > 0 ? "Success" : "Info");
-            }
-            catch (Exception ex)
-            {
-                foreach (var item in _items)
-                {
-                    item.Status = "失败";
-                    item.Message = ex.Message;
-                }
-            }
-        }
 
         private class UnlockItem : INotifyPropertyChanged
         {

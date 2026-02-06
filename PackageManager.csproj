@@ -258,6 +258,7 @@
         <Page Include="Views\Controls\WorkItemCard.xaml" />
     </ItemGroup>
     <ItemGroup>
+        <Content Include="Assets\Tools\UnlockProcessAdmin.exe" />
         <Content Include="Models\json.txt" />
         <Content Include="Views\WorkItemKanban.html">
             <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
@@ -329,6 +330,7 @@
       <Content Include="scripts\SignPackageManager.ps1" />
       <Content Include="UpdateSummary.txt" />
       <EmbeddedResource Include="Assets\Tools\LogViewPro.exe" />
+      <EmbeddedResource Include="Assets\Tools\UnlockProcessAdmin.exe" />
       <Content Include="Assets\Icons\README.txt" />
       <Content Include="Assets\Icons\source.png" />
       <Content Include="Assets\Tools\Endelib.v1.0.1.dll" />

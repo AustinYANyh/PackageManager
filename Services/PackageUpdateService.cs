@@ -683,46 +683,32 @@ namespace PackageManager.Services
                     return;
                 }
 
-                await Task.Run(() =>
+                var ids = procs.Select(x =>
                 {
-                    if (cancellationToken.IsCancellationRequested) { return; }
-                    foreach (var p in procs)
-                    {
-                        try
-                        {
-                            if (p.CloseMainWindow())
-                            {
-                                p.WaitForExit(5000);
-                            }
-                        }
-                        catch
-                        {
-                        }
-
-                        try
-                        {
-                            if (!p.HasExited)
-                            {
-                                p.Kill();
-                                p.WaitForExit(2000);
-                            }
-                        }
-                        catch
-                        {
-                        }
-                    }
-                }, cancellationToken);
+                    try { return x.Id; } catch { return 0; }
+                }).Where(id => id > 0).Distinct().ToArray();
+                if (ids.Length > 0)
+                {
+                    await KillProcessesAsync(ids, cancellationToken);
+                }
             }
             catch
             {
             }
         }
-
-        public async Task<int> UnlockLocksForTargetsAsync(IEnumerable<string> targets, CancellationToken cancellationToken = default)
+        
+        public class LockingProcessInfo
         {
-            if (targets == null) return 0;
+            public int Id { get; set; }
+            public string Name { get; set; }
+            public string ExecutablePath { get; set; }
+            public string Title { get; set; }
+        }
+        
+        public async Task<List<LockingProcessInfo>> ListLockingProcessesForTargetsAsync(IEnumerable<string> targets, CancellationToken cancellationToken = default)
+        {
+            if (targets == null) return new List<LockingProcessInfo>();
             var files = new List<string>();
-
             try
             {
                 foreach (var t in targets)
@@ -732,8 +718,7 @@ namespace PackageManager.Services
                     {
                         if (Directory.Exists(t))
                         {
-                            var dirFiles = Directory.EnumerateFiles(t, "*.*", SearchOption.AllDirectories)
-                                                    .Take(10000);
+                            var dirFiles = Directory.EnumerateFiles(t, "*.*", SearchOption.AllDirectories).Take(10000);
                             files.AddRange(dirFiles);
                         }
                         else if (File.Exists(t))
@@ -745,74 +730,71 @@ namespace PackageManager.Services
                 }
             }
             catch { }
-
             var procs = GetLockingProcesses(files);
-            if (procs.Count == 0) return 0;
-
+            var result = new List<LockingProcessInfo>();
+            await Task.Run(() =>
+            {
+                foreach (var p in procs)
+                {
+                    if (cancellationToken.IsCancellationRequested) break;
+                    try
+                    {
+                        var info = new LockingProcessInfo
+                        {
+                            Id = p.Id,
+                            Name = p.ProcessName,
+                            Title = p.MainWindowTitle,
+                            ExecutablePath = TryGetMainModulePath(p)
+                        };
+                        if (!result.Any(x => x.Id == info.Id))
+                        {
+                            result.Add(info);
+                        }
+                    }
+                    catch { }
+                }
+            }, cancellationToken);
+            return result;
+        }
+        
+        public async Task<bool> KillProcessesAsync(IEnumerable<int> pids, CancellationToken cancellationToken = default)
+        {
+            var list = pids == null ? new List<int>() : pids.Where(id => id > 0).Distinct().ToList();
+            if (list.Count == 0) return false;
             try
             {
-                await Task.Run(() =>
+                return await Task.Run(() =>
                 {
-                    foreach (var p in procs)
+                    var args = "/c " + ("taskkill " + string.Join(" ", list.Select(id => "/PID " + id)) + " /F /T");
+                    var psi = new ProcessStartInfo
                     {
-                        if (cancellationToken.IsCancellationRequested) return;
-                        try
-                        {
-                            if (p.CloseMainWindow())
-                            {
-                                p.WaitForExit(3000);
-                            }
-                        }
-                        catch { }
-
-                        try
-                        {
-                            if (!p.HasExited)
-                            {
-                                p.Kill();
-                                p.WaitForExit(2000);
-                            }
-                        }
-                        catch { }
-                    }
+                        FileName = "cmd.exe",
+                        Arguments = args,
+                        UseShellExecute = true,
+                        WindowStyle = ProcessWindowStyle.Hidden,
+                        Verb = AdminElevationService.IsRunningAsAdministrator() ? null : "runas"
+                    };
+                    var proc = Process.Start(psi);
+                    proc?.WaitForExit(20000);
+                    return true;
                 }, cancellationToken);
-
-                var remaining = procs.Where(p =>
-                {
-                    try { return !p.HasExited; } catch { return false; }
-                }).ToList();
-
-                if (remaining.Count > 0 && !AdminElevationService.IsRunningAsAdministrator())
-                {
-                    foreach (var p in remaining)
-                    {
-                        if (cancellationToken.IsCancellationRequested) break;
-                        try
-                        {
-                            var psi = new ProcessStartInfo
-                            {
-                                FileName = "cmd.exe",
-                                Arguments = $"/c taskkill /PID {p.Id} /F",
-                                UseShellExecute = true,
-                                Verb = "runas",
-                                WindowStyle = ProcessWindowStyle.Hidden,
-                            };
-                            var proc = Process.Start(psi);
-                            proc.WaitForExit(5000);
-                        }
-                        catch { }
-                    }
-                }
             }
-            catch { }
-
-            return procs.Count;
+            catch
+            {
+                return false;
+            }
         }
-
-        public Task<int> UnlockLocksForDirectoryAsync(string targetDirectory, CancellationToken cancellationToken = default)
+        
+        private static string TryGetMainModulePath(Process p)
         {
-            if (string.IsNullOrWhiteSpace(targetDirectory)) return Task.FromResult(0);
-            return UnlockLocksForTargetsAsync(new[] { targetDirectory }, cancellationToken);
+            try
+            {
+                return p?.MainModule?.FileName;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private static List<Process> GetLockingProcesses(List<string> files)
