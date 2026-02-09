@@ -42,6 +42,7 @@
                                  EnableAutoTemplateSelection="True"
                                  ItemsSource="{Binding VisibilityItems}"/>
                     <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+                        <button:CButton x:Name="ToggleAllVisibilityButton" Content="全选" Width="100" Margin="0,0,8,0" Click="ToggleAllVisibilityButton_Click"/>
                         <button:CButton Content="确定" Width="80" Click="ConfirmVisibilityButton_Click"/>
                         <button:CButton Content="取消" Width="80" Margin="8,0,0,0" Click="CancelVisibilityButton_Click"/>
                     </StackPanel>

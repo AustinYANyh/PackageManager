@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Linq;
 using System.Runtime.CompilerServices;
@@ -32,6 +33,8 @@ public partial class PackageConfigPage : Page, INotifyPropertyChanged, ICentralP
         LoadData();
         dataService.LoadMainWindowState();
         LoadVisibilityData();
+        VisibilityItems.CollectionChanged += VisibilityItems_CollectionChanged;
+        foreach (var item in VisibilityItems) { item.PropertyChanged += VisibilityItem_PropertyChanged; }
     }
 
     public event Action RequestExit;
@@ -164,14 +167,15 @@ public partial class PackageConfigPage : Page, INotifyPropertyChanged, ICentralP
     private void OpenVisibilityPanel_Click(object sender, RoutedEventArgs e)
     {
         VisibilityPanel.Visibility = Visibility.Visible;
-        // LoadVisibilityData();
+        LoadVisibilityData();
+        UpdateToggleButtonText();
     }
 
     private void LoadVisibilityData()
     {
         try
         {
-            
+            foreach (var old in VisibilityItems) { old.PropertyChanged -= VisibilityItem_PropertyChanged; }
             VisibilityItems.Clear();
             var names = dataService.GetBuiltInPackageConfigs().Select(i => i.ProductName)
                                    .Concat(dataService.LoadPackageConfigs().Select(i => i.ProductName))
@@ -187,6 +191,7 @@ public partial class PackageConfigPage : Page, INotifyPropertyChanged, ICentralP
                 }
                 VisibilityItems.Add(new VisibilityItem { ProductName = name, IsVisible = flag });
             }
+            UpdateToggleButtonText();
         }
         catch (Exception ex)
         {
@@ -220,5 +225,50 @@ public partial class PackageConfigPage : Page, INotifyPropertyChanged, ICentralP
     private void CancelVisibilityButton_Click(object sender, RoutedEventArgs e)
     {
         VisibilityPanel.Visibility = Visibility.Collapsed;
+        LoadVisibilityData();
+    }
+
+    private void ToggleAllVisibilityButton_Click(object sender, RoutedEventArgs e)
+    {
+        var allSelected = VisibilityItems.Count > 0 && VisibilityItems.All(i => i.IsVisible);
+        foreach (var item in VisibilityItems)
+        {
+            item.IsVisible = !allSelected;
+        }
+        UpdateToggleButtonText();
+    }
+
+    private void UpdateToggleButtonText()
+    {
+        if (ToggleAllVisibilityButton == null) return;
+        var allSelected = VisibilityItems.Count > 0 && VisibilityItems.All(i => i.IsVisible);
+        ToggleAllVisibilityButton.Content = allSelected ? "全不选" : "全选";
+    }
+
+    private void VisibilityItems_CollectionChanged(object sender, NotifyCollectionChangedEventArgs e)
+    {
+        if (e.NewItems != null)
+        {
+            foreach (VisibilityItem item in e.NewItems)
+            {
+                item.PropertyChanged += VisibilityItem_PropertyChanged;
+            }
+        }
+        if (e.OldItems != null)
+        {
+            foreach (VisibilityItem item in e.OldItems)
+            {
+                item.PropertyChanged -= VisibilityItem_PropertyChanged;
+            }
+        }
+        UpdateToggleButtonText();
+    }
+
+    private void VisibilityItem_PropertyChanged(object sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(VisibilityItem.IsVisible))
+        {
+            UpdateToggleButtonText();
+        }
     }
 }
