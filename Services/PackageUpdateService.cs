@@ -6,6 +6,8 @@ using System.IO.Compression;
 using System.Linq;
 using System.Net;
 using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -58,6 +60,7 @@ namespace PackageManager.Services
                     packageInfo.StatusText = "正在以管理员权限执行更新...";
                     progressCallback?.Invoke(0, "请求管理员权限");
                     var elevatedOk = await AdminElevationService.RunElevatedUpdateAsync(packageInfo, forceUnlock);
+                    return elevatedOk;
                 }
                 // 记录开始更新
                 LoggingService.LogInfo($"开始更新包：{packageInfo?.ProductName ?? "<unknown>"} | Url={packageInfo?.DownloadUrl} | Local={targetLocalPath}");
@@ -105,7 +108,7 @@ namespace PackageManager.Services
                                                               downloadLogGate = (int)progress;
                                                           }
                                                       },
-                                                      cancellationToken);
+                                                      cancellationToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
@@ -137,20 +140,25 @@ namespace PackageManager.Services
                     LoggingService.LogInfo($"下载完成：{tempFilePath} | 大小={size} bytes");
                     ToastService.ShowToast("下载完成", $"{packageInfo?.ProductName ?? "包"} 已下载完成", "Success");
                 }
-                catch
+                catch (Exception ex)
                 {
+                    LoggingService.LogWarning($"下载完成后信息记录失败：{tempFilePath} | {ex.Message}");
                 }
 
                 // 解压文件
                 packageInfo.Status = PackageStatus.Extracting;
-                packageInfo.StatusText = "正在解压...";
-                progressCallback?.Invoke(80, "开始解压");
-                LoggingService.LogInfo($"开始解压：{tempFilePath} -> {targetLocalPath}");
-                await TryUnlockProcessesAsync(targetLocalPath, forceUnlock, progressCallback, cancellationToken);
+                
+                packageInfo.StatusText = "正在检测占用进程...";
+                progressCallback?.Invoke(80, "检测占用进程");
+                LoggingService.LogInfo($"检测占用 {targetLocalPath}内文件的占用进程");
+                await TryUnlockProcessesAsync(targetLocalPath, forceUnlock, progressCallback, cancellationToken).ConfigureAwait(false);
 
                 var extractLogGate = 0; // 每25%记录一次
                 try
                 {
+                    packageInfo.StatusText = "正在解压...";
+                    progressCallback?.Invoke(80, "开始解压");
+                    LoggingService.LogInfo($"开始解压：{tempFilePath} -> {targetLocalPath}");
                     success = await ExtractPackageAsync(tempFilePath,
                                                         targetLocalPath,
                                                         progress =>
@@ -164,7 +172,7 @@ namespace PackageManager.Services
                                                                 extractLogGate = (int)progress;
                                                             }
                                                         },
-                                                        cancellationToken);
+                                                        cancellationToken).ConfigureAwait(false);
                 }
                 catch (OperationCanceledException)
                 {
@@ -255,7 +263,7 @@ namespace PackageManager.Services
                                                           packageInfo.Progress = progress;
                                                           progressCallback?.Invoke(progress, $"下载中... {progress:F1}%");
                                                       },
-                                                      cancellationToken);
+                                                      cancellationToken).ConfigureAwait(false);
 
                 if (!success)
                 {
@@ -279,8 +287,9 @@ namespace PackageManager.Services
                     LoggingService.LogInfo($"仅下载完成：{localZipPath} | 大小={size} bytes");
                     ToastService.ShowToast("下载完成", $"{Path.GetFileName(localZipPath)} 已保存", "Success");
                 }
-                catch
+                catch (Exception ex)
                 {
+                    LoggingService.LogWarning($"仅下载完成后信息记录失败：{localZipPath} | {ex.Message}");
                 }
 
                 packageInfo.Status = PackageStatus.Completed;
@@ -307,7 +316,7 @@ namespace PackageManager.Services
         }
 
         /// <summary>
-        /// 安全删除目录：去除只读属性，逐项删除，失败时返回false
+        /// 安全删除目录：解除只读/隐藏/系统属性，尽可能修复ACL，重试并使用回退手段删除
         /// </summary>
         private static bool TrySafeDeleteDirectory(string path)
         {
@@ -318,13 +327,29 @@ namespace PackageManager.Services
                     try
                     {
                         var attr = File.GetAttributes(file);
-                        if ((attr & FileAttributes.ReadOnly) == FileAttributes.ReadOnly)
+                        var newAttr = attr & ~(FileAttributes.ReadOnly | FileAttributes.Hidden | FileAttributes.System);
+                        if (newAttr != attr)
                         {
-                            File.SetAttributes(file, attr & ~FileAttributes.ReadOnly);
+                            File.SetAttributes(file, newAttr);
+                        }
+                        try
+                        {
+                            var user = WindowsIdentity.GetCurrent()?.User;
+                            if (user != null)
+                            {
+                                var sec = File.GetAccessControl(file);
+                                sec.AddAccessRule(new FileSystemAccessRule(user, FileSystemRights.FullControl, AccessControlType.Allow));
+                                File.SetAccessControl(file, sec);
+                            }
+                        }
+                        catch (Exception aclEx)
+                        {
+                            LoggingService.LogWarning($"文件ACL调整失败：{file} | {aclEx.Message}");
                         }
                     }
-                    catch
+                    catch (Exception ex)
                     {
+                        LoggingService.LogWarning($"文件属性处理失败：{file} | {ex.Message}");
                     }
                 }
 
@@ -333,29 +358,85 @@ namespace PackageManager.Services
                     try
                     {
                         var attr = File.GetAttributes(dir);
-                        if ((attr & FileAttributes.ReadOnly) == FileAttributes.ReadOnly)
+                        var newAttr = attr & ~(FileAttributes.ReadOnly | FileAttributes.Hidden | FileAttributes.System);
+                        if (newAttr != attr)
                         {
-                            File.SetAttributes(dir, attr & ~FileAttributes.ReadOnly);
+                            File.SetAttributes(dir, newAttr);
+                        }
+                        try
+                        {
+                            var user = WindowsIdentity.GetCurrent()?.User;
+                            if (user != null)
+                            {
+                                var sec = Directory.GetAccessControl(dir);
+                                sec.AddAccessRule(new FileSystemAccessRule(
+                                    user,
+                                    FileSystemRights.FullControl,
+                                    InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+                                    PropagationFlags.None,
+                                    AccessControlType.Allow));
+                                Directory.SetAccessControl(dir, sec);
+                            }
+                        }
+                        catch (Exception aclEx)
+                        {
+                            LoggingService.LogWarning($"目录ACL调整失败：{dir} | {aclEx.Message}");
                         }
                     }
-                    catch
+                    catch (Exception ex)
                     {
+                        LoggingService.LogWarning($"目录属性处理失败：{dir} | {ex.Message}");
+                    }
+                }
+
+                for (var attempt = 1; attempt <= 3; attempt++)
+                {
+                    try
+                    {
+                        GC.Collect();
+                        GC.WaitForPendingFinalizers();
+                        Directory.Delete(path, true);
+                        return true;
+                    }
+                    catch (UnauthorizedAccessException uae)
+                    {
+                        LoggingService.LogWarning($"删除目录权限不足(第{attempt}次)：{path} | {uae.Message}");
+                        Thread.Sleep(100);
+                    }
+                    catch (IOException ioe)
+                    {
+                        LoggingService.LogWarning($"删除目录IO异常(第{attempt}次)：{path} | {ioe.Message}");
+                        Thread.Sleep(150);
+                    }
+                    catch (Exception ex)
+                    {
+                        LoggingService.LogWarning($"删除目录异常(第{attempt}次)：{path} | {ex.Message}");
+                        Thread.Sleep(150);
                     }
                 }
 
                 try
                 {
-                    Directory.Delete(path, true);
-                    return true;
-                }
-                catch (UnauthorizedAccessException uae)
-                {
-                    LoggingService.LogWarning($"删除目录权限不足：{path} | {uae.Message}");
+                    var psi = new ProcessStartInfo
+                    {
+                        FileName = "cmd.exe",
+                        Arguments = "/c rd /s /q \"" + path + "\"",
+                        UseShellExecute = true,
+                        WindowStyle = ProcessWindowStyle.Hidden,
+                        Verb = AdminElevationService.IsRunningAsAdministrator() ? null : "runas"
+                    };
+                    var p = Process.Start(psi);
+                    p?.WaitForExit(20000);
+                    if (!Directory.Exists(path))
+                    {
+                        return true;
+                    }
+                    LoggingService.LogWarning($"命令回退删除失败：{path}");
                     return false;
                 }
-                catch (IOException ioe)
+                catch (Exception ex)
                 {
-                    LoggingService.LogWarning($"删除目录IO异常：{path} | {ioe.Message}");
+                    LoggingService.LogWarning($"命令回退删除异常：{path} | {ex.Message}");
                     return false;
                 }
             }
@@ -384,8 +465,9 @@ namespace PackageManager.Services
             {
                 return true;
             }
-            catch
+            catch (Exception ex)
             {
+                LoggingService.LogWarning($"检测文件锁定失败：{path} | {ex.Message}");
                 return false;
             }
         }
@@ -422,10 +504,14 @@ namespace PackageManager.Services
 
                     using (cancellationToken.Register(() =>
                     {
-                        try { client.CancelAsync(); } catch { }
+                        try { client.CancelAsync(); } catch (Exception ex) { LoggingService.LogWarning($"取消下载失败：{ex.Message}"); }
                     }))
                     {
-                        await client.DownloadFileTaskAsync(new Uri(ftpUrl), localPath);
+                        await Task.Run(async () => 
+                        {
+                            await client.DownloadFileTaskAsync(new Uri(ftpUrl), localPath).ConfigureAwait(false);
+                        }).ConfigureAwait(false);
+                        
                     }
                 }
 
@@ -434,8 +520,9 @@ namespace PackageManager.Services
                     var size = new FileInfo(localPath).Length;
                     LoggingService.LogInfo($"下载完成(内部)：{localPath} | 大小={size} bytes");
                 }
-                catch
+                catch (Exception ex)
                 {
+                    LoggingService.LogWarning($"下载完成后信息记录失败(内部)：{localPath} | {ex.Message}");
                 }
 
                 return true;
@@ -509,8 +596,9 @@ namespace PackageManager.Services
                                             File.SetAttributes(destinationPath, attr & ~FileAttributes.ReadOnly);
                                         }
                                     }
-                                    catch
+                                catch (Exception ex)
                                     {
+                                    LoggingService.LogWarning($"解除只读失败：{destinationPath} | {ex.Message}");
                                     }
                                 }
 
@@ -592,8 +680,9 @@ namespace PackageManager.Services
                                     {
                                         File.Delete(temp);
                                     }
-                                    catch
+                                    catch (Exception ex)
                                     {
+                                        LoggingService.LogWarning($"删除暂存文件失败：{temp} | {ex.Message}");
                                     }
                                 }
                             }
@@ -605,7 +694,7 @@ namespace PackageManager.Services
 
                         pendingRemain = pendingReplacements.Count(t => File.Exists(t.Item1));
                     }
-                }, cancellationToken);
+                }, cancellationToken).ConfigureAwait(false);
                 LoggingService.LogInfo($"解压完成：{zipFilePath} -> {extractPath}");
                 if (pendingRemain > 0)
                 {
@@ -639,21 +728,24 @@ namespace PackageManager.Services
                 {
                     return;
                 }
-                var files = new List<string>();
-                try
+                
+                var procs = await Task.Run(() =>
                 {
-                    if (Directory.Exists(targetDirectory))
+                    var filesLocal = new List<string>();
+                    try
                     {
-                        var exts = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".dll", ".exe", ".addin" };
-                        files = Directory.EnumerateFiles(targetDirectory, "*.*", SearchOption.AllDirectories)
-                                         .Where(p => exts.Contains(Path.GetExtension(p)))
-                                         .Take(1000)
-                                         .ToList();
+                        if (Directory.Exists(targetDirectory))
+                        {
+                            var exts = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".dll", ".exe", ".addin" };
+                            filesLocal = Directory.EnumerateFiles(targetDirectory, "*.*", SearchOption.AllDirectories)
+                                                  .Where(p => exts.Contains(Path.GetExtension(p)))
+                                                  .Take(1000)
+                                                  .ToList();
+                        }
                     }
-                }
-                catch { }
-
-                var procs = GetLockingProcesses(files);
+                    catch (Exception ex) { LoggingService.LogWarning($"列举待解锁文件失败：{targetDirectory} | {ex.Message}"); }
+                    return GetLockingProcesses(filesLocal);
+                }, cancellationToken).ConfigureAwait(false);
                 if (procs.Count == 0)
                 {
                     return;
@@ -672,8 +764,9 @@ namespace PackageManager.Services
                         var msg = "检测到下列进程可能占用更新文件：" + string.Join(", ", procs.Select(p => p.ProcessName).Distinct()) + "\n是否关闭以继续更新？";
                         proceed = MessageBox.Show(msg, "解锁占用", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
                     }
-                    catch
+                    catch (Exception ex)
                     {
+                        LoggingService.LogWarning($"显示解锁提示失败：{ex.Message}");
                         proceed = false;
                     }
                 }
@@ -685,15 +778,16 @@ namespace PackageManager.Services
 
                 var ids = procs.Select(x =>
                 {
-                    try { return x.Id; } catch { return 0; }
+                    try { return x.Id; } catch (Exception ex) { LoggingService.LogWarning($"读取进程ID失败：{ex.Message}"); return 0; }
                 }).Where(id => id > 0).Distinct().ToArray();
                 if (ids.Length > 0)
                 {
-                    await KillProcessesAsync(ids, cancellationToken);
+                    await KillProcessesAsync(ids, cancellationToken).ConfigureAwait(false);
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                LoggingService.LogWarning($"解锁占用进程失败：{targetDirectory} | {ex.Message}");
             }
         }
         
@@ -726,10 +820,10 @@ namespace PackageManager.Services
                             files.Add(t);
                         }
                     }
-                    catch { }
+                    catch (Exception ex) { LoggingService.LogWarning($"列举目标文件失败：{t} | {ex.Message}"); }
                 }
             }
-            catch { }
+            catch (Exception ex) { LoggingService.LogWarning($"聚合目标文件失败：{ex.Message}"); }
             var procs = GetLockingProcesses(files);
             var result = new List<LockingProcessInfo>();
             await Task.Run(() =>
@@ -751,9 +845,9 @@ namespace PackageManager.Services
                             result.Add(info);
                         }
                     }
-                    catch { }
+                    catch (Exception ex) { LoggingService.LogWarning($"读取进程信息失败：{ex.Message}"); }
                 }
-            }, cancellationToken);
+            }, cancellationToken).ConfigureAwait(false);
             return result;
         }
         
@@ -777,10 +871,11 @@ namespace PackageManager.Services
                     var proc = Process.Start(psi);
                     proc?.WaitForExit(20000);
                     return true;
-                }, cancellationToken);
+                }, cancellationToken).ConfigureAwait(false);
             }
-            catch
+            catch (Exception ex)
             {
+                LoggingService.LogWarning($"结束占用进程失败：{string.Join(",", list)} | {ex.Message}");
                 return false;
             }
         }
@@ -791,8 +886,9 @@ namespace PackageManager.Services
             {
                 return p?.MainModule?.FileName;
             }
-            catch
+            catch (Exception ex)
             {
+                LoggingService.LogWarning($"读取进程主模块路径失败：{ex.Message}");
                 return null;
             }
         }
@@ -827,7 +923,7 @@ namespace PackageManager.Services
                                 var p = Process.GetProcessById(pid);
                                 result.Add(p);
                             }
-                            catch { }
+                            catch (Exception ex) { LoggingService.LogWarning($"获取占用进程失败：{ex.Message}"); }
                         }
                     }
                 }

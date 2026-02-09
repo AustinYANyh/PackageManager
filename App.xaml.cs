@@ -127,11 +127,11 @@ namespace PackageManager
                     var info = new Models.PackageInfo
                     {
                         ProductName = cfg.ProductName,
-                        // DownloadUrl = cfg.DownloadUrl,
                         LocalPath = cfg.LocalPath,
                         Status = Models.PackageStatus.Downloading,
                         StatusText = "正在下载..."
                     };
+                    info.SetDownloadUrlOverride(cfg.DownloadUrl);
                     var svc = new Services.PackageUpdateService();
                     var ok = svc.UpdatePackageAsync(info, null, cfg.ForceUnlock).GetAwaiter().GetResult();
                     Environment.Exit(ok ? 0 : 1);

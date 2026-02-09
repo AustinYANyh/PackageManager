@@ -116,6 +116,7 @@ namespace PackageManager.Models
 
         private string finalizeFtpServerPath;
         private bool isFinalizing;
+        private string downloadUrlOverride;
 
         /// <summary>
         /// 更新请求事件
@@ -774,6 +775,13 @@ namespace PackageManager.Models
 
             set => SetProperty(ref openPathCommand, value);
         }
+        
+        public void SetDownloadUrlOverride(string url)
+        {
+            if (downloadUrlOverride == url) return;
+            downloadUrlOverride = url;
+            OnPropertyChanged(nameof(DownloadUrl));
+        }
 
         /// <summary>
         /// 完整的下载地址（FTP路径 + 版本 + 上传时间）
@@ -782,6 +790,10 @@ namespace PackageManager.Models
         {
             get
             {
+                if (!string.IsNullOrEmpty(downloadUrlOverride))
+                {
+                    return downloadUrlOverride;
+                }
                 if (string.IsNullOrEmpty(FtpServerPath) ||
                     string.IsNullOrEmpty(Version) ||
                     string.IsNullOrEmpty(UploadPackageName))
@@ -789,7 +801,6 @@ namespace PackageManager.Models
                     return string.Empty;
                 }
 
-                // 组合完整的下载地址
                 var basePath = FtpServerPath.TrimEnd('/');
                 return $"{basePath}/{Version}/{UploadPackageName}";
             }
