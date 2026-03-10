@@ -1,0 +1,88 @@
+<Page x:Class="PackageManager.Views.PluginManagementPage"
+      xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:C="clr-namespace:CustomControlLibrary.CustomControl.Controls.DataGrid;assembly=CustomControlLibrary"
+      xmlns:button="clr-namespace:CustomControlLibrary.CustomControl.Controls.Button;assembly=CustomControlLibrary"
+      xmlns:controls="clr-namespace:CustomControlLibrary.CustomControl.Controls;assembly=CustomControlLibrary"
+      xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+      xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+      mc:Ignorable="d">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,12">
+            <TextBlock Text="插件管理" FontSize="20" FontWeight="Bold"/>
+            <TextBlock Text="按 Revit 可执行版本查看和控制 Addin 插件启用状态" Foreground="Gray" Margin="0,6,0,0"/>
+        </StackPanel>
+
+        <Border Grid.Row="1" Padding="12" BorderThickness="1" BorderBrush="#1F000000" Background="#06000000">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="320"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <controls:CTextBlock Grid.Row="0" Grid.Column="0" Text="Addin目录" VerticalAlignment="Center"/>
+                <TextBlock Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="3" Text="{Binding AddinRootPathText}" Margin="12,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap"/>
+
+                <controls:CTextBlock Grid.Row="1" Grid.Column="0" Text="可执行版本" VerticalAlignment="Center" Margin="0,10,0,0"/>
+                <controls:CComboBox x:Name="RevitVersionCombo"
+                                    Grid.Row="1"
+                                    Grid.Column="1"
+                                    Margin="12,10,0,0"
+                                    Width="280"
+                                    ItemsSource="{Binding RevitExecutableVersions}"
+                                    DisplayMemberPath="DisPlayName"
+                                    SelectedItem="{Binding SelectedRevitExecutableVersion}"
+                                    SelectionChanged="RevitVersionCombo_SelectionChanged"/>
+                <button:CButton Grid.Row="1" Grid.Column="2" Content="刷新" Width="100" Margin="12,10,0,0" Click="RefreshButton_Click"/>
+                <button:CButton Grid.Row="1" Grid.Column="3" Content="打开目录" Width="100" Margin="12,10,0,0" Click="OpenVersionFolderButton_Click"/>
+
+                <TextBlock Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="4" Text="{Binding CurrentVersionFolderText}" Margin="0,10,0,0" Foreground="Gray" TextWrapping="Wrap"/>
+            </Grid>
+        </Border>
+
+        <C:CDataGrid x:Name="PluginGrid"
+                     Grid.Row="2"
+                     Margin="0,12,0,12"
+                     ItemsSource="{Binding Plugins}"
+                     TextAlignment="Left"
+                     AutoGenerateColumns="False"
+                     CanUserAddRows="False"
+                     CanUserDeleteRows="False"
+                     HeadersVisibility="Column"
+                     RowHeight="36">
+            <C:CDataGrid.Columns>
+                <DataGridTemplateColumn Header="启用" Width="80">
+                    <DataGridTemplateColumn.CellTemplate>
+                        <DataTemplate>
+                            <CheckBox HorizontalAlignment="Center"
+                                      VerticalAlignment="Center"
+                                      IsChecked="{Binding IsEnabled, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                      Click="PluginEnabledCheckBox_Click"/>
+                        </DataTemplate>
+                    </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <DataGridTextColumn Header="插件名称" Binding="{Binding Name}" Width="2*" IsReadOnly="True"/>
+                <DataGridTextColumn Header="文件名" Binding="{Binding FileName}" Width="2*" IsReadOnly="True"/>
+                <DataGridTextColumn Header="后缀" Binding="{Binding Extension}" Width="120" IsReadOnly="True"/>
+            </C:CDataGrid.Columns>
+        </C:CDataGrid>
+
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right">
+            <button:CButton Content="返回" Width="100" Click="CloseButton_Click"/>
+        </StackPanel>
+    </Grid>
+</Page>

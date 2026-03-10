@@ -100,6 +100,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         OpenCommonLinksPageCommand = new RelayCommand(OpenCommonLinksPage);
         OpenChangelogPageCommand = new RelayCommand(() => { OpenChangelogPageButton_Click(this, new RoutedEventArgs()); });
         OpenKanbanStatsPageCommand = new RelayCommand(() => { OpenKanbanStatsPageButton_Click(this, new RoutedEventArgs()); });
+        OpenPluginManagerPageCommand = new RelayCommand(() => { OpenPluginManagerPageButton_Click(this, new RoutedEventArgs()); });
     }
 
     public event PropertyChangedEventHandler PropertyChanged;
@@ -147,8 +148,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     public ICommand OpenCommonLinksPageCommand { get; }
 
     public ICommand OpenChangelogPageCommand { get; }
-    
+
     public ICommand OpenKanbanStatsPageCommand { get; }
+
+    public ICommand OpenPluginManagerPageCommand { get; }
 
     public ObservableCollection<PackageInfo> Packages
     {
@@ -421,6 +424,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                        : (page is PackageConfigPage) ? "产品管理"
                        : (page is SettingsPage) ? "软件设置"
                        : (page is KanbanStatsPage) ? "看板统计"
+                       : (page is PluginManagementPage) ? "插件管理"
                        : null;
             if (!string.IsNullOrEmpty(name))
             {
@@ -1463,6 +1467,25 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             LoggingService.LogError(ex, "打开看板统计页面失败");
             MessageBox.Show($"打开看板统计页面失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void OpenPluginManagerPageButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var page = new PluginManagementPage(_dataPersistenceService, _applicationFinderService);
+            if (page is ICentralPage icp)
+            {
+                icp.RequestExit += () => NavigateHome();
+            }
+
+            NavigateTo(page);
+        }
+        catch (Exception ex)
+        {
+            LoggingService.LogError(ex, "打开插件管理页面失败");
+            MessageBox.Show($"打开插件管理页面失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 

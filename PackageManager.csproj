@@ -184,6 +184,7 @@
           <SubType>Code</SubType>
         </Compile>
         <Compile Include="Views\PackageConfigPage.xaml.cs" />
+        <Compile Include="Views\PluginManagementPage.xaml.cs" />
         <Compile Include="Views\ProductLogsPage.xaml.cs" />
         <Compile Include="Views\SettingsPage.xaml.cs" />
         <Compile Include="Views\Controls\WorkItemCard.xaml.cs">
@@ -233,6 +234,7 @@
         <Compile Include="Models\PackageInfo.cs" />
         <Compile Include="Models\LogEntry.cs" />
         <Compile Include="Models\LocalPathInfo.cs" />
+        <Compile Include="Models\PluginAddinInfo.cs" />
         <Compile Include="Services\ApplicationFinderService.cs" />
         <Compile Include="Services\DataPersistenceService.cs" />
         <Compile Include="Services\FtpService.cs" />
@@ -253,6 +255,7 @@
           <SubType>Designer</SubType>
         </Page>
         <Page Include="Views\PackageConfigPage.xaml" />
+        <Page Include="Views\PluginManagementPage.xaml" />
         <Page Include="Views\ProductLogsPage.xaml" />
         <Page Include="Views\SettingsPage.xaml" />
         <Page Include="Views\Controls\WorkItemCard.xaml" />
