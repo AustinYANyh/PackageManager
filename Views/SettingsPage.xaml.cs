@@ -1,6 +1,7 @@
 using System;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -164,6 +165,25 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
         catch (Exception ex)
         {
             MessageBox.Show($"选择文件夹失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+    
+    private void OpenAddinButtonOnClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (!string.IsNullOrEmpty(AddinPath))
+            {
+                Process.Start(addinPath);
+            }
+            else
+            {
+                MessageBox.Show($"请先设置Addin文件夹", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"打开Addin文件夹: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 

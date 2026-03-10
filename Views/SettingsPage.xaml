@@ -34,6 +34,7 @@
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
 
                             <TextBox x:Name="AddinPathTextBox" Grid.Column="0" Height="30"
@@ -41,6 +42,8 @@
                                      Margin="0,0,10,0" Padding="5"/>
                             <button:CButton x:Name="BrowseButton" Grid.Column="1" Content="浏览..."  Height="30"
                                     Padding="10,5" Click="BrowseButton_Click"/>
+                            <button:CButton x:Name="OpenAddinButton" Grid.Column="2" Content="打开目录"  Height="30"
+                                            Padding="10,5" Click="OpenAddinButtonOnClick"/>
                         </Grid>
 
                         <TextBlock Text="默认路径：C:\\ProgramData\\Autodesk\\Revit\\Addins" 
