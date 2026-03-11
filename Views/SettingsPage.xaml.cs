@@ -27,6 +27,8 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
 
     private string appVersionText;
 
+    private string productLogLevel;
+
     public SettingsPage(DataPersistenceService dataPersistenceService)
     {
         InitializeComponent();
@@ -61,6 +63,13 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
         get => programEntryWithG;
 
         set => SetProperty(ref programEntryWithG, value);
+    }
+
+    public string ProductLogLevel
+    {
+        get => productLogLevel;
+
+        set => SetProperty(ref productLogLevel, value);
     }
 
     public bool FilterLogDirectories
@@ -127,6 +136,7 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
             UpdateServerUrl = settings?.UpdateServerUrl ?? string.Empty;
             FilterLogDirectories = settings?.FilterLogDirectories ?? true;
             DataLocation = dataPersistenceService.GetDataFolderPath();
+            ProductLogLevel = settings?.ProductLogLevel ?? "ERROR";
 
             LogTxtReader = settings?.LogTxtReader ?? "LogViewPro";
             LogTxtReaders.Add("LogViewPro");
@@ -282,6 +292,7 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
                 UpdateServerUrl = string.IsNullOrWhiteSpace(UpdateServerUrl) ? null : UpdateServerUrl.Trim(),
                 FilterLogDirectories = FilterLogDirectories,
                 LogTxtReader = LogTxtReader,
+                ProductLogLevel = ProductLogLevel,
             };
 
             dataPersistenceService.SaveSettings(settings);
