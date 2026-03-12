@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Windows.Input;
 using CustomControlLibrary.CustomControl.Attribute.DataGrid;
+using PackageManager.Services;
 
 namespace PackageManager.Models
 {
@@ -42,21 +43,10 @@ namespace PackageManager.Models
 
         private void ExecuteBrowse()
         {
-            // 使用WPF的Microsoft.Win32.OpenFileDialog选择文件夹
-            var dialog = new Microsoft.Win32.OpenFileDialog
+            var selectedPath = FolderPickerService.PickFolder("选择本地包所在的文件夹", LocalPath);
+            if (!string.IsNullOrWhiteSpace(selectedPath))
             {
-                Title = "选择本地包所在的文件夹",
-                CheckFileExists = false,
-                CheckPathExists = true,
-                FileName = "选择文件夹",
-                Filter = "文件夹|*.none",
-            };
-
-            var result = dialog.ShowDialog();
-            if (result == true)
-            {
-                // 获取选择的文件夹路径（去掉FileName部分）
-                LocalPath = System.IO.Path.GetDirectoryName(dialog.FileName);
+                LocalPath = selectedPath;
             }
         }
 

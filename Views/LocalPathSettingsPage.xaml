@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:C="clr-namespace:CustomControlLibrary.CustomControl.Controls.DataGrid;assembly=CustomControlLibrary"
         xmlns:button="clr-namespace:CustomControlLibrary.CustomControl.Controls.Button;assembly=CustomControlLibrary"
+        xmlns:converters="clr-namespace:PackageManager.Converters"
         xmlns:controls="clr-namespace:CustomControlLibrary.CustomControl.Controls;assembly=CustomControlLibrary"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
@@ -10,6 +11,7 @@
         Loaded="UserControl_Loaded">
     <Grid Margin="20">
         <Grid.Resources>
+            <converters:LocalPathGroupSummaryConverter x:Key="LocalPathGroupSummaryConverter" />
             <CollectionViewSource x:Key="LocalPathItemsView" Source="{Binding LocalPathItems}">
                 <CollectionViewSource.GroupDescriptions>
                     <PropertyGroupDescription PropertyName="ProductName" />
@@ -25,32 +27,90 @@
         <!-- 统一面包屑 + 页标题 -->
         <StackPanel Grid.Row="0" Margin="0,0,0,8">
             <TextBlock Text="为每个产品设置本地包路径" FontSize="18" FontWeight="Bold"/>
+            <TextBlock Text="支持按产品统一设置全部版本路径；如有个别版本需要特殊目录，再展开分组逐项调整。"
+                       Margin="0,6,0,0"
+                       Foreground="#6B6B6B"
+                       FontSize="12"
+                       TextWrapping="Wrap"/>
         </StackPanel>
 
         <C:CDataGrid x:Name="LocalPathGrid" Grid.Row="1"
-                     TextAlignment="Left"
-                     EnableAutoTemplateSelection="True"
-                     ItemsSource="{Binding Source={StaticResource LocalPathItemsView}}"
-                     Margin="0,12,0,12">
+                      TextAlignment="Left"
+                      EnableAutoTemplateSelection="True"
+                      ItemsSource="{Binding Source={StaticResource LocalPathItemsView}}"
+                      SizeChanged="LocalPathGrid_SizeChanged"
+                      Margin="0,12,0,12">
             <C:CDataGrid.GroupStyle>
                 <GroupStyle HidesIfEmpty="True">
                     <GroupStyle.ContainerStyle>
                         <Style TargetType="{x:Type GroupItem}">
+                            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+                            <Setter Property="HorizontalAlignment" Value="Stretch"></Setter>
+                            <Setter Property="Margin" Value="0,0,0,10" />
                             <Setter Property="Template">
                                 <Setter.Value>
                                     <ControlTemplate TargetType="{x:Type GroupItem}">
-                                        <Expander IsExpanded="False">
-                                            <Expander.Header>
-                                                <StackPanel Orientation="Horizontal">
-                                                    <controls:CTextBlock Text="{Binding Name}"
-                                                               FontSize="16"
-                                                               FontWeight="SemiBold"/>
-                                                    <controls:CTextBlock Text="{Binding ItemCount, StringFormat=（{0} 个版本）}"
-                                                               Margin="8,0,0,0"
-                                                               Foreground="#6B6B6B"/>
-                                                </StackPanel>
-                                            </Expander.Header>
-                                            <ItemsPresenter Margin="18,4,0,8"/>
+                                        <Expander IsExpanded="False"
+                                                  HorizontalContentAlignment="Stretch"
+                                                  HorizontalAlignment="Stretch"
+                                                  Background="Transparent"
+                                                  BorderThickness="0">
+                                             <Expander.Header>
+                                                <Border Padding="12,10"
+                                                        Tag="GroupHeaderBorder"
+                                                        Background="#FAFAFA"
+                                                        BorderBrush="#E6E6E6"
+                                                        BorderThickness="1"
+                                                        CornerRadius="4">
+                                                    <DockPanel LastChildFill="True">
+                                                        <Grid DockPanel.Dock="Right"
+                                                              VerticalAlignment="Center"
+                                                              HorizontalAlignment="Right"
+                                                              Margin="12,0,0,0">
+                                                            <Grid.ColumnDefinitions>
+                                                                <ColumnDefinition Width="120" />
+                                                                <ColumnDefinition Width="12" />
+                                                                <ColumnDefinition Width="100" />
+                                                            </Grid.ColumnDefinitions>
+
+                                                            <button:CButton Grid.Column="0"
+                                                                            Content="统一设置路径..."
+                                                                            Height="30"
+                                                                            Tag="{Binding Name}"
+                                                                            Click="ApplyGroupPathButton_Click"/>
+                                                            <button:CButton Grid.Column="2"
+                                                                            Content="清空本组"
+                                                                            Height="30"
+                                                                            Tag="{Binding Name}"
+                                                                            Click="ClearGroupPathButton_Click"/>
+                                                        </Grid>
+
+                                                        <StackPanel VerticalAlignment="Center">
+                                                            <StackPanel Orientation="Horizontal"
+                                                                        VerticalAlignment="Center">
+                                                                <controls:CTextBlock Text="{Binding Name}"
+                                                                                     FontSize="15"
+                                                                                     FontWeight="SemiBold"
+                                                                                     VerticalAlignment="Center"
+                                                                                     HorizontalAlignment="Left"/>
+                                                                <controls:CTextBlock Text="{Binding ItemCount, StringFormat=（{0} 个版本）}"
+                                                                                     Margin="8,0,0,0"
+                                                                                     Foreground="#6B6B6B"
+                                                                                     FontSize="12"
+                                                                                     VerticalAlignment="Center"
+                                                                                     HorizontalAlignment="Left"/>
+                                                            </StackPanel>
+                                                            <controls:CTextBlock Text="{Binding Items, Converter={StaticResource LocalPathGroupSummaryConverter}}"
+                                                                                 Margin="0,6,0,0"
+                                                                                 Foreground="#808080"
+                                                                                 FontSize="12"
+                                                                                 VerticalAlignment="Center"
+                                                                                 HorizontalAlignment="Left"/>
+                                                        </StackPanel>
+                                                    </DockPanel>
+                                                </Border>
+                                             </Expander.Header>
+                                            <ItemsPresenter Margin="18,8,0,8"/>
                                         </Expander>
                                     </ControlTemplate>
                                 </Setter.Value>
