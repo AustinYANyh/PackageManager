@@ -77,6 +77,50 @@
                     </StackPanel>
                 </GroupBox>
 
+                <GroupBox Header="Jenkins 编译" Margin="0,0,0,20">
+                    <StackPanel Margin="10">
+                        <TextBlock Text="用于自动触发 Jenkins 编译" FontWeight="Bold" Margin="0,0,0,5"/>
+                        <TextBlock Text="软件会使用用户名和密码自动获取 crumb 并发起 POST 编译请求。" 
+                                   Foreground="Gray" FontSize="12" Margin="0,0,0,10"/>
+
+                        <Grid Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="100"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="Jenkins地址" VerticalAlignment="Center"/>
+                            <TextBox Grid.Column="1" Text="{Binding JenkinsBaseUrl, UpdateSourceTrigger=PropertyChanged}" Padding="5"/>
+                        </Grid>
+
+                        <Grid Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="100"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="视图名称" VerticalAlignment="Center"/>
+                            <TextBox Grid.Column="1" Text="{Binding JenkinsViewName, UpdateSourceTrigger=PropertyChanged}" Padding="5"/>
+                        </Grid>
+
+                        <Grid Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="100"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="用户名" VerticalAlignment="Center"/>
+                            <TextBox Grid.Column="1" Text="{Binding JenkinsUsername, UpdateSourceTrigger=PropertyChanged}" Padding="5"/>
+                        </Grid>
+
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="100"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="密码" VerticalAlignment="Center"/>
+                            <PasswordBox x:Name="JenkinsPasswordBox" Grid.Column="1" Padding="5"/>
+                        </Grid>
+                    </StackPanel>
+                </GroupBox>
+
                 <GroupBox Header="目录过滤" Margin="0,0,0,20">
                     <StackPanel Margin="10">
                         <CheckBox Content="拉取版本目录时过滤含 log 的目录" IsChecked="{Binding FilterLogDirectories, UpdateSourceTrigger=PropertyChanged}"/>

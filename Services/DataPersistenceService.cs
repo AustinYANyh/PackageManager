@@ -694,5 +694,13 @@ namespace PackageManager.Services
         /// 产品日志页的日志等级选择
         /// </summary>
         public string ProductLogLevel { get; set; } = "ERROR";
+
+        public string JenkinsBaseUrl { get; set; } = "http://192.168.0.245:8080";
+
+        public string JenkinsViewName { get; set; } = "机电项目组";
+
+        public string JenkinsUsername { get; set; } = null;
+
+        public string JenkinsPasswordProtected { get; set; } = null;
     }
 }

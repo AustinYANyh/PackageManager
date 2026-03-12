@@ -148,6 +148,11 @@
                                                         Width="96"
                                                         Margin="0,0,8,8"
                                                         IsEnabled="{Binding LatestActivePackage.ConfigOpsEnabled}" />
+                                        <button:CButton Content="DNS"
+                                                        Width="110"
+                                                        Margin="0,0,8,8"
+                                                        Click="OpenDnsSettingsWindowButton_Click"
+                                                        IsEnabled="{Binding LatestActivePackage.IsTeamworkMasterDevelop}"/>
                                     </WrapPanel>
                                 </StackPanel>
                             </Border>
@@ -166,11 +171,11 @@
                                                         Width="110"
                                                         Margin="0,0,8,8"
                                                         Click="OpenCsvCryptoWindowButton_Click"/>
-                                        <button:CButton Content="DNS"
+                                        <button:CButton Content="Jenkins编译"
                                                         Width="110"
                                                         Margin="0,0,8,8"
-                                                        Click="OpenDnsSettingsWindowButton_Click"
-                                                        IsEnabled="{Binding LatestActivePackage.IsTeamworkMasterDevelop}"/>
+                                                        Click="TriggerJenkinsBuildButton_Click"
+                                                        IsEnabled="{Binding LatestActivePackage.IsEnabled}" />
                                         </StackPanel>
                                         <StackPanel Orientation="Horizontal">
                                         <button:CButton Content="解除占用"

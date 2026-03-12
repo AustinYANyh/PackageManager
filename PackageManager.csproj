@@ -48,6 +48,7 @@
         <Reference Include="System.Core"/>
         <Reference Include="System.Data"/>
         <Reference Include="System.Configuration"/>
+        <Reference Include="System.Security"/>
         <Reference Include="System.Windows.Forms"/>
         <Reference Include="System.Xml"/>
         <Reference Include="System.Xaml">
@@ -236,9 +237,11 @@
         <Compile Include="Models\LocalPathInfo.cs" />
         <Compile Include="Models\PluginAddinInfo.cs" />
         <Compile Include="Services\ApplicationFinderService.cs" />
+        <Compile Include="Services\CredentialProtectionService.cs" />
         <Compile Include="Services\DataPersistenceService.cs" />
         <Compile Include="Services\FolderPickerService.cs" />
         <Compile Include="Services\FtpService.cs" />
+        <Compile Include="Services\JenkinsBuildService.cs" />
         <Compile Include="Services\PackageUpdateService.cs" />
         <Compile Include="Converters\StatusConverters.cs" />
         <Compile Include="Converters\LocalPathGroupSummaryConverter.cs" />

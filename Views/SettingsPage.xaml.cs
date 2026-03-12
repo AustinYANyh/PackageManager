@@ -29,6 +29,12 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
 
     private string productLogLevel;
 
+    private string jenkinsBaseUrl;
+
+    private string jenkinsViewName;
+
+    private string jenkinsUsername;
+
     public SettingsPage(DataPersistenceService dataPersistenceService)
     {
         InitializeComponent();
@@ -70,6 +76,27 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
         get => productLogLevel;
 
         set => SetProperty(ref productLogLevel, value);
+    }
+
+    public string JenkinsBaseUrl
+    {
+        get => jenkinsBaseUrl;
+
+        set => SetProperty(ref jenkinsBaseUrl, value);
+    }
+
+    public string JenkinsViewName
+    {
+        get => jenkinsViewName;
+
+        set => SetProperty(ref jenkinsViewName, value);
+    }
+
+    public string JenkinsUsername
+    {
+        get => jenkinsUsername;
+
+        set => SetProperty(ref jenkinsUsername, value);
     }
 
     public bool FilterLogDirectories
@@ -137,6 +164,10 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
             FilterLogDirectories = settings?.FilterLogDirectories ?? true;
             DataLocation = dataPersistenceService.GetDataFolderPath();
             ProductLogLevel = settings?.ProductLogLevel ?? "ERROR";
+            JenkinsBaseUrl = settings?.JenkinsBaseUrl ?? "http://192.168.0.245:8080";
+            JenkinsViewName = settings?.JenkinsViewName ?? "机电项目组";
+            JenkinsUsername = settings?.JenkinsUsername ?? string.Empty;
+            JenkinsPasswordBox.Password = CredentialProtectionService.Unprotect(settings?.JenkinsPasswordProtected);
 
             LogTxtReader = settings?.LogTxtReader ?? "LogViewPro";
             LogTxtReaders.Add("LogViewPro");
@@ -267,6 +298,10 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
             {
                 AddinPath = @"C:\\ProgramData\\Autodesk\\Revit\\Addins";
                 UpdateServerUrl = string.Empty;
+                JenkinsBaseUrl = "http://192.168.0.245:8080";
+                JenkinsViewName = "机电项目组";
+                JenkinsUsername = string.Empty;
+                JenkinsPasswordBox.Password = string.Empty;
             }
         }
         catch (Exception ex)
@@ -293,6 +328,10 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
                 FilterLogDirectories = FilterLogDirectories,
                 LogTxtReader = LogTxtReader,
                 ProductLogLevel = ProductLogLevel,
+                JenkinsBaseUrl = string.IsNullOrWhiteSpace(JenkinsBaseUrl) ? null : JenkinsBaseUrl.Trim(),
+                JenkinsViewName = string.IsNullOrWhiteSpace(JenkinsViewName) ? null : JenkinsViewName.Trim(),
+                JenkinsUsername = string.IsNullOrWhiteSpace(JenkinsUsername) ? null : JenkinsUsername.Trim(),
+                JenkinsPasswordProtected = CredentialProtectionService.Protect(JenkinsPasswordBox.Password),
             };
 
             dataPersistenceService.SaveSettings(settings);

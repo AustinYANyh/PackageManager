@@ -10,6 +10,8 @@ using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Diagnostics;
+using PackageManager.Models;
+using PackageManager.Services;
 
 namespace PackageManager.Views
 {
@@ -69,6 +71,44 @@ namespace PackageManager.Views
             catch
             {
                 MessageBox.Show("定版执行失败", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        private async void TriggerJenkinsBuildButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var main = Window.GetWindow(this) as MainWindow;
+                if (main == null)
+                {
+                    MessageBox.Show("未找到主窗口，无法触发 Jenkins 编译", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                    return;
+                }
+
+                var package = main.LatestActivePackage;
+                if (package == null)
+                {
+                    MessageBox.Show("请先选择需要编译的产品包", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+
+                package.StatusText = $"正在触发 {package.ProductName} 的 Jenkins 编译...";
+
+                var data = new DataPersistenceService();
+                var settings = data.LoadSettings();
+                var service = new JenkinsBuildService(settings);
+                var result = await service.TriggerBuildAsync(package);
+
+                package.StatusText = result.Message;
+
+                if (!result.IsSuccess)
+                {
+                    MessageBox.Show(result.Message, "Jenkins 编译", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"触发 Jenkins 编译失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
