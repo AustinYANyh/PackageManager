@@ -14,6 +14,8 @@ namespace PackageManager.Services
         private static readonly Regex CrumbFieldRegex = new Regex("\"crumbRequestField\"\\s*:\\s*\"(?<value>[^\"]+)\"", RegexOptions.Compiled);
         private static readonly Regex CrumbValueRegex = new Regex("\"crumb\"\\s*:\\s*\"(?<value>[^\"]+)\"", RegexOptions.Compiled);
         private static readonly Regex ExecutableRegex = new Regex("\"executable\"\\s*:\\s*\\{[^\\}]*\"number\"\\s*:\\s*(?<number>\\d+)[^\\}]*\"url\"\\s*:\\s*\"(?<url>[^\"]+)\"", RegexOptions.Compiled | RegexOptions.Singleline);
+        private static readonly Regex BuildingRegex = new Regex("\"building\"\\s*:\\s*(?<value>true|false)", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        private static readonly Regex ResultRegex = new Regex("\"result\"\\s*:\\s*(?<value>null|\"[^\"]+\")", RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         private readonly AppSettings settings;
 
@@ -22,7 +24,9 @@ namespace PackageManager.Services
             this.settings = settings ?? throw new ArgumentNullException(nameof(settings));
         }
 
-        public async Task<JenkinsBuildResult> TriggerBuildAsync(PackageInfo package, CancellationToken cancellationToken = default)
+        public async Task<JenkinsBuildResult> TriggerBuildAsync(PackageInfo package,
+                                                                Action<string> progressReporter = null,
+                                                                CancellationToken cancellationToken = default)
         {
             if (package == null)
             {
@@ -54,6 +58,8 @@ namespace PackageManager.Services
             var crumbUrl = $"{baseUrl}/crumbIssuer/api/json";
             var cookies = new CookieContainer();
             var authHeader = "Basic " + Convert.ToBase64String(Encoding.ASCII.GetBytes($"{username}:{password}"));
+
+            progressReporter?.Invoke($"正在触发 {jobName} 的 Jenkins 编译...");
 
             string crumbField = null;
             string crumbValue = null;
@@ -104,8 +110,21 @@ namespace PackageManager.Services
                     return JenkinsBuildResult.Success(buildUrl, null, null, null, "Jenkins 已接收编译请求");
                 }
 
-                var startResult = await WaitForExecutableAsync(baseUrl, queueUrl, authHeader, cookies, cancellationToken);
-                return startResult ?? JenkinsBuildResult.Success(buildUrl, queueUrl, null, null, "Jenkins 已接收编译请求，正在排队");
+                progressReporter?.Invoke("Jenkins 已接收编译请求，正在排队...");
+
+                var startResult = await WaitForExecutableAsync(baseUrl, queueUrl, authHeader, cookies, progressReporter, cancellationToken);
+                if ((startResult == null) || !startResult.IsSuccess || string.IsNullOrWhiteSpace(startResult.BuildUrl))
+                {
+                    return startResult ?? JenkinsBuildResult.Success(buildUrl, queueUrl, null, null, "Jenkins 已接收编译请求，正在排队");
+                }
+
+                var finalResult = await WaitForBuildCompletionAsync(startResult.BuildUrl,
+                                                                    startResult.BuildNumber,
+                                                                    authHeader,
+                                                                    cookies,
+                                                                    progressReporter,
+                                                                    cancellationToken);
+                return finalResult ?? startResult;
             }
             catch (WebException ex)
             {
@@ -118,10 +137,11 @@ namespace PackageManager.Services
         }
 
         private static async Task<JenkinsBuildResult> WaitForExecutableAsync(string baseUrl,
-                                                                              string queueUrl,
-                                                                              string authHeader,
-                                                                              CookieContainer cookies,
-                                                                              CancellationToken cancellationToken)
+                                                                               string queueUrl,
+                                                                               string authHeader,
+                                                                               CookieContainer cookies,
+                                                                               Action<string> progressReporter,
+                                                                               CancellationToken cancellationToken)
         {
             var apiUrl = queueUrl.TrimEnd('/') + "/api/json";
 
@@ -144,6 +164,9 @@ namespace PackageManager.Services
                         int buildNumber;
                         int? parsedNumber = int.TryParse(buildNumberText, out buildNumber) ? buildNumber : (int?)null;
                         var buildUrl = NormalizeLocation(baseUrl, match.Groups["url"].Value);
+                        progressReporter?.Invoke(parsedNumber.HasValue
+                                                     ? $"Jenkins 已开始编译 #{parsedNumber.Value}"
+                                                     : "Jenkins 已开始编译");
                         return JenkinsBuildResult.Success(buildUrl,
                                                           queueUrl,
                                                           buildUrl,
@@ -158,6 +181,65 @@ namespace PackageManager.Services
             }
 
             return JenkinsBuildResult.Success(null, queueUrl, null, null, "Jenkins 已接收编译请求，正在排队");
+        }
+
+        private static async Task<JenkinsBuildResult> WaitForBuildCompletionAsync(string buildUrl,
+                                                                                   int? buildNumber,
+                                                                                   string authHeader,
+                                                                                   CookieContainer cookies,
+                                                                                   Action<string> progressReporter,
+                                                                                   CancellationToken cancellationToken)
+        {
+            if (string.IsNullOrWhiteSpace(buildUrl))
+            {
+                return null;
+            }
+
+            var apiUrl = buildUrl.TrimEnd('/') + "/api/json";
+            string lastMessage = null;
+
+            for (int i = 0; i < 360; i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var buildResponse = await SendRequestAsync(apiUrl, "GET", authHeader, cookies, null, null, cancellationToken);
+                if (buildResponse.StatusCode == HttpStatusCode.OK)
+                {
+                    var body = buildResponse.Body ?? string.Empty;
+                    var building = MatchValue(BuildingRegex, body);
+                    var resultValue = MatchValue(ResultRegex, body);
+
+                    if (string.Equals(building, "true", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var runningMessage = buildNumber.HasValue
+                            ? $"Jenkins 正在编译 #{buildNumber.Value}..."
+                            : "Jenkins 正在编译...";
+                        if (!string.Equals(lastMessage, runningMessage, StringComparison.Ordinal))
+                        {
+                            progressReporter?.Invoke(runningMessage);
+                            lastMessage = runningMessage;
+                        }
+                    }
+
+                    if (!string.Equals(building, "true", StringComparison.OrdinalIgnoreCase)
+                        && !string.IsNullOrWhiteSpace(resultValue)
+                        && !string.Equals(resultValue, "null", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var normalizedResult = resultValue.Trim().Trim('"').ToUpperInvariant();
+                        return JenkinsBuildResult.FromBuildResult(buildUrl, buildNumber, normalizedResult);
+                    }
+                }
+
+                await Task.Delay(5000, cancellationToken);
+            }
+
+            return JenkinsBuildResult.Success(buildUrl,
+                                              null,
+                                              buildUrl,
+                                              buildNumber,
+                                              buildNumber.HasValue
+                                                  ? $"Jenkins 编译 #{buildNumber.Value} 仍在执行，请到 Jenkins 页面查看最新状态"
+                                                  : "Jenkins 编译仍在执行，请到 Jenkins 页面查看最新状态");
         }
 
         private static async Task<JenkinsHttpResponse> SendRequestAsync(string url,
@@ -348,6 +430,27 @@ namespace PackageManager.Services
                 IsSuccess = false,
                 Message = message,
             };
+        }
+
+        public static JenkinsBuildResult FromBuildResult(string buildUrl, int? buildNumber, string result)
+        {
+            var label = buildNumber.HasValue ? $" #{buildNumber.Value}" : string.Empty;
+
+            switch ((result ?? string.Empty).Trim().ToUpperInvariant())
+            {
+                case "SUCCESS":
+                    return Success(buildUrl, null, buildUrl, buildNumber, $"Jenkins 编译成功{label}");
+                case "FAILURE":
+                    return Fail($"Jenkins 编译失败{label}");
+                case "ABORTED":
+                    return Fail($"Jenkins 编译已中止{label}");
+                case "UNSTABLE":
+                    return Success(buildUrl, null, buildUrl, buildNumber, $"Jenkins 编译完成{label}，结果为 UNSTABLE");
+                case "NOT_BUILT":
+                    return Fail($"Jenkins 编译未执行{label}");
+                default:
+                    return Success(buildUrl, null, buildUrl, buildNumber, $"Jenkins 编译完成{label}，结果为 {result}");
+            }
         }
     }
 }

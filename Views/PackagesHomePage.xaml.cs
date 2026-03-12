@@ -97,7 +97,11 @@ namespace PackageManager.Views
                 var data = new DataPersistenceService();
                 var settings = data.LoadSettings();
                 var service = new JenkinsBuildService(settings);
-                var result = await service.TriggerBuildAsync(package);
+                var result = await service.TriggerBuildAsync(package,
+                                                             message =>
+                                                             {
+                                                                 Dispatcher.Invoke(() => package.StatusText = message);
+                                                             });
 
                 package.StatusText = result.Message;
 
