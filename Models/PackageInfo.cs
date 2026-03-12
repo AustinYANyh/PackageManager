@@ -296,7 +296,8 @@ namespace PackageManager.Models
                              Width = "120",
                              ProgressBarWidth = 100,
                              ProgressBarHeight = 20,
-                             TextFormat = "{0:F1}%")]
+                             TextFormat = "{0:F1}%",
+                             IsVisible = false)]
         public double Progress
         {
             get => progress;

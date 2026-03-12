@@ -9,7 +9,7 @@
         xmlns:button="clr-namespace:CustomControlLibrary.CustomControl.Controls.Button;assembly=CustomControlLibrary"
         xmlns:views="clr-namespace:PackageManager.Views"
         mc:Ignorable="d"
-        Title="包管理器" Height="700" Width="1400" MinWidth="960"
+        Title="包管理器" Height="780" Width="1400" MinWidth="960"
         Icon="/Assets/Icons/App.ico"
         ResizeMode="CanResize" WindowStartupLocation="CenterScreen" AllowDrop="True">
     <Window.Resources>

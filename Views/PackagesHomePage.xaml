@@ -16,6 +16,7 @@
 
         <!-- 包列表：继承 MainWindow 的 DataContext 进行绑定 -->
         <C:CDataGrid x:Name="PackageDataGrid"
+                     HorizontalScrollBarVisibility="Hidden"
                      Grid.Column="0"
                      EnableAutoTemplateSelection="True"
                      ItemsSource="{Binding Packages}"
@@ -99,26 +100,95 @@
                                                     SelectedValuePath="DisPlayName"
                                                     SelectedValue="{Binding LatestActivePackage.SelectedExecutableVersion, Mode=TwoWay}" Width="320" />
                             </StackPanel>
-                            <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
-                                <button:CButton Content="{Binding LatestActivePackage.UnlockUpdateButtonText}" Command="{Binding LatestActivePackage.UnlockUpdateToggleCommand}" Width="80" Margin="0,0,8,0" IsEnabled="{Binding LatestActivePackage.UpdateCancelEnabled}" />
-                                <!-- <button:CButton Content="{Binding LatestActivePackage.UpdateButtonText}" Command="{Binding LatestActivePackage.UpdateToggleCommand}" Width="80" Margin="0,0,8,0" IsEnabled="{Binding LatestActivePackage.UpdateCancelEnabled}" /> -->
-                                <button:CButton Content="仅下载" Command="{Binding LatestActivePackage.DownloadOnlyCommand}" Width="80" Margin="0,0,8,0" IsEnabled="{Binding LatestActivePackage.DownloadOnlyEnabled}" />
-                                <button:CButton Content="打开Revit" Command="{Binding LatestActivePackage.OpenPathCommand}" Width="100" Margin="0,0,8,0" IsEnabled="{Binding LatestActivePackage.IsEnabled}" />
-                                <button:CButton Content="切换配置" Command="{Binding LatestActivePackage.ChangeConfigPresetCommand}" Width="80" IsEnabled="{Binding LatestActivePackage.ConfigOpsEnabled}" />
-                                <button:CDangerButton Content="定版" Width="80" Margin="8,0,0,0" Click="FinalizeButton_Click" IsEnabled="{Binding LatestActivePackage.FinalizeButtonEnabled}"/>
-                            </StackPanel>
-                            <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
-                                <button:CButton Content="参数目录" Command="{Binding LatestActivePackage.OpenParameterConfigCommand}" Width="80" Margin="0,0,8,0" IsEnabled="{Binding LatestActivePackage.ConfigOpsEnabled}" />
-                                <button:CButton Content="调试选项" Command="{Binding LatestActivePackage.OpenDebugOptionsCommand}" Width="80" Margin="0,0,8,0" IsEnabled="{Binding LatestActivePackage.ConfigOpsEnabled}" />
-                                <button:CButton Content="{Binding LatestActivePackage.SignatureToggleText}" Command="{Binding LatestActivePackage.SignatureToggleCommand}" Width="100" IsEnabled="{Binding LatestActivePackage.SignatureCancelEnabled}" />
-                                <button:CButton Content="CSV加解密" Width="100" Margin="0,0,8,0" Click="OpenCsvCryptoWindowButton_Click"/>
-                                <button:CButton Content="DNS" Width="80" Margin="0,0,8,0" Click="OpenDnsSettingsWindowButton_Click" IsEnabled="{Binding LatestActivePackage.IsTeamworkMasterDevelop}"/>
-                            </StackPanel>
-                            <StackPanel Orientation="Horizontal" Margin="0,16,0,0">
-                                <button:CButton Content="解除占用" Width="80" Click="OpenUnlockFilesWindowButton_Click" Margin="0,0,8,0"/>
-                                <button:CButton Content="编译顺序" Width="80" Click="OpenSlnUpdateWindowButton_Click" Margin="0,0,8,0"/>
-                                <button:CButton Content="Revit破解" Width="100" Click="OpenRevitActivationToolButton_Click" Margin="0,0,8,0"/>
-                            </StackPanel>
+                            <Border Margin="0,18,0,0" Padding="12" Background="#06000000" BorderBrush="#12000000" BorderThickness="1" CornerRadius="6">
+                                <StackPanel>
+                                    <controls:CTextBlock Text="主要操作" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" TextAlignment="Left" />
+                                    <WrapPanel Margin="0,12,0,0" ItemHeight="40">
+                                        <button:CButton Content="{Binding LatestActivePackage.UnlockUpdateButtonText}"
+                                                        Command="{Binding LatestActivePackage.UnlockUpdateToggleCommand}"
+                                                        Width="96"
+                                                        Margin="0,0,8,8"
+                                                        IsEnabled="{Binding LatestActivePackage.UpdateCancelEnabled}" />
+                                        <!-- <button:CButton Content="{Binding LatestActivePackage.UpdateButtonText}" Command="{Binding LatestActivePackage.UpdateToggleCommand}" Width="80" Margin="0,0,8,0" IsEnabled="{Binding LatestActivePackage.UpdateCancelEnabled}" /> -->
+                                        <button:CButton Content="仅下载"
+                                                        Command="{Binding LatestActivePackage.DownloadOnlyCommand}"
+                                                        Width="96"
+                                                        Margin="0,0,8,8"
+                                                        IsEnabled="{Binding LatestActivePackage.DownloadOnlyEnabled}" />
+                                        <button:CButton Content="打开Revit"
+                                                        Command="{Binding LatestActivePackage.OpenPathCommand}"
+                                                        Width="110"
+                                                        Margin="0,0,8,8"
+                                                        IsEnabled="{Binding LatestActivePackage.IsEnabled}" />
+                                        <button:CDangerButton Content="定版"
+                                                             Width="96"
+                                                             Margin="0,0,8,8"
+                                                             Click="FinalizeButton_Click"
+                                                             IsEnabled="{Binding LatestActivePackage.FinalizeButtonEnabled}"/>
+                                    </WrapPanel>
+                                </StackPanel>
+                            </Border>
+
+                            <Border Margin="0,12,0,0" Padding="12" Background="#06000000" BorderBrush="#12000000" BorderThickness="1" CornerRadius="6">
+                                <StackPanel>
+                                    <controls:CTextBlock Text="配置相关" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" TextAlignment="Left" />
+                                    <WrapPanel Margin="0,12,0,0" ItemHeight="40">
+                                        <button:CButton Content="切换配置"
+                                                        Command="{Binding LatestActivePackage.ChangeConfigPresetCommand}"
+                                                        Width="96"
+                                                        Margin="0,0,8,8"
+                                                        IsEnabled="{Binding LatestActivePackage.ConfigOpsEnabled}" />
+                                        <button:CButton Content="参数目录"
+                                                        Command="{Binding LatestActivePackage.OpenParameterConfigCommand}"
+                                                        Width="96"
+                                                        Margin="0,0,8,8"
+                                                        IsEnabled="{Binding LatestActivePackage.ConfigOpsEnabled}" />
+                                        <button:CButton Content="调试选项"
+                                                        Command="{Binding LatestActivePackage.OpenDebugOptionsCommand}"
+                                                        Width="96"
+                                                        Margin="0,0,8,8"
+                                                        IsEnabled="{Binding LatestActivePackage.ConfigOpsEnabled}" />
+                                    </WrapPanel>
+                                </StackPanel>
+                            </Border>
+
+                            <Border Margin="0,12,0,0" Padding="12" Background="#06000000" BorderBrush="#12000000" BorderThickness="1" CornerRadius="6">
+                                <StackPanel>
+                                    <controls:CTextBlock Text="工具与维护" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" TextAlignment="Left" />
+                                    <StackPanel Margin="0,12,0,0">
+                                        <StackPanel Orientation="Horizontal">
+                                        <button:CButton Content="{Binding LatestActivePackage.SignatureToggleText}"
+                                                        Command="{Binding LatestActivePackage.SignatureToggleCommand}"
+                                                        Width="96"
+                                                        Margin="0,0,8,8"
+                                                        IsEnabled="{Binding LatestActivePackage.SignatureCancelEnabled}" />
+                                        <button:CButton Content="CSV加解密"
+                                                        Width="110"
+                                                        Margin="0,0,8,8"
+                                                        Click="OpenCsvCryptoWindowButton_Click"/>
+                                        <button:CButton Content="DNS"
+                                                        Width="110"
+                                                        Margin="0,0,8,8"
+                                                        Click="OpenDnsSettingsWindowButton_Click"
+                                                        IsEnabled="{Binding LatestActivePackage.IsTeamworkMasterDevelop}"/>
+                                        </StackPanel>
+                                        <StackPanel Orientation="Horizontal">
+                                        <button:CButton Content="解除占用"
+                                                        Width="96"
+                                                        Margin="0,0,8,8"
+                                                        Click="OpenUnlockFilesWindowButton_Click"/>
+                                        <button:CButton Content="编译顺序"
+                                                        Width="110"
+                                                        Margin="0,0,8,8"
+                                                        Click="OpenSlnUpdateWindowButton_Click"/>
+                                        <button:CButton Content="Revit破解"
+                                                        Width="110"
+                                                        Margin="0,0,8,8"
+                                                        Click="OpenRevitActivationToolButton_Click"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
                             </StackPanel>
                     </StackPanel>
                 </ScrollViewer>
