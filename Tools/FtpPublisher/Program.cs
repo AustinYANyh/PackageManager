@@ -71,7 +71,7 @@ namespace FtpPublisher
         {
             Console.WriteLine("开始发布到 FTP...");
             var version = ReadAssemblyVersion(@"e:\PackageManager\Properties\AssemblyInfo.cs");
-            var binExe = Path.Combine(@"e:\PackageManager\bin\Debug", "PackageManager.exe");
+            var binExe = Path.Combine(@"e:\PackageManager\bin\Release", "PackageManager.exe");
             Console.WriteLine("版本: " + version);
 
             var ftpBase = "ftp://192.168.0.215/";
