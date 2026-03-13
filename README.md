@@ -72,6 +72,38 @@
 - 预设匹配不上当前配置
   - 应用会自动创建“当前配置”卡片并选中；可在预设窗口中编辑或保存为自定义预设。
 
+## 发布签名
+
+- 当前仓库已经支持 Authenticode 签名，但必须提供正式的代码签名证书。
+- 不要使用自签名或开发证书（例如 `CN=localhost`）；这类证书不能解决 360、SmartScreen 等对未知程序的拦截问题。
+- 仓库内可用两种方式签名：
+  - `PFX` 文件签名：
+    `powershell -ExecutionPolicy Bypass -File .\scripts\SignPackageManager.ps1 -PfxPath "D:\certs\company.pfx" -PfxPassword "******"`
+  - 证书仓库签名：
+    `powershell -ExecutionPolicy Bypass -File .\scripts\SignPackageManager.ps1 -Thumbprint "‎证书SHA1指纹" -StoreLocation CurrentUser -StoreName My`
+- 若要在构建后自动签名，可在编译时传入 MSBuild 属性：
+  - `msbuild .\PackageManager.csproj /t:Build /p:Configuration=Release /p:Sign_Enabled=true /p:Sign_CertPath=D:\certs\company.pfx /p:Sign_CertPassword=******`
+  - 或：
+    `msbuild .\PackageManager.csproj /t:Build /p:Configuration=Release /p:Sign_Enabled=true /p:Sign_Thumbprint=证书SHA1指纹 /p:Sign_StoreLocation=CurrentUser /p:Sign_StoreName=My`
+- 脚本会自动查找 Windows SDK 中的 `signtool.exe`，不再要求手动配置系统 `PATH`。
+
+## 自签名 Release 流程
+
+- 这是单独的本地测试流程，不会覆盖正式证书签名入口。
+- 构建命令：
+  - `powershell -ExecutionPolicy Bypass -File .\scripts\BuildReleaseSelfSigned.ps1`
+- 该流程会在 `Release` 构建完成后自动执行：
+  - 若未指定证书指纹，则创建或复用 `CN=PackageManager Self-Signed` 的自签名代码签名证书。
+  - 默认把证书公钥导入当前用户的 `Root` 和 `TrustedPublisher`，便于本机识别该签名。
+  - 然后对 `bin\Release\PackageManager.exe` 执行签名。
+- 如需固定使用某个自签名证书，可在 `scripts\selfsign.config.json` 中填写 `Thumbprint`。
+- 如需关闭构建脚本中的自动信任，可把 `scripts\selfsign.config.json` 里的 `TrustCurrentUser` 改为 `false`。
+- 也可以直接通过 MSBuild 触发自签名构建：
+  - `msbuild .\PackageManager.csproj /t:Build /p:Configuration=Release /p:SelfSign_Enabled=true`
+- 注意：
+  - 自签名只能解决你自己机器或已导入该证书机器上的“未知发布者”提示。
+  - 对 360、SmartScreen、下载信誉这类问题帮助非常有限，不能替代正式代码签名证书。
+
 ## 版本管理
 
 - 详细版本更新记录请参阅仓库根目录的 `CHANGELOG.md`。
@@ -85,4 +117,3 @@
 ## 许可
 
 - 许可协议未在仓库中声明时，默认仅供内部团队使用；如需开源发布请先补充 LICENSE。
-

@@ -300,18 +300,37 @@
   </ItemGroup>
   <PropertyGroup>
     <Sign_Enabled>false</Sign_Enabled>
-    <SignToolExe>signtool.exe</SignToolExe>
+    <Sign_PowerShellExe>powershell</Sign_PowerShellExe>
+    <Sign_ScriptPath>$(MSBuildProjectDirectory)\scripts\SignExe.ps1</Sign_ScriptPath>
     <Sign_TimestampUrl>http://timestamp.digicert.com</Sign_TimestampUrl>
     <Sign_CertPath></Sign_CertPath>
     <Sign_CertPassword></Sign_CertPassword>
     <Sign_SubjectName></Sign_SubjectName>
+    <Sign_Thumbprint></Sign_Thumbprint>
+    <Sign_StoreLocation>CurrentUser</Sign_StoreLocation>
+    <Sign_StoreName>My</Sign_StoreName>
+    <Sign_SignToolPath></Sign_SignToolPath>
+    <SelfSign_Enabled>false</SelfSign_Enabled>
+    <SelfSign_ScriptPath>$(MSBuildProjectDirectory)\scripts\SelfSignExe.ps1</SelfSign_ScriptPath>
+    <SelfSign_SubjectName>CN=PackageManager Self-Signed</SelfSign_SubjectName>
+    <SelfSign_ValidYears>3</SelfSign_ValidYears>
+    <SelfSign_Thumbprint></SelfSign_Thumbprint>
+    <SelfSign_StoreLocation>CurrentUser</SelfSign_StoreLocation>
+    <SelfSign_StoreName>My</SelfSign_StoreName>
+    <SelfSign_SignToolPath></SelfSign_SignToolPath>
+    <SelfSign_TimestampUrl></SelfSign_TimestampUrl>
+    <SelfSign_TrustCurrentUser>true</SelfSign_TrustCurrentUser>
   </PropertyGroup>
   <Target Name="AuthenticodeSign" AfterTargets="AfterBuild" Condition="'$(Sign_Enabled)'=='true'">
     <Message Text="Signing $(TargetPath)" Importance="high" />
-    <Exec Condition="'$(Sign_CertPath)' != ''" Command="&quot;$(SignToolExe)&quot; sign /f &quot;$(Sign_CertPath)&quot; /p &quot;$(Sign_CertPassword)&quot; /tr &quot;$(Sign_TimestampUrl)&quot; /td SHA256 /fd SHA256 &quot;$(TargetPath)&quot;" />
-    <Exec Condition="'$(Sign_CertPath)' == '' AND '$(Sign_SubjectName)' != ''" Command="&quot;$(SignToolExe)&quot; sign /n &quot;$(Sign_SubjectName)&quot; /tr &quot;$(Sign_TimestampUrl)&quot; /td SHA256 /fd SHA256 &quot;$(TargetPath)&quot;" />
-    <Exec Condition="'$(Sign_CertPath)' == '' AND '$(Sign_SubjectName)' == ''" Command="echo No signing certificate configured. Skipping signing." />
-    <Exec Command="&quot;$(SignToolExe)&quot; verify /pa &quot;$(TargetPath)&quot;" />
+    <Error Condition="'$(SelfSign_Enabled)' == 'true'" Text="Sign_Enabled and SelfSign_Enabled cannot both be true." />
+    <Error Condition="'$(Sign_CertPath)' == '' AND '$(Sign_SubjectName)' == '' AND '$(Sign_Thumbprint)' == ''" Text="No signing certificate configured. Set Sign_CertPath, Sign_SubjectName, or Sign_Thumbprint." />
+    <Exec Command="&quot;$(Sign_PowerShellExe)&quot; -NoLogo -NoProfile -ExecutionPolicy Bypass -File &quot;$(Sign_ScriptPath)&quot; -FilePath &quot;$(TargetPath)&quot; -CertPath &quot;$(Sign_CertPath)&quot; -CertPassword &quot;$(Sign_CertPassword)&quot; -SubjectName &quot;$(Sign_SubjectName)&quot; -Thumbprint &quot;$(Sign_Thumbprint)&quot; -StoreLocation &quot;$(Sign_StoreLocation)&quot; -StoreName &quot;$(Sign_StoreName)&quot; -SignToolPath &quot;$(Sign_SignToolPath)&quot; -TimestampUrl &quot;$(Sign_TimestampUrl)&quot;" />
+  </Target>
+  <Target Name="AuthenticodeSelfSign" AfterTargets="AfterBuild" Condition="'$(SelfSign_Enabled)'=='true' AND '$(Configuration)'=='Release'">
+    <Message Text="Self-signing $(TargetPath)" Importance="high" />
+    <Error Condition="'$(Sign_Enabled)' == 'true'" Text="Sign_Enabled and SelfSign_Enabled cannot both be true." />
+    <Exec Command="&quot;$(Sign_PowerShellExe)&quot; -NoLogo -NoProfile -ExecutionPolicy Bypass -File &quot;$(SelfSign_ScriptPath)&quot; -FilePath &quot;$(TargetPath)&quot; -SubjectName &quot;$(SelfSign_SubjectName)&quot; -ValidYears &quot;$(SelfSign_ValidYears)&quot; -Thumbprint &quot;$(SelfSign_Thumbprint)&quot; -StoreLocation &quot;$(SelfSign_StoreLocation)&quot; -StoreName &quot;$(SelfSign_StoreName)&quot; -SignToolPath &quot;$(SelfSign_SignToolPath)&quot; -TimestampUrl &quot;$(SelfSign_TimestampUrl)&quot; -TrustCurrentUser &quot;$(SelfSign_TrustCurrentUser)&quot;" />
   </Target>
     <ItemGroup>
         <!-- 将外部工具exe作为嵌入资源，确保最终仅生成本程序的exe -->

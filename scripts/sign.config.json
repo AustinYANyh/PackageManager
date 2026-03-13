@@ -6,5 +6,9 @@
   "PfxPath": "",
   "PfxPassword": "",
   "SubjectName": "",
+  "Thumbprint": "",
+  "StoreLocation": "CurrentUser",
+  "StoreName": "My",
+  "SignToolPath": "",
   "TimestampUrl": "http://timestamp.digicert.com"
 }
