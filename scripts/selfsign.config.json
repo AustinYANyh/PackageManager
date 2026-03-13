@@ -1,0 +1,11 @@
+{
+  "Configuration": "Release",
+  "ProjectPath": "PackageManager.csproj",
+  "MSBuildPath": "",
+  "SubjectName": "CN=PackageManager Self-Signed",
+  "ValidYears": 3,
+  "Thumbprint": "",
+  "SignToolPath": "",
+  "TimestampUrl": "",
+  "TrustCurrentUser": true
+}
