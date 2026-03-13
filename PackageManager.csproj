@@ -311,6 +311,7 @@
     <Sign_StoreName>My</Sign_StoreName>
     <Sign_SignToolPath></Sign_SignToolPath>
     <SelfSign_Enabled>false</SelfSign_Enabled>
+    <SelfSign_AutoForRelease>true</SelfSign_AutoForRelease>
     <SelfSign_ScriptPath>$(MSBuildProjectDirectory)\scripts\SelfSignExe.ps1</SelfSign_ScriptPath>
     <SelfSign_SubjectName>CN=PackageManager Self-Signed</SelfSign_SubjectName>
     <SelfSign_ValidYears>3</SelfSign_ValidYears>
@@ -327,7 +328,7 @@
     <Error Condition="'$(Sign_CertPath)' == '' AND '$(Sign_SubjectName)' == '' AND '$(Sign_Thumbprint)' == ''" Text="No signing certificate configured. Set Sign_CertPath, Sign_SubjectName, or Sign_Thumbprint." />
     <Exec Command="&quot;$(Sign_PowerShellExe)&quot; -NoLogo -NoProfile -ExecutionPolicy Bypass -File &quot;$(Sign_ScriptPath)&quot; -FilePath &quot;$(TargetPath)&quot; -CertPath &quot;$(Sign_CertPath)&quot; -CertPassword &quot;$(Sign_CertPassword)&quot; -SubjectName &quot;$(Sign_SubjectName)&quot; -Thumbprint &quot;$(Sign_Thumbprint)&quot; -StoreLocation &quot;$(Sign_StoreLocation)&quot; -StoreName &quot;$(Sign_StoreName)&quot; -SignToolPath &quot;$(Sign_SignToolPath)&quot; -TimestampUrl &quot;$(Sign_TimestampUrl)&quot;" />
   </Target>
-  <Target Name="AuthenticodeSelfSign" AfterTargets="AfterBuild" Condition="'$(SelfSign_Enabled)'=='true' AND '$(Configuration)'=='Release'">
+  <Target Name="AuthenticodeSelfSign" AfterTargets="AfterBuild" Condition="'$(Configuration)'=='Release' AND '$(Sign_Enabled)'!='true' AND ('$(SelfSign_Enabled)'=='true' OR '$(SelfSign_AutoForRelease)'=='true')">
     <Message Text="Self-signing $(TargetPath)" Importance="high" />
     <Error Condition="'$(Sign_Enabled)' == 'true'" Text="Sign_Enabled and SelfSign_Enabled cannot both be true." />
     <Exec Command="&quot;$(Sign_PowerShellExe)&quot; -NoLogo -NoProfile -ExecutionPolicy Bypass -File &quot;$(SelfSign_ScriptPath)&quot; -FilePath &quot;$(TargetPath)&quot; -SubjectName &quot;$(SelfSign_SubjectName)&quot; -ValidYears &quot;$(SelfSign_ValidYears)&quot; -Thumbprint &quot;$(SelfSign_Thumbprint)&quot; -StoreLocation &quot;$(SelfSign_StoreLocation)&quot; -StoreName &quot;$(SelfSign_StoreName)&quot; -SignToolPath &quot;$(SelfSign_SignToolPath)&quot; -TimestampUrl &quot;$(SelfSign_TimestampUrl)&quot; -TrustCurrentUser &quot;$(SelfSign_TrustCurrentUser)&quot;" />

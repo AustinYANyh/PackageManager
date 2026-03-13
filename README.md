@@ -90,6 +90,9 @@
 ## 自签名 Release 流程
 
 - 这是单独的本地测试流程，不会覆盖正式证书签名入口。
+- 现在直接编译 `PackageManager.csproj` 的 `Release` 配置时，也会默认自动执行自签名。
+- 如果你只想出未自签名的 `Release`，可在编译时显式关闭：
+  - `msbuild .\PackageManager.csproj /t:Build /p:Configuration=Release /p:SelfSign_AutoForRelease=false`
 - 构建命令：
   - `powershell -ExecutionPolicy Bypass -File .\scripts\BuildReleaseSelfSigned.ps1`
 - 该流程会在 `Release` 构建完成后自动执行：
