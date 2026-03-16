@@ -3,10 +3,7 @@ using System.Globalization;
 using System.Windows;
 using System.Windows.Data;
 using PackageManager.Models;
-using System.Windows;
-using System.Text.RegularExpressions;
 using System.Windows.Media;
-using System.Globalization;
 
 namespace PackageManager.Converters
 {

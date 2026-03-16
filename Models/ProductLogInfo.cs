@@ -19,9 +19,10 @@ namespace PackageManager.Models
         private string modifiedText;
 
         private ICommand openCommand;
-        private ICommand openWithLogViewProCommand;
-        private ICommand openWithVSCodeCommand;
-        private ICommand openWithNotepadCommand;
+
+        private ICommand openWithLogViewProCommand = null;
+        private ICommand openWithVSCodeCommand= null;
+        private ICommand openWithNotepadCommand= null;
 
         [DataGridColumn(1, DisplayName = "日志文件名", Width = "250", IsReadOnly = true)]
         public string FileName

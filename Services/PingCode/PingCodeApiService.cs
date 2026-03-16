@@ -375,6 +375,7 @@ public partial class PingCodeApiService
             }
             catch (System.Exception ex)
             {
+                LoggingService.LogError(ex, "获取工作项列表失败");
             }
         }
 
@@ -732,6 +733,7 @@ public partial class PingCodeApiService
             }
             catch (System.Exception ex)
             {
+                LoggingService.LogError(ex, "获取迭代内工作项失败");
             }
         }
 

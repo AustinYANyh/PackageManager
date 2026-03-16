@@ -4,7 +4,6 @@ using System.IO;
 using Microsoft.Win32;
 using System.Text.RegularExpressions;
 using System.Linq;
-using Microsoft.Win32;
 
 namespace PackageManager.Services
 {

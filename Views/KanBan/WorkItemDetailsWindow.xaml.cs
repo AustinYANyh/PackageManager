@@ -1444,7 +1444,9 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                       HtmlEscape(Details.Title) + "</span></div>");
         var stateType = (Details.StateType ?? "").Trim().ToLowerInvariant();
         var stateName = (Details.StateName ?? "").Trim().ToLowerInvariant();
+#pragma warning disable CS0219 // 变量已被赋值，但从未使用过它的值
         var stateCls = "state-pending";
+#pragma warning restore CS0219 // 变量已被赋值，但从未使用过它的值
         if (stateType.Contains("done") || stateName.Contains("完成"))
         {
             stateCls = "state-done";
