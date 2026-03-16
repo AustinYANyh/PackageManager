@@ -123,14 +123,29 @@ namespace PackageManager.Services
             {
                 directories.RemoveAll(x => x.IndexOf("log", StringComparison.OrdinalIgnoreCase) >= 0);
             }
-            return directories
-                   .Select(d => new
+            return SortNamesByVersion(directories);
+        }
+
+        /// <summary>
+        /// 按版本号语义排序名称，支持任意位置的 vX.Y[.Z[.W]]，例如：
+        /// 2025.09.30_v1.5.2、v11.3.2.0_log、v11.3.2。
+        /// </summary>
+        public static List<string> SortNamesByVersion(IEnumerable<string> names)
+        {
+            if (names == null)
+            {
+                return new List<string>();
+            }
+
+            return names
+                   .Where(name => !string.IsNullOrWhiteSpace(name))
+                   .Select(name => new
                    {
-                       Original = d,
-                       VersionObj = TryExtractVersionFromName(d),
+                       Original = name,
+                       VersionObj = TryExtractVersionFromName(name),
                    })
                    .OrderBy(x => x.VersionObj ?? new Version(0, 0))
-                   .ThenBy(x => x.Original)
+                   .ThenBy(x => x.Original, StringComparer.OrdinalIgnoreCase)
                    .Select(x => x.Original)
                    .ToList();
         }

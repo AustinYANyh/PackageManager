@@ -44,7 +44,7 @@ namespace PackageManager.Views
                         if (!string.IsNullOrWhiteSpace(v)) versions.Add(v);
                     }
                 }
-                foreach (var v in versions.OrderBy(version => version, StringComparer.OrdinalIgnoreCase))
+                foreach (var v in FtpService.SortNamesByVersion(versions))
                 {
                     items.Add(new LocalPathInfo
                     {
