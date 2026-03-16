@@ -20,6 +20,140 @@ namespace PackageManager.Services
     /// </summary>
     public class PackageUpdateService
     {
+        private const int ParallelDownloadThreadCount = 10;
+        private const int ParallelDownloadMinBytes = 20 * 1024 * 1024;
+        private const int DownloadBufferSize = 256 * 1024;
+
+        private sealed class DownloadProbeResult
+        {
+            public bool SupportsParallelDownload { get; set; }
+            public long ContentLength { get; set; }
+        }
+
+        private sealed class DownloadProgressInfo
+        {
+            public double ProgressPercentage { get; set; }
+            public long DownloadedBytes { get; set; }
+            public long TotalBytes { get; set; }
+            public double SpeedBytesPerSecond { get; set; }
+            public TimeSpan? EstimatedRemaining { get; set; }
+        }
+
+        private sealed class DownloadProgressReporter
+        {
+            private readonly object syncRoot = new object();
+            private readonly string logPrefix;
+            private readonly Action<DownloadProgressInfo> progressCallback;
+            private readonly Stopwatch stopwatch = Stopwatch.StartNew();
+            private long totalBytes;
+            private long lastSampleBytes;
+            private double lastSampleSeconds;
+            private double smoothedSpeedBytesPerSecond;
+            private double lastUiProgress = -1;
+            private double lastUiSeconds = -1;
+            private int lastLoggedBucket = -1;
+
+            public DownloadProgressReporter(string logPrefix, long totalBytes, Action<DownloadProgressInfo> progressCallback)
+            {
+                this.logPrefix = logPrefix;
+                this.totalBytes = Math.Max(0, totalBytes);
+                this.progressCallback = progressCallback;
+            }
+
+            public void Report(long downloadedBytes, long latestTotalBytes = 0, bool force = false)
+            {
+                DownloadProgressInfo info = null;
+                string logMessage = null;
+
+                lock (syncRoot)
+                {
+                    if (latestTotalBytes > 0)
+                    {
+                        totalBytes = Math.Max(totalBytes, latestTotalBytes);
+                    }
+
+                    downloadedBytes = Math.Max(0, downloadedBytes);
+                    if ((totalBytes > 0) && (downloadedBytes > totalBytes))
+                    {
+                        downloadedBytes = totalBytes;
+                    }
+
+                    var elapsedSeconds = Math.Max(stopwatch.Elapsed.TotalSeconds, 0.001d);
+                    var deltaSeconds = elapsedSeconds - lastSampleSeconds;
+
+                    if (force || (deltaSeconds >= 0.25d))
+                    {
+                        var deltaBytes = downloadedBytes - lastSampleBytes;
+                        var instantSpeed = deltaSeconds > 0 ? Math.Max(0d, deltaBytes / deltaSeconds) : 0d;
+                        if (instantSpeed > 0)
+                        {
+                            smoothedSpeedBytesPerSecond = smoothedSpeedBytesPerSecond <= 0
+                                ? instantSpeed
+                                : ((smoothedSpeedBytesPerSecond * 0.65d) + (instantSpeed * 0.35d));
+                        }
+                        else if ((smoothedSpeedBytesPerSecond <= 0) && (downloadedBytes > 0))
+                        {
+                            smoothedSpeedBytesPerSecond = downloadedBytes / elapsedSeconds;
+                        }
+
+                        lastSampleBytes = downloadedBytes;
+                        lastSampleSeconds = elapsedSeconds;
+                    }
+
+                    var speedBytesPerSecond = smoothedSpeedBytesPerSecond > 0
+                        ? smoothedSpeedBytesPerSecond
+                        : ((downloadedBytes > 0) ? (downloadedBytes / elapsedSeconds) : 0d);
+                    var progress = totalBytes > 0
+                        ? Math.Min(100d, (downloadedBytes * 100d) / totalBytes)
+                        : 0d;
+
+                    TimeSpan? eta = null;
+                    if ((totalBytes > 0) && (downloadedBytes < totalBytes) && (speedBytesPerSecond > 1))
+                    {
+                        eta = TimeSpan.FromSeconds((totalBytes - downloadedBytes) / speedBytesPerSecond);
+                    }
+
+                    var shouldNotifyUi = force ||
+                                         (progress >= 100d) ||
+                                         (lastUiSeconds < 0) ||
+                                         ((elapsedSeconds - lastUiSeconds) >= 0.25d) ||
+                                         ((progress - lastUiProgress) >= 0.25d);
+                    if (shouldNotifyUi)
+                    {
+                        lastUiSeconds = elapsedSeconds;
+                        lastUiProgress = progress;
+                        info = new DownloadProgressInfo
+                        {
+                            ProgressPercentage = progress,
+                            DownloadedBytes = downloadedBytes,
+                            TotalBytes = totalBytes,
+                            SpeedBytesPerSecond = speedBytesPerSecond,
+                            EstimatedRemaining = eta
+                        };
+                    }
+
+                    var logBucket = (int)(progress / 10d);
+                    var shouldLog = force || (progress >= 100d) || (logBucket > lastLoggedBucket);
+                    if (shouldLog)
+                    {
+                        lastLoggedBucket = logBucket;
+                        logMessage =
+                            $"{logPrefix}：{progress:F1}% | {FormatByteSize(downloadedBytes)}/{FormatByteSize(totalBytes)} | {FormatSpeed(speedBytesPerSecond)} | ETA {FormatEta(eta)}";
+                    }
+                }
+
+                if (info != null)
+                {
+                    progressCallback?.Invoke(info);
+                }
+
+                if (!string.IsNullOrWhiteSpace(logMessage))
+                {
+                    LoggingService.LogInfo(logMessage);
+                }
+            }
+        }
+
         /// <summary>
         /// 对外暴露的校验完成提示入口（供签名/加密校验流程调用）。
         /// </summary>
@@ -92,21 +226,16 @@ namespace PackageManager.Services
 
                 // 下载文件
                 LoggingService.LogInfo($"开始下载：{packageInfo.DownloadUrl} -> {tempFilePath}");
-                var downloadLogGate = -10; // 每10%记录一次
                 bool success;
                 try
                 {
                     success = await DownloadFileAsync(packageInfo.DownloadUrl,
                                                       tempFilePath,
-                                                      progress =>
+                                                      info =>
                                                       {
-                                                          packageInfo.Progress = progress * 0.8; // 下载占80%进度
-                                                          progressCallback?.Invoke(progress * 0.8, $"下载中... {progress:F1}%");
-                                                          if ((progress >= (downloadLogGate + 10)) || (progress >= 100) || (progress <= 0))
-                                                          {
-                                                              LoggingService.LogInfo($"下载进度：{progress:F0}%");
-                                                              downloadLogGate = (int)progress;
-                                                          }
+                                                          var scaledProgress = info.ProgressPercentage * 0.8; // 下载占80%进度
+                                                          packageInfo.Progress = scaledProgress;
+                                                          progressCallback?.Invoke(scaledProgress, BuildDownloadProgressMessage(info));
                                                       },
                                                       cancellationToken).ConfigureAwait(false);
                 }
@@ -258,10 +387,10 @@ namespace PackageManager.Services
                 // 执行下载（完整进度显示到100）
                 var success = await DownloadFileAsync(packageInfo.DownloadUrl,
                                                       localZipPath,
-                                                      progress =>
+                                                      info =>
                                                       {
-                                                          packageInfo.Progress = progress;
-                                                          progressCallback?.Invoke(progress, $"下载中... {progress:F1}%");
+                                                          packageInfo.Progress = info.ProgressPercentage;
+                                                          progressCallback?.Invoke(info.ProgressPercentage, BuildDownloadProgressMessage(info));
                                                       },
                                                       cancellationToken).ConfigureAwait(false);
 
@@ -484,48 +613,27 @@ namespace PackageManager.Services
         /// <summary>
         /// 下载文件
         /// </summary>
-        private async Task<bool> DownloadFileAsync(string ftpUrl, string localPath, Action<double> progressCallback = null, CancellationToken cancellationToken = default)
+        private async Task<bool> DownloadFileAsync(string ftpUrl, string localPath, Action<DownloadProgressInfo> progressCallback = null, CancellationToken cancellationToken = default)
         {
             try
             {
                 LoggingService.LogInfo($"准备下载：Url={ftpUrl} -> {localPath}");
-                using (var client = new WebClient())
+                DownloadProbeResult probe = null;
+                var uri = new Uri(ftpUrl);
+                if (uri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+                    uri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
                 {
-                    var lastLoggedProgress = -10; // 每10%记录一次
-                    client.DownloadProgressChanged += (sender, e) =>
+                    probe = await ProbeParallelDownloadAsync(uri, cancellationToken).ConfigureAwait(false);
+                    if (probe != null && probe.SupportsParallelDownload)
                     {
-                        progressCallback?.Invoke(e.ProgressPercentage);
-                        if ((e.ProgressPercentage >= (lastLoggedProgress + 10)) || (e.ProgressPercentage >= 100) || (e.ProgressPercentage <= 0))
-                        {
-                            LoggingService.LogInfo($"下载进度(内部)：{e.ProgressPercentage}%");
-                            lastLoggedProgress = e.ProgressPercentage;
-                        }
-                    };
-
-                    using (cancellationToken.Register(() =>
-                    {
-                        try { client.CancelAsync(); } catch (Exception ex) { LoggingService.LogWarning($"取消下载失败：{ex.Message}"); }
-                    }))
-                    {
-                        await Task.Run(async () => 
-                        {
-                            await client.DownloadFileTaskAsync(new Uri(ftpUrl), localPath).ConfigureAwait(false);
-                        }).ConfigureAwait(false);
-                        
+                        LoggingService.LogInfo($"检测到服务器支持分片下载，启用{ParallelDownloadThreadCount}线程并行下载：{ftpUrl}");
+                        return await DownloadFileInParallelAsync(uri, localPath, probe.ContentLength, ParallelDownloadThreadCount, progressCallback, cancellationToken)
+                            .ConfigureAwait(false);
                     }
                 }
 
-                try
-                {
-                    var size = new FileInfo(localPath).Length;
-                    LoggingService.LogInfo($"下载完成(内部)：{localPath} | 大小={size} bytes");
-                }
-                catch (Exception ex)
-                {
-                    LoggingService.LogWarning($"下载完成后信息记录失败(内部)：{localPath} | {ex.Message}");
-                }
-
-                return true;
+                LoggingService.LogInfo($"回退到单线程下载：{ftpUrl}");
+                return await DownloadFileSingleAsync(uri, localPath, probe?.ContentLength ?? 0, progressCallback, cancellationToken).ConfigureAwait(false);
             }
             catch (WebException wex) when (wex.Status == WebExceptionStatus.RequestCanceled)
             {
@@ -537,6 +645,275 @@ namespace PackageManager.Services
                 Debug.WriteLine($"下载失败: {ex.Message}");
                 LoggingService.LogError(ex, $"下载失败：Url={ftpUrl} -> {localPath}");
                 return false;
+            }
+        }
+
+        private async Task<bool> DownloadFileSingleAsync(Uri uri, string localPath, long expectedContentLength, Action<DownloadProgressInfo> progressCallback, CancellationToken cancellationToken)
+        {
+            using (var client = new WebClient())
+            {
+                var reporter = new DownloadProgressReporter("下载进度(单线程)", expectedContentLength, progressCallback);
+                client.DownloadProgressChanged += (sender, e) =>
+                {
+                    reporter.Report(e.BytesReceived, e.TotalBytesToReceive);
+                };
+
+                using (cancellationToken.Register(() =>
+                {
+                    try { client.CancelAsync(); } catch (Exception ex) { LoggingService.LogWarning($"取消下载失败：{ex.Message}"); }
+                }))
+                {
+                    await client.DownloadFileTaskAsync(uri, localPath).ConfigureAwait(false);
+                }
+
+                var finalSize = File.Exists(localPath) ? new FileInfo(localPath).Length : 0;
+                reporter.Report(finalSize, finalSize > 0 ? finalSize : expectedContentLength, true);
+            }
+
+            try
+            {
+                var size = new FileInfo(localPath).Length;
+                LoggingService.LogInfo($"下载完成(内部)：{localPath} | 大小={size} bytes");
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogWarning($"下载完成后信息记录失败(内部)：{localPath} | {ex.Message}");
+            }
+
+            return true;
+        }
+
+        private async Task<DownloadProbeResult> ProbeParallelDownloadAsync(Uri uri, CancellationToken cancellationToken)
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                throw new OperationCanceledException(cancellationToken);
+            }
+
+            try
+            {
+                var contentLength = await GetHttpContentLengthAsync(uri, cancellationToken).ConfigureAwait(false);
+                if (contentLength < ParallelDownloadMinBytes)
+                {
+                    LoggingService.LogInfo($"文件大小{contentLength} bytes，小于并行下载阈值，继续单线程下载。");
+                    return new DownloadProbeResult
+                    {
+                        SupportsParallelDownload = false,
+                        ContentLength = contentLength
+                    };
+                }
+
+                var supportsRange = await SupportsHttpRangeRequestAsync(uri, cancellationToken).ConfigureAwait(false);
+                return new DownloadProbeResult
+                {
+                    SupportsParallelDownload = supportsRange,
+                    ContentLength = contentLength
+                };
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogWarning($"探测并行下载能力失败，回退单线程：{uri} | {ex.Message}");
+                return null;
+            }
+        }
+
+        private async Task<long> GetHttpContentLengthAsync(Uri uri, CancellationToken cancellationToken)
+        {
+            var request = (HttpWebRequest)WebRequest.Create(uri);
+            request.Method = "HEAD";
+            request.Proxy = null;
+
+            using (cancellationToken.Register(() =>
+            {
+                try { request.Abort(); } catch { }
+            }))
+            using (var response = (HttpWebResponse)await request.GetResponseAsync().ConfigureAwait(false))
+            {
+                return response.ContentLength;
+            }
+        }
+
+        private async Task<bool> SupportsHttpRangeRequestAsync(Uri uri, CancellationToken cancellationToken)
+        {
+            var request = (HttpWebRequest)WebRequest.Create(uri);
+            request.Method = "GET";
+            request.AddRange(0, 0);
+            request.Proxy = null;
+
+            using (cancellationToken.Register(() =>
+            {
+                try { request.Abort(); } catch { }
+            }))
+            using (var response = (HttpWebResponse)await request.GetResponseAsync().ConfigureAwait(false))
+            {
+                return response.StatusCode == HttpStatusCode.PartialContent;
+            }
+        }
+
+        private async Task<bool> DownloadFileInParallelAsync(Uri uri, string localPath, long contentLength, int threadCount, Action<DownloadProgressInfo> progressCallback, CancellationToken cancellationToken)
+        {
+            var effectiveThreadCount = (int)Math.Max(1, Math.Min(threadCount, contentLength));
+            var targetDirectory = Path.GetDirectoryName(localPath);
+            if (!string.IsNullOrEmpty(targetDirectory) && !Directory.Exists(targetDirectory))
+            {
+                Directory.CreateDirectory(targetDirectory);
+            }
+
+            var totalDownloadedBytes = 0L;
+            var reporter = new DownloadProgressReporter("下载进度(并行)", contentLength, progressCallback);
+            Action<int> accumulateDownloadedBytes = bytesRead =>
+            {
+                var downloaded = Interlocked.Add(ref totalDownloadedBytes, bytesRead);
+                reporter.Report(downloaded, contentLength);
+            };
+
+            try
+            {
+                ServicePointManager.DefaultConnectionLimit = Math.Max(ServicePointManager.DefaultConnectionLimit, effectiveThreadCount + 2);
+
+                var partSize = contentLength / effectiveThreadCount;
+                var downloadTasks = new List<Task>();
+                using (var initializer = new FileStream(localPath, FileMode.Create, FileAccess.Write, FileShare.ReadWrite))
+                {
+                    initializer.SetLength(contentLength);
+                }
+
+                for (var index = 0; index < effectiveThreadCount; index++)
+                {
+                    var start = partSize * index;
+                    var end = (index == effectiveThreadCount - 1) ? (contentLength - 1) : (start + partSize - 1);
+                    downloadTasks.Add(DownloadRangeToFileAsync(uri, localPath, start, end, accumulateDownloadedBytes, cancellationToken));
+                }
+
+                await Task.WhenAll(downloadTasks).ConfigureAwait(false);
+                reporter.Report(contentLength, contentLength, true);
+                var finalSize = new FileInfo(localPath).Length;
+                LoggingService.LogInfo($"并行下载完成：{localPath} | 大小={finalSize} bytes");
+                return true;
+            }
+            catch (OperationCanceledException)
+            {
+                LoggingService.LogInfo("并行下载已取消");
+                throw;
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogWarning($"并行下载失败，回退单线程：{uri} | {ex.Message}");
+                TryDeleteFileQuietly(localPath);
+                return await DownloadFileSingleAsync(uri, localPath, contentLength, progressCallback, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        private async Task DownloadRangeToFileAsync(Uri uri, string localPath, long start, long end, Action<int> accumulateDownloadedBytes, CancellationToken cancellationToken)
+        {
+            var request = (HttpWebRequest)WebRequest.Create(uri);
+            request.Method = "GET";
+            request.AddRange(start, end);
+            request.Proxy = null;
+            request.ReadWriteTimeout = 30000;
+            request.Timeout = 30000;
+
+            using (cancellationToken.Register(() =>
+            {
+                try { request.Abort(); } catch { }
+            }))
+            using (var response = (HttpWebResponse)await request.GetResponseAsync().ConfigureAwait(false))
+            using (var input = response.GetResponseStream())
+            using (var output = new FileStream(localPath, FileMode.Open, FileAccess.Write, FileShare.ReadWrite, DownloadBufferSize, true))
+            {
+                if (response.StatusCode != HttpStatusCode.PartialContent)
+                {
+                    throw new InvalidOperationException($"服务器未返回206分段响应，实际状态：{(int)response.StatusCode} {response.StatusCode}");
+                }
+
+                output.Seek(start, SeekOrigin.Begin);
+                var buffer = new byte[DownloadBufferSize];
+                while (true)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var read = await input.ReadAsync(buffer, 0, buffer.Length, cancellationToken).ConfigureAwait(false);
+                    if (read <= 0)
+                    {
+                        break;
+                    }
+
+                    await output.WriteAsync(buffer, 0, read, cancellationToken).ConfigureAwait(false);
+                    accumulateDownloadedBytes?.Invoke(read);
+                }
+            }
+        }
+
+        private static string BuildDownloadProgressMessage(DownloadProgressInfo info)
+        {
+            if (info == null)
+            {
+                return "下载中...";
+            }
+
+            return $"下载中... {info.ProgressPercentage:F1}% | {FormatSpeed(info.SpeedBytesPerSecond)} | ETA {FormatEta(info.EstimatedRemaining)}";
+        }
+
+        private static string FormatSpeed(double speedBytesPerSecond)
+        {
+            if (speedBytesPerSecond <= 0)
+            {
+                return "0.00 MB/s";
+            }
+
+            return $"{(speedBytesPerSecond / 1024d / 1024d):F2} MB/s";
+        }
+
+        private static string FormatByteSize(long bytes)
+        {
+            if (bytes <= 0)
+            {
+                return "0 MB";
+            }
+
+            var units = new[] { "B", "KB", "MB", "GB", "TB" };
+            var value = (double)bytes;
+            var unitIndex = 0;
+            while ((value >= 1024d) && (unitIndex < (units.Length - 1)))
+            {
+                value /= 1024d;
+                unitIndex++;
+            }
+
+            return unitIndex == 0 ? $"{value:F0} {units[unitIndex]}" : $"{value:F1} {units[unitIndex]}";
+        }
+
+        private static string FormatEta(TimeSpan? eta)
+        {
+            if (!eta.HasValue)
+            {
+                return "--";
+            }
+
+            var value = eta.Value;
+            if (value.TotalHours >= 1)
+            {
+                return value.ToString(@"hh\:mm\:ss");
+            }
+
+            return value.ToString(@"mm\:ss");
+        }
+
+        private static void TryDeleteFileQuietly(string path)
+        {
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+                {
+                    File.Delete(path);
+                }
+            }
+            catch
+            {
+                // ignore cleanup failures
             }
         }
 
