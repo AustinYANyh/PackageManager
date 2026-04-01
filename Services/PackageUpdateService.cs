@@ -233,6 +233,11 @@ namespace PackageManager.Services
                                                       tempFilePath,
                                                       info =>
                                                       {
+                                                          if (cancellationToken.IsCancellationRequested)
+                                                          {
+                                                              return;
+                                                          }
+
                                                           var scaledProgress = info.ProgressPercentage * 0.8; // 下载占80%进度
                                                           packageInfo.Progress = scaledProgress;
                                                           progressCallback?.Invoke(scaledProgress, BuildDownloadProgressMessage(info));
@@ -389,6 +394,11 @@ namespace PackageManager.Services
                                                       localZipPath,
                                                       info =>
                                                       {
+                                                          if (cancellationToken.IsCancellationRequested)
+                                                          {
+                                                              return;
+                                                          }
+
                                                           packageInfo.Progress = info.ProgressPercentage;
                                                           progressCallback?.Invoke(info.ProgressPercentage, BuildDownloadProgressMessage(info));
                                                       },
@@ -635,10 +645,23 @@ namespace PackageManager.Services
                 LoggingService.LogInfo($"回退到单线程下载：{ftpUrl}");
                 return await DownloadFileSingleAsync(uri, localPath, probe?.ContentLength ?? 0, progressCallback, cancellationToken).ConfigureAwait(false);
             }
+            catch (OperationCanceledException)
+            {
+                TryDeleteFileQuietly(localPath);
+                LoggingService.LogInfo("下载已取消");
+                throw;
+            }
             catch (WebException wex) when (wex.Status == WebExceptionStatus.RequestCanceled)
             {
+                TryDeleteFileQuietly(localPath);
                 LoggingService.LogInfo("下载已取消");
-                throw new OperationCanceledException("下载取消", wex);
+                throw new OperationCanceledException("下载取消", wex, cancellationToken);
+            }
+            catch (Exception ex) when (IsCancellationException(ex, cancellationToken))
+            {
+                TryDeleteFileQuietly(localPath);
+                LoggingService.LogInfo("下载已取消");
+                throw new OperationCanceledException("下载取消", ex, cancellationToken);
             }
             catch (Exception ex)
             {
@@ -663,7 +686,14 @@ namespace PackageManager.Services
                     try { client.CancelAsync(); } catch (Exception ex) { LoggingService.LogWarning($"取消下载失败：{ex.Message}"); }
                 }))
                 {
-                    await client.DownloadFileTaskAsync(uri, localPath).ConfigureAwait(false);
+                    try
+                    {
+                        await client.DownloadFileTaskAsync(uri, localPath).ConfigureAwait(false);
+                    }
+                    catch (WebException ex) when (IsCancellationException(ex, cancellationToken))
+                    {
+                        throw new OperationCanceledException("下载取消", ex, cancellationToken);
+                    }
                 }
 
                 var finalSize = File.Exists(localPath) ? new FileInfo(localPath).Length : 0;
@@ -797,8 +827,15 @@ namespace PackageManager.Services
             }
             catch (OperationCanceledException)
             {
+                TryDeleteFileQuietly(localPath);
                 LoggingService.LogInfo("并行下载已取消");
                 throw;
+            }
+            catch (Exception ex) when (IsCancellationException(ex, cancellationToken))
+            {
+                TryDeleteFileQuietly(localPath);
+                LoggingService.LogInfo("并行下载已取消");
+                throw new OperationCanceledException("并行下载取消", ex, cancellationToken);
             }
             catch (Exception ex)
             {
@@ -817,33 +854,44 @@ namespace PackageManager.Services
             request.ReadWriteTimeout = 30000;
             request.Timeout = 30000;
 
-            using (cancellationToken.Register(() =>
+            try
             {
-                try { request.Abort(); } catch { }
-            }))
-            using (var response = (HttpWebResponse)await request.GetResponseAsync().ConfigureAwait(false))
-            using (var input = response.GetResponseStream())
-            using (var output = new FileStream(localPath, FileMode.Open, FileAccess.Write, FileShare.ReadWrite, DownloadBufferSize, true))
-            {
-                if (response.StatusCode != HttpStatusCode.PartialContent)
+                using (cancellationToken.Register(() =>
                 {
-                    throw new InvalidOperationException($"服务器未返回206分段响应，实际状态：{(int)response.StatusCode} {response.StatusCode}");
-                }
-
-                output.Seek(start, SeekOrigin.Begin);
-                var buffer = new byte[DownloadBufferSize];
-                while (true)
+                    try { request.Abort(); } catch { }
+                }))
+                using (var response = (HttpWebResponse)await request.GetResponseAsync().ConfigureAwait(false))
+                using (var input = response.GetResponseStream())
+                using (var output = new FileStream(localPath, FileMode.Open, FileAccess.Write, FileShare.ReadWrite, DownloadBufferSize, true))
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    var read = await input.ReadAsync(buffer, 0, buffer.Length, cancellationToken).ConfigureAwait(false);
-                    if (read <= 0)
+                    if (response.StatusCode != HttpStatusCode.PartialContent)
                     {
-                        break;
+                        throw new InvalidOperationException($"服务器未返回206分段响应，实际状态：{(int)response.StatusCode} {response.StatusCode}");
                     }
 
-                    await output.WriteAsync(buffer, 0, read, cancellationToken).ConfigureAwait(false);
-                    accumulateDownloadedBytes?.Invoke(read);
+                    output.Seek(start, SeekOrigin.Begin);
+                    var buffer = new byte[DownloadBufferSize];
+                    while (true)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var read = await input.ReadAsync(buffer, 0, buffer.Length, cancellationToken).ConfigureAwait(false);
+                        if (read <= 0)
+                        {
+                            break;
+                        }
+
+                        await output.WriteAsync(buffer, 0, read, cancellationToken).ConfigureAwait(false);
+                        accumulateDownloadedBytes?.Invoke(read);
+                    }
                 }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex) when (IsCancellationException(ex, cancellationToken))
+            {
+                throw new OperationCanceledException($"分片下载取消：{start}-{end}", ex, cancellationToken);
             }
         }
 
@@ -915,6 +963,41 @@ namespace PackageManager.Services
             {
                 // ignore cleanup failures
             }
+        }
+
+        private static bool IsCancellationException(Exception ex, CancellationToken cancellationToken)
+        {
+            if (ex == null)
+            {
+                return false;
+            }
+
+            if (ex is OperationCanceledException)
+            {
+                return true;
+            }
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return true;
+            }
+
+            if (ex is AggregateException aggregateException)
+            {
+                return aggregateException.Flatten().InnerExceptions.Any(inner => IsCancellationException(inner, cancellationToken));
+            }
+
+            if (ex is WebException webException)
+            {
+                if (webException.Status == WebExceptionStatus.RequestCanceled)
+                {
+                    return true;
+                }
+
+                return IsCancellationException(webException.InnerException, cancellationToken);
+            }
+
+            return IsCancellationException(ex.InnerException, cancellationToken);
         }
 
         /// <summary>
