@@ -6,8 +6,16 @@ using System.Threading.Tasks;
 
 namespace FtpPublisher
 {
+    /// <summary>
+    /// FTP 发布工具的主程序类，负责将构建产物上传到 FTP 服务器。
+    /// </summary>
     class Program
     {
+        /// <summary>
+        /// 程序入口点，执行 FTP 发布流程。
+        /// </summary>
+        /// <param name="args">命令行参数，支持 <c>--pause</c> 以在完成后暂停。</param>
+        /// <returns>成功返回 0，失败返回 1。</returns>
         static int Main(string[] args)
         {
             var exitCode = 0;
@@ -30,6 +38,11 @@ namespace FtpPublisher
             return exitCode;
         }
         
+        /// <summary>
+        /// 将给定的 URL 转换为 FTP URL 格式，并确保路径以斜杠结尾。
+        /// </summary>
+        /// <param name="anyUrl">原始 URL（支持 HTTP/HTTPS/FTP）。</param>
+        /// <returns>规范化后的 FTP URL；如果输入为空则原样返回。</returns>
         private static string ToFtpUrl(string anyUrl)
         {
             if (string.IsNullOrWhiteSpace(anyUrl))
@@ -67,6 +80,10 @@ namespace FtpPublisher
             return ftpUrl;
         }
 
+        /// <summary>
+        /// 执行 FTP 发布的核心流程：读取版本号、创建远程目录、上传主程序和更新说明文件。
+        /// </summary>
+        /// <returns>异步任务。</returns>
         static async Task Run()
         {
             Console.WriteLine("开始发布到 FTP...");
@@ -111,6 +128,12 @@ namespace FtpPublisher
             Console.WriteLine("发布完成");
         }
 
+        /// <summary>
+        /// 从 AssemblyInfo.cs 文件中读取程序集版本号。
+        /// </summary>
+        /// <param name="assemblyInfoPath">AssemblyInfo.cs 文件路径。</param>
+        /// <returns>解析到的版本号字符串。</returns>
+        /// <exception cref="InvalidOperationException">当无法找到或解析 AssemblyVersion 特性时抛出。</exception>
         static string ReadAssemblyVersion(string assemblyInfoPath)
         {
             var text = File.ReadAllText(assemblyInfoPath);
@@ -122,6 +145,12 @@ namespace FtpPublisher
             return text.Substring(start, end - start);
         }
 
+        /// <summary>
+        /// 在 FTP 服务器上逐级创建远程目录。如果目录已存在则跳过。
+        /// </summary>
+        /// <param name="remoteDir">要创建的远程目录完整 URL。</param>
+        /// <param name="cred">FTP 登录凭据。</param>
+        /// <returns>异步任务。</returns>
         static async Task CreateRemoteDirectoryAsync(string remoteDir, NetworkCredential cred)
         {
             var uri = new Uri(remoteDir);
@@ -149,6 +178,12 @@ namespace FtpPublisher
             }
         }
 
+        /// <summary>
+        /// 删除 FTP 服务器上的远程目录及其包含的所有文件。
+        /// </summary>
+        /// <param name="remoteDir">要删除的远程目录 URL。</param>
+        /// <param name="cred">FTP 登录凭据。</param>
+        /// <returns>异步任务。</returns>
         static async Task DeleteDirectoryAsync(string remoteDir, NetworkCredential cred)
         {
             string[] list = Array.Empty<string>();
@@ -186,6 +221,12 @@ namespace FtpPublisher
             }
         }
 
+        /// <summary>
+        /// 列出 FTP 远程目录下的文件和子目录名称。
+        /// </summary>
+        /// <param name="remoteDir">要列出的远程目录 URL。</param>
+        /// <param name="cred">FTP 登录凭据。</param>
+        /// <returns>目录中的文件/目录名称数组。</returns>
         static async Task<string[]> ListDirectoryAsync(string remoteDir, NetworkCredential cred)
         {
             var req = (FtpWebRequest)WebRequest.Create(remoteDir);

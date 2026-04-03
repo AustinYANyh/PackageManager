@@ -23,8 +23,14 @@ public partial class PackageConfigPage : Page, INotifyPropertyChanged, ICentralP
 
     private PackageItem selectedItem;
 
+    /// <summary>
+    /// 获取产品可见性配置项的集合。
+    /// </summary>
     public ObservableCollection<VisibilityItem> VisibilityItems { get; } = new();
 
+    /// <summary>
+    /// 初始化 <see cref="PackageConfigPage"/> 的新实例。
+    /// </summary>
     public PackageConfigPage()
     {
         InitializeComponent();
@@ -37,12 +43,22 @@ public partial class PackageConfigPage : Page, INotifyPropertyChanged, ICentralP
         foreach (var item in VisibilityItems) { item.PropertyChanged += VisibilityItem_PropertyChanged; }
     }
 
+    /// <summary>
+    /// 请求退出当前页面的导航事件。
+    /// </summary>
     public event Action RequestExit;
 
+    /// <inheritdoc/>
     public event PropertyChangedEventHandler PropertyChanged;
 
+    /// <summary>
+    /// 获取所有包配置项（内置 + 自定义）的集合。
+    /// </summary>
     public ObservableCollection<PackageItem> AllItems { get; } = new();
 
+    /// <summary>
+    /// 获取或设置当前选中的包配置项。
+    /// </summary>
     public PackageItem SelectedItem
     {
         get => selectedItem;
@@ -50,6 +66,11 @@ public partial class PackageConfigPage : Page, INotifyPropertyChanged, ICentralP
         set => SetProperty(ref selectedItem, value);
     }
 
+    /// <summary>
+    /// 打开编辑窗口编辑指定包配置项。
+    /// </summary>
+    /// <param name="item">要编辑的包配置项。</param>
+    /// <param name="isNew">是否为新建项。</param>
     public void EditItem(PackageItem item, bool isNew)
     {
         if (item.IsBuiltIn)
@@ -71,6 +92,10 @@ public partial class PackageConfigPage : Page, INotifyPropertyChanged, ICentralP
         }
     }
 
+    /// <summary>
+    /// 从列表中移除指定的包配置项。
+    /// </summary>
+    /// <param name="item">要移除的包配置项。</param>
     public void RemoveItem(PackageItem item)
     {
         if (item.IsBuiltIn)
@@ -86,11 +111,23 @@ public partial class PackageConfigPage : Page, INotifyPropertyChanged, ICentralP
         }
     }
 
+    /// <summary>
+    /// 触发 <see cref="PropertyChanged"/> 事件。
+    /// </summary>
+    /// <param name="propertyName">发生更改的属性名称，默认为调用方成员名。</param>
     protected virtual void OnPropertyChanged([CallerMemberName] string propertyName = null)
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
     }
 
+    /// <summary>
+    /// 设置属性值并在值变化时触发 <see cref="PropertyChanged"/> 通知。
+    /// </summary>
+    /// <typeparam name="T">属性值的类型。</typeparam>
+    /// <param name="field">属性后备字段的引用。</param>
+    /// <param name="value">新值。</param>
+    /// <param name="propertyName">属性名称，默认为调用方成员名。</param>
+    /// <returns>如果值已更改返回 <c>true</c>，否则返回 <c>false</c>。</returns>
     protected bool SetProperty<T>(ref T field, T value, [CallerMemberName] string propertyName = null)
     {
         if (Equals(field, value))

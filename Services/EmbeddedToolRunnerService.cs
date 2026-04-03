@@ -18,11 +18,18 @@ namespace PackageManager.Services
     /// </summary>
     public class EmbeddedToolRunnerService
     {
+        /// <summary>
+        /// 初始化 <see cref="EmbeddedToolRunnerService"/> 的新实例。
+        /// </summary>
+        /// <param name="package">要执行签名/加密校验的包信息对象。</param>
         public EmbeddedToolRunnerService(PackageInfo package)
         {
             this.Package = package;
         }
 
+        /// <summary>
+        /// 获取当前关联的包信息对象。
+        /// </summary>
         public PackageInfo Package { get; private set; }
 
         private readonly Dictionary<string, double> stageProgress = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
@@ -33,8 +40,10 @@ namespace PackageManager.Services
         private volatile bool isCancelled;
         
         /// <summary>
-        /// 运行嵌入外部工具（异步，不阻塞UI）
+        /// 运行嵌入外部工具（异步，不阻塞UI）。
+        /// 提取嵌入的签名加密校验工具并启动，实时监控日志输出并更新进度状态。
         /// </summary>
+        /// <exception cref="ArgumentNullException">当 <see cref="Package"/> 为 null 时抛出。</exception>
         public void RunAsync()
         {
             if (Package == null) throw new ArgumentNullException(nameof(Package));
@@ -160,7 +169,7 @@ namespace PackageManager.Services
         }
 
         /// <summary>
-        /// 取消正在运行的嵌入式工具
+        /// 取消正在运行的嵌入式工具，终止进程并将状态设置为已取消。
         /// </summary>
         public void Cancel()
         {

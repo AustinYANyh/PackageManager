@@ -8,7 +8,9 @@ using PackageManager.Services;
 
 namespace PackageManager.Function.ConfigPreset
 {
-    // 添加卡片占位类型（仅用于模板识别）
+    /// <summary>
+    /// 添加卡片占位类型（仅用于模板识别）。
+    /// </summary>
     public sealed class AddCardPlaceholder
     {
     }
@@ -22,6 +24,10 @@ namespace PackageManager.Function.ConfigPreset
 
         private Models.ConfigPreset SelectedPreset;
 
+        /// <summary>
+        /// 初始化 <see cref="ConfigPresetWindow"/> 的新实例。
+        /// </summary>
+        /// <param name="initialIniContent">初始 INI 内容。</param>
         public ConfigPresetWindow(string initialIniContent = null)
         {
             InitializeComponent();
@@ -30,13 +36,24 @@ namespace PackageManager.Function.ConfigPreset
             InitializeBuiltInPresets();
         }
 
-        // 用于 ItemsControl 的统一数据源（内置 + 自定义 + 添加占位）
+        /// <summary>
+        /// 获取用于 ItemsControl 的统一数据源（包含内置预设、自定义预设及添加占位）。
+        /// </summary>
         public ObservableCollection<object> PresetItems { get; } = new ObservableCollection<object>();
 
+        /// <summary>
+        /// 获取用户自定义的预设配置集合。
+        /// </summary>
         public ObservableCollection<Models.ConfigPreset> CustomPresets { get; } = new ObservableCollection<Models.ConfigPreset>();
 
+        /// <summary>
+        /// 获取用户选择并确认应用后的预设配置内容。
+        /// </summary>
         public string SelectedPresetContent { get; private set; }
 
+        /// <summary>
+        /// 获取或设置预设卡片的高度（根据内容自动计算）。
+        /// </summary>
         private double _cardHeight = 220;
         public double CardHeight
         {
@@ -51,6 +68,9 @@ namespace PackageManager.Function.ConfigPreset
             }
         }
 
+        /// <summary>
+        /// 属性值变更时触发。
+        /// </summary>
         public event PropertyChangedEventHandler PropertyChanged;
         private void OnPropertyChanged(string name)
         {

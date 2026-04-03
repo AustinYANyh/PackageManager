@@ -6,21 +6,33 @@ using System.Windows.Input;
 
 namespace PackageManager.Views;
 
+/// <summary>
+/// 左侧导航面板，承载系统功能入口列表。
+/// </summary>
 public partial class NavigationPanel : UserControl
 {
     private NavigationActionItem lastSelectedItem;
 
     private bool revertingSelection;
 
+    /// <summary>
+    /// 初始化 <see cref="NavigationPanel"/> 的新实例。
+    /// </summary>
     public NavigationPanel()
     {
         InitializeComponent();
         Loaded += NavigationPanel_Loaded;
     }
 
-    // 统一的系统入口列表数据源
+    /// <summary>
+    /// 获取统一的系统入口列表数据源。
+    /// </summary>
     public ObservableCollection<NavigationActionItem> ActionItems { get; } = new();
 
+    /// <summary>
+    /// 按名称选中对应的导航项。
+    /// </summary>
+    /// <param name="name">要选中的导航项名称。</param>
     public void SelectActionByName(string name)
     {
         var item = ActionItems.FirstOrDefault(i => i.Name == name);
@@ -148,14 +160,29 @@ public partial class NavigationPanel : UserControl
         }
     }
 
+    /// <summary>
+    /// 导航动作项，表示左侧面板中的单个功能入口。
+    /// </summary>
     public class NavigationActionItem
     {
+        /// <summary>
+        /// 获取或设置导航项的显示名称。
+        /// </summary>
         public string Name { get; set; }
 
+        /// <summary>
+        /// 获取或设置导航项的图标字形。
+        /// </summary>
         public string Glyph { get; set; }
 
+        /// <summary>
+        /// 获取或设置点击该导航项时执行的命令。
+        /// </summary>
         public ICommand Command { get; set; }
 
+        /// <summary>
+        /// 获取子导航项集合。
+        /// </summary>
         public ObservableCollection<NavigationActionItem> Children { get; } = new();
     }
 }

@@ -9,6 +9,9 @@ using PackageManager.Models;
 
 namespace PackageManager.Services
 {
+    /// <summary>
+    /// Jenkins 编译服务，负责触发 Jenkins Job 编译并轮询编译结果。
+    /// </summary>
     internal sealed class JenkinsBuildService
     {
         private static readonly Regex CrumbFieldRegex = new Regex("\"crumbRequestField\"\\s*:\\s*\"(?<value>[^\"]+)\"", RegexOptions.Compiled);
@@ -19,11 +22,23 @@ namespace PackageManager.Services
 
         private readonly AppSettings settings;
 
+        /// <summary>
+        /// 初始化 <see cref="JenkinsBuildService"/> 的新实例。
+        /// </summary>
+        /// <param name="settings">应用程序设置实例。</param>
+        /// <exception cref="ArgumentNullException"><paramref name="settings"/> 为 null。</exception>
         public JenkinsBuildService(AppSettings settings)
         {
             this.settings = settings ?? throw new ArgumentNullException(nameof(settings));
         }
 
+        /// <summary>
+        /// 异步触发指定产品包对应的 Jenkins 编译，并等待编译完成。
+        /// </summary>
+        /// <param name="package">要编译的产品包信息。</param>
+        /// <param name="progressReporter">进度回调，用于向调用方报告编译进度。</param>
+        /// <param name="cancellationToken">取消令牌。</param>
+        /// <returns>Jenkins 编译结果。</returns>
         public async Task<JenkinsBuildResult> TriggerBuildAsync(PackageInfo package,
                                                                 Action<string> progressReporter = null,
                                                                 CancellationToken cancellationToken = default)
@@ -401,15 +416,50 @@ namespace PackageManager.Services
         }
     }
 
+    /// <summary>
+    /// 表示 Jenkins 编译操作的结果。
+    /// </summary>
     internal sealed class JenkinsBuildResult
     {
+        /// <summary>
+        /// 获取编译是否成功。
+        /// </summary>
         public bool IsSuccess { get; private set; }
+
+        /// <summary>
+        /// 获取编译触发请求的 URL。
+        /// </summary>
         public string TriggerUrl { get; private set; }
+
+        /// <summary>
+        /// 获取 Jenkins 队列中编译任务的 URL。
+        /// </summary>
         public string QueueUrl { get; private set; }
+
+        /// <summary>
+        /// 获取 Jenkins 编译任务的 URL。
+        /// </summary>
         public string BuildUrl { get; private set; }
+
+        /// <summary>
+        /// 获取 Jenkins 编译任务的编号；若未获取到则为 null。
+        /// </summary>
         public int? BuildNumber { get; private set; }
+
+        /// <summary>
+        /// 获取编译结果描述信息。
+        /// </summary>
         public string Message { get; private set; }
 
+        /// <summary>
+        /// 创建一个成功的编译结果。
+        /// </summary>
+        /// <param name="triggerUrl">触发请求的 URL。</param>
+        /// <param name="queueUrl">队列中编译任务的 URL。</param>
+        /// <param name="buildUrl">编译任务的 URL。</param>
+        /// <param name="buildNumber">编译编号。</param>
+        /// <param name="message">结果描述信息。</param>
+        /// <returns>成功的编译结果实例。</returns>
         public static JenkinsBuildResult Success(string triggerUrl, string queueUrl, string buildUrl, int? buildNumber, string message)
         {
             return new JenkinsBuildResult
@@ -423,6 +473,11 @@ namespace PackageManager.Services
             };
         }
 
+        /// <summary>
+        /// 创建一个失败的编译结果。
+        /// </summary>
+        /// <param name="message">失败原因描述。</param>
+        /// <returns>失败的编译结果实例。</returns>
         public static JenkinsBuildResult Fail(string message)
         {
             return new JenkinsBuildResult
@@ -432,6 +487,13 @@ namespace PackageManager.Services
             };
         }
 
+        /// <summary>
+        /// 根据 Jenkins 编译状态字符串创建编译结果。
+        /// </summary>
+        /// <param name="buildUrl">编译任务的 URL。</param>
+        /// <param name="buildNumber">编译编号。</param>
+        /// <param name="result">Jenkins 返回的编译状态（如 SUCCESS、FAILURE、ABORTED 等）。</param>
+        /// <returns>对应的编译结果实例。</returns>
         public static JenkinsBuildResult FromBuildResult(string buildUrl, int? buildNumber, string result)
         {
             var label = buildNumber.HasValue ? $" #{buildNumber.Value}" : string.Empty;

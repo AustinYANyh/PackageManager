@@ -21,12 +21,17 @@ namespace PackageManager.Views
     /// </summary>
     public partial class PackagesHomePage : Page
     {
+        /// <summary>
+        /// 初始化 <see cref="PackagesHomePage"/> 的新实例。
+        /// </summary>
         public PackagesHomePage()
         {
             InitializeComponent();
         }
 
-        // 公开内部网格以便主窗口进行筛选交互
+        /// <summary>
+        /// 获取内部包数据网格控件，供主窗口进行筛选交互。
+        /// </summary>
         public CustomControlLibrary.CustomControl.Controls.DataGrid.CDataGrid PackageGrid => PackageDataGrid;
 
         private void OpenCsvCryptoWindowButton_Click(object sender, RoutedEventArgs e)

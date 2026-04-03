@@ -11,6 +11,10 @@ namespace PackageManager.Services
         /// <summary>
         /// 使用 CustomControlLibrary 中的 ToastNotifier 弹出提示。
         /// </summary>
+        /// <param name="title">提示标题。</param>
+        /// <param name="message">提示消息内容。</param>
+        /// <param name="level">提示级别（如 "Info"、"Success"、"Warning"、"Error"），默认为 "Info"。</param>
+        /// <param name="durationMs">提示显示时长（毫秒），默认为 3000。</param>
         public static void ShowToast(string title, string message, string level = "Info", int durationMs = 3000)
         {
             try

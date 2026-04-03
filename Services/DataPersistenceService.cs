@@ -14,30 +14,78 @@ namespace PackageManager.Services
     /// </summary>
     public class PackageStateData
     {
+        /// <summary>
+        /// 产品名称
+        /// </summary>
         public string ProductName { get; set; }
+
+        /// <summary>
+        /// 本地安装路径
+        /// </summary>
         public string LocalPath { get; set; }
+
+        /// <summary>
+        /// 上传包名称
+        /// </summary>
         public string UploadPackageName { get; set; }
+
+        /// <summary>
+        /// 选中的可执行文件版本
+        /// </summary>
         public string SelectedExecutableVersion { get; set; }
+
+        /// <summary>
+        /// 可执行文件路径
+        /// </summary>
         public string ExecutablePath { get; set; }
+
+        /// <summary>
+        /// 是否启用调试模式
+        /// </summary>
         public bool IsDebugMode { get; set; }
-        
+
+        /// <summary>
+        /// 可用的可执行文件版本列表
+        /// </summary>
         public List<ApplicationVersion> AvailableExecutableVersions { get; set; } = new List<ApplicationVersion>();
+
+        /// <summary>
+        /// 版本与本地路径的映射字典
+        /// </summary>
         public Dictionary<string, string> VersionLocalPaths { get; set; } = new Dictionary<string, string>();
     }
 
     /// <summary>
     /// 主界面状态数据模型
     /// </summary>
+    /// <summary>
+    /// 主界面状态数据模型
+    /// </summary>
     public class MainWindowStateData
     {
+        /// <summary>
+        /// 包状态数据列表
+        /// </summary>
         public List<PackageStateData> Packages { get; set; } = new List<PackageStateData>();
+
+        /// <summary>
+        /// 最后保存时间
+        /// </summary>
         public DateTime LastSaved { get; set; } = DateTime.Now;
-        
-        // 主界面筛选条件集合用于精确还原各列筛选
+
+        /// <summary>
+        /// 主界面筛选条件集合，用于精确还原各列筛选
+        /// </summary>
         public List<FilterCondition> PackageGridFilterConditions { get; set; } = new List<FilterCondition>();
-        
+
+        /// <summary>
+        /// 筛选是否使用"或"逻辑
+        /// </summary>
         public bool UseOrLogic { get; set; }
 
+        /// <summary>
+        /// 产品可见性配置字典
+        /// </summary>
         public Dictionary<string, bool> ProductVisibility { get; set; } = new Dictionary<string, bool>();
     }
 
@@ -65,6 +113,9 @@ namespace PackageManager.Services
 
         private Dictionary<string, bool> _productVisibility = new Dictionary<string, bool>();
 
+        /// <summary>
+        /// 初始化数据持久化服务，创建数据文件目录并设置文件路径
+        /// </summary>
         public DataPersistenceService()
         {
             // 数据文件保存在应用程序数据目录
@@ -89,19 +140,41 @@ namespace PackageManager.Services
             };
         }
 
+        /// <summary>
+        /// 包配置项数据模型
+        /// </summary>
         public class PackageConfigItem
         {
+            /// <summary>
+            /// 产品名称
+            /// </summary>
             public string ProductName { get; set; }
 
+            /// <summary>
+            /// FTP 服务器路径
+            /// </summary>
             public string FtpServerPath { get; set; }
 
+            /// <summary>
+            /// 定版包 FTP 服务器路径
+            /// </summary>
             public string FinalizeFtpServerPath { get; set; }
-            
+
+            /// <summary>
+            /// 本地安装路径
+            /// </summary>
             public string LocalPath { get; set; }
 
+            /// <summary>
+            /// 是否支持配置操作
+            /// </summary>
             public bool SupportsConfigOps { get; set; } = true;
         }
 
+        /// <summary>
+        /// 从本地文件加载包配置列表
+        /// </summary>
+        /// <returns>包配置列表；如果文件不存在或加载失败则返回空列表</returns>
         public List<PackageConfigItem> LoadPackageConfigs()
         {
             try
@@ -122,6 +195,11 @@ namespace PackageManager.Services
             }
         }
 
+        /// <summary>
+        /// 将包配置列表保存到本地文件
+        /// </summary>
+        /// <param name="items">要保存的包配置集合</param>
+        /// <returns>如果保存成功则返回 <c>true</c>，否则返回 <c>false</c></returns>
         public bool SavePackageConfigs(IEnumerable<PackageConfigItem> items)
         {
             try
@@ -138,8 +216,16 @@ namespace PackageManager.Services
             }
         }
 
+        /// <summary>
+        /// 获取包配置文件的路径
+        /// </summary>
+        /// <returns>包配置文件的完整路径</returns>
         public string GetPackagesConfigPath() => _packagesFilePath;
 
+        /// <summary>
+        /// 从本地文件加载定版包配置列表
+        /// </summary>
+        /// <returns>定版包配置列表；如果文件不存在或加载失败则返回空列表</returns>
         public List<PackageConfigItem> LoadFinalizePackageConfigs()
         {
             try
@@ -160,6 +246,11 @@ namespace PackageManager.Services
             }
         }
 
+        /// <summary>
+        /// 将定版包配置列表保存到本地文件
+        /// </summary>
+        /// <param name="items">要保存的定版包配置集合</param>
+        /// <returns>如果保存成功则返回 <c>true</c>，否则返回 <c>false</c></returns>
         public bool SaveFinalizePackageConfigs(IEnumerable<PackageConfigItem> items)
         {
             try
@@ -176,8 +267,16 @@ namespace PackageManager.Services
             }
         }
 
+        /// <summary>
+        /// 获取定版包配置文件的路径。
+        /// </summary>
+        /// <returns>定版包配置文件的完整路径。</returns>
         public string GetFinalizePackagesConfigPath() => _finalizePackagesFilePath;
 
+        /// <summary>
+        /// 获取内置的开发包配置列表。
+        /// </summary>
+        /// <returns>内置开发包配置列表。</returns>
         public List<PackageConfigItem> GetBuiltInPackageConfigs()
         {
             return new List<PackageConfigItem>
@@ -243,6 +342,10 @@ namespace PackageManager.Services
             };
         }
 
+        /// <summary>
+        /// 获取内置的定版包配置列表。
+        /// </summary>
+        /// <returns>内置定版包配置列表。</returns>
         public List<PackageConfigItem> GetBuiltInFinalizePackageConfigs()
         {
             return new List<PackageConfigItem>
@@ -643,6 +746,11 @@ namespace PackageManager.Services
             return _appFolder;
         }
 
+        /// <summary>
+        /// 保存产品可见性配置到内存缓存。
+        /// </summary>
+        /// <param name="visibility">产品名称与可见性的映射字典。</param>
+        /// <returns>是否保存成功。</returns>
         public bool SaveProductVisibility(Dictionary<string, bool> visibility)
         {
             try
@@ -658,6 +766,10 @@ namespace PackageManager.Services
             }
         }
 
+        /// <summary>
+        /// 获取产品可见性配置。
+        /// </summary>
+        /// <returns>产品名称与可见性的映射字典。</returns>
         public Dictionary<string, bool> GetProductVisibility()
         {
             return _productVisibility ?? new Dictionary<string, bool>();
@@ -669,21 +781,39 @@ namespace PackageManager.Services
     /// </summary>
     public class AppSettings
     {
+        /// <summary>
+        /// 获取或设置是否使用 G 键快捷入口。
+        /// </summary>
         public bool ProgramEntryWithG { get; set; } = true;
-        
+
+        /// <summary>
+        /// 获取或设置 Revit 插件目录路径。
+        /// </summary>
         public string AddinPath { get; set; } = @"C:\\ProgramData\\Autodesk\\Revit\\Addins";
 
-        // 优先用于应用自动更新：若设置了该值，则覆盖 .config 与环境变量
+        /// <summary>
+        /// 获取或设置应用自动更新服务器地址；若设置了该值，则覆盖 .config 与环境变量。
+        /// </summary>
         public string UpdateServerUrl { get; set; } = null;
 
-        // 拉取包目录时是否过滤包含 'log' 的目录
+        /// <summary>
+        /// 获取或设置拉取包目录时是否过滤包含 'log' 的目录。
+        /// </summary>
         public bool FilterLogDirectories { get; set; } = true;
 
-        // 外部工具路径缓存
+        /// <summary>
+        /// 获取或设置 VS Code 外部工具的路径缓存。
+        /// </summary>
         public string VsCodePath { get; set; } = null;
-        
+
+        /// <summary>
+        /// 获取或设置 PingCode 应用的 Client ID。
+        /// </summary>
         public string PingCodeClientId { get; set; } = "wgRVSMOfjwqp";
 
+        /// <summary>
+        /// 获取或设置 PingCode 应用的 Client Secret。
+        /// </summary>
         public string PingCodeClientSecret { get; set; } = "UMxFmEenlPmQJuDKhguTlwJE";
         /// <summary>
         /// 日志文本查看器
@@ -695,12 +825,24 @@ namespace PackageManager.Services
         /// </summary>
         public string ProductLogLevel { get; set; } = "ERROR";
 
+        /// <summary>
+        /// 获取或设置 Jenkins 服务器的基地址。
+        /// </summary>
         public string JenkinsBaseUrl { get; set; } = "http://192.168.0.245:8080";
 
+        /// <summary>
+        /// 获取或设置 Jenkins 视图名称。
+        /// </summary>
         public string JenkinsViewName { get; set; } = "机电项目组";
 
+        /// <summary>
+        /// 获取或设置 Jenkins 登录用户名。
+        /// </summary>
         public string JenkinsUsername { get; set; } = null;
 
+        /// <summary>
+        /// 获取或设置经过 DPAPI 加密保护的 Jenkins 密码。
+        /// </summary>
         public string JenkinsPasswordProtected { get; set; } = null;
     }
 }

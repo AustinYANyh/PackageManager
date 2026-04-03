@@ -8,10 +8,19 @@ using System.Windows.Controls;
 
 namespace PackageManager.Views
 {
+    /// <summary>
+    /// 更新日志页面，加载并显示 CHANGELOG.md 内容。
+    /// </summary>
     public partial class ChangelogPage : Page, ICentralPage
     {
+        /// <summary>
+        /// 请求退出当前页面的导航事件。
+        /// </summary>
         public event Action RequestExit;
 
+        /// <summary>
+        /// 初始化 <see cref="ChangelogPage"/> 的新实例。
+        /// </summary>
         public ChangelogPage()
         {
             InitializeComponent();

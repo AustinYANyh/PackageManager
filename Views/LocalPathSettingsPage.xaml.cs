@@ -11,14 +11,29 @@ using PackageManager.Services;
 
 namespace PackageManager.Views
 {
+    /// <summary>
+    /// 本地路径设置页面，允许按产品和版本配置本地包路径。
+    /// </summary>
     public partial class LocalPathSettingsPage : Page, ICentralPage
     {
         private readonly DataPersistenceService dataPersistenceService;
         private readonly ObservableCollection<PackageInfo> packages;
 
+        /// <summary>
+        /// 请求退出当前页面的导航事件。
+        /// </summary>
         public event Action RequestExit;
+
+        /// <summary>
+        /// 保存操作完成时触发的事件。
+        /// </summary>
         public event Action Saved;
 
+        /// <summary>
+        /// 初始化 <see cref="LocalPathSettingsPage"/> 的新实例。
+        /// </summary>
+        /// <param name="dataPersistenceService">数据持久化服务实例。</param>
+        /// <param name="packages">产品包信息集合。</param>
         public LocalPathSettingsPage(DataPersistenceService dataPersistenceService,
                                       ObservableCollection<PackageInfo> packages)
         {
@@ -59,6 +74,9 @@ namespace PackageManager.Views
             DataContext = this;
         }
 
+        /// <summary>
+        /// 获取或设置本地路径配置项的集合。
+        /// </summary>
         public ObservableCollection<LocalPathInfo> LocalPathItems { get; set; }
 
         private void ApplyGroupPathButton_Click(object sender, RoutedEventArgs e)

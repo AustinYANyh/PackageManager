@@ -15,6 +15,9 @@ using PackageManager.Services.PingCode.Model;
 
 namespace PackageManager.Views.KanBan;
 
+/// <summary>
+/// 迭代看板窗口，以列形式展示工作项并支持拖拽修改状态。
+/// </summary>
 public partial class WorkItemKanbanWindow : Window, INotifyPropertyChanged
 {
     private readonly PingCodeApiService api;
@@ -51,6 +54,12 @@ public partial class WorkItemKanbanWindow : Window, INotifyPropertyChanged
 
     private bool handlingDrop;
 
+    /// <summary>
+    /// 初始化 <see cref="WorkItemKanbanWindow"/> 的新实例。
+    /// </summary>
+    /// <param name="iterationId">迭代标识。</param>
+    /// <param name="members">项目成员集合。</param>
+    /// <param name="selectedMember">初始选中的成员。</param>
     public WorkItemKanbanWindow(string iterationId, IEnumerable<Entity> members, Entity selectedMember)
     {
         InitializeComponent();
@@ -65,12 +74,22 @@ public partial class WorkItemKanbanWindow : Window, INotifyPropertyChanged
         Closed += (s, e) => refreshTimer.Stop();
     }
 
+    /// <inheritdoc/>
     public event PropertyChangedEventHandler PropertyChanged;
 
+    /// <summary>
+    /// 获取看板成员（筛选）列表。
+    /// </summary>
     public ObservableCollection<Entity> Members { get; } = new();
 
+    /// <summary>
+    /// 获取参与人（筛选）列表。
+    /// </summary>
     public ObservableCollection<string> Participants { get; } = new();
 
+    /// <summary>
+    /// 获取或设置当前选中的成员筛选。
+    /// </summary>
     public Entity SelectedMember
     {
         get => selectedMember;
@@ -86,6 +105,9 @@ public partial class WorkItemKanbanWindow : Window, INotifyPropertyChanged
         }
     }
 
+    /// <summary>
+    /// 获取或设置当前选中的参与人筛选。
+    /// </summary>
     public string SelectedParticipant
     {
         get => selectedParticipant;
@@ -101,6 +123,9 @@ public partial class WorkItemKanbanWindow : Window, INotifyPropertyChanged
         }
     }
 
+    /// <summary>
+    /// 获取或设置看板列集合。
+    /// </summary>
     public ObservableCollection<KanbanColumn> Columns
     {
         get => columns;
@@ -115,6 +140,10 @@ public partial class WorkItemKanbanWindow : Window, INotifyPropertyChanged
         }
     }
 
+    /// <summary>
+    /// 触发 <see cref="PropertyChanged"/> 事件。
+    /// </summary>
+    /// <param name="name">发生更改的属性名称，默认为调用方成员名。</param>
     protected void OnPropertyChanged([CallerMemberName] string name = null) { PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name)); }
 
     private static string ComputeItemsSignature(IEnumerable<WorkItemInfo> items)

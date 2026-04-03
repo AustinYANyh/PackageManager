@@ -14,6 +14,9 @@ using PackageManager.Services;
 
 namespace PackageManager.Function.CsvTool
 {
+    /// <summary>
+    /// CSV 加解密工具窗口。
+    /// </summary>
     public partial class CsvCryptoWindow : Window
     {
         private readonly ObservableCollection<CsvItem> _items = new ObservableCollection<CsvItem>();
@@ -22,6 +25,9 @@ namespace PackageManager.Function.CsvTool
 
         private readonly EncryptingAndDecryptingTxtTool encryptingAndDecryptingTxtTool;
 
+        /// <summary>
+        /// 初始化 <see cref="CsvCryptoWindow"/> 的新实例。
+        /// </summary>
         public CsvCryptoWindow()
         {
             InitializeComponent();

@@ -13,13 +13,22 @@ using PackageManager.Services;
 
 namespace PackageManager.Views
 {
+    /// <summary>
+    /// 日志查看页面，支持按日期、类型和级别筛选应用日志。
+    /// </summary>
     public partial class LogViewerPage : Page, ICentralPage
     {
         private string infoDir;
         private string errorDir;
 
+        /// <summary>
+        /// 请求退出当前页面的导航事件。
+        /// </summary>
         public event Action RequestExit;
 
+        /// <summary>
+        /// 初始化 <see cref="LogViewerPage"/> 的新实例。
+        /// </summary>
         public LogViewerPage()
         {
             InitializeComponent();

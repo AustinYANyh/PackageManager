@@ -11,6 +11,11 @@ namespace PackageManager.Services
         private static string infoDir;
         private static string errorDir;
 
+        /// <summary>
+        /// 初始化日志目录结构。若未指定自定义目录，则使用 %LocalAppData%\PackageManager\logs。
+        /// 若自定义目录创建失败，回退到临时目录。
+        /// </summary>
+        /// <param name="customBaseDir">自定义日志根目录路径，为 null 时使用默认路径。</param>
         public static void Initialize(string customBaseDir = null)
         {
             try
@@ -39,10 +44,23 @@ namespace PackageManager.Services
             }
         }
 
+        /// <summary>
+        /// 记录信息级别日志。
+        /// </summary>
+        /// <param name="message">日志消息内容。</param>
         public static void LogInfo(string message) => Append(infoDir, "INFO", message, null);
 
+        /// <summary>
+        /// 记录警告级别日志。
+        /// </summary>
+        /// <param name="message">警告消息内容。</param>
         public static void LogWarning(string message) => Append(infoDir, "WARN", message, null);
 
+        /// <summary>
+        /// 记录错误级别日志，包含异常详细信息。
+        /// </summary>
+        /// <param name="ex">异常对象。</param>
+        /// <param name="message">附加描述消息，可为 null。</param>
         public static void LogError(Exception ex, string message = null) => Append(errorDir, "ERROR", message, ex);
 
         private static void Append(string dir, string level, string message, Exception ex)

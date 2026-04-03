@@ -6,8 +6,19 @@ using PackageManager.Models;
 
 namespace PackageManager.Converters
 {
+    /// <summary>
+    /// 将 <see cref="ConfigPreset"/> 对象转换为 INI 格式字符串的转换器。
+    /// </summary>
     public sealed class PresetToIniConverter : IValueConverter
     {
+        /// <summary>
+        /// 将配置预设对象转换为 INI 格式字符串。
+        /// </summary>
+        /// <param name="value">要转换的 <see cref="ConfigPreset"/> 对象。</param>
+        /// <param name="targetType">目标类型。</param>
+        /// <param name="parameter">转换参数（未使用）。</param>
+        /// <param name="culture">区域信息。</param>
+        /// <returns>INI 格式的字符串；若输入无效则返回空字符串。</returns>
         public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
         {
             if (value is ConfigPreset p)
@@ -31,6 +42,14 @@ namespace PackageManager.Converters
             return string.Empty;
         }
 
+        /// <summary>
+        /// 反向转换不做处理，返回 <see cref="Binding.DoNothing"/>。
+        /// </summary>
+        /// <param name="value">源值。</param>
+        /// <param name="targetType">目标类型。</param>
+        /// <param name="parameter">转换参数（未使用）。</param>
+        /// <param name="culture">区域信息。</param>
+        /// <returns><see cref="Binding.DoNothing"/></returns>
         public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
         {
             return Binding.DoNothing;

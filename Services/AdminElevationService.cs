@@ -9,8 +9,15 @@ using PackageManager.Models;
 
 namespace PackageManager.Services
 {
+    /// <summary>
+    /// 管理员权限提升服务，提供权限检测、以管理员身份运行进程等功能
+    /// </summary>
     public static class AdminElevationService
     {
+        /// <summary>
+        /// 判断当前进程是否以管理员身份运行
+        /// </summary>
+        /// <returns>如果当前进程具有管理员权限则返回 <c>true</c>，否则返回 <c>false</c></returns>
         public static bool IsRunningAsAdministrator()
         {
             try
@@ -25,6 +32,11 @@ namespace PackageManager.Services
             }
         }
 
+        /// <summary>
+        /// 判断指定路径是否需要管理员权限才能写入（如 Program Files、Windows 目录或驱动器根目录）
+        /// </summary>
+        /// <param name="path">要检查的文件或目录路径</param>
+        /// <returns>如果该路径位于受保护目录下则返回 <c>true</c>，否则返回 <c>false</c></returns>
         public static bool RequiresAdminForPath(string path)
         {
             try
@@ -44,22 +56,59 @@ namespace PackageManager.Services
             }
         }
 
+        /// <summary>
+        /// 管理员更新操作的配置数据模型
+        /// </summary>
         public class AdminUpdateConfig
         {
+            /// <summary>
+            /// 产品名称
+            /// </summary>
             public string ProductName { get; set; }
+
+            /// <summary>
+            /// 下载地址
+            /// </summary>
             public string DownloadUrl { get; set; }
+
+            /// <summary>
+            /// 本地安装路径
+            /// </summary>
             public string LocalPath { get; set; }
+
+            /// <summary>
+            /// 是否强制解除文件占用
+            /// </summary>
             public bool ForceUnlock { get; set; }
         }
         
+        /// <summary>
+        /// 管理员进程解锁操作的 UI 配置数据模型
+        /// </summary>
         public class AdminUnlockUiConfig
         {
+            /// <summary>
+            /// 要解锁的目标路径数组
+            /// </summary>
             public string[] Targets { get; set; }
+
+            /// <summary>
+            /// 要解锁的进程 ID 数组
+            /// </summary>
             public int[] Pids { get; set; }
-            
+
+            /// <summary>
+            /// 解锁结果的输出文件路径
+            /// </summary>
             public string ResultPath { get; set; }
         }
 
+        /// <summary>
+        /// 以管理员权限启动更新进程
+        /// </summary>
+        /// <param name="packageInfo">要更新的包信息</param>
+        /// <param name="forceUnlock">是否强制解除文件占用</param>
+        /// <returns>如果管理员更新进程成功执行并返回退出码 0 则返回 <c>true</c>，否则返回 <c>false</c></returns>
         public static async Task<bool> RunElevatedUpdateAsync(PackageInfo packageInfo, bool forceUnlock)
         {
             var tempDir = Path.Combine(Path.GetTempPath(), "PackageManager");
@@ -135,6 +184,12 @@ namespace PackageManager.Services
             }
         }
         
+        /// <summary>
+        /// 以管理员权限启动进程解锁工具的 UI 界面
+        /// </summary>
+        /// <param name="targets">要解锁的目标路径数组</param>
+        /// <param name="pids">要解锁的进程 ID 数组，默认为 <c>null</c></param>
+        /// <returns>如果进程成功启动则返回 <c>true</c>，否则返回 <c>false</c></returns>
         public static async Task<bool> RunElevatedUnlockUiAsync(string[] targets, int[] pids = null)
         {
             try
@@ -171,6 +226,12 @@ namespace PackageManager.Services
             }
         }
         
+        /// <summary>
+        /// 以管理员权限启动进程解锁工具并返回结果文件路径
+        /// </summary>
+        /// <param name="targets">要解锁的目标路径数组</param>
+        /// <param name="pids">要解锁的进程 ID 数组，默认为 <c>null</c></param>
+        /// <returns>解锁结果的 JSONL 文件路径；如果启动失败则返回 <c>null</c></returns>
         public static async Task<string> RunElevatedUnlockUiWithResultAsync(string[] targets, int[] pids = null)
         {
             try

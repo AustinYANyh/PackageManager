@@ -3,10 +3,17 @@ using PackageManager.Models;
 
 namespace PackageManager.Function.Log
 {
+    /// <summary>
+    /// 日志详情窗口，用于查看单条日志的详细信息。
+    /// </summary>
     public partial class LogDetailsWindow : Window
     {
         private readonly LogEntry _entry;
 
+        /// <summary>
+        /// 初始化 <see cref="LogDetailsWindow"/> 的新实例。
+        /// </summary>
+        /// <param name="entry">要显示的日志条目。</param>
         public LogDetailsWindow(LogEntry entry)
         {
             InitializeComponent();

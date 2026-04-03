@@ -123,16 +123,34 @@ namespace PackageManager.Models
         /// </summary>
         public event Action<PackageInfo> UpdateRequested;
 
+        /// <summary>
+        /// 版本切换事件
+        /// </summary>
         public event Action<PackageInfo, string> VersionChanged;
 
+        /// <summary>
+        /// 下载请求事件
+        /// </summary>
         public event Action<PackageInfo> DownloadRequested;
 
+        /// <summary>
+        /// 调试模式切换事件
+        /// </summary>
         public event Action<PackageInfo, bool> DebugModeChanged;
 
+        /// <summary>
+        /// 解锁并下载请求事件
+        /// </summary>
         public event Action<PackageInfo> UnlockAndDownloadRequested;
 
+        /// <summary>
+        /// 仅下载ZIP包请求事件
+        /// </summary>
         public event Action<PackageInfo> DownloadZipOnlyRequested;
 
+        /// <summary>
+        /// 属性值变更时触发。
+        /// </summary>
         public event PropertyChangedEventHandler PropertyChanged;
 
         /// <summary>
@@ -240,6 +258,9 @@ namespace PackageManager.Models
             }
         }
 
+        /// <summary>
+        /// 获取或设置各版本对应的本地路径映射。
+        /// </summary>
         public System.Collections.Generic.Dictionary<string, string> VersionLocalPaths
         {
             get => versionLocalPaths ?? (versionLocalPaths = new System.Collections.Generic.Dictionary<string, string>(System.StringComparer.OrdinalIgnoreCase));
@@ -252,6 +273,11 @@ namespace PackageManager.Models
         private ICommand cancelUpdateCommand;
         private ICommand cancelEmbeddedToolCommand;
 
+        /// <summary>
+        /// 获取指定版本对应的本地路径，若未配置则返回默认 <see cref="LocalPath"/>。
+        /// </summary>
+        /// <param name="version">版本号。</param>
+        /// <returns>对应版本的本地路径。</returns>
         public string GetLocalPathForVersion(string version)
         {
             if (!string.IsNullOrWhiteSpace(version) && VersionLocalPaths != null && VersionLocalPaths.TryGetValue(version, out var p) && !string.IsNullOrWhiteSpace(p))
@@ -261,6 +287,9 @@ namespace PackageManager.Models
             return LocalPath;
         }
 
+        /// <summary>
+        /// 获取当前版本的有效本地路径。
+        /// </summary>
         public string EffectiveLocalPath => GetLocalPathForVersion(Version);
 
         /// <summary>
@@ -274,6 +303,9 @@ namespace PackageManager.Models
             set => SetProperty(ref status, value);
         }
 
+        /// <summary>
+        /// 操作按钮列的占位属性。
+        /// </summary>
         [DataGridButton(7,
                         DisplayName = "操作",
                         Width = "100",
@@ -349,18 +381,34 @@ namespace PackageManager.Models
                              IsVisible = false)]
         public string ConfigOperation { get; set; }
 
+        /// <summary>
+        /// 获取是否启用（非只读状态）。
+        /// </summary>
         public bool IsEnabled => !IsReadOnly;
 
-        // 更新/解锁更新按钮的启用状态：运行中或非只读时均应可点击（以便取消）
+        /// <summary>
+        /// 获取更新/取消按钮的启用状态。
+        /// </summary>
         public bool UpdateCancelEnabled => IsUpdatingRunning || IsEnabled;
 
-        // 签名加密按钮的启用状态：运行中或非只读时均应可点击（以便取消）
+        /// <summary>
+        /// 获取签名加密按钮的启用状态。
+        /// </summary>
         public bool SignatureCancelEnabled => IsSignatureEncryptionRunning || IsEnabled;
 
+        /// <summary>
+        /// 获取当前产品是否为 TeamworkMaster(Develop)。
+        /// </summary>
         public bool IsTeamworkMasterDevelop => string.Equals(ProductName, "TeamworkMaster(Develop)", StringComparison.OrdinalIgnoreCase);
 
+        /// <summary>
+        /// 获取或设置是否支持配置操作的覆盖值。
+        /// </summary>
         public bool? SupportsConfigOpsOverride { get; set; }
 
+        /// <summary>
+        /// 获取当前产品是否支持配置操作。
+        /// </summary>
         public bool SupportsConfigOps
         {
             get
@@ -373,8 +421,14 @@ namespace PackageManager.Models
             }
         }
 
+        /// <summary>
+        /// 获取配置操作按钮的启用状态。
+        /// </summary>
         public bool ConfigOpsEnabled => SupportsConfigOps && IsEnabled;
 
+        /// <summary>
+        /// 签名加密操作按钮的占位属性。
+        /// </summary>
         [DataGridButton(12,
                         DisplayName = "签名加密",
                         Width = "100",
@@ -447,6 +501,9 @@ namespace PackageManager.Models
             set => SetProperty(ref changeModeToDebugCommand, value);
         }
 
+        /// <summary>
+        /// 获取或设置打开调试选项的命令。
+        /// </summary>
         public ICommand OpenDebugOptionsCommand
         {
             get => openDebugOptionsCommand ?? (openDebugOptionsCommand = new RelayCommand(ExecuteOpenDebugOptions, () => SupportsConfigOps));
@@ -478,6 +535,9 @@ namespace PackageManager.Models
 
         private ICommand unlockAndDownloadCommand;
 
+        /// <summary>
+        /// 获取或设置解锁并下载的命令。
+        /// </summary>
         public ICommand UnlockAndDownloadCommand
         {
             get => unlockAndDownloadCommand ?? (unlockAndDownloadCommand = new RelayCommand(ExecuteUnlockAndDownload));
@@ -609,6 +669,9 @@ namespace PackageManager.Models
             set => SetProperty(ref isDebugMode, value);
         }
 
+        /// <summary>
+        /// 获取或设置签名加密流程是否运行中。
+        /// </summary>
         private bool isSignatureEncryptionRunning;
 
         public bool IsSignatureEncryptionRunning
@@ -626,6 +689,9 @@ namespace PackageManager.Models
             }
         }
 
+        /// <summary>
+        /// 获取是否可以运行签名加密（非运行中且启用状态）。
+        /// </summary>
         public bool CanRunSignatureEncryption => !IsSignatureEncryptionRunning && IsEnabled;
 
         /// <summary>
@@ -777,6 +843,10 @@ namespace PackageManager.Models
             set => SetProperty(ref openPathCommand, value);
         }
         
+        /// <summary>
+        /// 设置下载地址覆盖值。
+        /// </summary>
+        /// <param name="url">覆盖的下载地址。</param>
         public void SetDownloadUrlOverride(string url)
         {
             if (downloadUrlOverride == url) return;
@@ -852,11 +922,23 @@ namespace PackageManager.Models
             }
         }
 
+        /// <summary>
+        /// 触发 <see cref="PropertyChanged"/> 事件。
+        /// </summary>
+        /// <param name="propertyName">发生变更的属性名称。</param>
         protected virtual void OnPropertyChanged([CallerMemberName] string propertyName = null)
         {
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
         }
 
+        /// <summary>
+        /// 设置属性值并在值变更时触发 <see cref="PropertyChanged"/> 事件。
+        /// </summary>
+        /// <typeparam name="T">属性类型。</typeparam>
+        /// <param name="field">属性 backing 字段的引用。</param>
+        /// <param name="value">新值。</param>
+        /// <param name="propertyName">属性名称。</param>
+        /// <returns>值是否发生变更。</returns>
         protected bool SetProperty<T>(ref T field, T value, [CallerMemberName] string propertyName = null)
         {
             if (Equals(field, value))
@@ -1230,18 +1312,29 @@ namespace PackageManager.Models
     /// <summary>
     /// 简单的RelayCommand实现
     /// </summary>
+    /// <summary>
+    /// 简单的RelayCommand实现
+    /// </summary>
     public class RelayCommand : ICommand
     {
         private readonly Action execute;
 
         private readonly Func<bool> canExecute;
 
+        /// <summary>
+        /// 初始化 <see cref="RelayCommand"/> 的新实例。
+        /// </summary>
+        /// <param name="execute">执行的操作。</param>
+        /// <param name="canExecute">判断是否可执行的函数，为 null 时始终可执行。</param>
         public RelayCommand(Action execute, Func<bool> canExecute = null)
         {
             this.execute = execute ?? throw new ArgumentNullException(nameof(execute));
             this.canExecute = canExecute;
         }
 
+        /// <summary>
+        /// 当影响命令是否应执行的条件发生更改时触发。
+        /// </summary>
         public event EventHandler CanExecuteChanged
         {
             add => CommandManager.RequerySuggested += value;
@@ -1249,11 +1342,20 @@ namespace PackageManager.Models
             remove => CommandManager.RequerySuggested -= value;
         }
 
+        /// <summary>
+        /// 判断当前命令是否可以执行。
+        /// </summary>
+        /// <param name="parameter">命令参数（未使用）。</param>
+        /// <returns>如果可以执行返回 true，否则返回 false。</returns>
         public bool CanExecute(object parameter)
         {
             return canExecute?.Invoke() ?? true;
         }
 
+        /// <summary>
+        /// 执行命令。
+        /// </summary>
+        /// <param name="parameter">命令参数（未使用）。</param>
         public void Execute(object parameter)
         {
             execute();

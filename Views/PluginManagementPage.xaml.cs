@@ -13,6 +13,9 @@ using PackageManager.Services;
 
 namespace PackageManager.Views;
 
+/// <summary>
+/// 插件管理页面，管理 Revit Addin 插件的启用/禁用状态。
+/// </summary>
 public partial class PluginManagementPage : Page, INotifyPropertyChanged, ICentralPage
 {
     private static readonly HashSet<string> ExcludedExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
@@ -30,6 +33,12 @@ public partial class PluginManagementPage : Page, INotifyPropertyChanged, ICentr
     private string currentVersionFolderText;
     private ApplicationVersion selectedRevitExecutableVersion;
 
+    /// <summary>
+    /// 初始化 <see cref="PluginManagementPage"/> 的新实例。
+    /// </summary>
+    /// <param name="dataPersistenceService">数据持久化服务实例。</param>
+    /// <param name="applicationFinderService">应用程序查找服务实例。</param>
+    /// <exception cref="ArgumentNullException"><paramref name="dataPersistenceService"/> 或 <paramref name="applicationFinderService"/> 为 null。</exception>
     public PluginManagementPage(DataPersistenceService dataPersistenceService, ApplicationFinderService applicationFinderService)
     {
         InitializeComponent();
@@ -42,26 +51,45 @@ public partial class PluginManagementPage : Page, INotifyPropertyChanged, ICentr
         RefreshPlugins();
     }
 
+    /// <summary>
+    /// 请求退出当前页面的导航事件。
+    /// </summary>
     public event Action RequestExit;
 
+    /// <inheritdoc/>
     public event PropertyChangedEventHandler PropertyChanged;
 
+    /// <summary>
+    /// 获取可选的 Revit 可执行版本列表。
+    /// </summary>
     public ObservableCollection<ApplicationVersion> RevitExecutableVersions { get; } = new();
 
+    /// <summary>
+    /// 获取当前版本的插件列表。
+    /// </summary>
     public ObservableCollection<PluginAddinInfo> Plugins { get; } = new();
 
+    /// <summary>
+    /// 获取或设置 Addin 根路径的显示文本。
+    /// </summary>
     public string AddinRootPathText
     {
         get => addinRootPathText;
         set => SetProperty(ref addinRootPathText, value);
     }
 
+    /// <summary>
+    /// 获取或设置当前选中的 Revit 可执行版本。
+    /// </summary>
     public ApplicationVersion SelectedRevitExecutableVersion
     {
         get => selectedRevitExecutableVersion;
         set => SetProperty(ref selectedRevitExecutableVersion, value);
     }
 
+    /// <summary>
+    /// 获取或设置当前版本文件夹路径的显示文本。
+    /// </summary>
     public string CurrentVersionFolderText
     {
         get => currentVersionFolderText;
@@ -292,11 +320,23 @@ public partial class PluginManagementPage : Page, INotifyPropertyChanged, ICentr
         return int.TryParse(version, out var result) ? result : 0;
     }
 
+    /// <summary>
+    /// 触发 <see cref="PropertyChanged"/> 事件。
+    /// </summary>
+    /// <param name="propertyName">发生更改的属性名称，默认为调用方成员名。</param>
     protected virtual void OnPropertyChanged([CallerMemberName] string propertyName = null)
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
     }
 
+    /// <summary>
+    /// 设置属性值并在值变化时触发 <see cref="PropertyChanged"/> 通知。
+    /// </summary>
+    /// <typeparam name="T">属性值的类型。</typeparam>
+    /// <param name="field">属性后备字段的引用。</param>
+    /// <param name="value">新值。</param>
+    /// <param name="propertyName">属性名称，默认为调用方成员名。</param>
+    /// <returns>如果值已更改返回 <c>true</c>，否则返回 <c>false</c>。</returns>
     protected bool SetProperty<T>(ref T field, T value, [CallerMemberName] string propertyName = null)
     {
         if (Equals(field, value))

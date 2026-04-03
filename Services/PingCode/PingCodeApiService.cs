@@ -39,6 +39,7 @@ public partial class PingCodeApiService
     /// <summary>
     /// 获取当前访问令牌（自动刷新且返回最新有效令牌）。
     /// </summary>
+    /// <returns>有效的访问令牌字符串。</returns>
     public async Task<string> GetAccessTokenAsync()
     {
         await EnsureTokenAsync();
@@ -48,6 +49,7 @@ public partial class PingCodeApiService
     /// <summary>
     /// 获取项目列表（兼容多种端点，优先返回首个非空结果）。
     /// </summary>
+    /// <returns>项目实体列表。</returns>
     public async Task<List<Entity>> GetProjectsAsync()
     {
         var candidates = new[]
@@ -85,6 +87,8 @@ public partial class PingCodeApiService
     /// <summary>
     /// 获取指定项目未完成的迭代（过滤 Completed/Done/Closed 等状态）。
     /// </summary>
+    /// <param name="projectId">项目的唯一标识。</param>
+    /// <returns>未完成的迭代实体列表。</returns>
     public async Task<List<Entity>> GetNotCompletedIterationsByProjectAsync(string projectId)
     {
         var result = new List<Entity>();
@@ -137,6 +141,8 @@ public partial class PingCodeApiService
     /// <summary>
     /// 获取指定项目进行中的迭代（status=in_progress）。
     /// </summary>
+    /// <param name="projectId">项目的唯一标识。</param>
+    /// <returns>进行中的迭代实体列表。</returns>
     public async Task<List<Entity>> GetOngoingIterationsByProjectAsync(string projectId)
     {
         var result = new List<Entity>();
@@ -178,6 +184,8 @@ public partial class PingCodeApiService
     /// <summary>
     /// 获取项目成员（去重并返回 Id/Name）。
     /// </summary>
+    /// <param name="projectId">项目的唯一标识。</param>
+    /// <returns>项目成员实体列表。</returns>
     public async Task<List<Entity>> GetProjectMembersAsync(string projectId)
     {
         var result = new List<Entity>();
@@ -220,6 +228,8 @@ public partial class PingCodeApiService
     /// <summary>
     /// 获取迭代内按处理人聚合的故事点拆分（Closed/Done/InProgress/NotStarted 及优先级分布）。
     /// </summary>
+    /// <param name="iterationOrSprintId">迭代或冲刺的唯一标识。</param>
+    /// <returns>以处理人标识为键、故事点拆分为值的字典。</returns>
     public async Task<Dictionary<string, StoryPointBreakdown>> GetIterationStoryPointsBreakdownByAssigneeAsync(string iterationOrSprintId)
     {
         var result = new Dictionary<string, StoryPointBreakdown>(StringComparer.OrdinalIgnoreCase);
@@ -385,6 +395,8 @@ public partial class PingCodeApiService
     /// <summary>
     /// 获取迭代内工作项列表（补充参与者与成员映射、状态/优先级/故事点等信息）。
     /// </summary>
+    /// <param name="iterationOrSprintId">迭代或冲刺的唯一标识。</param>
+    /// <returns>工作项摘要信息列表。</returns>
     public async Task<List<WorkItemInfo>> GetIterationWorkItemsAsync(string iterationOrSprintId)
     {
         var result = new List<WorkItemInfo>();
@@ -740,6 +752,11 @@ public partial class PingCodeApiService
         return result;
     }
 
+    /// <summary>
+    /// 获取工作项的详细信息（含描述、评论、子工作项统计等）。
+    /// </summary>
+    /// <param name="workItemId">工作项的唯一标识。</param>
+    /// <returns>工作项详细信息；若未找到则返回 <c>null</c>。</returns>
     public async Task<WorkItemDetails> GetWorkItemDetailsAsync(string workItemId)
     {
         if (string.IsNullOrWhiteSpace(workItemId))
@@ -846,6 +863,11 @@ public partial class PingCodeApiService
         return null;
     }
 
+    /// <summary>
+    /// 获取工作项的评论列表（兼容多个端点，含附件和回复信息）。
+    /// </summary>
+    /// <param name="workItemId">工作项的唯一标识。</param>
+    /// <returns>评论列表。</returns>
     public async Task<List<WorkItemComment>> GetWorkItemCommentsAsync(string workItemId)
     {
         var result = new List<WorkItemComment>();
@@ -1009,6 +1031,11 @@ public partial class PingCodeApiService
         return result;
     }
 
+    /// <summary>
+    /// 获取指定工作项的子工作项列表。
+    /// </summary>
+    /// <param name="parentWorkItemId">父工作项的唯一标识。</param>
+    /// <returns>子工作项摘要信息列表。</returns>
     public async Task<List<WorkItemInfo>> GetChildWorkItemsAsync(string parentWorkItemId)
     {
         var result = new List<WorkItemInfo>();
@@ -1087,6 +1114,8 @@ public partial class PingCodeApiService
     /// <summary>
     /// 获取子工作项数量（优先 parent_id 查询，回退 children 端点）。
     /// </summary>
+    /// <param name="parentWorkItemId">父工作项的唯一标识。</param>
+    /// <returns>子工作项的数量。</returns>
     public async Task<int> GetChildWorkItemCountAsync(string parentWorkItemId)
     {
         if (string.IsNullOrWhiteSpace(parentWorkItemId))
@@ -1127,6 +1156,9 @@ public partial class PingCodeApiService
     /// <summary>
     /// 创建结构化评论（content 为结构化 payload，支持 @提及）。
     /// </summary>
+    /// <param name="workItemId">工作项的唯一标识。</param>
+    /// <param name="contentPayload">结构化评论内容的 JSON 数组。</param>
+    /// <returns>创建成功后的评论 JSON 对象；失败返回 <c>null</c>。</returns>
     public async Task<JObject> CreateWorkItemCommentWithPayloadAsync(string workItemId, JArray contentPayload)
     {
         if (string.IsNullOrWhiteSpace(workItemId) || contentPayload == null)
@@ -1154,6 +1186,9 @@ public partial class PingCodeApiService
     /// <summary>
     /// 创建普通评论（content 为 HTML 字符串），兼容不同字段名。
     /// </summary>
+    /// <param name="workItemId">工作项的唯一标识。</param>
+    /// <param name="contentHtml">评论的 HTML 内容。</param>
+    /// <returns>是否创建成功。</returns>
     public async Task<bool> AddWorkItemCommentAsync(string workItemId, string contentHtml)
     {
         if (string.IsNullOrWhiteSpace(workItemId) || string.IsNullOrWhiteSpace(contentHtml))
@@ -1194,6 +1229,10 @@ public partial class PingCodeApiService
     /// <summary>
     /// 创建通用评论（仅发送正文），返回是否成功。
     /// </summary>
+    /// <param name="workItemId">工作项的唯一标识。</param>
+    /// <param name="contentHtml">评论的 HTML 内容。</param>
+    /// <param name="attachments">可选的附件列表（当前未使用）。</param>
+    /// <returns>是否创建成功。</returns>
     public async Task<bool> AddGenericWorkItemCommentAsync(string workItemId, string contentHtml, List<JObject> attachments = null)
     {
         if (string.IsNullOrWhiteSpace(workItemId))
@@ -1207,6 +1246,9 @@ public partial class PingCodeApiService
     /// <summary>
     /// 创建通用评论并返回响应对象。
     /// </summary>
+    /// <param name="workItemId">工作项的唯一标识。</param>
+    /// <param name="contentHtml">评论的 HTML 内容。</param>
+    /// <returns>创建成功后的评论 JSON 对象；失败返回 <c>null</c>。</returns>
     public async Task<JObject> CreateGenericWorkItemCommentAsync(string workItemId, string contentHtml)
     {
         if (string.IsNullOrWhiteSpace(workItemId))
@@ -1234,6 +1276,9 @@ public partial class PingCodeApiService
     /// <summary>
     /// 更新工作项状态（兼容 state_id 字段写入）。
     /// </summary>
+    /// <param name="workItemId">工作项的唯一标识。</param>
+    /// <param name="stateId">目标状态的唯一标识。</param>
+    /// <returns>是否更新成功。</returns>
     public async Task<bool> UpdateWorkItemStateByIdAsync(string workItemId, string stateId)
     {
         if (string.IsNullOrWhiteSpace(workItemId) || string.IsNullOrWhiteSpace(stateId))
@@ -1275,6 +1320,9 @@ public partial class PingCodeApiService
     /// <summary>
     /// 更新工作项故事点（兼容 story_points/story_point 字段）。
     /// </summary>
+    /// <param name="workItemId">工作项的唯一标识。</param>
+    /// <param name="storyPoints">要设置的故事点数。</param>
+    /// <returns>是否更新成功。</returns>
     public async Task<bool> UpdateWorkItemStoryPointsAsync(string workItemId, double storyPoints)
     {
         if (string.IsNullOrWhiteSpace(workItemId) || (storyPoints < 0))
@@ -1316,6 +1364,9 @@ public partial class PingCodeApiService
     /// <summary>
     /// 获取某工作项类型下的状态列表（兼容多个端点与参数键）。
     /// </summary>
+    /// <param name="projectId">项目的唯一标识。</param>
+    /// <param name="workItemTypeIdOrName">工作项类型的标识或名称。</param>
+    /// <returns>状态 DTO 列表。</returns>
     public async Task<List<StateDto>> GetWorkItemStatesByTypeAsync(string projectId, string workItemTypeIdOrName)
     {
         var result = new List<StateDto>();
@@ -1363,6 +1414,10 @@ public partial class PingCodeApiService
     /// <summary>
     /// 获取从指定状态可迁移到的目标状态列表（兼容多个端点与参数键）。
     /// </summary>
+    /// <param name="projectId">项目的唯一标识。</param>
+    /// <param name="workItemTypeIdOrName">工作项类型的标识或名称。</param>
+    /// <param name="fromStateId">起始状态的唯一标识。</param>
+    /// <returns>可迁移到的目标状态 DTO 列表。</returns>
     public async Task<List<StateDto>> GetWorkItemStateTransitionsAsync(string projectId, string workItemTypeIdOrName, string fromStateId)
     {
         var result = new List<StateDto>();
@@ -1430,6 +1485,8 @@ public partial class PingCodeApiService
     /// <summary>
     /// 获取项目下的状态方案列表（返回方案 Id 与项目/工作项类型信息）。
     /// </summary>
+    /// <param name="projectId">项目的唯一标识。</param>
+    /// <returns>状态方案信息列表。</returns>
     public async Task<List<StatePlanInfo>> GetWorkItemStatePlansAsync(string projectId)
     {
         var result = new List<StatePlanInfo>();
@@ -1483,6 +1540,9 @@ public partial class PingCodeApiService
     /// <summary>
     /// 获取状态方案内的状态流转（可指定 fromStateId 过滤）。
     /// </summary>
+    /// <param name="statePlanId">状态方案的唯一标识。</param>
+    /// <param name="fromStateId">起始状态的唯一标识（可为 <c>null</c> 以获取所有流转）。</param>
+    /// <returns>可流转到的目标状态 DTO 列表。</returns>
     public async Task<List<StateDto>> GetWorkItemStateFlowsAsync(string statePlanId, string fromStateId)
     {
         var result = new List<StateDto>();
@@ -1546,6 +1606,9 @@ public partial class PingCodeApiService
     /// <summary>
     /// 计算用户在迭代内的故事点总和（迭代/冲刺 + 指派过滤）。
     /// </summary>
+    /// <param name="iterationOrSprintId">迭代或冲刺的唯一标识。</param>
+    /// <param name="userId">用户的唯一标识。</param>
+    /// <returns>该用户在指定迭代内的故事点总和。</returns>
     public async Task<double> GetUserStoryPointsSumAsync(string iterationOrSprintId, string userId)
     {
         if (string.IsNullOrWhiteSpace(iterationOrSprintId) || string.IsNullOrWhiteSpace(userId))
@@ -1616,60 +1679,4 @@ public partial class PingCodeApiService
 
         return 0;
     }
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
-
-    
 }

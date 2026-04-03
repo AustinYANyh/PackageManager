@@ -13,10 +13,16 @@ using PackageManager.Services;
 
 namespace PackageManager.Function.SlnTool
 {
+    /// <summary>
+    /// 解决方案更新窗口，用于批量更新 sln 文件中项目的依赖关系。
+    /// </summary>
     public partial class SlnUpdateWindow : Window
     {
         private readonly ObservableCollection<SlnItem> _items = new ObservableCollection<SlnItem>();
 
+        /// <summary>
+        /// 初始化 <see cref="SlnUpdateWindow"/> 的新实例。
+        /// </summary>
         public SlnUpdateWindow()
         {
             InitializeComponent();

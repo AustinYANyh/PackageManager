@@ -7,7 +7,17 @@ namespace PackageManager.Function.PackageManage
     /// </summary>
     public interface IPackageEditorHost
     {
+        /// <summary>
+        /// 编辑指定的包配置项。
+        /// </summary>
+        /// <param name="item">要编辑的包配置项。</param>
+        /// <param name="isNew">是否为新建模式。</param>
         void EditItem(PackageItem item, bool isNew);
+
+        /// <summary>
+        /// 移除指定的包配置项。
+        /// </summary>
+        /// <param name="item">要移除的包配置项。</param>
         void RemoveItem(PackageItem item);
     }
 }

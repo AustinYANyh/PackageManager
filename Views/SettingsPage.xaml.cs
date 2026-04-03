@@ -11,6 +11,9 @@ using PackageManager.Services;
 
 namespace PackageManager.Views;
 
+/// <summary>
+/// 应用设置页面，管理 Addin 路径、更新服务器、Jenkins 配置等。
+/// </summary>
 public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
 {
     private readonly DataPersistenceService dataPersistenceService;
@@ -35,6 +38,11 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
 
     private string jenkinsUsername;
 
+    /// <summary>
+    /// 初始化 <see cref="SettingsPage"/> 的新实例。
+    /// </summary>
+    /// <param name="dataPersistenceService">数据持久化服务实例。</param>
+    /// <exception cref="ArgumentNullException"><paramref name="dataPersistenceService"/> 为 null。</exception>
     public SettingsPage(DataPersistenceService dataPersistenceService)
     {
         InitializeComponent();
@@ -46,10 +54,17 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
         AppVersionText = $"版本：{current}";
     }
 
+    /// <summary>
+    /// 请求退出当前页面的导航事件。
+    /// </summary>
     public event Action RequestExit;
 
+    /// <inheritdoc/>
     public event PropertyChangedEventHandler PropertyChanged;
 
+    /// <summary>
+    /// 获取或设置 Revit Addin 根目录路径。
+    /// </summary>
     public string AddinPath
     {
         get => addinPath;
@@ -57,6 +72,9 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
         set => SetProperty(ref addinPath, value);
     }
 
+    /// <summary>
+    /// 获取或设置更新服务器 URL。
+    /// </summary>
     public string UpdateServerUrl
     {
         get => updateServerUrl;
@@ -64,6 +82,9 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
         set => SetProperty(ref updateServerUrl, value);
     }
 
+    /// <summary>
+    /// 获取或设置程序入口是否带 G 参数的标志。
+    /// </summary>
     public bool ProgramEntryWithG
     {
         get => programEntryWithG;
@@ -71,6 +92,9 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
         set => SetProperty(ref programEntryWithG, value);
     }
 
+    /// <summary>
+    /// 获取或设置产品日志等级。
+    /// </summary>
     public string ProductLogLevel
     {
         get => productLogLevel;
@@ -78,6 +102,9 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
         set => SetProperty(ref productLogLevel, value);
     }
 
+    /// <summary>
+    /// 获取或设置 Jenkins 服务器基础 URL。
+    /// </summary>
     public string JenkinsBaseUrl
     {
         get => jenkinsBaseUrl;
@@ -85,6 +112,9 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
         set => SetProperty(ref jenkinsBaseUrl, value);
     }
 
+    /// <summary>
+    /// 获取或设置 Jenkins 视图名称。
+    /// </summary>
     public string JenkinsViewName
     {
         get => jenkinsViewName;
@@ -92,6 +122,9 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
         set => SetProperty(ref jenkinsViewName, value);
     }
 
+    /// <summary>
+    /// 获取或设置 Jenkins 用户名。
+    /// </summary>
     public string JenkinsUsername
     {
         get => jenkinsUsername;
@@ -99,6 +132,9 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
         set => SetProperty(ref jenkinsUsername, value);
     }
 
+    /// <summary>
+    /// 获取或设置是否过滤日志目录的标志。
+    /// </summary>
     public bool FilterLogDirectories
     {
         get => filterLogDirectories;
@@ -106,6 +142,9 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
         set => SetProperty(ref filterLogDirectories, value);
     }
 
+    /// <summary>
+    /// 获取或设置应用数据存储位置的显示文本。
+    /// </summary>
     public string DataLocation
     {
         get => dataLocation;
@@ -113,6 +152,9 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
         set => SetProperty(ref dataLocation, value);
     }
 
+    /// <summary>
+    /// 获取或设置应用版本号的显示文本。
+    /// </summary>
     public string AppVersionText
     {
         get => appVersionText;
@@ -120,15 +162,33 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
         set => SetProperty(ref appVersionText, value);
     }
 
+    /// <summary>
+    /// 获取日志文本阅读器选项列表。
+    /// </summary>
     public ObservableCollection<string> LogTxtReaders { get; } = new();
 
+    /// <summary>
+    /// 获取或设置当前选中的日志文本阅读器名称。
+    /// </summary>
     public string LogTxtReader { get; set; }
 
+    /// <summary>
+    /// 触发 <see cref="PropertyChanged"/> 事件。
+    /// </summary>
+    /// <param name="propertyName">发生更改的属性名称，默认为调用方成员名。</param>
     protected virtual void OnPropertyChanged([CallerMemberName] string propertyName = null)
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
     }
 
+    /// <summary>
+    /// 设置属性值并在值变化时触发 <see cref="PropertyChanged"/> 通知。
+    /// </summary>
+    /// <typeparam name="T">属性值的类型。</typeparam>
+    /// <param name="field">属性后备字段的引用。</param>
+    /// <param name="value">新值。</param>
+    /// <param name="propertyName">属性名称，默认为调用方成员名。</param>
+    /// <returns>如果值已更改返回 <c>true</c>，否则返回 <c>false</c>。</returns>
     protected bool SetProperty<T>(ref T field, T value, [CallerMemberName] string propertyName = null)
     {
         if (Equals(field, value))

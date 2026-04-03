@@ -22,42 +22,65 @@ namespace PackageManager.Function.Setting
         private string _dataLocation;
         private string _appVersionText;
 
+        /// <summary>
+        /// 获取或设置插件路径。
+        /// </summary>
         public string AddinPath
         {
             get => _addinPath;
             set => SetProperty(ref _addinPath, value);
         }
         
+        /// <summary>
+        /// 获取或设置更新服务器地址。
+        /// </summary>
         public string UpdateServerUrl
         {
             get => _updateServerUrl;
             set => SetProperty(ref _updateServerUrl, value);
         }
         
+        /// <summary>
+        /// 获取或设置是否以 G 标识程序入口。
+        /// </summary>
         public bool ProgramEntryWithG
         {
             get => _programEntryWithG;
             set => SetProperty(ref _programEntryWithG, value);
         }
 
+        /// <summary>
+        /// 获取或设置是否过滤日志目录。
+        /// </summary>
         public bool FilterLogDirectories
         {
             get => _filterLogDirectories;
             set => SetProperty(ref _filterLogDirectories, value);
         }
 
+        /// <summary>
+        /// 获取或设置数据存储路径。
+        /// </summary>
         public string DataLocation
         {
             get => _dataLocation;
             set => SetProperty(ref _dataLocation, value);
         }
 
+        /// <summary>
+        /// 获取应用程序版本显示文本。
+        /// </summary>
         public string AppVersionText
         {
             get => _appVersionText;
             set => SetProperty(ref _appVersionText, value);
         }
 
+        /// <summary>
+        /// 初始化 <see cref="SettingsWindow"/> 的新实例。
+        /// </summary>
+        /// <param name="dataPersistenceService">数据持久化服务实例。</param>
+        /// <exception cref="ArgumentNullException"><paramref name="dataPersistenceService"/> 为 <c>null</c>。</exception>
         public SettingsWindow(DataPersistenceService dataPersistenceService)
         {
             InitializeComponent();
@@ -274,13 +297,28 @@ namespace PackageManager.Function.Setting
 
         #region INotifyPropertyChanged Implementation
 
+        /// <summary>
+        /// 当属性值更改时触发。
+        /// </summary>
         public event PropertyChangedEventHandler PropertyChanged;
 
+        /// <summary>
+        /// 触发 <see cref="PropertyChanged"/> 事件。
+        /// </summary>
+        /// <param name="propertyName">发生更改的属性名称。</param>
         protected virtual void OnPropertyChanged([CallerMemberName] string propertyName = null)
         {
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
         }
 
+        /// <summary>
+        /// 设置属性值，如果值发生更改则触发 <see cref="PropertyChanged"/> 事件。
+        /// </summary>
+        /// <typeparam name="T">属性值的类型。</typeparam>
+        /// <param name="field">属性后备字段的引用。</param>
+        /// <param name="value">要设置的新值。</param>
+        /// <param name="propertyName">属性名称。</param>
+        /// <returns>如果值已更改返回 <c>true</c>，否则返回 <c>false</c>。</returns>
         protected bool SetProperty<T>(ref T field, T value, [CallerMemberName] string propertyName = null)
         {
             if (Equals(field, value)) return false;

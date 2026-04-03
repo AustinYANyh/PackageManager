@@ -12,12 +12,18 @@ using PackageManager.Services;
 
 namespace PackageManager.Function.Log
 {
+    /// <summary>
+    /// 日志查看器窗口，用于浏览和筛选软件运行日志。
+    /// </summary>
     public partial class LogViewerWindow : Window
     {
         private string infoDir;
 
         private string errorDir;
 
+        /// <summary>
+        /// 初始化 <see cref="LogViewerWindow"/> 的新实例。
+        /// </summary>
         public LogViewerWindow()
         {
             InitializeComponent();

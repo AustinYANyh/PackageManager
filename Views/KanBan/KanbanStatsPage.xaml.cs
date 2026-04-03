@@ -13,6 +13,9 @@ using PackageManager.Services.PingCode.Model;
 
 namespace PackageManager.Views.KanBan;
 
+/// <summary>
+/// 看板统计页面，按人员汇总迭代故事点数据。
+/// </summary>
 public partial class KanbanStatsPage : Page, ICentralPage, INotifyPropertyChanged
 {
     private readonly PingCodeApiService api;
@@ -29,6 +32,9 @@ public partial class KanbanStatsPage : Page, ICentralPage, INotifyPropertyChange
 
     private string resultTextContent;
 
+    /// <summary>
+    /// 初始化 <see cref="KanbanStatsPage"/> 的新实例。
+    /// </summary>
     public KanbanStatsPage()
     {
         InitializeComponent();
@@ -36,16 +42,32 @@ public partial class KanbanStatsPage : Page, ICentralPage, INotifyPropertyChange
         DataContext = this;
     }
 
+    /// <summary>
+    /// 请求退出当前页面的导航事件。
+    /// </summary>
     public event Action RequestExit;
 
+    /// <inheritdoc/>
     public event PropertyChangedEventHandler PropertyChanged;
 
+    /// <summary>
+    /// 获取项目成员（用户）列表。
+    /// </summary>
     public ObservableCollection<Entity> Users { get; } = new();
 
+    /// <summary>
+    /// 获取可选项目列表。
+    /// </summary>
     public ObservableCollection<Entity> Projects { get; } = new();
 
+    /// <summary>
+    /// 获取可选迭代列表。
+    /// </summary>
     public ObservableCollection<Entity> Iterations { get; } = new();
 
+    /// <summary>
+    /// 获取或设置查询结果统计行数据。
+    /// </summary>
     public ObservableCollection<MemberStatsItem> StatsRows
     {
         get => statsRows;
@@ -60,6 +82,9 @@ public partial class KanbanStatsPage : Page, ICentralPage, INotifyPropertyChange
         }
     }
 
+    /// <summary>
+    /// 获取或设置当前选中的项目。
+    /// </summary>
     public Entity SelectedProject
     {
         get => selectedProject;
@@ -74,6 +99,9 @@ public partial class KanbanStatsPage : Page, ICentralPage, INotifyPropertyChange
         }
     }
 
+    /// <summary>
+    /// 获取或设置当前选中的用户。
+    /// </summary>
     public Entity SelectedUser
     {
         get => selectedUser;
@@ -88,6 +116,9 @@ public partial class KanbanStatsPage : Page, ICentralPage, INotifyPropertyChange
         }
     }
 
+    /// <summary>
+    /// 获取或设置当前选中的迭代。
+    /// </summary>
     public Entity SelectedIteration
     {
         get => selectedIteration;
@@ -102,6 +133,9 @@ public partial class KanbanStatsPage : Page, ICentralPage, INotifyPropertyChange
         }
     }
 
+    /// <summary>
+    /// 获取或设置查询结果摘要文本。
+    /// </summary>
     public string ResultTextContent
     {
         get => resultTextContent;
@@ -116,6 +150,10 @@ public partial class KanbanStatsPage : Page, ICentralPage, INotifyPropertyChange
         }
     }
 
+    /// <summary>
+    /// 触发 <see cref="PropertyChanged"/> 事件。
+    /// </summary>
+    /// <param name="name">发生更改的属性名称，默认为调用方成员名。</param>
     protected void OnPropertyChanged([CallerMemberName] string name = null)
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));

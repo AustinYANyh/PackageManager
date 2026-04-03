@@ -15,6 +15,10 @@ namespace PackageManager
     /// </summary>
     public partial class App
     {
+        /// <summary>
+        /// 应用程序启动时执行初始化操作，包括 WebView2 加载器、日志服务和异常处理。
+        /// </summary>
+        /// <param name="e">启动事件参数，包含命令行参数。</param>
         protected override void OnStartup(StartupEventArgs e)
         {
             base.OnStartup(e);

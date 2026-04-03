@@ -12,6 +12,9 @@ using PackageManager.Services;
 
 namespace PackageManager.Views;
 
+/// <summary>
+/// 产品日志页面，浏览产品日志和 Revit Journal 文件。
+/// </summary>
 public partial class ProductLogsPage : Page, ICentralPage
 {
     private readonly string baseDir;
@@ -24,6 +27,10 @@ public partial class ProductLogsPage : Page, ICentralPage
 
     private string revitDir;
 
+    /// <summary>
+    /// 初始化 <see cref="ProductLogsPage"/> 的新实例。
+    /// </summary>
+    /// <param name="baseDir">产品日志根目录路径。</param>
     public ProductLogsPage(string baseDir)
     {
         InitializeComponent();
@@ -49,21 +56,46 @@ public partial class ProductLogsPage : Page, ICentralPage
         EnsureRevitDirFromCache();
     }
 
+    /// <summary>
+    /// 请求退出当前页面的导航事件。
+    /// </summary>
     public event Action RequestExit;
 
+    /// <summary>
+    /// 获取产品日志文件列表。
+    /// </summary>
     public ObservableCollection<ProductLogInfo> ProductLogs { get; } = new();
 
+    /// <summary>
+    /// 获取 Revit 日志文件列表。
+    /// </summary>
     public ObservableCollection<ProductLogInfo> RevitLogs { get; } = new();
 
+    /// <summary>
+    /// 获取可选的 Revit 可执行版本列表。
+    /// </summary>
     public ObservableCollection<ApplicationVersion> RevitExecutableVersions { get; } = new();
 
+    /// <summary>
+    /// 获取日志等级选项列表。
+    /// </summary>
     public ObservableCollection<string> LogLevels { get; } = new();
 
+    /// <summary>
+    /// 获取或设置当前选中的 Revit 可执行版本显示名称。
+    /// </summary>
     public string SelectedRevitExecutableVersion { get; set; }
 
+    /// <summary>
+    /// 获取或设置当前选中的日志等级。
+    /// </summary>
     [ComboBox("ALL", "ERROR", "WARN", "INFO")]
     public string SelectedLogLevel { get; set; } = "ERROR";
 
+    /// <summary>
+    /// 设置 Revit Journal 日志目录并刷新列表。
+    /// </summary>
+    /// <param name="dir">Revit Journal 目录路径。</param>
     public void SetRevitJournalDir(string dir)
     {
         revitDir = dir;

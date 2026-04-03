@@ -13,6 +13,9 @@ namespace PackageManager.Services
     /// </summary>
     public class FtpService
     {
+        /// <summary>
+        /// 获取或设置数据持久化服务实例，用于加载设置（如是否过滤日志目录）。
+        /// </summary>
         public static DataPersistenceService DataService { get; set; }
         /// <summary>
         /// 异步获取服务器路径下的所有文件夹名称
@@ -130,6 +133,8 @@ namespace PackageManager.Services
         /// 按版本号语义排序名称，支持任意位置的 vX.Y[.Z[.W]]，例如：
         /// 2025.09.30_v1.5.2、v11.3.2.0_log、v11.3.2。
         /// </summary>
+        /// <param name="names">待排序的名称集合。</param>
+        /// <returns>按版本号升序排列的名称列表；若集合为 null 则返回空列表。</returns>
         public static List<string> SortNamesByVersion(IEnumerable<string> names)
         {
             if (names == null)

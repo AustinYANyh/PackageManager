@@ -16,6 +16,9 @@ using PackageManager.Services.PingCode.Model;
 
 namespace PackageManager.Views.KanBan;
 
+/// <summary>
+/// 工作项详情窗口，使用 WebView2 展示工作项的详细信息和评论。
+/// </summary>
 public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
 {
     private static readonly Regex ImgTagRegex = new("<img\\b[^>]*>", RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -36,6 +39,11 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
 
     private bool childrenLoaded;
 
+    /// <summary>
+    /// 初始化 <see cref="WorkItemDetailsWindow"/> 的新实例。
+    /// </summary>
+    /// <param name="details">工作项详情数据，为 null 时使用空对象。</param>
+    /// <param name="api">PingCode API 服务实例，为 null 时创建新实例。</param>
     public WorkItemDetailsWindow(WorkItemDetails details, PingCodeApiService api)
     {
         Details = details ?? new WorkItemDetails();
@@ -66,10 +74,18 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         };
     }
 
+    /// <inheritdoc/>
     public event PropertyChangedEventHandler PropertyChanged;
 
+    /// <summary>
+    /// 获取当前显示的工作项详情数据。
+    /// </summary>
     public WorkItemDetails Details { get; }
 
+    /// <summary>
+    /// 触发 <see cref="PropertyChanged"/> 事件。
+    /// </summary>
+    /// <param name="name">发生更改的属性名称，默认为调用方成员名。</param>
     protected void OnPropertyChanged([CallerMemberName] string name = null) { PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name)); }
 
     private static string JsEscape(string s)

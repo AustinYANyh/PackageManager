@@ -10,6 +10,11 @@ namespace PackageManager.Function.SlnTool
 {
     internal class Updater
     {
+        /// <summary>
+        /// 更新解决方案文件中项目间的依赖关系。
+        /// </summary>
+        /// <param name="slnPath">解决方案文件路径。</param>
+        /// <returns>是否有依赖关系发生变更。</returns>
         public bool UpdateDependencies(string slnPath)
         {
             var slnDir = System.IO.Path.GetDirectoryName(slnPath)!;
@@ -448,13 +453,39 @@ namespace PackageManager.Function.SlnTool
         }
     }
 
+    /// <summary>
+    /// 解决方案项目信息。
+    /// </summary>
     internal class SlnProject
     {
+        /// <summary>
+        /// 获取或设置项目名称。
+        /// </summary>
         public string Name { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 获取或设置项目相对路径。
+        /// </summary>
         public string RelativePath { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 获取或设置项目 GUID。
+        /// </summary>
         public string Guid { get; set; } = string.Empty;
+
+        /// <summary>
+        /// 获取或设置项目在 sln 文件中的起始行索引。
+        /// </summary>
         public int StartIndex { get; set; }
+
+        /// <summary>
+        /// 获取或设置项目在 sln 文件中的结束行索引。
+        /// </summary>
         public int EndIndex { get; set; }
+
+        /// <summary>
+        /// 获取或设置项目依赖的 GUID 集合。
+        /// </summary>
         public HashSet<string> DependencyGuids { get; set; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
     }
 }

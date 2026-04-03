@@ -8,12 +8,28 @@ using PackageManager.Models;
 
 namespace PackageManager.Function.DnsTool
 {
+    /// <summary>
+    /// DNS 编辑对话框，用于编辑网络适配器的 DNS 配置。
+    /// </summary>
     public partial class DnsEditDialog : Window
     {
+        /// <summary>
+        /// 获取 DNS 配置值字符串。
+        /// </summary>
         public string DnsValue { get; private set; }
+
+        /// <summary>
+        /// 获取 DNS 地址项集合。
+        /// </summary>
         public System.Collections.ObjectModel.ObservableCollection<DnsAddrItem> DnsItems { get; } = new System.Collections.ObjectModel.ObservableCollection<DnsAddrItem>();
+
         private DnsAddrItem editingItem;
 
+        /// <summary>
+        /// 初始化 <see cref="DnsEditDialog"/> 的新实例。
+        /// </summary>
+        /// <param name="adapterName">网络适配器名称。</param>
+        /// <param name="currentDns">当前 DNS 配置字符串。</param>
         public DnsEditDialog(string adapterName, string currentDns)
         {
             InitializeComponent();

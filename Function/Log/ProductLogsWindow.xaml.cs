@@ -9,6 +9,9 @@ using PackageManager.Services;
 
 namespace PackageManager.Function.Log
 {
+    /// <summary>
+    /// 产品日志窗口，用于查看指定目录下的产品日志文件。
+    /// </summary>
     public partial class ProductLogsWindow : Window
     {
         private readonly string _baseDir;
@@ -16,8 +19,15 @@ namespace PackageManager.Function.Log
         private readonly ApplicationFinderService _applicationFinderService;
         private AppSettings _settings;
 
+        /// <summary>
+        /// 获取产品日志信息集合。
+        /// </summary>
         public ObservableCollection<ProductLogInfo> ProductLogs { get; } = new ObservableCollection<ProductLogInfo>();
 
+        /// <summary>
+        /// 初始化 <see cref="ProductLogsWindow"/> 的新实例。
+        /// </summary>
+        /// <param name="baseDir">日志根目录。</param>
         public ProductLogsWindow(string baseDir)
         {
             InitializeComponent();

@@ -24,16 +24,30 @@ using PackageManager.Views.KanBan;
 
 namespace PackageManager;
 
+/// <summary>
+/// 常用链接项数据模型。
+/// </summary>
 public class CommonLinkItem
 {
+    /// <summary>
+    /// 初始化常用链接项。
+    /// </summary>
+    /// <param name="name">链接名称。</param>
+    /// <param name="url">链接地址。</param>
     public CommonLinkItem(string name, string url)
     {
         Name = name;
         Url = url;
     }
 
+    /// <summary>
+    /// 获取链接名称。
+    /// </summary>
     public string Name { get; }
 
+    /// <summary>
+    /// 获取链接地址。
+    /// </summary>
     public string Url { get; }
 }
 
@@ -66,6 +80,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private bool _isHomeActive;
 
+    /// <summary>
+    /// 初始化主窗口实例。
+    /// </summary>
     public MainWindow()
     {
         InitializeComponent();
@@ -103,10 +120,19 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         OpenPluginManagerPageCommand = new RelayCommand(() => { OpenPluginManagerPageButton_Click(this, new RoutedEventArgs()); });
     }
 
+    /// <summary>
+    /// 属性值变更时触发。
+    /// </summary>
     public event PropertyChangedEventHandler PropertyChanged;
 
+    /// <summary>
+    /// 获取常用链接集合。
+    /// </summary>
     public ObservableCollection<CommonLinkItem> CommonLinks { get; } = new();
 
+    /// <summary>
+    /// 获取或设置当前选中的常用链接项。
+    /// </summary>
     public CommonLinkItem SelectedCommonLink
     {
         get => _selectedCommonLink;
@@ -114,9 +140,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         set => SetProperty(ref _selectedCommonLink, value);
     }
 
-    // 左侧导航分类数据
+    /// <summary>
+    /// 获取左侧导航分类树数据。
+    /// </summary>
     public ObservableCollection<CategoryNode> CategoryTree { get; } = new();
 
+    /// <summary>
+    /// 获取或设置当前选中的分类名称，变更时自动筛选包列表。
+    /// </summary>
     public string SelectedCategory
     {
         get => _selectedCategory;
@@ -130,29 +161,64 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
-    // 左侧导航命令（与 NavigationPanel.xaml 绑定）
+    /// <summary>
+    /// 获取或设置导航到主页的命令。
+    /// </summary>
     public ICommand NavigateHomeCommand { get; set; }
 
+    /// <summary>
+    /// 获取刷新版本信息的命令。
+    /// </summary>
     public ICommand RefreshCommand { get; }
 
+    /// <summary>
+    /// 获取打开设置页面的命令。
+    /// </summary>
     public ICommand SettingsCommand { get; }
 
+    /// <summary>
+    /// 获取打开本地路径设置的命令。
+    /// </summary>
     public ICommand LocalPathSettingsCommand { get; }
 
+    /// <summary>
+    /// 获取打开日志查看器的命令。
+    /// </summary>
     public ICommand OpenLogViewerCommand { get; }
 
+    /// <summary>
+    /// 获取打开产品日志的命令。
+    /// </summary>
     public ICommand OpenProductLogsCommand { get; }
 
+    /// <summary>
+    /// 获取打开包管理配置的命令。
+    /// </summary>
     public ICommand OpenPackageConfigCommand { get; }
 
+    /// <summary>
+    /// 获取打开常用网址页面的命令。
+    /// </summary>
     public ICommand OpenCommonLinksPageCommand { get; }
 
+    /// <summary>
+    /// 获取打开更新日志页面的命令。
+    /// </summary>
     public ICommand OpenChangelogPageCommand { get; }
 
+    /// <summary>
+    /// 获取打开看板统计页面的命令。
+    /// </summary>
     public ICommand OpenKanbanStatsPageCommand { get; }
 
+    /// <summary>
+    /// 获取打开插件管理页面的命令。
+    /// </summary>
     public ICommand OpenPluginManagerPageCommand { get; }
 
+    /// <summary>
+    /// 获取或设置产品包列表。
+    /// </summary>
     public ObservableCollection<PackageInfo> Packages
     {
         get => _packages;
@@ -160,6 +226,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         set => SetProperty(ref _packages, value);
     }
 
+    /// <summary>
+    /// 获取或设置最近活跃的产品包。
+    /// </summary>
     public PackageInfo LatestActivePackage
     {
         get => _latestActivePackage;
@@ -167,7 +236,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         set => SetProperty(ref _latestActivePackage, value);
     }
 
-    // 每次成功导航后递增，用于左侧导航在命令执行失败时回退选中项
+    /// <summary>
+    /// 获取导航版本号，每次成功导航后递增，用于左侧导航在命令执行失败时回退选中项。
+    /// </summary>
     public int NavigationVersion
     {
         get => _navigationVersion;
@@ -175,7 +246,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         private set => SetProperty(ref _navigationVersion, value);
     }
 
-    // 指示中央区域是否处于主页（用于左侧导航同步选中状态）
+    /// <summary>
+    /// 获取中央区域是否处于主页状态，用于左侧导航同步选中状态。
+    /// </summary>
     public bool IsHomeActive
     {
         get => _isHomeActive;
@@ -183,7 +256,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         private set => SetProperty(ref _isHomeActive, value);
     }
 
-    // 定版：将当前选中版本的包下载到临时目录并上传到定版目录
+    /// <summary>
+    /// 将当前选中版本的包下载到临时目录并上传到定版目录。
+    /// </summary>
+    /// <returns>异步任务。</returns>
     public async Task FinalizeSelectedPackageAsync()
     {
         var pkg = LatestActivePackage;
@@ -273,11 +349,23 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
+    /// <summary>
+    /// 触发 <see cref="PropertyChanged"/> 事件。
+    /// </summary>
+    /// <param name="propertyName">发生变更的属性名称。</param>
     protected virtual void OnPropertyChanged([CallerMemberName] string propertyName = null)
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
     }
 
+    /// <summary>
+    /// 设置属性值并在值变更时触发 <see cref="PropertyChanged"/> 事件。
+    /// </summary>
+    /// <typeparam name="T">属性类型。</typeparam>
+    /// <param name="field">属性 backing 字段的引用。</param>
+    /// <param name="value">新值。</param>
+    /// <param name="propertyName">属性名称。</param>
+    /// <returns>值是否发生变更。</returns>
     protected bool SetProperty<T>(ref T field, T value, [CallerMemberName] string propertyName = null)
     {
         if (Equals(field, value))
@@ -434,6 +522,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         catch { }
     }
 
+    /// <summary>
+    /// 更新左侧导航面板的选中项。
+    /// </summary>
+    /// <param name="name">要选中的导航项名称。</param>
     public void UpdateLeftNavSelection(string name)
     {
         try { LeftNavPanel?.SelectActionByName(name); } catch { }

@@ -11,12 +11,20 @@ using System.Text;
 
 namespace PackageManager.Services
 {
+    /// <summary>
+    /// 应用程序自动更新服务，负责检查版本更新、下载并切换到新版本
+    /// </summary>
     public class AppUpdateService
     {
         private readonly FtpService ftpService = new FtpService();
 
         private readonly DataPersistenceService dataPersistenceService = new DataPersistenceService();
 
+        /// <summary>
+        /// 检查服务器上是否存在新版本，如果有则弹窗提示用户并允许选择更新
+        /// </summary>
+        /// <param name="owner">弹窗的父窗口，默认为 <c>null</c></param>
+        /// <returns>异步任务</returns>
         public async Task CheckAndPromptUpdateAsync(Window owner = null)
         {
             string serverUrl = GetUpdateServerUrl();
@@ -99,9 +107,11 @@ namespace PackageManager.Services
         }
 
         /// <summary>
-        /// 直接升级到最新版本：与“发现新版本后选择立即更新”一致，但不弹窗提示。
+        /// 直接升级到最新版本：与”发现新版本后选择立即更新”一致，但不弹窗提示。
         /// 哪怕版本号是最新的也要执行，同版本号本地的exe也不一定是最新
         /// </summary>
+        /// <param name="owner">弹窗的父窗口，默认为 null</param>
+        /// <returns>异步任务</returns>
         public async Task UpgradeToLatestAsync(Window owner = null)
         {
             string serverUrl = GetUpdateServerUrl();

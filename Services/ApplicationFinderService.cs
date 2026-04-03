@@ -12,15 +12,35 @@ namespace PackageManager.Services
     /// </summary>
     public class ApplicationVersion
     {
+        /// <summary>
+        /// 程序名称
+        /// </summary>
         public string Name { get; set; }
+
+        /// <summary>
+        /// 版本号
+        /// </summary>
         public string Version { get; set; }
+
+        /// <summary>
+        /// 可执行文件的完整路径
+        /// </summary>
         public string ExecutablePath { get; set; }
+
+        /// <summary>
+        /// 安装目录路径
+        /// </summary>
         public string InstallPath { get; set; }
 
+        /// <summary>
+        /// 显示名称，由名称和版本号组合而成
+        /// </summary>
         public string DisPlayName => ToString();
 
-        
-        
+        /// <summary>
+        /// 返回程序的显示字符串，格式为"名称 版本号"或仅"名称"（无版本号时）
+        /// </summary>
+        /// <returns>格式化后的显示字符串</returns>
         public override string ToString()
         {
             return string.IsNullOrEmpty(Version) ? Name : $"{Name} {Version}";

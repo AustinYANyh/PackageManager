@@ -157,6 +157,9 @@ namespace PackageManager.Services
         /// <summary>
         /// 对外暴露的校验完成提示入口（供签名/加密校验流程调用）。
         /// </summary>
+        /// <param name="packageInfo">完成校验的包信息对象。</param>
+        /// <param name="success">校验是否成功。</param>
+        /// <param name="detail">附加详情文本，可为 null。</param>
         public static void NotifyVerificationCompleted(PackageInfo packageInfo, bool success, string detail = null)
         {
             var title = "校验完成";
@@ -170,12 +173,14 @@ namespace PackageManager.Services
         }
 
         /// <summary>
-        /// 下载并更新包
+        /// 下载并更新包。下载占进度 80%，解压占 20%。
+        /// 若目标路径需要管理员权限，会自动提权执行。
         /// </summary>
-        /// <param name="packageInfo">包信息</param>
-        /// <param name="progressCallback">进度回调</param>
-        /// <param name="forceUnlock"></param>
-        /// <returns></returns>
+        /// <param name="packageInfo">要更新的包信息对象。</param>
+        /// <param name="progressCallback">进度回调（进度百分比、状态文本），可为 null。</param>
+        /// <param name="forceUnlock">是否强制关闭占用进程而不提示用户。</param>
+        /// <param name="cancellationToken">取消令牌。</param>
+        /// <returns>更新是否成功；取消或失败返回 false。</returns>
         public async Task<bool> UpdatePackageAsync(PackageInfo packageInfo, Action<double, string> progressCallback = null, bool forceUnlock = false, CancellationToken cancellationToken = default)
         {
             try
@@ -1251,14 +1256,35 @@ namespace PackageManager.Services
             }
         }
         
+        /// <summary>
+        /// 表示占用文件/目录的进程信息。
+        /// </summary>
         public class LockingProcessInfo
         {
+            /// <summary>
+            /// 获取或设置进程标识符。
+            /// </summary>
             public int Id { get; set; }
+            /// <summary>
+            /// 获取或设置进程名称。
+            /// </summary>
             public string Name { get; set; }
+            /// <summary>
+            /// 获取或设置进程可执行文件的完整路径。
+            /// </summary>
             public string ExecutablePath { get; set; }
+            /// <summary>
+            /// 获取或设置进程主窗口标题。
+            /// </summary>
             public string Title { get; set; }
         }
-        
+
+        /// <summary>
+        /// 异步列出占用指定目标路径（文件或目录）的所有进程。
+        /// </summary>
+        /// <param name="targets">目标路径集合（支持文件和目录路径）。</param>
+        /// <param name="cancellationToken">取消令牌。</param>
+        /// <returns>占用进程信息列表。</returns>
         public async Task<List<LockingProcessInfo>> ListLockingProcessesForTargetsAsync(IEnumerable<string> targets, CancellationToken cancellationToken = default)
         {
             if (targets == null) return new List<LockingProcessInfo>();
@@ -1311,6 +1337,13 @@ namespace PackageManager.Services
             return result;
         }
         
+        /// <summary>
+        /// 异步强制终止指定进程ID集合中的所有进程。
+        /// 通过 taskkill 命令以管理员权限执行。
+        /// </summary>
+        /// <param name="pids">要终止的进程ID集合。</param>
+        /// <param name="cancellationToken">取消令牌。</param>
+        /// <returns>是否成功发起终止操作。</returns>
         public async Task<bool> KillProcessesAsync(IEnumerable<int> pids, CancellationToken cancellationToken = default)
         {
             var list = pids == null ? new List<int>() : pids.Where(id => id > 0).Distinct().ToList();

@@ -9,6 +9,12 @@ namespace PackageManager.Services
     /// </summary>
     public static class DebugSettingsService
     {
+        /// <summary>
+        /// 读取指定路径的调试模式配置。
+        /// </summary>
+        /// <param name="localPath">本地包路径。</param>
+        /// <param name="defaultValue">默认值，默认为 false。</param>
+        /// <returns>是否启用调试模式。</returns>
         public static bool ReadIsDebugMode(string localPath, bool defaultValue = false)
         {
             try
@@ -31,6 +37,11 @@ namespace PackageManager.Services
             }
         }
 
+        /// <summary>
+        /// 写入调试模式配置到指定路径的 DebugSetting.json 文件。
+        /// </summary>
+        /// <param name="localPath">本地包路径。</param>
+        /// <param name="enable">是否启用调试模式。</param>
         public static void WriteIsDebugMode(string localPath, bool enable)
         {
             try

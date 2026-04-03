@@ -9,8 +9,14 @@ using PackageManager.Models;
 
 namespace PackageManager.Function.DnsTool
 {
+    /// <summary>
+    /// DNS 设置窗口，用于查看和编辑网络适配器的 DNS 配置。
+    /// </summary>
     public partial class DnsSettingsWindow : Window
     {
+        /// <summary>
+        /// 初始化 <see cref="DnsSettingsWindow"/> 的新实例。
+        /// </summary>
         public DnsSettingsWindow()
         {
             InitializeComponent();
@@ -18,8 +24,15 @@ namespace PackageManager.Function.DnsTool
             LoadAdapters();
         }
 
+        /// <summary>
+        /// 获取网络适配器项集合。
+        /// </summary>
         public ObservableCollection<AdapterItem> AdapterItems { get; } = new ObservableCollection<AdapterItem>();
 
+        /// <summary>
+        /// 编辑指定适配器的 DNS 配置。
+        /// </summary>
+        /// <param name="item">要编辑的适配器项。</param>
         public void EditDns(AdapterItem item)
         {
             var dlg = new DnsEditDialog(item.Name, item.DnsServers) { Owner = this };
@@ -41,6 +54,10 @@ namespace PackageManager.Function.DnsTool
             }
         }
 
+        /// <summary>
+        /// 重置指定适配器的 DNS 为自动获取（DHCP）。
+        /// </summary>
+        /// <param name="item">要重置的适配器项。</param>
         public void ResetDns(AdapterItem item)
         {
             if (ResetAdapterDns(item.Name))
@@ -53,6 +70,10 @@ namespace PackageManager.Function.DnsTool
             }
         }
 
+        /// <summary>
+        /// 打开系统网络设置界面。
+        /// </summary>
+        /// <param name="item">目标适配器项，用于判断网络类型以选择对应设置页面。</param>
         public void OpenDnsUi(AdapterItem item)
         {
             try
@@ -226,10 +247,17 @@ namespace PackageManager.Function.DnsTool
             Close();
         }
 
+        /// <summary>
+        /// 网络适配器信息项，用于在 DataGrid 中展示单个适配器的详细信息和操作按钮。
+        /// </summary>
         public class AdapterItem
         {
             private readonly DnsSettingsWindow owner;
 
+            /// <summary>
+            /// 初始化 <see cref="AdapterItem"/> 的新实例。
+            /// </summary>
+            /// <param name="owner">所属的 DNS 设置窗口实例。</param>
             public AdapterItem(DnsSettingsWindow owner)
             {
                 this.owner = owner;
@@ -239,34 +267,70 @@ namespace PackageManager.Function.DnsTool
             }
 
             [DataGridColumn(1, DisplayName = "网卡名称", Width = "220", IsReadOnly = true)]
+            /// <summary>
+            /// 获取或设置网卡名称。
+            /// </summary>
             public string Name { get; set; }
 
             [DataGridColumn(2, DisplayName = "描述", Width = "320", IsReadOnly = true)]
+            /// <summary>
+            /// 获取或设置网卡描述信息。
+            /// </summary>
             public string Description { get; set; }
 
             [DataGridColumn(3, DisplayName = "类型", Width = "140", IsReadOnly = true)]
+            /// <summary>
+            /// 获取或设置网络接口类型。
+            /// </summary>
             public string Type { get; set; }
 
             [DataGridColumn(4, DisplayName = "状态", Width = "120", IsReadOnly = true)]
+            /// <summary>
+            /// 获取或设置网络接口的运行状态。
+            /// </summary>
             public string Status { get; set; }
 
             [DataGridColumn(5, DisplayName = "IPv4地址", Width = "200", IsReadOnly = true)]
+            /// <summary>
+            /// 获取或设置 IPv4 地址。
+            /// </summary>
             public string IPv4 { get; set; }
 
             [DataGridColumn(6, DisplayName = "DNS服务器", Width = "340", IsReadOnly = true)]
+            /// <summary>
+            /// 获取或设置 DNS 服务器地址。
+            /// </summary>
             public string DnsServers { get; set; }
 
             [DataGridMultiButton(nameof(ActionButtons), 7, DisplayName = "操作DNS", Width = "350", ButtonSpacing = 12)]
+            /// <summary>
+            /// 获取或设置操作列绑定字段（占位，实际按钮由 <see cref="ActionButtons"/> 提供）。
+            /// </summary>
             public string Actions { get; set; }
 
+            /// <summary>
+            /// 获取编辑 DNS 命令。
+            /// </summary>
             public ICommand EditCommand { get; }
 
+            /// <summary>
+            /// 获取重置 DNS 命令。
+            /// </summary>
             public ICommand ResetCommand { get; }
 
+            /// <summary>
+            /// 获取打开网络设置命令。
+            /// </summary>
             public ICommand OpenCommand { get; }
 
+            /// <summary>
+            /// 获取或设置连接名称。
+            /// </summary>
             public string ConnectionName { get; set; }
 
+            /// <summary>
+            /// 获取操作按钮配置列表。
+            /// </summary>
             public System.Collections.Generic.List<ButtonConfig> ActionButtons => new System.Collections.Generic.List<ButtonConfig>
             {
                 new ButtonConfig { Text = "打开", Width = 70, Height = 26, CommandProperty = nameof(OpenCommand) },

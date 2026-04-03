@@ -14,12 +14,18 @@ using PackageManager.Services;
 
 namespace PackageManager.Function.UnlockTool
 {
+    /// <summary>
+    /// 文件解锁窗口，用于查找并解除被进程锁定的文件。
+    /// </summary>
     public partial class UnlockFilesWindow : Window
     {
         private readonly ObservableCollection<UnlockItem> _items = new ObservableCollection<UnlockItem>();
         private readonly PackageUpdateService _updateService = new PackageUpdateService();
         private readonly CancellationTokenSource _cts = new CancellationTokenSource();
 
+        /// <summary>
+        /// 初始化 <see cref="UnlockFilesWindow"/> 的新实例。
+        /// </summary>
         public UnlockFilesWindow()
         {
             InitializeComponent();

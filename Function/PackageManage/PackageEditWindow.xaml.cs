@@ -10,13 +10,28 @@ using RelayCommand = CustomControlLibrary.CustomControl.Example.RelayCommand;
 
 namespace PackageManager.Function.PackageManage
 {
+    /// <summary>
+    /// 包编辑窗口，用于编辑或新增包配置项。
+    /// </summary>
     public partial class PackageEditWindow : Window
     {
+        /// <summary>
+        /// 获取正在编辑的包配置项。
+        /// </summary>
         public PackageItem Item { get; }
+
+        /// <summary>
+        /// 获取编辑项集合。
+        /// </summary>
         public ObservableCollection<EditItem> EditItems { get; }
 
         private readonly bool isNew;
 
+        /// <summary>
+        /// 初始化 <see cref="PackageEditWindow"/> 的新实例。
+        /// </summary>
+        /// <param name="item">要编辑的包配置项。</param>
+        /// <param name="isNew">是否为新增模式。</param>
         public PackageEditWindow(PackageItem item, bool isNew)
         {
             InitializeComponent();
@@ -58,15 +73,26 @@ namespace PackageManager.Function.PackageManage
             Close();
         }
 
+        /// <summary>
+        /// 编辑项数据模型，用于在包编辑窗口中绑定编辑字段。
+        /// </summary>
         public class EditItem : INotifyPropertyChanged
         {
             private string productName;
             private string ftpServerPath;
             private string localPath;
             private string finalizeFtpServerPath;
+
+            /// <summary>
+            /// 获取或设置是否为新增模式。
+            /// </summary>
             public bool IsNew { get; set; }
+
             private ICommand browseCommand;
 
+            /// <summary>
+            /// 获取或设置产品名称。
+            /// </summary>
             [DataGridColumn(1, DisplayName = "产品名称", Width = "180", IsReadOnlyProperty = nameof(IsBuiltIn))]
             public string ProductName
             {
@@ -74,6 +100,9 @@ namespace PackageManager.Function.PackageManage
                 set => SetProperty(ref productName, value);
             }
 
+            /// <summary>
+            /// 获取或设置 FTP 服务器路径。
+            /// </summary>
             [DataGridColumn(2, DisplayName = "FTP服务器路径", Width = "350", IsReadOnlyProperty = nameof(IsBuiltIn))]
             public string FtpServerPath
             {
@@ -81,6 +110,9 @@ namespace PackageManager.Function.PackageManage
                 set => SetProperty(ref ftpServerPath, value);
             }
 
+            /// <summary>
+            /// 获取或设置本地路径。
+            /// </summary>
             [DataGridColumn(4, DisplayName = "本地路径", Width = "300", IsReadOnlyProperty = nameof(IsBuiltIn))]
             public string LocalPath
             {
@@ -88,6 +120,9 @@ namespace PackageManager.Function.PackageManage
                 set => SetProperty(ref localPath, value);
             }
 
+            /// <summary>
+            /// 获取或设置定版 FTP 路径。
+            /// </summary>
             [DataGridColumn(3, DisplayName = "定版FTP路径", Width = "350", IsReadOnlyProperty = nameof(IsFinalizeReadonly))]
             public string FinalizeFtpServerPath
             {
@@ -95,11 +130,20 @@ namespace PackageManager.Function.PackageManage
                 set => SetProperty(ref finalizeFtpServerPath, value);
             }
 
+            /// <summary>
+            /// 获取定版 FTP 路径是否只读（内置项或非新增模式）。
+            /// </summary>
             public bool IsFinalizeReadonly => IsBuiltIn || !IsNew;
 
+            /// <summary>
+            /// 浏览按钮列的占位属性。
+            /// </summary>
             [DataGridButton(5, DisplayName = "选择路径", Width = "120", ControlType = "Button", ButtonText = "浏览...", ButtonWidth = 90, ButtonHeight = 26, ButtonCommandProperty = nameof(BrowseCommand), IsReadOnlyProperty = nameof(IsBuiltIn))]
             public string Browse { get; set; }
 
+            /// <summary>
+            /// 获取或设置浏览命令。
+            /// </summary>
             public ICommand BrowseCommand
             {
                 get => browseCommand ?? (browseCommand = new RelayCommand(ExecuteBrowse));
@@ -128,10 +172,20 @@ namespace PackageManager.Function.PackageManage
                 }
             }
 
+            /// <summary>
+            /// 获取或设置是否为内置包。
+            /// </summary>
             public bool IsBuiltIn { get; set; }
 
+            /// <summary>
+            /// 属性值变更时触发。
+            /// </summary>
             public event PropertyChangedEventHandler PropertyChanged;
 
+            /// <summary>
+            /// 触发 <see cref="PropertyChanged"/> 事件。
+            /// </summary>
+            /// <param name="propertyName">发生变更的属性名称。</param>
             protected virtual void OnPropertyChanged([CallerMemberName] string propertyName = null)
             {
                 PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));

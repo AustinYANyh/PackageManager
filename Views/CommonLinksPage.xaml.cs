@@ -6,12 +6,25 @@ using System.Windows.Controls;
 
 namespace PackageManager.Views
 {
+    /// <summary>
+    /// 常用链接页面，展示并可打开预配置的网址列表。
+    /// </summary>
     public partial class CommonLinksPage : Page, ICentralPage
     {
+        /// <summary>
+        /// 获取常用链接项的集合。
+        /// </summary>
         public ObservableCollection<PackageManager.CommonLinkItem> Links { get; }
 
+        /// <summary>
+        /// 请求退出当前页面的导航事件。
+        /// </summary>
         public event Action RequestExit;
 
+        /// <summary>
+        /// 初始化 <see cref="CommonLinksPage"/> 的新实例。
+        /// </summary>
+        /// <param name="links">要展示的常用链接集合，为 null 时使用空集合。</param>
         public CommonLinksPage(ObservableCollection<PackageManager.CommonLinkItem> links)
         {
             InitializeComponent();

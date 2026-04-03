@@ -8,12 +8,20 @@ using PackageManager.Services;
 
 namespace PackageManager.Function.Path
 {
+    /// <summary>
+    /// 本地路径设置窗口，用于管理各产品版本对应的本地安装路径。
+    /// </summary>
     public partial class LocalPathSettingsWindow : Window
     {
         private readonly DataPersistenceService dataPersistenceService;
 
         private readonly ObservableCollection<PackageInfo> packages;
 
+        /// <summary>
+        /// 初始化 <see cref="LocalPathSettingsWindow"/> 的新实例。
+        /// </summary>
+        /// <param name="dataPersistenceService">数据持久化服务实例。</param>
+        /// <param name="packages">产品包信息集合。</param>
         public LocalPathSettingsWindow(DataPersistenceService dataPersistenceService,
                                        ObservableCollection<PackageInfo> packages)
         {
@@ -54,6 +62,9 @@ namespace PackageManager.Function.Path
             DataContext = this;
         }
 
+        /// <summary>
+        /// 获取或设置本地路径信息项的集合。
+        /// </summary>
         public ObservableCollection<LocalPathInfo> LocalPathItems { get; set; }
 
         private void SaveButton_Click(object sender, RoutedEventArgs e)
