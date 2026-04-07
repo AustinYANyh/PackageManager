@@ -321,6 +321,20 @@ namespace PackageManager.Services
                     return false;
                 }
 
+                if (success)
+                {
+                    try
+                    {
+                        packageInfo.StatusText = "正在同步 Revit Addin...";
+                        progressCallback?.Invoke(98, "同步 Revit Addin");
+                        packageInfo.DeploySelectedRevitAddin(targetLocalPath);
+                    }
+                    catch (Exception addinEx)
+                    {
+                        LoggingService.LogError(addinEx, $"同步 Revit Addin 失败：{packageInfo?.ProductName}");
+                    }
+                }
+
                 // 清理临时文件
                 if (File.Exists(tempFilePath))
                 {

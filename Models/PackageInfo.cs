@@ -959,7 +959,10 @@ namespace PackageManager.Models
             if (DataPersistenceService != null)
             {
                 var settings = DataPersistenceService.LoadSettings();
-                return settings.AddinPath;
+                if (!string.IsNullOrWhiteSpace(settings?.AddinPath))
+                {
+                    return settings.AddinPath.Trim();
+                }
             }
 
             return @"C:\ProgramData\Autodesk\Revit\Addins"; // 默认路径
@@ -973,10 +976,115 @@ namespace PackageManager.Models
             if (DataPersistenceService != null)
             {
                 var settings = DataPersistenceService.LoadSettings();
-                return settings.ProgramEntryWithG;
+                return settings?.ProgramEntryWithG ?? true;
             }
 
             return true;
+        }
+
+        /// <summary>
+        /// 将当前产品对应的 Revit Addin 同步到目标版本目录。
+        /// </summary>
+        /// <param name="packageRootPath">包根目录；为空时使用当前有效本地路径。</param>
+        public void DeploySelectedRevitAddin(string packageRootPath = null)
+        {
+            var applicationVersion = ResolveSelectedApplicationVersion();
+            if (applicationVersion == null)
+            {
+                LoggingService.LogWarning($"同步 Revit Addin 跳过：{ProductName} 未找到已选择的 Revit 版本。");
+                return;
+            }
+
+            var resolvedPackageRoot = string.IsNullOrWhiteSpace(packageRootPath) ? EffectiveLocalPath : packageRootPath;
+            if (string.IsNullOrWhiteSpace(resolvedPackageRoot) || !Directory.Exists(resolvedPackageRoot))
+            {
+                LoggingService.LogWarning($"同步 Revit Addin 跳过：{ProductName} 的包目录无效，Path={resolvedPackageRoot}");
+                return;
+            }
+
+            var addinTemplateFile = Directory.GetFiles(resolvedPackageRoot, "*.addin", SearchOption.TopDirectoryOnly).FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(addinTemplateFile))
+            {
+                LoggingService.LogInfo($"同步 Revit Addin 跳过：{ProductName} 在 {resolvedPackageRoot} 未找到 addin 模板。");
+                return;
+            }
+
+            var targetAssembly = ResolveRevitEntryAssemblyPath(resolvedPackageRoot, applicationVersion.Version);
+            if (string.IsNullOrWhiteSpace(targetAssembly))
+            {
+                LoggingService.LogWarning($"同步 Revit Addin 跳过：{ProductName} 未找到适用于 Revit {applicationVersion.Version} 的入口 DLL。");
+                return;
+            }
+
+            var addinContent = File.ReadAllText(addinTemplateFile, Encoding.UTF8);
+            const string assemblyPattern = @"<Assembly>.*?</Assembly>";
+            if (!Regex.IsMatch(addinContent, assemblyPattern, RegexOptions.IgnoreCase | RegexOptions.Singleline))
+            {
+                throw new InvalidOperationException($"Addin 模板缺少 Assembly 节点：{addinTemplateFile}");
+            }
+
+            addinContent = Regex.Replace(addinContent,
+                                         assemblyPattern,
+                                         $"<Assembly>{targetAssembly}</Assembly>",
+                                         RegexOptions.IgnoreCase | RegexOptions.Singleline);
+
+            var addinDir = Path.Combine(GetAddinPath(), applicationVersion.Version);
+            Directory.CreateDirectory(addinDir);
+
+            var targetAddinFile = Path.Combine(addinDir, Path.GetFileName(addinTemplateFile));
+            File.WriteAllText(targetAddinFile, addinContent, new UTF8Encoding(false));
+
+            LoggingService.LogInfo(
+                $"已同步 Revit Addin：Product={ProductName}, RevitVersion={applicationVersion.Version}, Target={targetAddinFile}, Assembly={targetAssembly}");
+        }
+
+        private ApplicationVersion ResolveSelectedApplicationVersion()
+        {
+            var applicationVersion = AvailableExecutableVersions?.FirstOrDefault(x => x.DisPlayName == SelectedExecutableVersion);
+            return applicationVersion ?? AvailableExecutableVersions?.FirstOrDefault();
+        }
+
+        private string ResolveRevitEntryAssemblyPath(string packageRootPath, string revitVersion)
+        {
+            var binDir = Path.Combine(packageRootPath, "bin");
+            if (!Directory.Exists(binDir) || string.IsNullOrWhiteSpace(revitVersion))
+            {
+                return null;
+            }
+
+            var targetFile = Directory.GetFiles(binDir, "*.dll", SearchOption.TopDirectoryOnly)
+                                      .Where(file =>
+                                      {
+                                          var fileName = Path.GetFileName(file);
+                                          return fileName.StartsWith("G", StringComparison.OrdinalIgnoreCase) &&
+                                                 fileName.Contains(revitVersion);
+                                      })
+                                      .OrderBy(Path.GetFileName)
+                                      .FirstOrDefault();
+
+            if (string.IsNullOrWhiteSpace(targetFile))
+            {
+                return null;
+            }
+
+            if (!GetProgramEntryWithG())
+            {
+                var fileName = Path.GetFileName(targetFile);
+                if (!string.IsNullOrWhiteSpace(fileName) && fileName.StartsWith("G", StringComparison.OrdinalIgnoreCase))
+                {
+                    var candidate = Path.Combine(Path.GetDirectoryName(targetFile) ?? string.Empty, fileName.Substring(1));
+                    if (File.Exists(candidate))
+                    {
+                        targetFile = candidate;
+                    }
+                    else
+                    {
+                        LoggingService.LogWarning($"未找到去除前缀 G 后的入口 DLL，继续使用原文件：{candidate}");
+                    }
+                }
+            }
+
+            return targetFile;
         }
        
         /// <summary>
@@ -1223,7 +1331,7 @@ namespace PackageManager.Models
         /// </summary>
         private void ExecuteOpenPath()
         {
-            ApplicationVersion applicationVersion = AvailableExecutableVersions.FirstOrDefault(x => x.DisPlayName == SelectedExecutableVersion);
+            ApplicationVersion applicationVersion = ResolveSelectedApplicationVersion();
             if (applicationVersion == null)
             {
                 return;
@@ -1234,61 +1342,6 @@ namespace PackageManager.Models
             {
                 try
                 {
-                    //配置Addin文件
-                    string defaultAddinDir = GetAddinPath();
-                    if (!System.IO.Directory.Exists(defaultAddinDir))
-                    {
-                        return;
-                    }
-
-                    string version = applicationVersion.Version;
-                    string addinDir = Path.Combine(defaultAddinDir, version);
-
-                    string binDir = System.IO.Path.Combine(EffectiveLocalPath, "bin");
-
-                    // 查找bin目录下所有dll文件，找出以G开头、包含版本号、以.dll结尾的文件，并复制其完整路径
-                    if (Directory.Exists(binDir))
-                    {
-                        var targetFiles = System.IO.Directory.GetFiles(binDir, "*.dll")
-                                                   .Where(file => Path.GetFileName(file).StartsWith("G") && Path.GetFileName(file).Contains(version))
-                                                   .ToList().FirstOrDefault();
-
-                        if (!string.IsNullOrEmpty(targetFiles))
-                        {
-                            bool programEntryWithG = GetProgramEntryWithG();
-                            if (!programEntryWithG)
-                            {
-                                string replace = Path.GetFileName(targetFiles).Replace("G", string.Empty);
-                                targetFiles = Path.Combine(Path.GetDirectoryName(targetFiles) ?? string.Empty, replace);
-                            }
-
-                            string addinFile = System.IO.Directory.GetFiles(EffectiveLocalPath, "*.addin").FirstOrDefault();
-                            if (!string.IsNullOrEmpty(addinFile))
-                            {
-                                string addinStr = string.Empty;
-                                using (System.IO.StreamReader streamReader = new System.IO.StreamReader(new System.IO.FileStream(addinFile, System.IO.FileMode.Open)))
-                                {
-                                    addinStr = streamReader.ReadToEnd();
-
-                                    //找出<Assembly>C:\红瓦科技\MaxiBIM（PMEP）Develop\GHWPMEP4RevitEntry.dll</Assembly>匹配的内容，进行替换
-                                    string assemblyPattern = @"<Assembly>(.*?)</Assembly>";
-                                    Match match = Regex.Match(addinStr, assemblyPattern);
-                                    if (match.Success)
-                                    {
-                                        string assemblyPath = match.Groups[1].Value;
-                                        addinStr = addinStr.Replace(assemblyPath, targetFiles);
-                                    }
-                                }
-
-                                System.IO.File.WriteAllText(addinFile, addinStr);
-
-                                string addinFilePath = System.IO.Path.Combine(addinDir, Path.GetFileName(addinFile));
-                                System.IO.File.Copy(addinFile, addinFilePath, true);
-                            }
-                        }
-                    }
-
-                    // 打开文件所在的文件夹并选中该文件
                     Process.Start(ExecutablePath);
                 }
                 catch (Exception ex)
