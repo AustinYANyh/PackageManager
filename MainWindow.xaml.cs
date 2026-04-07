@@ -553,6 +553,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         
         // 加载可执行文件版本
         await LoadExecutableVersionsAsync();
+        EnsureLatestActivePackageSelected();
     }
 
     private void InitializeCommonLinks()
@@ -1245,10 +1246,61 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                        && IsProductVisible(p.ProductName);
             };
         }
+
+            EnsureLatestActivePackageSelected();
         }
         catch (Exception ex)
         {
             LoggingService.LogError(ex, "应用分类筛选失败");
+        }
+    }
+
+    private void EnsureLatestActivePackageSelected()
+    {
+        if (LatestActivePackage != null)
+        {
+            return;
+        }
+
+        PackageInfo candidate = null;
+        var dataGrid = GetPackageDataGrid();
+
+        if (dataGrid?.SelectedItem is PackageInfo selectedPackage)
+        {
+            candidate = selectedPackage;
+        }
+
+        if (candidate == null)
+        {
+            var source = dataGrid?.ItemsSource ?? Packages;
+            var view = CollectionViewSource.GetDefaultView(source);
+            if (view != null)
+            {
+                foreach (var item in view)
+                {
+                    if (item is PackageInfo pkg)
+                    {
+                        candidate = pkg;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if ((candidate == null) && (Packages != null))
+        {
+            candidate = Packages.FirstOrDefault(p => IsProductVisible(p.ProductName));
+        }
+
+        if (candidate == null)
+        {
+            return;
+        }
+
+        LatestActivePackage = candidate;
+        if (dataGrid != null && !ReferenceEquals(dataGrid.SelectedItem, candidate))
+        {
+            dataGrid.SelectedItem = candidate;
         }
     }
 
