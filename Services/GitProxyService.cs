@@ -10,10 +10,19 @@ namespace PackageManager.Services
     /// </summary>
     public sealed class GitProxyStatus
     {
+        /// <summary>
+        /// 获取或设置 HTTP 代理地址。
+        /// </summary>
         public string HttpProxy { get; set; }
 
+        /// <summary>
+        /// 获取或设置 HTTPS 代理地址。
+        /// </summary>
         public string HttpsProxy { get; set; }
 
+        /// <summary>
+        /// 获取一个值，指示是否已启用代理（任一代理地址非空即为已启用）。
+        /// </summary>
         public bool IsEnabled => !string.IsNullOrWhiteSpace(HttpProxy) || !string.IsNullOrWhiteSpace(HttpsProxy);
     }
 
@@ -22,19 +31,37 @@ namespace PackageManager.Services
     /// </summary>
     public sealed class GitProxyToggleResult
     {
+        /// <summary>
+        /// 获取或设置一个值，指示切换后代理是否处于启用状态。
+        /// </summary>
         public bool IsEnabled { get; set; }
 
+        /// <summary>
+        /// 获取或设置切换后的 Git 代理状态。
+        /// </summary>
         public GitProxyStatus Status { get; set; }
 
+        /// <summary>
+        /// 获取或设置切换结果的消息描述。
+        /// </summary>
         public string Message { get; set; }
     }
 
     internal sealed class GitCommandResult
     {
+        /// <summary>
+        /// 获取或设置 Git 命令的退出代码。
+        /// </summary>
         public int ExitCode { get; set; }
 
+        /// <summary>
+        /// 获取或设置 Git 命令的标准输出内容。
+        /// </summary>
         public string StandardOutput { get; set; }
 
+        /// <summary>
+        /// 获取或设置 Git 命令的标准错误输出内容。
+        /// </summary>
         public string StandardError { get; set; }
     }
 
@@ -46,6 +73,10 @@ namespace PackageManager.Services
         private const string DefaultHttpProxy = "http://127.0.0.1:7897";
         private const string DefaultHttpsProxy = "http://127.0.0.1:7897";
 
+        /// <summary>
+        /// 异步获取当前 Git 全局代理状态。
+        /// </summary>
+        /// <returns>包含 HTTP 与 HTTPS 代理配置的状态对象。</returns>
         public static async Task<GitProxyStatus> GetStatusAsync()
         {
             var httpProxy = await GetConfigValueAsync("http.proxy").ConfigureAwait(false);
@@ -58,6 +89,10 @@ namespace PackageManager.Services
             };
         }
 
+        /// <summary>
+        /// 异步切换 Git 全局代理状态（启用/禁用切换）。
+        /// </summary>
+        /// <returns>包含切换后状态与结果消息的切换结果对象。</returns>
         public static async Task<GitProxyToggleResult> ToggleAsync()
         {
             var currentStatus = await GetStatusAsync().ConfigureAwait(false);

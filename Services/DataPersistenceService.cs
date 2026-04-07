@@ -58,9 +58,6 @@ namespace PackageManager.Services
     /// <summary>
     /// 主界面状态数据模型
     /// </summary>
-    /// <summary>
-    /// 主界面状态数据模型
-    /// </summary>
     public class MainWindowStateData
     {
         /// <summary>
