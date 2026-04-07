@@ -937,7 +937,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             package.UnlockAndDownloadRequested += OnUnlockAndDownloadRequested;
             package.DownloadZipOnlyRequested += OnPackageDownloadZipOnlyRequested;
             package.DebugModeChanged += OnPackageDebugModeChanged;
-            package.PropertyChanged += OnPackagePropertyChanged;
         }
 
         if (_dataPersistenceService.HasMainWindowState())
@@ -1001,7 +1000,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                     p.UnlockAndDownloadRequested -= OnUnlockAndDownloadRequested;
                     p.DownloadZipOnlyRequested -= OnPackageDownloadZipOnlyRequested;
                     p.DebugModeChanged -= OnPackageDebugModeChanged;
-                    p.PropertyChanged -= OnPackagePropertyChanged;
                 }
             }
 
@@ -1397,14 +1395,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         catch (Exception ex)
         {
             MessageBox.Show($"清除数据失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    private void OnPackagePropertyChanged(object sender, PropertyChangedEventArgs e)
-    {
-        if ((e.PropertyName == nameof(PackageInfo.StatusText)) && sender is PackageInfo pkg)
-        {
-            Dispatcher.Invoke(() => { LatestActivePackage = pkg; });
         }
     }
 
