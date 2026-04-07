@@ -187,6 +187,9 @@ namespace PackageManager.Models
             }
         }
 
+        /// <summary>
+        /// 包的上传时间（从包名解析或手动设置）
+        /// </summary>
         [DataGridColumn(4, DisplayName = "时间", Width = "150", IsReadOnly = true)]
         public string Time
         {
@@ -516,6 +519,9 @@ namespace PackageManager.Models
         /// </summary>
         private ICommand changeConfigPresetCommand;
 
+        /// <summary>
+        /// 获取或设置切换配置预设的命令。
+        /// </summary>
         public ICommand ChangeConfigPresetCommand
         {
             get => changeConfigPresetCommand ?? (changeConfigPresetCommand = new RelayCommand(ExecuteChangeConfigPreset, () => SupportsConfigOps));
@@ -669,11 +675,11 @@ namespace PackageManager.Models
             set => SetProperty(ref isDebugMode, value);
         }
 
+        private bool isSignatureEncryptionRunning;
+
         /// <summary>
         /// 获取或设置签名加密流程是否运行中。
         /// </summary>
-        private bool isSignatureEncryptionRunning;
-
         public bool IsSignatureEncryptionRunning
         {
             get => isSignatureEncryptionRunning;
@@ -1362,9 +1368,6 @@ namespace PackageManager.Models
         }
     }
 
-    /// <summary>
-    /// 简单的RelayCommand实现
-    /// </summary>
     /// <summary>
     /// 简单的RelayCommand实现
     /// </summary>
