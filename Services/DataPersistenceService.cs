@@ -844,5 +844,15 @@ namespace PackageManager.Services
         /// 获取或设置经过 DPAPI 加密保护的 Jenkins 密码。
         /// </summary>
         public string JenkinsPasswordProtected { get; set; } = null;
+
+        /// <summary>
+        /// 获取或设置 Git HTTP 代理地址。
+        /// </summary>
+        public string GitProxyHttpUrl { get; set; } = "http://127.0.0.1:7897";
+
+        /// <summary>
+        /// 获取或设置 Git HTTPS 代理地址。
+        /// </summary>
+        public string GitProxyHttpsUrl { get; set; } = "http://127.0.0.1:7897";
     }
 }

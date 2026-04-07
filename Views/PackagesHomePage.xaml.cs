@@ -251,5 +251,48 @@ namespace PackageManager.Views
                 MessageBox.Show("运行Revit破解工具失败", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
+
+        private async void ToggleGitProxyButton_Click(object sender, RoutedEventArgs e)
+        {
+            var button = sender as Button;
+            var main = Window.GetWindow(this) as MainWindow;
+            var package = main?.LatestActivePackage;
+
+            try
+            {
+                if (button != null)
+                {
+                    button.IsEnabled = false;
+                }
+
+                if (package != null)
+                {
+                    package.StatusText = "正在切换 Git 代理...";
+                }
+
+                var result = await GitProxyService.ToggleAsync();
+                if (package != null)
+                {
+                    package.StatusText = result.Message;
+                }
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, "切换 Git 代理失败");
+                if (package != null)
+                {
+                    package.StatusText = $"Git代理切换失败：{ex.Message}";
+                }
+
+                MessageBox.Show($"切换 Git 代理失败：{ex.Message}", "Git代理", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                if (button != null)
+                {
+                    button.IsEnabled = true;
+                }
+            }
+        }
     }
 }
