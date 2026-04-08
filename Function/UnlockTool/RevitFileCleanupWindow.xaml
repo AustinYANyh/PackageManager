@@ -23,7 +23,7 @@
 
         <StackPanel Grid.Row="0" Margin="0,0,0,12">
             <TextBlock Text="清理 RVT / RFA 文件" FontSize="22" FontWeight="Bold"/>
-            <TextBlock Text="并发扫描桌面、下载、文档及自定义目录中的 Revit 文件，支持单个删除和一键全部删除。" Margin="0,6,0,0" Foreground="#6B7280"/>
+            <TextBlock Text="优先使用 Everything 索引；若不可用则使用本地索引库，支持自定义目录、单个删除和一键全部删除。" Margin="0,6,0,0" Foreground="#6B7280"/>
         </StackPanel>
 
         <Border Grid.Row="1" Padding="14" BorderThickness="1" BorderBrush="#1F000000" Background="#06000000" CornerRadius="6">
@@ -46,7 +46,7 @@
                     <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
                         <button:CButton Content="开始扫描" Width="110" Click="ScanButton_Click" IsEnabled="{Binding CanScan}"/>
                         <button:CButton Content="一键全部删除" Width="110" Margin="8,0,0,0" Click="DeleteAllButton_Click" IsEnabled="{Binding CanDeleteAll}"/>
-                        <button:CButton Content="刷新列表" Width="110" Margin="8,0,0,0" Click="RefreshButton_Click" IsEnabled="{Binding CanScan}"/>
+                        <button:CButton Content="重建索引" Width="110" Margin="8,0,0,0" Click="RefreshButton_Click" IsEnabled="{Binding CanScan}"/>
                     </StackPanel>
                 </StackPanel>
 

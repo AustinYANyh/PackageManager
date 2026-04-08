@@ -165,6 +165,11 @@
         <Compile Include="Services\PingCode\PingCodeApiService.Http.cs" />
         <Compile Include="Services\PingCode\PingCodeApiService.Parsing.cs" />
         <Compile Include="Services\PingCode\PingCodeApiService.Partials.cs" />
+        <Compile Include="Services\RevitCleanup\EverythingIndexProvider.cs" />
+        <Compile Include="Services\RevitCleanup\LocalIndexProvider.cs" />
+        <Compile Include="Services\RevitCleanup\RevitFileQueryModels.cs" />
+        <Compile Include="Services\RevitCleanup\RevitFileQueryService.cs" />
+        <Compile Include="Services\RevitCleanup\RevitLocalIndexStore.cs" />
         <Compile Include="Services\ToastService.cs" />
         <Compile Include="Services\AppUpdateService.cs" />
         <Compile Include="Views\CommonLinksPage.xaml.cs" />

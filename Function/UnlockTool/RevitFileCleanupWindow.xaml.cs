@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
@@ -14,6 +13,7 @@ using System.Windows.Input;
 using CustomControlLibrary.CustomControl.Attribute.DataGrid;
 using PackageManager.Models;
 using PackageManager.Services;
+using PackageManager.Services.RevitCleanup;
 using IOPath = System.IO.Path;
 
 namespace PackageManager.Function.UnlockTool
@@ -28,19 +28,23 @@ namespace PackageManager.Function.UnlockTool
         private const string KnownFolderDocuments = "FDD39AD0-238F-46AF-ADB4-6C85480369C7";
 
         private readonly DataPersistenceService dataPersistenceService = new DataPersistenceService();
-        private readonly ConcurrentQueue<ScannedFileDescriptor> pendingResults = new ConcurrentQueue<ScannedFileDescriptor>();
-        private readonly ConcurrentDictionary<string, byte> dedupPaths = new ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
+        private readonly RevitFileQueryService queryService = new RevitFileQueryService();
 
         private bool scanDesktop = true;
         private bool scanDownloads = true;
         private bool scanDocuments = true;
         private bool isScanning;
+        private bool hasScanned;
         private string selectedCustomDirectory;
         private string summaryText = "请选择扫描范围后开始扫描。";
+        private string currentProgressMessage = "请选择扫描范围后开始扫描。";
+        private string currentProviderDisplayText = "本地索引";
         private long matchedFileCount;
         private long matchedTotalBytes;
         private long deletedFileCount;
         private long failedDeleteCount;
+        private RevitFileQuerySourceKind currentSourceKind = RevitFileQuerySourceKind.LocalIndex;
+        private CancellationTokenSource scanCancellationTokenSource;
 
         public RevitFileCleanupWindow()
         {
@@ -145,12 +149,12 @@ namespace PackageManager.Function.UnlockTool
 
         private async void ScanButton_Click(object sender, RoutedEventArgs e)
         {
-            await StartScanAsync();
+            await StartScanAsync(false);
         }
 
         private async void RefreshButton_Click(object sender, RoutedEventArgs e)
         {
-            await StartScanAsync();
+            await StartScanAsync(true);
         }
 
         private void AddDirectoryButton_Click(object sender, RoutedEventArgs e)
@@ -162,7 +166,7 @@ namespace PackageManager.Function.UnlockTool
                 return;
             }
 
-            selectedPath = NormalizePath(selectedPath);
+            selectedPath = RevitCleanupPathUtility.NormalizePath(selectedPath);
             if (CustomDirectories.Any(path => string.Equals(path, selectedPath, StringComparison.OrdinalIgnoreCase)))
             {
                 MessageBox.Show("该目录已在扫描列表中。", "清理RVT", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -237,7 +241,7 @@ namespace PackageManager.Function.UnlockTool
             Close();
         }
 
-        private async Task StartScanAsync()
+        private async Task StartScanAsync(bool forceRebuildLocalIndex)
         {
             var roots = BuildScanRoots();
             if (roots.Count == 0)
@@ -246,37 +250,57 @@ namespace PackageManager.Function.UnlockTool
                 return;
             }
 
+            scanCancellationTokenSource?.Cancel();
+            scanCancellationTokenSource?.Dispose();
+            scanCancellationTokenSource = new CancellationTokenSource();
+
             IsScanning = true;
+            hasScanned = false;
             Files.Clear();
-            while (pendingResults.TryDequeue(out _))
-            {
-            }
-            dedupPaths.Clear();
-            Interlocked.Exchange(ref matchedFileCount, 0);
-            Interlocked.Exchange(ref matchedTotalBytes, 0);
-            Interlocked.Exchange(ref deletedFileCount, 0);
-            Interlocked.Exchange(ref failedDeleteCount, 0);
+            matchedFileCount = 0;
+            matchedTotalBytes = 0;
+            deletedFileCount = 0;
+            failedDeleteCount = 0;
+            currentProgressMessage = forceRebuildLocalIndex ? "正在准备重建本地索引..." : "正在准备索引查询...";
+            currentProviderDisplayText = "本地索引";
             RefreshSummaryText();
 
-            LoggingService.LogInfo($"开始扫描 Revit 文件。Roots={string.Join(" | ", roots.Select(r => r.Path))}");
+            LoggingService.LogInfo($"{(forceRebuildLocalIndex ? "开始重建 Revit 本地索引" : "开始扫描 Revit 文件")}。Roots={string.Join(" | ", roots.Select(r => r.RootPath))}");
 
             try
             {
-                var tasks = roots.Select(root => Task.Run(() => ScanRootDirectory(root))).ToArray();
-                var allTasks = Task.WhenAll(tasks);
-
-                while (!allTasks.IsCompleted || !pendingResults.IsEmpty)
+                var progress = new Progress<RevitFileQueryProgress>(info =>
                 {
-                    FlushPendingResults();
-                    if (!allTasks.IsCompleted)
+                    if (info != null && !string.IsNullOrWhiteSpace(info.Message))
                     {
-                        await Task.Delay(120).ConfigureAwait(true);
+                        currentProgressMessage = info.Message;
+                        RefreshSummaryText();
                     }
+                });
+
+                var result = await queryService.QueryAsync(new RevitFileQueryOptions
+                {
+                    Roots = roots,
+                    Extensions = new[] { ".rvt", ".rfa" },
+                    ForceRebuildLocalIndex = forceRebuildLocalIndex
+                }, progress, scanCancellationTokenSource.Token).ConfigureAwait(true);
+
+                currentSourceKind = result.SourceKind;
+                currentProviderDisplayText = result.ProviderDisplayText;
+                Files.Clear();
+                foreach (var item in result.Files.OrderByDescending(file => file.ModifiedTimeUtc))
+                {
+                    Files.Add(new RevitCleanupFileItem(item, DeleteSingleFileAsync));
                 }
 
-                await allTasks.ConfigureAwait(true);
-                FlushPendingResults();
-                LoggingService.LogInfo($"Revit 文件扫描完成。Matched={matchedFileCount}, Listed={Files.Count}");
+                SynchronizeMatchedSummary();
+                hasScanned = true;
+                currentProgressMessage = string.Empty;
+                LoggingService.LogInfo($"{(forceRebuildLocalIndex ? "Revit 本地索引重建并查询完成" : "Revit 文件扫描完成")}。Source={result.ProviderDisplayText}, Matched={matchedFileCount}, Size={matchedTotalBytes}");
+            }
+            catch (OperationCanceledException)
+            {
+                LoggingService.LogWarning(forceRebuildLocalIndex ? "Revit 本地索引重建已取消。" : "Revit 文件扫描已取消。");
             }
             catch (Exception ex)
             {
@@ -288,70 +312,6 @@ namespace PackageManager.Function.UnlockTool
                 IsScanning = false;
                 RefreshSummaryText();
             }
-        }
-
-        private void ScanRootDirectory(ScanRootInfo root)
-        {
-            var directories = new Stack<string>();
-            directories.Push(root.Path);
-
-            while (directories.Count > 0)
-            {
-                var currentDirectory = directories.Pop();
-
-                foreach (var file in EnumerateFilesSafe(currentDirectory))
-                {
-                    var extension = IOPath.GetExtension(file);
-                    if (!string.Equals(extension, ".rvt", StringComparison.OrdinalIgnoreCase) &&
-                        !string.Equals(extension, ".rfa", StringComparison.OrdinalIgnoreCase))
-                    {
-                        continue;
-                    }
-
-                    var normalizedPath = NormalizePath(file);
-                    if (!dedupPaths.TryAdd(normalizedPath, 0))
-                    {
-                        continue;
-                    }
-
-                    var descriptor = CreateDescriptor(file, root.DisplayName);
-                    pendingResults.Enqueue(descriptor);
-                    Interlocked.Increment(ref matchedFileCount);
-                    Interlocked.Add(ref matchedTotalBytes, descriptor.SizeBytes);
-                }
-
-                foreach (var directory in EnumerateDirectoriesSafe(currentDirectory))
-                {
-                    directories.Push(directory);
-                }
-            }
-        }
-
-        private void FlushPendingResults()
-        {
-            var batch = new List<ScannedFileDescriptor>();
-            while (pendingResults.TryDequeue(out var descriptor))
-            {
-                batch.Add(descriptor);
-                if (batch.Count >= 200)
-                {
-                    break;
-                }
-            }
-
-            if (batch.Count == 0)
-            {
-                RefreshSummaryText();
-                return;
-            }
-
-            foreach (var descriptor in batch.OrderByDescending(x => x.ModifiedTimeUtc))
-            {
-                Files.Add(new RevitCleanupFileItem(descriptor, DeleteSingleFileAsync));
-            }
-
-            RefreshSummaryText();
-            OnPropertyChanged(nameof(CanDeleteAll));
         }
 
         private async Task DeleteSingleFileAsync(RevitCleanupFileItem item)
@@ -367,10 +327,10 @@ namespace PackageManager.Function.UnlockTool
                 return;
             }
 
-            var deleteResult = await DeleteFilesAsync(new[] { item.Descriptor });
+            var deleteResult = await DeleteFilesAsync(new[] { item.IndexedFile });
             if (deleteResult.DeletedPaths.Any(path => string.Equals(path, item.FullPath, StringComparison.OrdinalIgnoreCase)))
             {
-                Files.Remove(item);
+                RemoveFilesFromView(deleteResult.DeletedPaths);
                 LoggingService.LogInfo($"已删除 Revit 文件：{item.FullPath}");
             }
             else
@@ -389,15 +349,8 @@ namespace PackageManager.Function.UnlockTool
                 return;
             }
 
-            var deleteResult = await DeleteFilesAsync(items.Select(item => item.Descriptor));
-            foreach (var deletedPath in deleteResult.DeletedPaths)
-            {
-                var match = items.FirstOrDefault(item => string.Equals(item.FullPath, deletedPath, StringComparison.OrdinalIgnoreCase));
-                if (match != null)
-                {
-                    Files.Remove(match);
-                }
-            }
+            var deleteResult = await DeleteFilesAsync(items.Select(item => item.IndexedFile));
+            RemoveFilesFromView(deleteResult.DeletedPaths);
 
             LoggingService.LogInfo($"{logTitle}：Success={deleteResult.DeletedPaths.Count}, Failed={deleteResult.FailedPaths.Count}");
             if (deleteResult.FailedPaths.Count > 0)
@@ -411,13 +364,13 @@ namespace PackageManager.Function.UnlockTool
             OnPropertyChanged(nameof(CanDeleteAll));
         }
 
-        private Task<DeleteResult> DeleteFilesAsync(IEnumerable<ScannedFileDescriptor> descriptors)
+        private async Task<DeleteResult> DeleteFilesAsync(IEnumerable<RevitIndexedFileInfo> descriptors)
         {
-            return Task.Run(() =>
+            var result = await Task.Run(() =>
             {
-                var deletedPaths = new ConcurrentBag<string>();
-                var failedPaths = new ConcurrentBag<string>();
-                var targets = descriptors?.Where(item => item != null).ToList() ?? new List<ScannedFileDescriptor>();
+                var deletedPaths = new List<string>();
+                var failedPaths = new List<string>();
+                var targets = descriptors?.Where(item => item != null).ToList() ?? new List<RevitIndexedFileInfo>();
 
                 Parallel.ForEach(targets, descriptor =>
                 {
@@ -428,12 +381,20 @@ namespace PackageManager.Function.UnlockTool
                             File.Delete(descriptor.FullPath);
                         }
 
-                        deletedPaths.Add(descriptor.FullPath);
+                        lock (deletedPaths)
+                        {
+                            deletedPaths.Add(descriptor.FullPath);
+                        }
+
                         Interlocked.Increment(ref deletedFileCount);
                     }
                     catch (Exception ex)
                     {
-                        failedPaths.Add(descriptor.FullPath);
+                        lock (failedPaths)
+                        {
+                            failedPaths.Add(descriptor.FullPath);
+                        }
+
                         Interlocked.Increment(ref failedDeleteCount);
                         LoggingService.LogError(ex, $"删除 Revit 文件失败：{descriptor.FullPath}");
                     }
@@ -441,15 +402,48 @@ namespace PackageManager.Function.UnlockTool
 
                 return new DeleteResult
                 {
-                    DeletedPaths = deletedPaths.ToList(),
-                    FailedPaths = failedPaths.ToList()
+                    DeletedPaths = deletedPaths,
+                    FailedPaths = failedPaths
                 };
-            });
+            }).ConfigureAwait(true);
+
+            if ((currentSourceKind != RevitFileQuerySourceKind.EverythingIndex) && result.DeletedPaths.Count > 0)
+            {
+                try
+                {
+                    await queryService.RemoveFilesFromIndexAsync(result.DeletedPaths, CancellationToken.None).ConfigureAwait(true);
+                }
+                catch (Exception ex)
+                {
+                    LoggingService.LogError(ex, "同步本地索引删除结果失败");
+                }
+            }
+
+            return result;
         }
 
-        private List<ScanRootInfo> BuildScanRoots()
+        private void RemoveFilesFromView(IEnumerable<string> deletedPaths)
         {
-            var roots = new List<ScanRootInfo>();
+            var pathSet = new HashSet<string>((deletedPaths ?? Array.Empty<string>())
+                .Select(RevitCleanupPathUtility.NormalizePath)
+                .Where(path => !string.IsNullOrWhiteSpace(path)), StringComparer.OrdinalIgnoreCase);
+
+            if (pathSet.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var item in Files.Where(file => pathSet.Contains(file.FullPath)).ToList())
+            {
+                Files.Remove(item);
+            }
+
+            SynchronizeMatchedSummary();
+        }
+
+        private List<RevitFileQueryRoot> BuildScanRoots()
+        {
+            var roots = new List<RevitFileQueryRoot>();
 
             if (ScanDesktop)
             {
@@ -471,68 +465,30 @@ namespace PackageManager.Function.UnlockTool
                 AddRoot(roots, "自定义", customDirectory);
             }
 
-            return roots.GroupBy(root => NormalizePath(root.Path), StringComparer.OrdinalIgnoreCase)
+            return roots.GroupBy(root => RevitCleanupPathUtility.NormalizePath(root.RootPath), StringComparer.OrdinalIgnoreCase)
                         .Select(group => group.First())
                         .ToList();
         }
 
-        private void AddRoot(ICollection<ScanRootInfo> roots, string displayName, string path)
+        private void AddRoot(ICollection<RevitFileQueryRoot> roots, string displayName, string path)
         {
             if (string.IsNullOrWhiteSpace(path))
             {
                 return;
             }
 
-            var normalized = NormalizePath(path);
+            var normalized = RevitCleanupPathUtility.NormalizePath(path);
             if (!Directory.Exists(normalized))
             {
                 LoggingService.LogWarning($"Revit 文件清理跳过不存在目录：{normalized}");
                 return;
             }
 
-            roots.Add(new ScanRootInfo
+            roots.Add(new RevitFileQueryRoot
             {
                 DisplayName = displayName,
-                Path = normalized
+                RootPath = normalized
             });
-        }
-
-        private ScannedFileDescriptor CreateDescriptor(string filePath, string displayName)
-        {
-            var fileInfo = new FileInfo(filePath);
-            return new ScannedFileDescriptor
-            {
-                FileName = fileInfo.Name,
-                DirectoryPath = fileInfo.DirectoryName ?? string.Empty,
-                FullPath = fileInfo.FullName,
-                SizeBytes = fileInfo.Exists ? fileInfo.Length : 0,
-                ModifiedTimeUtc = fileInfo.Exists ? fileInfo.LastWriteTimeUtc : DateTime.MinValue,
-                SourceDisplayName = displayName
-            };
-        }
-
-        private static IEnumerable<string> EnumerateFilesSafe(string directory)
-        {
-            try
-            {
-                return Directory.EnumerateFiles(directory, "*", SearchOption.TopDirectoryOnly);
-            }
-            catch
-            {
-                return Array.Empty<string>();
-            }
-        }
-
-        private static IEnumerable<string> EnumerateDirectoriesSafe(string directory)
-        {
-            try
-            {
-                return Directory.EnumerateDirectories(directory, "*", SearchOption.TopDirectoryOnly);
-            }
-            catch
-            {
-                return Array.Empty<string>();
-            }
         }
 
         private void LoadCustomDirectories()
@@ -541,7 +497,7 @@ namespace PackageManager.Function.UnlockTool
             var paths = settings?.RevitCleanupCustomDirectories ?? new List<string>();
             CustomDirectories.Clear();
 
-            foreach (var path in paths.Select(NormalizePath)
+            foreach (var path in paths.Select(RevitCleanupPathUtility.NormalizePath)
                                       .Where(path => !string.IsNullOrWhiteSpace(path))
                                       .Distinct(StringComparer.OrdinalIgnoreCase))
             {
@@ -555,7 +511,7 @@ namespace PackageManager.Function.UnlockTool
         private void SaveCustomDirectories()
         {
             var settings = dataPersistenceService.LoadSettings() ?? new AppSettings();
-            settings.RevitCleanupCustomDirectories = CustomDirectories.Select(NormalizePath)
+            settings.RevitCleanupCustomDirectories = CustomDirectories.Select(RevitCleanupPathUtility.NormalizePath)
                                                                      .Where(path => !string.IsNullOrWhiteSpace(path))
                                                                      .Distinct(StringComparer.OrdinalIgnoreCase)
                                                                      .ToList();
@@ -593,27 +549,28 @@ namespace PackageManager.Function.UnlockTool
 
         private void RefreshSummaryText()
         {
-            var totalSizeText = FormatSize(Interlocked.Read(ref matchedTotalBytes));
-            SummaryText = IsScanning
-                ? $"正在扫描... 已命中 {matchedFileCount} 个文件，累计大小 {totalSizeText}，当前列表 {Files.Count} 个。"
-                : $"扫描完成：命中 {matchedFileCount} 个文件，总大小 {totalSizeText}，已删除 {deletedFileCount} 个，删除失败 {failedDeleteCount} 个，当前列表剩余 {Files.Count} 个。";
+            if (IsScanning)
+            {
+                SummaryText = string.IsNullOrWhiteSpace(currentProgressMessage)
+                    ? "正在处理索引查询..."
+                    : currentProgressMessage;
+                return;
+            }
+
+            if (!hasScanned)
+            {
+                SummaryText = "请选择扫描范围后开始扫描。";
+                return;
+            }
+
+            var totalSizeText = FormatSize(matchedTotalBytes);
+            SummaryText = $"来源：{currentProviderDisplayText}，命中 {matchedFileCount} 个文件，总大小 {totalSizeText}，已删除 {deletedFileCount} 个，删除失败 {failedDeleteCount} 个，当前列表剩余 {Files.Count} 个。";
         }
 
-        private static string NormalizePath(string path)
+        private void SynchronizeMatchedSummary()
         {
-            if (string.IsNullOrWhiteSpace(path))
-            {
-                return null;
-            }
-
-            try
-            {
-                return IOPath.GetFullPath(path).TrimEnd(IOPath.DirectorySeparatorChar);
-            }
-            catch
-            {
-                return path.Trim();
-            }
+            matchedFileCount = Files.Count;
+            matchedTotalBytes = Files.Sum(item => item.SizeBytes);
         }
 
         protected virtual void OnPropertyChanged([CallerMemberName] string propertyName = null)
@@ -631,6 +588,14 @@ namespace PackageManager.Function.UnlockTool
             field = value;
             OnPropertyChanged(propertyName);
             return true;
+        }
+
+        protected override void OnClosing(CancelEventArgs e)
+        {
+            scanCancellationTokenSource?.Cancel();
+            scanCancellationTokenSource?.Dispose();
+            scanCancellationTokenSource = null;
+            base.OnClosing(e);
         }
 
         [DllImport("shell32.dll")]
@@ -658,53 +623,25 @@ namespace PackageManager.Function.UnlockTool
             }
         }
 
-        private sealed class ScanRootInfo
-        {
-            public string DisplayName { get; set; }
-
-            public string Path { get; set; }
-        }
-
-        internal sealed class ScannedFileDescriptor
-        {
-            public string SourceDisplayName { get; set; }
-
-            public string FileName { get; set; }
-
-            public string DirectoryPath { get; set; }
-
-            public string FullPath { get; set; }
-
-            public long SizeBytes { get; set; }
-
-            public DateTime ModifiedTimeUtc { get; set; }
-        }
-
-        private sealed class DeleteResult
-        {
-            public List<string> DeletedPaths { get; set; } = new List<string>();
-
-            public List<string> FailedPaths { get; set; } = new List<string>();
-        }
-
         public sealed class RevitCleanupFileItem
         {
             private readonly Func<RevitCleanupFileItem, Task> deleteHandler;
 
-            internal RevitCleanupFileItem(ScannedFileDescriptor descriptor, Func<RevitCleanupFileItem, Task> deleteHandler)
+            internal RevitCleanupFileItem(RevitIndexedFileInfo indexedFile, Func<RevitCleanupFileItem, Task> deleteHandler)
             {
-                Descriptor = descriptor;
+                IndexedFile = indexedFile;
                 this.deleteHandler = deleteHandler;
-                FileName = descriptor.FileName;
-                SourceDisplayName = descriptor.SourceDisplayName;
-                SizeText = FormatSize(descriptor.SizeBytes);
-                ModifiedText = descriptor.ModifiedTimeUtc == DateTime.MinValue ? string.Empty : descriptor.ModifiedTimeUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
-                DirectoryPath = descriptor.DirectoryPath;
-                FullPath = descriptor.FullPath;
+                FileName = indexedFile.FileName;
+                SourceDisplayName = indexedFile.RootDisplayName;
+                SizeBytes = indexedFile.SizeBytes;
+                SizeText = FormatSize(indexedFile.SizeBytes);
+                ModifiedText = indexedFile.ModifiedTimeUtc == DateTime.MinValue ? string.Empty : indexedFile.ModifiedTimeUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
+                DirectoryPath = IOPath.GetDirectoryName(indexedFile.FullPath) ?? string.Empty;
+                FullPath = indexedFile.FullPath;
                 DeleteCommand = new RelayCommand(() => _ = this.deleteHandler?.Invoke(this));
             }
 
-            internal ScannedFileDescriptor Descriptor { get; }
+            internal RevitIndexedFileInfo IndexedFile { get; }
 
             [DataGridColumn(1, DisplayName = "文件名", Width = "220", IsReadOnly = true)]
             public string FileName { get; set; }
@@ -739,24 +676,14 @@ namespace PackageManager.Function.UnlockTool
 
             public string FullPath { get; set; }
 
-            private static string FormatSize(long bytes)
-            {
-                if (bytes <= 0)
-                {
-                    return "0 B";
-                }
+            public long SizeBytes { get; set; }
+        }
 
-                var units = new[] { "B", "KB", "MB", "GB" };
-                var size = (double)bytes;
-                var unitIndex = 0;
-                while ((size >= 1024d) && (unitIndex < (units.Length - 1)))
-                {
-                    size /= 1024d;
-                    unitIndex++;
-                }
+        private sealed class DeleteResult
+        {
+            public List<string> DeletedPaths { get; set; } = new List<string>();
 
-                return unitIndex == 0 ? $"{size:F0} {units[unitIndex]}" : $"{size:F2} {units[unitIndex]}";
-            }
+            public List<string> FailedPaths { get; set; } = new List<string>();
         }
 
         private static string FormatSize(long bytes)
