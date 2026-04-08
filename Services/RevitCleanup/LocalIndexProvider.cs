@@ -42,6 +42,7 @@ namespace PackageManager.Services.RevitCleanup
                     var watcherState = EnsureWatcher(root, options.Extensions);
                     var snapshot = store.LoadSnapshot(root.RootPath);
                     var metadata = store.GetRootMetadata(root.RootPath);
+                    var snapshotIsFresh = false; // 刚刚重建的快照无需再做 MaterializeLiveRecords 二次验证
 
                     if (options.ForceRebuildLocalIndex)
                     {
@@ -55,6 +56,7 @@ namespace PackageManager.Services.RevitCleanup
                         store.SaveSnapshot(snapshot, watcherState != null && watcherState.Enabled);
                         watcherState?.ResetPendingChanges();
                         builtAnyRoot = true;
+                        snapshotIsFresh = true;
                         LoggingService.LogInfo($"Revit 本地索引重建完成：{root.DisplayName} -> {root.RootPath}，Files={snapshot.Files.Count}");
                     }
                     else if (snapshot == null)
@@ -69,6 +71,7 @@ namespace PackageManager.Services.RevitCleanup
                         store.SaveSnapshot(snapshot, watcherState != null && watcherState.Enabled);
                         watcherState?.ResetPendingChanges();
                         builtAnyRoot = true;
+                        snapshotIsFresh = true;
                         LoggingService.LogInfo($"Revit 本地索引首次建库完成：{root.DisplayName} -> {root.RootPath}，Files={snapshot.Files.Count}");
                     }
                     else
@@ -120,8 +123,10 @@ namespace PackageManager.Services.RevitCleanup
                         }
                     }
 
-                    var liveRecords = MaterializeLiveRecords(snapshot, root, options.Extensions);
-                    if (NeedPersistValidatedSnapshot(snapshot.Files, liveRecords))
+                    var liveRecords = snapshotIsFresh
+                        ? snapshot.Files  // 刚重建，数据新鲜，跳过逐文件二次 FileInfo 验证
+                        : MaterializeLiveRecords(snapshot, root, options.Extensions);
+                    if (!snapshotIsFresh && NeedPersistValidatedSnapshot(snapshot.Files, liveRecords))
                     {
                         snapshot.Files = liveRecords;
                         snapshot.LastSyncUtc = DateTime.UtcNow;
@@ -299,36 +304,48 @@ namespace PackageManager.Services.RevitCleanup
 
         private RevitRootIndexSnapshot BuildSnapshot(RevitFileQueryRoot root, IEnumerable<string> extensions, CancellationToken cancellationToken)
         {
-            var files = new List<RevitIndexedFileRecord>();
-            var directories = new Stack<string>();
-            directories.Push(root.RootPath);
+            // 第一步：广度优先收集所有子目录（单线程，I/O 顺序访问更快）
+            var allDirectories = new List<string>();
+            var queue = new Queue<string>();
+            queue.Enqueue(root.RootPath);
 
-            while (directories.Count > 0)
+            while (queue.Count > 0)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var currentDirectory = directories.Pop();
-                foreach (var file in EnumerateFilesSafe(currentDirectory, extensions))
+                var current = queue.Dequeue();
+                allDirectories.Add(current);
+                foreach (var sub in EnumerateDirectoriesSafe(current))
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    var descriptor = CreateRecord(file, root);
-                    if (descriptor != null)
-                    {
-                        files.Add(descriptor);
-                    }
-                }
-
-                foreach (var subDirectory in EnumerateDirectoriesSafe(currentDirectory))
-                {
-                    directories.Push(subDirectory);
+                    queue.Enqueue(sub);
                 }
             }
+
+            // 第二步：并行枚举各目录下的目标文件
+            var bag = new ConcurrentBag<RevitIndexedFileRecord>();
+            var extensionList = (extensions ?? Array.Empty<string>()).ToList();
+
+            Parallel.ForEach(
+                allDirectories,
+                new ParallelOptions { CancellationToken = cancellationToken, MaxDegreeOfParallelism = Environment.ProcessorCount },
+                directory =>
+                {
+                    foreach (var file in EnumerateFilesSafe(directory, extensionList))
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var record = CreateRecord(file, root);
+                        if (record != null)
+                        {
+                            bag.Add(record);
+                        }
+                    }
+                });
 
             return new RevitRootIndexSnapshot
             {
                 RootPath = root.RootPath,
                 RootDisplayName = root.DisplayName,
                 LastIndexedUtc = DateTime.UtcNow,
-                Files = files.OrderByDescending(item => item.ModifiedTimeUtc).ToList()
+                Files = bag.OrderByDescending(item => item.ModifiedTimeUtc).ToList()
             };
         }
 
