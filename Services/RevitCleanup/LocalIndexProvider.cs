@@ -53,6 +53,7 @@ namespace PackageManager.Services.RevitCleanup
                         snapshot = BuildSnapshot(root, options.Extensions, cancellationToken);
                         snapshot.LastSyncUtc = snapshot.LastIndexedUtc;
                         store.SaveSnapshot(snapshot, watcherState != null && watcherState.Enabled);
+                        watcherState?.ResetPendingChanges();
                         builtAnyRoot = true;
                         LoggingService.LogInfo($"Revit 本地索引重建完成：{root.DisplayName} -> {root.RootPath}，Files={snapshot.Files.Count}");
                     }
@@ -66,6 +67,7 @@ namespace PackageManager.Services.RevitCleanup
                         snapshot = BuildSnapshot(root, options.Extensions, cancellationToken);
                         snapshot.LastSyncUtc = snapshot.LastIndexedUtc;
                         store.SaveSnapshot(snapshot, watcherState != null && watcherState.Enabled);
+                        watcherState?.ResetPendingChanges();
                         builtAnyRoot = true;
                         LoggingService.LogInfo($"Revit 本地索引首次建库完成：{root.DisplayName} -> {root.RootPath}，Files={snapshot.Files.Count}");
                     }
@@ -118,7 +120,15 @@ namespace PackageManager.Services.RevitCleanup
                         }
                     }
 
-                    foreach (var record in snapshot.Files.OrderByDescending(item => item.ModifiedTimeUtc))
+                    var liveRecords = MaterializeLiveRecords(snapshot, root, options.Extensions);
+                    if (NeedPersistValidatedSnapshot(snapshot.Files, liveRecords))
+                    {
+                        snapshot.Files = liveRecords;
+                        snapshot.LastSyncUtc = DateTime.UtcNow;
+                        store.SaveSnapshot(snapshot, watcherState != null && watcherState.Enabled);
+                    }
+
+                    foreach (var record in liveRecords.OrderByDescending(item => item.ModifiedTimeUtc))
                     {
                         var normalizedPath = RevitCleanupPathUtility.NormalizePath(record.FullPath);
                         if (!dedup.Add(normalizedPath))
@@ -171,6 +181,89 @@ namespace PackageManager.Services.RevitCleanup
             }
 
             return (DateTime.UtcNow - referenceTime) >= RebuildIntervalWithoutWatcher;
+        }
+
+        private List<RevitIndexedFileRecord> MaterializeLiveRecords(RevitRootIndexSnapshot snapshot, RevitFileQueryRoot root, IEnumerable<string> extensions)
+        {
+            var records = new List<RevitIndexedFileRecord>();
+            foreach (var record in snapshot.Files ?? Enumerable.Empty<RevitIndexedFileRecord>())
+            {
+                var normalizedPath = RevitCleanupPathUtility.NormalizePath(record.FullPath);
+                if (string.IsNullOrWhiteSpace(normalizedPath))
+                {
+                    continue;
+                }
+
+                if (!RevitCleanupPathUtility.IsPathUnderRoot(normalizedPath, root.RootPath))
+                {
+                    continue;
+                }
+
+                if (!RevitCleanupPathUtility.IsIndexedExtension(normalizedPath, extensions))
+                {
+                    continue;
+                }
+
+                try
+                {
+                    var info = new FileInfo(normalizedPath);
+                    if (!info.Exists)
+                    {
+                        continue;
+                    }
+
+                    records.Add(new RevitIndexedFileRecord
+                    {
+                        RootPath = root.RootPath,
+                        RootDisplayName = root.DisplayName,
+                        FullPath = normalizedPath,
+                        FileName = info.Name,
+                        Extension = RevitCleanupPathUtility.NormalizeExtension(info.Extension),
+                        SizeBytes = info.Length,
+                        ModifiedTimeUtc = info.LastWriteTimeUtc
+                    });
+                }
+                catch
+                {
+                }
+            }
+
+            return records.OrderByDescending(item => item.ModifiedTimeUtc).ToList();
+        }
+
+        private bool AreSameRecord(RevitIndexedFileRecord left, RevitIndexedFileRecord right)
+        {
+            if (left == null || right == null)
+            {
+                return left == right;
+            }
+
+            return string.Equals(RevitCleanupPathUtility.NormalizePath(left.FullPath), RevitCleanupPathUtility.NormalizePath(right.FullPath), StringComparison.OrdinalIgnoreCase) &&
+                   string.Equals(left.RootPath, right.RootPath, StringComparison.OrdinalIgnoreCase) &&
+                   string.Equals(left.RootDisplayName, right.RootDisplayName, StringComparison.Ordinal) &&
+                   left.SizeBytes == right.SizeBytes &&
+                   left.ModifiedTimeUtc == right.ModifiedTimeUtc;
+        }
+
+        private bool NeedPersistValidatedSnapshot(IReadOnlyList<RevitIndexedFileRecord> oldRecords, IReadOnlyList<RevitIndexedFileRecord> newRecords)
+        {
+            oldRecords = oldRecords ?? Array.Empty<RevitIndexedFileRecord>();
+            newRecords = newRecords ?? Array.Empty<RevitIndexedFileRecord>();
+
+            if (oldRecords.Count != newRecords.Count)
+            {
+                return true;
+            }
+
+            for (var index = 0; index < oldRecords.Count; index++)
+            {
+                if (!AreSameRecord(oldRecords[index], newRecords[index]))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private RootWatcherState EnsureWatcher(RevitFileQueryRoot root, IEnumerable<string> extensions)
@@ -403,8 +496,7 @@ namespace PackageManager.Services.RevitCleanup
             }
 
             foreach (var existingPath in map.Keys.Where(path =>
-                         string.Equals(path, directoryPath, StringComparison.OrdinalIgnoreCase) ||
-                         path.StartsWith(directoryPath + IOPath.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase))
+                         RevitCleanupPathUtility.IsPathUnderRoot(path, directoryPath))
                      .ToList())
             {
                 map.Remove(existingPath);
@@ -444,6 +536,15 @@ namespace PackageManager.Services.RevitCleanup
                 }
 
                 return changes.Count > 0;
+            }
+
+            public void ResetPendingChanges()
+            {
+                while (pendingChanges.TryDequeue(out _))
+                {
+                }
+
+                Interlocked.Exchange(ref requiresFullResync, 0);
             }
 
             public void OnCreated(object sender, FileSystemEventArgs e)
@@ -491,18 +592,8 @@ namespace PackageManager.Services.RevitCleanup
                     return;
                 }
 
-                if (Directory.Exists(normalizedPath) || string.IsNullOrWhiteSpace(IOPath.GetExtension(normalizedPath)))
-                {
-                    EnqueueChange(new RevitIndexChange
-                    {
-                        ChangeType = changeType,
-                        FilePath = normalizedPath,
-                        IsDirectory = true
-                    });
-                    return;
-                }
-
-                if (!extensions.Contains(RevitCleanupPathUtility.NormalizeExtension(IOPath.GetExtension(normalizedPath))))
+                var normalizedExtension = RevitCleanupPathUtility.NormalizeExtension(IOPath.GetExtension(normalizedPath));
+                if (!extensions.Contains(normalizedExtension))
                 {
                     return;
                 }

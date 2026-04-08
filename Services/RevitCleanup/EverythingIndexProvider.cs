@@ -141,8 +141,7 @@ namespace PackageManager.Services.RevitCleanup
                             continue;
                         }
 
-                        if (!fullPath.StartsWith(root.RootPath + IOPath.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) &&
-                            !string.Equals(fullPath, root.RootPath, StringComparison.OrdinalIgnoreCase))
+                        if (!RevitCleanupPathUtility.IsPathUnderRoot(fullPath, root.RootPath))
                         {
                             continue;
                         }

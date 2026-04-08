@@ -188,8 +188,7 @@ namespace PackageManager.Services.RevitCleanup
         {
             foreach (var rootPath in manifest.Roots.Keys.OrderByDescending(item => item.Length))
             {
-                if (filePath.StartsWith(rootPath + IOPath.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(filePath, rootPath, StringComparison.OrdinalIgnoreCase))
+                if (RevitCleanupPathUtility.IsPathUnderRoot(filePath, rootPath))
                 {
                     return rootPath;
                 }

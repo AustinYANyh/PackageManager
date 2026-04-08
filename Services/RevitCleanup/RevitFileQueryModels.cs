@@ -155,5 +155,28 @@ namespace PackageManager.Services.RevitCleanup
 
             return (extensions ?? Array.Empty<string>()).Any(item => string.Equals(NormalizeExtension(item), extension, StringComparison.OrdinalIgnoreCase));
         }
+
+        public static bool IsPathUnderRoot(string path, string rootPath)
+        {
+            var normalizedPath = NormalizePath(path);
+            var normalizedRoot = NormalizePath(rootPath);
+            if (string.IsNullOrWhiteSpace(normalizedPath) || string.IsNullOrWhiteSpace(normalizedRoot))
+            {
+                return false;
+            }
+
+            if (string.Equals(normalizedPath, normalizedRoot, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            var rootWithoutTrailing = normalizedRoot.TrimEnd(IOPath.DirectorySeparatorChar, IOPath.AltDirectorySeparatorChar);
+            if (string.IsNullOrWhiteSpace(rootWithoutTrailing))
+            {
+                return false;
+            }
+
+            return normalizedPath.StartsWith(rootWithoutTrailing + IOPath.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+        }
     }
 }
