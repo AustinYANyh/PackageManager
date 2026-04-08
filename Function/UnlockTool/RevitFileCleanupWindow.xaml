@@ -1,0 +1,119 @@
+<Window x:Class="PackageManager.Function.UnlockTool.RevitFileCleanupWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:C="clr-namespace:CustomControlLibrary.CustomControl.Controls.DataGrid;assembly=CustomControlLibrary"
+        xmlns:controls="clr-namespace:CustomControlLibrary.CustomControl.Controls;assembly=CustomControlLibrary"
+        xmlns:button="clr-namespace:CustomControlLibrary.CustomControl.Controls.Button;assembly=CustomControlLibrary"
+        mc:Ignorable="d"
+        Title="清理RVT / RFA"
+        Height="760"
+        Width="1220"
+        MinHeight="620"
+        MinWidth="980"
+        WindowStartupLocation="CenterOwner">
+    <Grid Margin="18">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Grid.Row="0" Margin="0,0,0,12">
+            <TextBlock Text="清理 RVT / RFA 文件" FontSize="22" FontWeight="Bold"/>
+            <TextBlock Text="并发扫描桌面、下载、文档及自定义目录中的 Revit 文件，支持单个删除和一键全部删除。" Margin="0,6,0,0" Foreground="#6B7280"/>
+        </StackPanel>
+
+        <Border Grid.Row="1" Padding="14" BorderThickness="1" BorderBrush="#1F000000" Background="#06000000" CornerRadius="6">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="1.2*"/>
+                    <ColumnDefinition Width="14"/>
+                    <ColumnDefinition Width="1*"/>
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0">
+                    <controls:CTextBlock Text="默认扫描目录" FontSize="14" FontWeight="SemiBold"/>
+                    <WrapPanel Margin="0,10,0,0">
+                        <CheckBox Content="桌面" IsChecked="{Binding ScanDesktop}" Margin="0,0,18,8"/>
+                        <CheckBox Content="下载" IsChecked="{Binding ScanDownloads}" Margin="0,0,18,8"/>
+                        <CheckBox Content="文档" IsChecked="{Binding ScanDocuments}" Margin="0,0,18,8"/>
+                    </WrapPanel>
+
+                    <TextBlock Text="{Binding ScanScopeText}" Margin="0,10,0,0" Foreground="#6B7280" TextWrapping="Wrap"/>
+                    <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                        <button:CButton Content="开始扫描" Width="110" Click="ScanButton_Click" IsEnabled="{Binding CanScan}"/>
+                        <button:CButton Content="一键全部删除" Width="110" Margin="8,0,0,0" Click="DeleteAllButton_Click" IsEnabled="{Binding CanDeleteAll}"/>
+                        <button:CButton Content="刷新列表" Width="110" Margin="8,0,0,0" Click="RefreshButton_Click" IsEnabled="{Binding CanScan}"/>
+                    </StackPanel>
+                </StackPanel>
+
+                <StackPanel Grid.Column="2">
+                    <controls:CTextBlock Text="自定义扫描目录" FontSize="14" FontWeight="SemiBold"/>
+                    <Border Margin="0,10,0,0" BorderThickness="1" BorderBrush="#14000000" Background="#04FFFFFF" CornerRadius="4" Height="120">
+                        <Grid>
+                            <ListBox ItemsSource="{Binding CustomDirectories}" SelectedItem="{Binding SelectedCustomDirectory}" BorderThickness="0" Background="Transparent">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding}" TextWrapping="Wrap" Padding="4,3"/>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                            <TextBlock Text="尚未添加自定义目录"
+                                       Foreground="#9CA3AF"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"
+                                       IsHitTestVisible="False">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding CustomDirectories.Count}" Value="0">
+                                                <Setter Property="Visibility" Value="Visible"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </Grid>
+                    </Border>
+                    <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                        <button:CButton Content="添加目录" Width="100" Click="AddDirectoryButton_Click" IsEnabled="{Binding CanScan}"/>
+                        <button:CButton Content="移除所选" Width="100" Margin="8,0,0,0" Click="RemoveDirectoryButton_Click" IsEnabled="{Binding CanEditCustomDirectories}"/>
+                        <button:CButton Content="清空自定义" Width="110" Margin="8,0,0,0" Click="ClearDirectoriesButton_Click" IsEnabled="{Binding CanClearCustomDirectories}"/>
+                    </StackPanel>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Grid Grid.Row="2" Margin="0,12,0,0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+
+            <DockPanel Grid.Row="0" Margin="0,0,0,8">
+                <TextBlock Text="{Binding SummaryText}" VerticalAlignment="Center" Foreground="#374151"/>
+                <ProgressBar Width="180"
+                             Height="16"
+                             Margin="12,0,0,0"
+                             IsIndeterminate="True"
+                             Visibility="{Binding BusyVisibility}"
+                             VerticalAlignment="Center"/>
+            </DockPanel>
+
+            <Border Grid.Row="1" BorderBrush="#1F000000" BorderThickness="1" Background="#08000000" CornerRadius="6">
+                <C:CDataGrid x:Name="FilesGrid"
+                             TextAlignment="Left"
+                             EnableAutoTemplateSelection="True"
+                             Margin="0"/>
+            </Border>
+        </Grid>
+
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+            <button:CButton Content="关闭" Width="100" Click="CloseButton_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>

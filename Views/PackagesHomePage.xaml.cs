@@ -252,6 +252,20 @@ namespace PackageManager.Views
             }
         }
 
+        private void OpenRevitFileCleanupWindowButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var win = new RevitFileCleanupWindow { Owner = Window.GetWindow(this) };
+                win.ShowDialog();
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, "打开 Revit 文件清理窗口失败");
+                MessageBox.Show($"打开清理窗口失败：{ex.Message}", "清理RVT", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
         private async void ToggleGitProxyButton_Click(object sender, RoutedEventArgs e)
         {
             var button = sender as Button;

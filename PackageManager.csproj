@@ -120,6 +120,10 @@
           <DependentUpon>UnlockFilesWindow.xaml</DependentUpon>
           <SubType>Code</SubType>
         </Compile>
+        <Compile Include="Function\UnlockTool\RevitFileCleanupWindow.xaml.cs">
+          <DependentUpon>RevitFileCleanupWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
         <Compile Include="Function\Setting\SettingsWindow.xaml.cs" />
         <Compile Include="Function\SlnTool\SlnUpdateWindow.xaml.cs">
           <DependentUpon>SlnUpdateWindow.xaml</DependentUpon>
@@ -215,6 +219,7 @@
         <Page Include="Function\Setting\SettingsWindow.xaml" />
         <Page Include="Function\Setting\DebugOptionsWindow.xaml" />
         <Page Include="Function\SlnTool\SlnUpdateWindow.xaml" />
+        <Page Include="Function\UnlockTool\RevitFileCleanupWindow.xaml" />
         <Page Include="Function\UnlockTool\UnlockFilesWindow.xaml" />
         <Page Include="MainWindow.xaml">
             <Generator>MSBuild:Compile</Generator>

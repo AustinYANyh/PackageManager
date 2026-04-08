@@ -851,5 +851,10 @@ namespace PackageManager.Services
         /// 获取或设置 Git HTTPS 代理地址。
         /// </summary>
         public string GitProxyHttpsUrl { get; set; } = "http://127.0.0.1:7897";
+
+        /// <summary>
+        /// 获取或设置 Revit 文件清理工具的自定义扫描目录列表。
+        /// </summary>
+        public List<string> RevitCleanupCustomDirectories { get; set; } = new List<string>();
     }
 }

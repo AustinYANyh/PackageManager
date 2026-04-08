@@ -171,12 +171,16 @@
                                                         Width="110"
                                                         Margin="0,0,8,8"
                                                         Click="OpenCsvCryptoWindowButton_Click"/>
-                                        <button:CButton Content="Jenkins编译"
-                                                        Width="110"
-                                                        Margin="0,0,8,8"
-                                                        Click="TriggerJenkinsBuildButton_Click"
-                                                        IsEnabled="{Binding LatestActivePackage.IsEnabled}" />
-                                        </StackPanel>
+                                         <button:CButton Content="Jenkins编译"
+                                                         Width="110"
+                                                         Margin="0,0,8,8"
+                                                         Click="TriggerJenkinsBuildButton_Click"
+                                                         IsEnabled="{Binding LatestActivePackage.IsEnabled}" />
+                                         <button:CButton Content="清理rvt"
+                                                         Width="110"
+                                                         Margin="0,0,8,8"
+                                                         Click="OpenRevitFileCleanupWindowButton_Click"/>
+                                         </StackPanel>
                                         <StackPanel Orientation="Horizontal">
                                         <button:CButton Content="解除占用"
                                                         Width="96"
