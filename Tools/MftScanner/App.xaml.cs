@@ -17,23 +17,21 @@ namespace MftScanner
 
         protected override void OnStartup(StartupEventArgs e)
         {
+            base.OnStartup(e);
+
             var args = e.Args;
             var mmfArgIndex = Array.IndexOf(args, "--mmf");
 
             if (mmfArgIndex >= 0 && mmfArgIndex + 1 < args.Length)
             {
-                // 无头 CLI 模式：不调用 base.OnStartup，不显示任何窗口
+                // 无头 CLI 模式：在 StartupUri 窗口创建前 Shutdown，阻止任何窗口显示
                 var mmfName = args[mmfArgIndex + 1];
                 RunHeadlessScan(mmfName, args);
                 Shutdown(0);
                 return;
             }
 
-            // 交互模式：正常打开 WPF 窗口
-            base.OnStartup(e);
-            var window = new RevitFileCleanupWindow();
-            MainWindow = window;
-            window.Show();
+            // 交互模式：StartupUri="RevitFileCleanupWindow.xaml" 自动处理，无需额外代码
         }
 
         private static void RunHeadlessScan(string mmfName, string[] args)
