@@ -47,6 +47,7 @@ namespace MftScanner
         {
             public string Name;
             public ulong ParentFrn;
+            public int NameLength; // 用于多记录时优先保留长文件名
         }
 
         /// <summary>
@@ -188,7 +189,12 @@ namespace MftScanner
 
                             if ((fileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
                             {
-                                directories[frn] = new MftEntry { Name = fileName, ParentFrn = parentFrn };
+                                // 同一 FRN 可能有多条记录（DOS 8.3 名 + 长文件名，或多硬链接）
+                                // 优先保留文件名最长的那条（即长文件名）
+                                if (!directories.TryGetValue(frn, out var existing) || fileName.Length > existing.NameLength)
+                                {
+                                    directories[frn] = new MftEntry { Name = fileName, ParentFrn = parentFrn, NameLength = fileName.Length };
+                                }
                             }
                             else
                             {
@@ -222,7 +228,7 @@ namespace MftScanner
 
             while (dirs.TryGetValue(current, out var entry))
             {
-                if (!visited.Add(current)) break;
+                if (!visited.Add(current)) break; // 循环引用，链断掉
                 parts.Add(entry.Name);
                 current = entry.ParentFrn;
                 if (cache.TryGetValue(current, out var parentPath))
@@ -232,6 +238,27 @@ namespace MftScanner
                     cache[frn] = result;
                     return result;
                 }
+            }
+
+            // current 不在 dirs 里，说明已到达卷根（父 FRN 指向自身或根目录记录）
+            // 只有当链能追溯到卷根时才认为路径有效
+            // 卷根的父 FRN 通常等于自身 FRN，或者 dirs 里不存在该 FRN
+            // 如果 parts 为空说明 frn 本身就是根，直接返回驱动器根路径
+            if (parts.Count == 0)
+            {
+                var root = driveLetter + ":\\";
+                cache[frn] = root;
+                return root;
+            }
+
+            // 检查链是否因循环引用断掉（visited 里有 current 说明是循环，不是正常到根）
+            // 正常到根：current 不在 dirs 里（dirs 不含卷根记录）
+            // 异常断链：visited 里有 current（循环引用）
+            if (visited.Contains(current))
+            {
+                // 路径重建失败，返回 null 让调用方跳过该文件
+                cache[frn] = null;
+                return null;
             }
 
             parts.Reverse();
