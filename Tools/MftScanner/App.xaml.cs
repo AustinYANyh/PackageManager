@@ -31,7 +31,19 @@ namespace MftScanner
                 return;
             }
 
-            // 交互模式：StartupUri="RevitFileCleanupWindow.xaml" 自动处理，无需额外代码
+            // 交互模式：手动创建窗口，捕获初始化异常
+            try
+            {
+                var window = new RevitFileCleanupWindow();
+                MainWindow = window;
+                window.Show();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"窗口初始化失败：{ex.Message}\n\n{ex.StackTrace}",
+                    "MftScanner 错误", MessageBoxButton.OK, MessageBoxImage.Error);
+                Shutdown(1);
+            }
         }
 
         private static void RunHeadlessScan(string mmfName, string[] args)
