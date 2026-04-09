@@ -13,7 +13,7 @@ namespace MftScanner
     /// 通过 NTFS MFT 枚举实现高速文件扫描服务。
     /// 首次扫描走全量 MFT 枚举，后续扫描通过 USN 日志增量更新，速度接近即时。
     /// </summary>
-    internal sealed class MftScanService
+    public sealed class MftScanService
     {
         private const uint GENERIC_READ = 0x80000000;
         private const uint FILE_SHARE_READ = 1;
