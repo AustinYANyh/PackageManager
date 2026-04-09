@@ -26,11 +26,8 @@ public partial class PackagesHomePage : Page
     public PackagesHomePage()
     {
         InitializeComponent();
-        if (Environment.UserName.Equals("AustinYanyh", StringComparison.OrdinalIgnoreCase))
-        {
-            KiroProxyRow.Visibility = Visibility.Visible;
-            VcsMappingRow.Visibility = Visibility.Collapsed;
-        }
+        if (!Environment.UserName.Equals("AustinYanyh", StringComparison.OrdinalIgnoreCase))
+            KiroProxyButton.IsEnabled = false;
     }
 
     /// <summary>

@@ -199,17 +199,11 @@
                                                         Margin="0,0,8,8"
                                                         Click="ToggleGitProxyButton_Click"/>
                                          </StackPanel>
-                                        <StackPanel x:Name="KiroProxyRow" Orientation="Horizontal" Visibility="Collapsed">
-                                        <button:CButton Content="Kiro反代"
+                                        <StackPanel Orientation="Horizontal">
+                                        <button:CButton x:Name="KiroProxyButton" Content="Kiro反代"
                                                         Width="96"
                                                         Margin="0,0,8,8"
                                                         Click="OpenKiroProxyButton_Click"/>
-                                        <button:CButton Content="VCS映射"
-                                                        Width="96"
-                                                        Margin="0,0,8,8"
-                                                        Click="OpenVcsMappingButton_Click"/>
-                                        </StackPanel>
-                                        <StackPanel x:Name="VcsMappingRow" Orientation="Horizontal">
                                         <button:CButton Content="VCS映射"
                                                         Width="96"
                                                         Margin="0,0,8,8"
