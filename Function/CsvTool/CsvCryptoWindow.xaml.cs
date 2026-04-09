@@ -70,12 +70,9 @@ namespace PackageManager.Function.CsvTool
 
         private void SelectOutputDirButton_Click(object sender, RoutedEventArgs e)
         {
-            var dlg = new System.Windows.Forms.FolderBrowserDialog();
-            var res = dlg.ShowDialog();
-            if (res == System.Windows.Forms.DialogResult.OK)
-            {
-                OutputDirTextBox.Text = dlg.SelectedPath;
-            }
+            var path = PackageManager.Services.FolderPickerService.PickFolder("选择输出目录");
+            if (path != null)
+                OutputDirTextBox.Text = path;
         }
 
         private void AddFilesButton_Click(object sender, RoutedEventArgs e)

@@ -352,17 +352,10 @@ public partial class PackagesHomePage : Page
     {
         try
         {
-            var dialog = new System.Windows.Forms.FolderBrowserDialog
-            {
-                Description = @"选择根目录（包含各子项目文件夹）",
-                ShowNewFolderButton = false,
-            };
-            if (dialog.ShowDialog() != System.Windows.Forms.DialogResult.OK)
-            {
+            var rootDir = FolderPickerService.PickFolder("选择根目录（包含各子项目文件夹）");
+            if (rootDir == null)
                 return;
-            }
 
-            var rootDir = dialog.SelectedPath;
             var vcsXmlFiles = Directory.GetFiles(rootDir, "vcs.xml", SearchOption.AllDirectories);
             var vcsXmlPath = vcsXmlFiles.FirstOrDefault(f =>
             {

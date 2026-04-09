@@ -62,12 +62,11 @@ namespace PackageManager.Function.UnlockTool
 
         private void SelectDirButton_Click(object sender, RoutedEventArgs e)
         {
-            var dlg = new System.Windows.Forms.FolderBrowserDialog();
-            var res = dlg.ShowDialog();
-            if (res == System.Windows.Forms.DialogResult.OK)
+            var path = PackageManager.Services.FolderPickerService.PickFolder("选择目录");
+            if (path != null)
             {
-                TargetDirTextBox.Text = dlg.SelectedPath;
-                AddTargets(new[] { dlg.SelectedPath });
+                TargetDirTextBox.Text = path;
+                AddTargets(new[] { path });
             }
         }
 
