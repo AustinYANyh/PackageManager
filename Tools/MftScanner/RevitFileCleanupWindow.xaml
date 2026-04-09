@@ -43,6 +43,8 @@
                     <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
                         <Button Content="开始扫描" Width="110" Padding="6,4"
                                 Click="ScanButton_Click" IsEnabled="{Binding CanScan}"/>
+                        <Button Content="强制重扫" Width="110" Margin="8,0,0,0" Padding="6,4"
+                                Click="ForceRescanButton_Click" IsEnabled="{Binding CanScan}"/>
                         <Button Content="一键全部删除" Width="110" Margin="8,0,0,0" Padding="6,4"
                                 Click="DeleteAllButton_Click" IsEnabled="{Binding CanDeleteAll}"/>
                     </StackPanel>

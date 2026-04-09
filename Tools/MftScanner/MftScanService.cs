@@ -11,6 +11,7 @@ namespace MftScanner
 {
     /// <summary>
     /// 通过 NTFS MFT 枚举实现高速文件扫描服务。
+    /// 首次扫描走全量 MFT 枚举，后续扫描通过 USN 日志增量更新，速度接近即时。
     /// </summary>
     internal sealed class MftScanService
     {
@@ -20,7 +21,13 @@ namespace MftScanner
         private const uint FILE_SHARE_DELETE = 4;
         private const uint OPEN_EXISTING = 3;
         private const uint FSCTL_ENUM_USN_DATA = 0x000900B3;
+        private const uint FSCTL_QUERY_USN_JOURNAL = 0x000900F4;
+        private const uint FSCTL_READ_USN_JOURNAL = 0x000900BB;
         private const uint FILE_ATTRIBUTE_DIRECTORY = 0x10;
+        private const uint USN_REASON_FILE_CREATE = 0x00000100;
+        private const uint USN_REASON_FILE_DELETE = 0x00000200;
+        private const uint USN_REASON_RENAME_OLD_NAME = 0x00001000;
+        private const uint USN_REASON_RENAME_NEW_NAME = 0x00002000;
         private static readonly IntPtr INVALID_HANDLE_VALUE = new IntPtr(-1);
 
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
@@ -30,6 +37,16 @@ namespace MftScanner
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool DeviceIoControl(IntPtr hDevice, uint dwIoControlCode,
             ref MftEnumDataV0 lpInBuffer, int nInBufferSize,
+            IntPtr lpOutBuffer, int nOutBufferSize, out int lpBytesReturned, IntPtr lpOverlapped);
+
+        [DllImport("kernel32.dll", EntryPoint = "DeviceIoControl", SetLastError = true)]
+        private static extern bool DeviceIoControlQueryUsn(IntPtr hDevice, uint dwIoControlCode,
+            IntPtr lpInBuffer, int nInBufferSize,
+            out UsnJournalData lpOutBuffer, int nOutBufferSize, out int lpBytesReturned, IntPtr lpOverlapped);
+
+        [DllImport("kernel32.dll", EntryPoint = "DeviceIoControl", SetLastError = true)]
+        private static extern bool DeviceIoControlReadUsn(IntPtr hDevice, uint dwIoControlCode,
+            ref ReadUsnJournalData lpInBuffer, int nInBufferSize,
             IntPtr lpOutBuffer, int nOutBufferSize, out int lpBytesReturned, IntPtr lpOverlapped);
 
         [DllImport("kernel32.dll", SetLastError = true)]
@@ -43,16 +60,58 @@ namespace MftScanner
             public long HighUsn;
         }
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct UsnJournalData
+        {
+            public ulong UsnJournalID;
+            public long FirstUsn;
+            public long NextUsn;
+            public long LowestValidUsn;
+            public long MaxUsn;
+            public ulong MaximumSize;
+            public ulong AllocationDelta;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ReadUsnJournalData
+        {
+            public long StartUsn;
+            public uint ReasonMask;
+            public uint ReturnOnlyOnClose;
+            public ulong Timeout;
+            public ulong BytesToWaitFor;
+            public ulong UsnJournalID;
+        }
+
         private struct MftEntry
         {
             public string Name;
             public ulong ParentFrn;
-            public int NameLength; // 用于多记录时优先保留长文件名
+            public int NameLength;
         }
 
+        private sealed class VolumeCache
+        {
+            public Dictionary<ulong, MftEntry> Directories { get; } = new Dictionary<ulong, MftEntry>();
+            // key = FRN，保证同一物理文件不重复计数
+            public Dictionary<ulong, MftEntry> MatchedFiles { get; } = new Dictionary<ulong, MftEntry>();
+            public long NextUsn { get; set; }
+            public ulong UsnJournalId { get; set; }
+        }
+
+        private readonly Dictionary<char, VolumeCache> _volumeCaches = new Dictionary<char, VolumeCache>();
+
         /// <summary>
-        /// 扫描指定根目录下匹配扩展名的文件。
+        /// 清除指定卷（或全部卷）的缓存，下次扫描将重新全量枚举 MFT。
         /// </summary>
+        public void InvalidateCache(char? driveLetter = null)
+        {
+            if (driveLetter.HasValue)
+                _volumeCaches.Remove(char.ToUpperInvariant(driveLetter.Value));
+            else
+                _volumeCaches.Clear();
+        }
+
         public Task<List<ScannedFileInfo>> ScanAsync(IReadOnlyList<ScanRoot> roots, IReadOnlyList<string> extensions,
             IProgress<string> progress, CancellationToken cancellationToken)
         {
@@ -81,19 +140,36 @@ namespace MftScanner
                         .Where(r => r.Path != null)
                         .ToList();
 
-                    progress?.Report($"正在通过 MFT 扫描卷 {driveLetter}:...");
+                    VolumeCache cache;
+                    if (_volumeCaches.TryGetValue(driveLetter, out var existing))
+                    {
+                        progress?.Report($"正在通过 USN 日志增量更新卷 {driveLetter}:...");
+                        if (TryApplyUsnDelta(driveLetter, existing, extSet, cancellationToken))
+                        {
+                            cache = existing;
+                        }
+                        else
+                        {
+                            progress?.Report($"USN 日志已失效，正在重新全量扫描卷 {driveLetter}:...");
+                            cache = FullScanVolume(driveLetter, extSet, cancellationToken);
+                            _volumeCaches[driveLetter] = cache;
+                        }
+                    }
+                    else
+                    {
+                        progress?.Report($"正在通过 MFT 全量扫描卷 {driveLetter}:...");
+                        cache = FullScanVolume(driveLetter, extSet, cancellationToken);
+                        _volumeCaches[driveLetter] = cache;
+                    }
 
-                    var directories = new Dictionary<ulong, MftEntry>();
-                    var matchingFiles = new List<MftEntry>();
-                    EnumerateMft(driveLetter, extSet, directories, matchingFiles, cancellationToken);
-
-                    progress?.Report($"正在解析路径... 找到 {matchingFiles.Count} 个匹配文件");
+                    progress?.Report($"正在解析路径... 找到 {cache.MatchedFiles.Count} 个匹配文件");
 
                     var pathCache = new Dictionary<ulong, string>();
-                    foreach (var file in matchingFiles)
+                    foreach (var kv in cache.MatchedFiles)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
-                        var dirPath = ReconstructPath(file.ParentFrn, directories, driveLetter, pathCache);
+                        var file = kv.Value;
+                        var dirPath = ReconstructPath(file.ParentFrn, cache.Directories, driveLetter, pathCache);
                         if (dirPath == null) continue;
                         var fullPath = NormalizePath(Path.Combine(dirPath, file.Name));
                         if (fullPath == null) continue;
@@ -131,8 +207,152 @@ namespace MftScanner
             }, cancellationToken);
         }
 
+        private VolumeCache FullScanVolume(char driveLetter, HashSet<string> extSet, CancellationToken ct)
+        {
+            var cache = new VolumeCache();
+            EnumerateMft(driveLetter, extSet, cache.Directories, cache.MatchedFiles, ct);
+
+            var volumePath = @"\\.\" + driveLetter + ":";
+            var handle = CreateFile(volumePath, GENERIC_READ,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
+            if (handle != INVALID_HANDLE_VALUE)
+            {
+                try
+                {
+                    if (DeviceIoControlQueryUsn(handle, FSCTL_QUERY_USN_JOURNAL, IntPtr.Zero, 0,
+                        out var journalData, Marshal.SizeOf(typeof(UsnJournalData)), out _, IntPtr.Zero))
+                    {
+                        cache.NextUsn = journalData.NextUsn;
+                        cache.UsnJournalId = journalData.UsnJournalID;
+                    }
+                }
+                finally { CloseHandle(handle); }
+            }
+
+            return cache;
+        }
+
+        private bool TryApplyUsnDelta(char driveLetter, VolumeCache cache, HashSet<string> extSet, CancellationToken ct)
+        {
+            var volumePath = @"\\.\" + driveLetter + ":";
+            var handle = CreateFile(volumePath, GENERIC_READ,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
+            if (handle == INVALID_HANDLE_VALUE) return false;
+
+            try
+            {
+                if (!DeviceIoControlQueryUsn(handle, FSCTL_QUERY_USN_JOURNAL, IntPtr.Zero, 0,
+                    out var journalData, Marshal.SizeOf(typeof(UsnJournalData)), out _, IntPtr.Zero))
+                    return false;
+
+                // 日志被重建或游标已过期
+                if (journalData.UsnJournalID != cache.UsnJournalId) return false;
+                if (cache.NextUsn < journalData.LowestValidUsn) return false;
+
+                // 没有新变更，直接复用缓存
+                if (cache.NextUsn >= journalData.NextUsn) return true;
+
+                var readData = new ReadUsnJournalData
+                {
+                    StartUsn = cache.NextUsn,
+                    ReasonMask = USN_REASON_FILE_CREATE | USN_REASON_FILE_DELETE
+                               | USN_REASON_RENAME_OLD_NAME | USN_REASON_RENAME_NEW_NAME,
+                    ReturnOnlyOnClose = 0,
+                    Timeout = 0,
+                    BytesToWaitFor = 0,
+                    UsnJournalID = cache.UsnJournalId,
+                };
+
+                var bufferSize = 64 * 1024;
+                var buffer = Marshal.AllocHGlobal(bufferSize);
+                try
+                {
+                    while (true)
+                    {
+                        ct.ThrowIfCancellationRequested();
+
+                        if (!DeviceIoControlReadUsn(handle, FSCTL_READ_USN_JOURNAL,
+                            ref readData, Marshal.SizeOf(typeof(ReadUsnJournalData)),
+                            buffer, bufferSize, out var bytesReturned, IntPtr.Zero))
+                            break;
+
+                        if (bytesReturned <= 8) break;
+
+                        readData.StartUsn = Marshal.ReadInt64(buffer, 0);
+
+                        var offset = 8;
+                        while (offset + 60 < bytesReturned)
+                        {
+                            var recordLength = Marshal.ReadInt32(buffer, offset);
+                            if (recordLength <= 0) break;
+
+                            var frn = (ulong)Marshal.ReadInt64(buffer, offset + 8) & 0x0000FFFFFFFFFFFF;
+                            var parentFrn = (ulong)Marshal.ReadInt64(buffer, offset + 16) & 0x0000FFFFFFFFFFFF;
+                            var reason = (uint)Marshal.ReadInt32(buffer, offset + 40);
+                            var fileAttributes = (uint)Marshal.ReadInt32(buffer, offset + 52);
+                            var fileNameLength = (ushort)Marshal.ReadInt16(buffer, offset + 56);
+                            var fileNameOffset = (ushort)Marshal.ReadInt16(buffer, offset + 58);
+
+                            if (fileNameLength > 0 && offset + fileNameOffset + fileNameLength <= bytesReturned)
+                            {
+                                var fileName = Marshal.PtrToStringUni(
+                                    IntPtr.Add(buffer, offset + fileNameOffset), fileNameLength / 2);
+
+                                var isDir = (fileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+                                var isDelete = (reason & (USN_REASON_FILE_DELETE | USN_REASON_RENAME_OLD_NAME)) != 0;
+                                var isCreate = (reason & (USN_REASON_FILE_CREATE | USN_REASON_RENAME_NEW_NAME)) != 0;
+
+                                if (isDir)
+                                {
+                                    if (isDelete)
+                                        cache.Directories.Remove(frn);
+                                    else if (isCreate)
+                                    {
+                                        if (!cache.Directories.TryGetValue(frn, out var existingDir) || fileName.Length > existingDir.NameLength)
+                                            cache.Directories[frn] = new MftEntry { Name = fileName, ParentFrn = parentFrn, NameLength = fileName.Length };
+                                    }
+                                }
+                                else
+                                {
+                                    if (isDelete)
+                                    {
+                                        cache.MatchedFiles.Remove(frn);
+                                    }
+                                    else if (isCreate)
+                                    {
+                                        var ext = GetExtension(fileName);
+                                        if (ext != null && extSet.Contains(ext))
+                                            cache.MatchedFiles[frn] = new MftEntry { Name = fileName, ParentFrn = parentFrn, NameLength = fileName.Length };
+                                        else
+                                            cache.MatchedFiles.Remove(frn); // 重命名为不匹配扩展名
+                                    }
+                                }
+                            }
+
+                            offset += recordLength;
+                        }
+
+                        if (readData.StartUsn >= journalData.NextUsn) break;
+                    }
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(buffer);
+                }
+
+                cache.NextUsn = journalData.NextUsn;
+                return true;
+            }
+            finally
+            {
+                CloseHandle(handle);
+            }
+        }
+
         private static void EnumerateMft(char driveLetter, HashSet<string> extensions,
-            Dictionary<ulong, MftEntry> directories, List<MftEntry> matchingFiles,
+            Dictionary<ulong, MftEntry> directories, Dictionary<ulong, MftEntry> matchingFiles,
             CancellationToken cancellationToken)
         {
             var volumePath = @"\\.\" + driveLetter + ":";
@@ -189,19 +409,16 @@ namespace MftScanner
 
                             if ((fileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
                             {
-                                // 同一 FRN 可能有多条记录（DOS 8.3 名 + 长文件名，或多硬链接）
-                                // 优先保留文件名最长的那条（即长文件名）
                                 if (!directories.TryGetValue(frn, out var existing) || fileName.Length > existing.NameLength)
-                                {
                                     directories[frn] = new MftEntry { Name = fileName, ParentFrn = parentFrn, NameLength = fileName.Length };
-                                }
                             }
                             else
                             {
                                 var ext = GetExtension(fileName);
                                 if (ext != null && extensions.Contains(ext))
                                 {
-                                    matchingFiles.Add(new MftEntry { Name = fileName, ParentFrn = parentFrn });
+                                    if (!matchingFiles.TryGetValue(frn, out var existingFile) || fileName.Length > existingFile.NameLength)
+                                        matchingFiles[frn] = new MftEntry { Name = fileName, ParentFrn = parentFrn, NameLength = fileName.Length };
                                 }
                             }
                         }
@@ -228,7 +445,7 @@ namespace MftScanner
 
             while (dirs.TryGetValue(current, out var entry))
             {
-                if (!visited.Add(current)) break; // 循环引用，链断掉
+                if (!visited.Add(current)) break;
                 parts.Add(entry.Name);
                 current = entry.ParentFrn;
                 if (cache.TryGetValue(current, out var parentPath))
@@ -240,10 +457,6 @@ namespace MftScanner
                 }
             }
 
-            // current 不在 dirs 里，说明已到达卷根（父 FRN 指向自身或根目录记录）
-            // 只有当链能追溯到卷根时才认为路径有效
-            // 卷根的父 FRN 通常等于自身 FRN，或者 dirs 里不存在该 FRN
-            // 如果 parts 为空说明 frn 本身就是根，直接返回驱动器根路径
             if (parts.Count == 0)
             {
                 var root = driveLetter + ":\\";
@@ -251,12 +464,8 @@ namespace MftScanner
                 return root;
             }
 
-            // 检查链是否因循环引用断掉（visited 里有 current 说明是循环，不是正常到根）
-            // 正常到根：current 不在 dirs 里（dirs 不含卷根记录）
-            // 异常断链：visited 里有 current（循环引用）
             if (visited.Contains(current))
             {
-                // 路径重建失败，返回 null 让调用方跳过该文件
                 cache[frn] = null;
                 return null;
             }
@@ -275,40 +484,25 @@ namespace MftScanner
 
         public static string NormalizePath(string path)
         {
-            if (string.IsNullOrWhiteSpace(path))
-            {
-                return null;
-            }
+            if (string.IsNullOrWhiteSpace(path)) return null;
 
             var trimmed = path.Trim();
 
-            // 裸盘符 "E:" → "E:\"
             if (System.Text.RegularExpressions.Regex.IsMatch(trimmed, @"^[A-Za-z]:$"))
-            {
                 return trimmed + IOPath.DirectorySeparatorChar;
-            }
 
-            // "E:\" 或 "E:/" → "E:\"
             if (System.Text.RegularExpressions.Regex.IsMatch(trimmed, @"^[A-Za-z]:[\\/]$"))
-            {
                 return trimmed.Substring(0, 2) + IOPath.DirectorySeparatorChar;
-            }
 
             try
             {
                 var full = IOPath.GetFullPath(trimmed);
                 var root = IOPath.GetPathRoot(full);
                 if (!string.IsNullOrWhiteSpace(root) && string.Equals(full, root, StringComparison.OrdinalIgnoreCase))
-                {
                     return root;
-                }
-
                 return full.TrimEnd(IOPath.DirectorySeparatorChar, IOPath.AltDirectorySeparatorChar);
             }
-            catch
-            {
-                return null;
-            }
+            catch { return null; }
         }
 
         internal static bool IsPathUnderRoot(string path, string root)

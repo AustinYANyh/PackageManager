@@ -362,6 +362,12 @@ public partial class RevitFileCleanupWindow : Window, INotifyPropertyChanged
         await StartScanAsync();
     }
 
+    private async void ForceRescanButton_Click(object sender, RoutedEventArgs e)
+    {
+        scanService.InvalidateCache();
+        await StartScanAsync();
+    }
+
     private async void DeleteAllButton_Click(object sender, RoutedEventArgs e)
     {
         if (Files.Count == 0)
@@ -490,7 +496,7 @@ public partial class RevitFileCleanupWindow : Window, INotifyPropertyChanged
         deletedFileCount = 0;
         failedDeleteCount = 0;
         scanElapsed = TimeSpan.Zero;
-        currentProgressMessage = "正在准备 MFT 扫描...";
+        currentProgressMessage = "正在准备扫描...";
         RefreshSummaryText();
 
         var stopwatch = Stopwatch.StartNew();
@@ -771,7 +777,7 @@ public partial class RevitFileCleanupWindow : Window, INotifyPropertyChanged
     {
         if (IsScanning)
         {
-            SummaryText = string.IsNullOrWhiteSpace(currentProgressMessage) ? "正在处理 MFT 扫描..." : currentProgressMessage;
+            SummaryText = string.IsNullOrWhiteSpace(currentProgressMessage) ? "正在扫描..." : currentProgressMessage;
             return;
         }
 
