@@ -10,7 +10,8 @@ namespace PackageManager.Services.RevitCleanup
     {
         EverythingIndex = 0,
         LocalIndex = 1,
-        FirstBuild = 2
+        FirstBuild = 2,
+        MftIndex = 3
     }
 
     internal sealed class RevitFileQueryRoot

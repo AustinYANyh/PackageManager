@@ -153,6 +153,17 @@ namespace PackageManager.Services
         
         private static string EnsureEmbeddedToolExtracted(string resourceSuffix, string outputFileName)
         {
+            return ExtractEmbeddedTool(resourceSuffix, outputFileName);
+        }
+
+        /// <summary>
+        /// 从嵌入资源中提取工具 EXE 到本地目录。
+        /// </summary>
+        /// <param name="resourceSuffix">嵌入资源名称后缀。</param>
+        /// <param name="outputFileName">输出文件名。</param>
+        /// <returns>提取后的文件路径；失败时返回 <c>null</c>。</returns>
+        public static string ExtractEmbeddedTool(string resourceSuffix, string outputFileName)
+        {
             try
             {
                 var asm = typeof(AdminElevationService).Assembly;

@@ -167,6 +167,7 @@
         <Compile Include="Services\PingCode\PingCodeApiService.Partials.cs" />
         <Compile Include="Services\RevitCleanup\EverythingIndexProvider.cs" />
         <Compile Include="Services\RevitCleanup\LocalIndexProvider.cs" />
+        <Compile Include="Services\RevitCleanup\MftIndexProvider.cs" />
         <Compile Include="Services\RevitCleanup\RevitFileQueryModels.cs" />
         <Compile Include="Services\RevitCleanup\RevitFileQueryService.cs" />
         <Compile Include="Services\RevitCleanup\RevitLocalIndexStore.cs" />
@@ -373,6 +374,7 @@
       <Content Include="scripts\SignPackageManager.ps1" />
       <Content Include="UpdateSummary.txt" />
       <EmbeddedResource Include="Assets\Tools\LogViewPro.exe" />
+      <EmbeddedResource Include="Assets\Tools\MftScanner.exe" />
       <EmbeddedResource Include="Assets\Tools\UnlockProcessAdmin.exe" />
       <Content Include="Assets\Icons\README.txt" />
       <Content Include="Assets\Icons\source.png" />

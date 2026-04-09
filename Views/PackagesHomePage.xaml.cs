@@ -338,8 +338,23 @@ public partial class PackagesHomePage : Page
     {
         try
         {
-            var win = new RevitFileCleanupWindow { Owner = Window.GetWindow(this) };
-            win.ShowDialog();
+            var exePath = AdminElevationService.ExtractEmbeddedTool("MftScanner.exe", "MftScanner.exe");
+            if (string.IsNullOrEmpty(exePath))
+            {
+                MessageBox.Show("未找到 MftScanner.exe 工具，请检查安装。", "清理RVT", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = exePath,
+                UseShellExecute = true
+            };
+            Process.Start(psi);
+        }
+        catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
+        {
+            // 用户取消了 UAC 提权
         }
         catch (Exception ex)
         {

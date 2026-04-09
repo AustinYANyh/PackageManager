@@ -8,12 +8,13 @@ namespace PackageManager.Services.RevitCleanup
     internal sealed class RevitFileQueryService
     {
         private readonly EverythingIndexProvider everythingProvider = new EverythingIndexProvider();
+        private readonly MftIndexProvider mftProvider = new MftIndexProvider();
         private readonly LocalIndexProvider localIndexProvider = new LocalIndexProvider();
 
         public Task EnsureIndexReadyAsync(RevitFileQueryOptions options, IProgress<RevitFileQueryProgress> progress, CancellationToken cancellationToken)
         {
             options = (options ?? new RevitFileQueryOptions()).Normalize();
-            if (everythingProvider.IsAvailable())
+            if (everythingProvider.IsAvailable() || mftProvider.IsAvailable())
             {
                 return Task.CompletedTask;
             }
@@ -47,6 +48,22 @@ namespace PackageManager.Services.RevitCleanup
                 catch (Exception ex)
                 {
                     LoggingService.LogError(ex, "使用 Everything 索引查询 Revit 文件失败，已回退到本地索引");
+                }
+            }
+
+            if (!options.ForceRebuildLocalIndex && mftProvider.IsAvailable())
+            {
+                try
+                {
+                    var mftResult = await mftProvider.QueryAsync(options, progress, cancellationToken).ConfigureAwait(false);
+                    if (mftResult != null)
+                    {
+                        return mftResult;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    LoggingService.LogError(ex, "使用 MFT 索引查询 Revit 文件失败，已回退到本地索引");
                 }
             }
 

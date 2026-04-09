@@ -90,7 +90,12 @@
       "Bash(for dir:*)",
       "Bash(svn diff:*)",
       "Bash(cd /e/HongWaWorkSpace/MaxiBIMPMEP_trunk && powershell -NoProfile -ExecutionPolicy Bypass -File .claude/skills/annotate_last_commit_public_xml_docs/scripts/get-last-change-files.ps1)",
-      "Bash(powershell -NoProfile -ExecutionPolicy Bypass -File .claude/skills/annotate_last_commit_public_xml_docs/scripts/get-last-change-files.ps1)"
+      "Bash(powershell -NoProfile -ExecutionPolicy Bypass -File .claude/skills/annotate_last_commit_public_xml_docs/scripts/get-last-change-files.ps1)",
+      "Bash(\"/c/Program Files/Microsoft Visual Studio/2022/Professional/MSBuild/Current/Bin/MSBuild.exe\" Tools/MftScanner/MftScanner.csproj /p:Configuration=Release /verbosity:minimal)",
+      "Bash(\"/c/Program Files/Microsoft Visual Studio/18/Community/MSBuild/Current/Bin/MSBuild.exe\" Tools/MftScanner/MftScanner.csproj /p:Configuration=Release /verbosity:minimal)",
+      "Bash(nuget restore:*)",
+      "Bash(\"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" \"Tools\\\\MftScanner\\\\MftScanner.csproj\" -p:Configuration=Release -verbosity:minimal)",
+      "Bash(\"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" \"PackageManager.csproj\" -p:Configuration=Release -verbosity:minimal)"
     ]
   }
 }
