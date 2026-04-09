@@ -16,7 +16,11 @@
   - 支持重建索引功能
   - 实现文件变更实时同步到索引
 
+-  VCS目录映射：
+  - 支持输入根目录更新和补充目录的版本管理
+
 - 提交参考：
+- b4b6bd304ab5c5934f34a80af09c0f683e6f4ffd — feat(PackagesHomePage): 支持调整vcs目录映射 
 - 28057fd2e2d74085df3d8f4f5c5f644ed1020801 — feat(revit-cleanup): 添加文件查询索引功能
 - 432f5d8de18ad429af76ae4c186b10f4a943ff17 — feat(revit): 添加Everything索引和本地索引功能
 - 64b1faeb0273a22d2dcf0f86632cb35b13a04f96 — feat(services): 增加Rvt和Rfa文件快速扫描和删除
