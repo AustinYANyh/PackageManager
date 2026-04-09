@@ -262,6 +262,7 @@ public partial class RevitFileCleanupWindow : Window, INotifyPropertyChanged
         scanCts?.Cancel();
         scanCts?.Dispose();
         scanCts = null;
+        scanService.SaveAllCaches();
         base.OnClosing(e);
     }
 
