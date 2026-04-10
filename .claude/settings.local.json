@@ -95,7 +95,8 @@
       "Bash(\"/c/Program Files/Microsoft Visual Studio/18/Community/MSBuild/Current/Bin/MSBuild.exe\" Tools/MftScanner/MftScanner.csproj /p:Configuration=Release /verbosity:minimal)",
       "Bash(nuget restore:*)",
       "Bash(\"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" \"Tools\\\\MftScanner\\\\MftScanner.csproj\" -p:Configuration=Release -verbosity:minimal)",
-      "Bash(\"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" \"PackageManager.csproj\" -p:Configuration=Release -verbosity:minimal)"
+      "Bash(\"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" \"PackageManager.csproj\" -p:Configuration=Release -verbosity:minimal)",
+      "Bash(xargs grep:*)"
     ]
   }
 }

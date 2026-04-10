@@ -9,6 +9,7 @@ using System.Xml.Linq;
 using PackageManager.Function.CsvTool;
 using PackageManager.Function.DnsTool;
 using PackageManager.Function.SlnTool;
+using PackageManager.Function.StartupTool;
 using PackageManager.Function.UnlockTool;
 using PackageManager.Services;
 
@@ -363,8 +364,14 @@ public partial class PackagesHomePage : Page
         }
     }
 
-    private void OpenVcsMappingButton_Click(object sender, RoutedEventArgs e)
+    private void OpenCommonStartupWindowButton_Click(object sender, RoutedEventArgs e)
     {
+        var persistence = new DataPersistenceService();
+        var win = new CommonStartupWindow(persistence) { Owner = Window.GetWindow(this) };
+        win.Show();
+    }
+
+    private void OpenVcsMappingButton_Click(object sender, RoutedEventArgs e)    {
         try
         {
             var rootDir = FolderPickerService.PickFolder("选择根目录（包含各子项目文件夹）");

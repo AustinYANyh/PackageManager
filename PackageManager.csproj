@@ -124,6 +124,14 @@
           <DependentUpon>RevitFileCleanupWindow.xaml</DependentUpon>
           <SubType>Code</SubType>
         </Compile>
+        <Compile Include="Function\StartupTool\CommonStartupWindow.xaml.cs">
+          <DependentUpon>CommonStartupWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Compile Include="Function\StartupTool\StartupItemEditWindow.xaml.cs">
+          <DependentUpon>StartupItemEditWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
         <Compile Include="Function\Setting\SettingsWindow.xaml.cs" />
         <Compile Include="Function\SlnTool\SlnUpdateWindow.xaml.cs">
           <DependentUpon>SlnUpdateWindow.xaml</DependentUpon>
@@ -227,6 +235,14 @@
         <Page Include="Function\SlnTool\SlnUpdateWindow.xaml" />
         <Page Include="Function\UnlockTool\RevitFileCleanupWindow.xaml" />
         <Page Include="Function\UnlockTool\UnlockFilesWindow.xaml" />
+        <Page Include="Function\StartupTool\CommonStartupWindow.xaml">
+          <Generator>MSBuild:Compile</Generator>
+          <SubType>Designer</SubType>
+        </Page>
+        <Page Include="Function\StartupTool\StartupItemEditWindow.xaml">
+          <Generator>MSBuild:Compile</Generator>
+          <SubType>Designer</SubType>
+        </Page>
         <Page Include="MainWindow.xaml">
             <Generator>MSBuild:Compile</Generator>
             <SubType>Designer</SubType>

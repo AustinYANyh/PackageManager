@@ -856,5 +856,28 @@ namespace PackageManager.Services
         /// 获取或设置 Revit 文件清理工具的自定义扫描目录列表。
         /// </summary>
         public List<string> RevitCleanupCustomDirectories { get; set; } = new List<string>();
+
+        /// <summary>
+        /// 获取或设置常用启动项列表。
+        /// </summary>
+        public List<CommonStartupItem> CommonStartupItems { get; set; } = new List<CommonStartupItem>();
+    }
+
+    /// <summary>
+    /// 表示一个常用启动项。
+    /// </summary>
+    public class CommonStartupItem
+    {
+        /// <summary>显示名称（用户可自定义）。</summary>
+        public string Name { get; set; }
+
+        /// <summary>可执行文件或脚本的完整路径。</summary>
+        public string FullPath { get; set; }
+
+        /// <summary>启动参数（可选）。</summary>
+        public string Arguments { get; set; } = "";
+
+        /// <summary>备注说明（可选）。</summary>
+        public string Note { get; set; } = "";
     }
 }
