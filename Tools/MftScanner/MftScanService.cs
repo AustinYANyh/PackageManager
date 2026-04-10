@@ -109,6 +109,7 @@ namespace MftScanner
             public string FullPath { get; set; }
             public string RootPath { get; set; }
             public string RootDisplayName { get; set; }
+            public bool IsDirectory { get; set; }
         }
 
         private sealed class SearchCandidateComparer : IComparer<SearchCandidate>
@@ -344,7 +345,7 @@ namespace MftScanner
                     var driveLetter = group.Key;
                     var volumeRoots = group.Value;
                     var cache = GetOrRefreshVolumeCache(driveLetter, progress, cancellationToken);
-                    totalCount += CountFilesUnderRoots(cache, driveLetter, volumeRoots, cancellationToken);
+                    totalCount += CountEntriesUnderRoots(cache, driveLetter, volumeRoots, cancellationToken);
                 }
 
                 return totalCount;
@@ -377,56 +378,16 @@ namespace MftScanner
                     var wholeVolumeRoots = AreWholeVolumeRoots(volumeRoots, driveLetter);
                     var cache = GetOrRefreshVolumeCache(driveLetter, progress, cancellationToken);
 
-                    totalIndexedCount += CountFilesUnderRoots(cache, driveLetter, volumeRoots, cancellationToken);
+                    totalIndexedCount += CountEntriesUnderRoots(cache, driveLetter, volumeRoots, cancellationToken);
                     progress?.Report($"正在搜索卷 {driveLetter}:...");
 
-                    foreach (var kv in cache.AllFiles)
-                    {
-                        cancellationToken.ThrowIfCancellationRequested();
-                        var file = kv.Value;
-                        var fileName = file.Name ?? string.Empty;
+                    CollectMatchesForEntries(cache.AllFiles, isDirectory: false, driveLetter, volumeRoots, wholeVolumeRoots, cache,
+                        trimmedKeyword, kwLower, isPathQuery, maxResults, cancellationToken,
+                        exactMatches, prefixMatches, containsMatches, pathMatches, ref totalMatchedCount);
 
-                        SearchCandidate candidate = null;
-                        var nameMatched = fileName.IndexOf(trimmedKeyword, StringComparison.OrdinalIgnoreCase) >= 0;
-
-                        if (!isPathQuery)
-                        {
-                            if (!nameMatched) continue;
-                            candidate = CreateSearchCandidate(driveLetter, kv.Key, file, cache, volumeRoots, requireFullPath: !wholeVolumeRoots);
-                            if (candidate == null) continue;
-                        }
-                        else
-                        {
-                            candidate = CreateSearchCandidate(driveLetter, kv.Key, file, cache, volumeRoots, requireFullPath: true);
-                            if (candidate == null) continue;
-
-                            var pathMatched = candidate.FullPath.IndexOf(trimmedKeyword, StringComparison.OrdinalIgnoreCase) >= 0;
-                            if (!nameMatched && !pathMatched) continue;
-                        }
-
-                        totalMatchedCount++;
-
-                        if (nameMatched)
-                        {
-                            var normalizedName = fileName.ToLowerInvariant();
-                            if (normalizedName == kwLower)
-                            {
-                                AddBoundedCandidate(exactMatches, candidate, maxResults);
-                            }
-                            else if (normalizedName.StartsWith(kwLower, StringComparison.Ordinal))
-                            {
-                                AddBoundedCandidate(prefixMatches, candidate, maxResults);
-                            }
-                            else
-                            {
-                                AddBoundedCandidate(containsMatches, candidate, maxResults);
-                            }
-                        }
-                        else
-                        {
-                            AddBoundedCandidate(pathMatches, candidate, maxResults);
-                        }
-                    }
+                    CollectMatchesForEntries(cache.Directories, isDirectory: true, driveLetter, volumeRoots, wholeVolumeRoots, cache,
+                        trimmedKeyword, kwLower, isPathQuery, maxResults, cancellationToken,
+                        exactMatches, prefixMatches, containsMatches, pathMatches, ref totalMatchedCount);
                 }
 
                 var candidates = exactMatches
@@ -504,13 +465,93 @@ namespace MftScanner
             return roots.All(r => string.Equals(r.Path, expectedRoot, StringComparison.OrdinalIgnoreCase));
         }
 
-        private static int CountFilesUnderRoots(VolumeCache cache, char driveLetter, IReadOnlyList<ScanRoot> volumeRoots, CancellationToken cancellationToken)
+        private static void CollectMatchesForEntries(
+            IEnumerable<KeyValuePair<ulong, MftEntry>> entries,
+            bool isDirectory,
+            char driveLetter,
+            IReadOnlyList<ScanRoot> volumeRoots,
+            bool wholeVolumeRoots,
+            VolumeCache cache,
+            string trimmedKeyword,
+            string kwLower,
+            bool isPathQuery,
+            int maxResults,
+            CancellationToken cancellationToken,
+            SortedSet<SearchCandidate> exactMatches,
+            SortedSet<SearchCandidate> prefixMatches,
+            SortedSet<SearchCandidate> containsMatches,
+            SortedSet<SearchCandidate> pathMatches,
+            ref int totalMatchedCount)
+        {
+            foreach (var kv in entries)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var entry = kv.Value;
+                var fileName = entry.Name ?? string.Empty;
+
+                SearchCandidate candidate = null;
+                var nameMatched = fileName.IndexOf(trimmedKeyword, StringComparison.OrdinalIgnoreCase) >= 0;
+
+                if (!isPathQuery)
+                {
+                    if (!nameMatched) continue;
+                    candidate = CreateSearchCandidate(driveLetter, kv.Key, entry, isDirectory, cache, volumeRoots, requireFullPath: !wholeVolumeRoots);
+                    if (candidate == null) continue;
+                }
+                else
+                {
+                    candidate = CreateSearchCandidate(driveLetter, kv.Key, entry, isDirectory, cache, volumeRoots, requireFullPath: true);
+                    if (candidate == null) continue;
+
+                    var pathMatched = candidate.FullPath.IndexOf(trimmedKeyword, StringComparison.OrdinalIgnoreCase) >= 0;
+                    if (!nameMatched && !pathMatched) continue;
+                }
+
+                totalMatchedCount++;
+
+                if (nameMatched)
+                {
+                    var normalizedName = fileName.ToLowerInvariant();
+                    if (normalizedName == kwLower)
+                    {
+                        AddBoundedCandidate(exactMatches, candidate, maxResults);
+                    }
+                    else if (normalizedName.StartsWith(kwLower, StringComparison.Ordinal))
+                    {
+                        AddBoundedCandidate(prefixMatches, candidate, maxResults);
+                    }
+                    else
+                    {
+                        AddBoundedCandidate(containsMatches, candidate, maxResults);
+                    }
+                }
+                else
+                {
+                    AddBoundedCandidate(pathMatches, candidate, maxResults);
+                }
+            }
+        }
+
+        private static int CountEntriesUnderRoots(VolumeCache cache, char driveLetter, IReadOnlyList<ScanRoot> volumeRoots, CancellationToken cancellationToken)
         {
             if (AreWholeVolumeRoots(volumeRoots, driveLetter))
-                return cache.AllFiles.Count;
+                return cache.AllFiles.Count + cache.Directories.Count;
 
             var count = 0;
             foreach (var kv in cache.AllFiles)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var dirPath = ReconstructPath(kv.Value.ParentFrn, cache.Directories, driveLetter, cache.DirectoryPathCache);
+                if (dirPath == null) continue;
+
+                var fullPath = NormalizePath(Path.Combine(dirPath, kv.Value.Name));
+                if (fullPath == null) continue;
+
+                if (FindMatchedRoot(fullPath, volumeRoots) != null)
+                    count++;
+            }
+
+            foreach (var kv in cache.Directories)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var dirPath = ReconstructPath(kv.Value.ParentFrn, cache.Directories, driveLetter, cache.DirectoryPathCache);
@@ -545,7 +586,7 @@ namespace MftScanner
         }
 
         private static SearchCandidate CreateSearchCandidate(char driveLetter, ulong fileFrn, MftEntry file,
-            VolumeCache cache, IReadOnlyList<ScanRoot> volumeRoots, bool requireFullPath)
+            bool isDirectory, VolumeCache cache, IReadOnlyList<ScanRoot> volumeRoots, bool requireFullPath)
         {
             if (volumeRoots == null || volumeRoots.Count == 0) return null;
 
@@ -560,7 +601,8 @@ namespace MftScanner
                     ParentFrn = file.ParentFrn,
                     FileName = file.Name,
                     RootPath = root.Path,
-                    RootDisplayName = root.DisplayName
+                    RootDisplayName = root.DisplayName,
+                    IsDirectory = isDirectory
                 };
             }
 
@@ -581,7 +623,8 @@ namespace MftScanner
                 FileName = file.Name,
                 FullPath = fullPath,
                 RootPath = matchedRoot.Path,
-                RootDisplayName = matchedRoot.DisplayName
+                RootDisplayName = matchedRoot.DisplayName,
+                IsDirectory = isDirectory
             };
         }
 
@@ -598,6 +641,23 @@ namespace MftScanner
 
             try
             {
+                if (candidate.IsDirectory)
+                {
+                    var di = new DirectoryInfo(fullPath);
+                    if (!di.Exists) return null;
+
+                    return new ScannedFileInfo
+                    {
+                        FullPath = fullPath,
+                        FileName = di.Name,
+                        SizeBytes = 0,
+                        ModifiedTimeUtc = di.LastWriteTimeUtc,
+                        RootPath = candidate.RootPath,
+                        RootDisplayName = candidate.RootDisplayName,
+                        IsDirectory = true
+                    };
+                }
+
                 var fi = new FileInfo(fullPath);
                 if (!fi.Exists) return null;
 
@@ -608,7 +668,8 @@ namespace MftScanner
                     SizeBytes = fi.Length,
                     ModifiedTimeUtc = fi.LastWriteTimeUtc,
                     RootPath = candidate.RootPath,
-                    RootDisplayName = candidate.RootDisplayName
+                    RootDisplayName = candidate.RootDisplayName,
+                    IsDirectory = false
                 };
             }
             catch
@@ -925,6 +986,7 @@ namespace MftScanner
         public DateTime ModifiedTimeUtc { get; set; }
         public string RootPath { get; set; }
         public string RootDisplayName { get; set; }
+        public bool IsDirectory { get; set; }
     }
 
     public sealed class SearchQueryResult

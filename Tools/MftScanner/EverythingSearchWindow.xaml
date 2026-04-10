@@ -50,7 +50,7 @@
                             MouseDoubleClick="ResultsGrid_MouseDoubleClick">
             <dataGrid:CDataGrid.ContextMenu>
                 <ContextMenu>
-                    <MenuItem Header="打开文件位置" Click="OpenContainingFolder_Click"/>
+                    <MenuItem Header="打开所在位置" Click="OpenContainingFolder_Click"/>
                     <MenuItem Header="复制路径" Click="CopyPath_Click"/>
                 </ContextMenu>
             </dataGrid:CDataGrid.ContextMenu>

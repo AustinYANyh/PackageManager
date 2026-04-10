@@ -15,12 +15,14 @@ namespace MftScanner
 {
     public sealed class EverythingSearchResultItem
     {
-        public EverythingSearchResultItem(string fullPath, long sizeBytes, DateTime modifiedUtc)
+        public EverythingSearchResultItem(string fullPath, long sizeBytes, DateTime modifiedUtc, bool isDirectory)
         {
             FullPath = fullPath;
+            IsDirectory = isDirectory;
             FileName = System.IO.Path.GetFileName(fullPath);
             DirectoryPath = System.IO.Path.GetDirectoryName(fullPath) ?? string.Empty;
-            SizeText = FormatSize(sizeBytes);
+            TypeText = isDirectory ? "文件夹" : "文件";
+            SizeText = isDirectory ? string.Empty : FormatSize(sizeBytes);
             ModifiedText = modifiedUtc == DateTime.MinValue
                 ? string.Empty
                 : modifiedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
@@ -33,14 +35,18 @@ namespace MftScanner
         [DataGridColumn(2, DisplayName = "路径", Width = "500", IsReadOnly = true)]
         public string DirectoryPath { get; set; }
 
-        [DataGridColumn(3, DisplayName = "大小", Width = "110", IsReadOnly = true)]
+        [DataGridColumn(3, DisplayName = "类型", Width = "90", IsReadOnly = true)]
+        public string TypeText { get; set; }
+
+        [DataGridColumn(4, DisplayName = "大小", Width = "110", IsReadOnly = true)]
         public string SizeText { get; set; }
 
-        [DataGridColumn(4, DisplayName = "修改时间", Width = "160", IsReadOnly = true)]
+        [DataGridColumn(5, DisplayName = "修改时间", Width = "160", IsReadOnly = true)]
         public string ModifiedText { get; set; }
 
         public string FullPath { get; set; }
         public long SizeBytes { get; set; }
+        public bool IsDirectory { get; set; }
 
         private static string FormatSize(long bytes)
         {
@@ -198,7 +204,7 @@ namespace MftScanner
                     .SearchByKeywordAsync(_roots, kw, MaxDisplayedResults, progress, ct)
                     .ConfigureAwait(true);
 
-                foreach (var item in queryResult.Results.Select(r => new EverythingSearchResultItem(r.FullPath, r.SizeBytes, r.ModifiedTimeUtc)))
+                foreach (var item in queryResult.Results.Select(r => new EverythingSearchResultItem(r.FullPath, r.SizeBytes, r.ModifiedTimeUtc, r.IsDirectory)))
                     _displayedResults.Add(item);
 
                 if (_displayedResults.Count == 0)
@@ -227,13 +233,13 @@ namespace MftScanner
         private void SearchBox_KeyDown(object sender, KeyEventArgs e)
         {
             if (e.Key == Key.Enter && ResultsGrid.SelectedItem is EverythingSearchResultItem item)
-                OpenFile(item.FullPath);
+                OpenItem(item);
         }
 
         private void ResultsGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
         {
             if (ResultsGrid.SelectedItem is EverythingSearchResultItem item)
-                OpenFile(item.FullPath);
+                OpenItem(item);
         }
 
         private void OpenContainingFolder_Click(object sender, RoutedEventArgs e)
@@ -256,15 +262,33 @@ namespace MftScanner
             _ = StartIndexingAsync(forceRescan: true);
         }
 
-        private static void OpenFile(string fullPath)
+        private static void OpenItem(EverythingSearchResultItem item)
         {
+            if (item == null) return;
+
             try
             {
-                Process.Start(new ProcessStartInfo { FileName = fullPath, UseShellExecute = true });
+                if (item.IsDirectory)
+                {
+                    if (!Directory.Exists(item.FullPath))
+                    {
+                        MessageBox.Show("文件夹不存在。", "错误",
+                            MessageBoxButton.OK, MessageBoxImage.Warning);
+                        return;
+                    }
+                }
+                else if (!File.Exists(item.FullPath))
+                {
+                    MessageBox.Show("文件不存在。", "错误",
+                        MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                Process.Start(new ProcessStartInfo { FileName = item.FullPath, UseShellExecute = true });
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"无法打开文件：{ex.Message}", "错误",
+                MessageBox.Show($"无法打开项目：{ex.Message}", "错误",
                     MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
@@ -273,11 +297,10 @@ namespace MftScanner
         {
             try
             {
-                var dir = Path.GetDirectoryName(fullPath);
-                if (dir != null && Directory.Exists(dir))
+                if (File.Exists(fullPath) || Directory.Exists(fullPath))
                     Process.Start("explorer.exe", $"/select,\"{fullPath}\"");
                 else
-                    MessageBox.Show("目录不存在。", "错误", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    MessageBox.Show("项目不存在。", "错误", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
             catch (Exception ex)
             {
