@@ -2,9 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.MemoryMappedFiles;
+using System.IO.Pipes;
 using System.Linq;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using Newtonsoft.Json;
 
@@ -39,6 +41,15 @@ namespace MftScanner
             {
                 var resultPath = args[searchExportIndex + 1];
                 var exitCode = RunHeadlessSearchExport(resultPath, args);
+                Shutdown(exitCode);
+                return;
+            }
+
+            var startupHelperIndex = Array.IndexOf(args, "--startup-helper");
+            if (startupHelperIndex >= 0 && startupHelperIndex + 1 < args.Length)
+            {
+                var pipeName = args[startupHelperIndex + 1];
+                var exitCode = RunStartupSearchHelper(pipeName);
                 Shutdown(exitCode);
                 return;
             }
@@ -350,6 +361,145 @@ namespace MftScanner
             }
         }
 
+        private static int RunStartupSearchHelper(string pipeName)
+        {
+            if (string.IsNullOrWhiteSpace(pipeName))
+            {
+                return 1;
+            }
+
+            var roots = DriveInfo.GetDrives()
+                .Where(d => d.DriveType == DriveType.Fixed)
+                .Select(d => new ScanRoot
+                {
+                    Path = d.RootDirectory.FullName,
+                    DisplayName = d.Name.TrimEnd('\\', '/')
+                })
+                .ToList();
+
+            var scanService = new MftScanService();
+            var warmupTask = scanService.PrepareSearchIndexAsync(roots, null, CancellationToken.None);
+
+            try
+            {
+                while (true)
+                {
+                    using (var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.None))
+                    {
+                        try
+                        {
+                            client.Connect(500);
+                        }
+                        catch (TimeoutException)
+                        {
+                            Thread.Sleep(100);
+                            continue;
+                        }
+
+                        using (var reader = new StreamReader(client, Encoding.UTF8, false, 4096, leaveOpen: true))
+                        using (var writer = new StreamWriter(client, new UTF8Encoding(false), 4096, leaveOpen: true) { AutoFlush = true })
+                        {
+                            StartupHelperRequest request = null;
+
+                            try
+                            {
+                                var requestJson = reader.ReadLine();
+                                if (string.IsNullOrWhiteSpace(requestJson))
+                                {
+                                    continue;
+                                }
+
+                                request = JsonConvert.DeserializeObject<StartupHelperRequest>(requestJson);
+                                if (request == null)
+                                {
+                                    writer.WriteLine(JsonConvert.SerializeObject(new SearchExportResponse
+                                    {
+                                        Success = false,
+                                        ErrorMessage = "请求格式无效。"
+                                    }));
+                                    continue;
+                                }
+
+                                if (string.Equals(request.Action, "shutdown", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    writer.WriteLine(JsonConvert.SerializeObject(new SearchExportResponse { Success = true }));
+                                    break;
+                                }
+
+                                if (!string.Equals(request.Action, "search", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    writer.WriteLine(JsonConvert.SerializeObject(new SearchExportResponse
+                                    {
+                                        Success = false,
+                                        ErrorMessage = $"不支持的请求：{request.Action}"
+                                    }));
+                                    continue;
+                                }
+
+                                if (request.ForceRescan)
+                                {
+                                    scanService.InvalidateCache();
+                                    warmupTask = scanService.PrepareSearchIndexAsync(roots, null, CancellationToken.None);
+                                }
+
+                                warmupTask.GetAwaiter().GetResult();
+
+                                var queryResult = scanService
+                                    .SearchByKeywordAsync(roots, request.Keyword ?? string.Empty, request.MaxResults > 0 ? request.MaxResults : 500, null, CancellationToken.None)
+                                    .GetAwaiter()
+                                    .GetResult();
+
+                                writer.WriteLine(JsonConvert.SerializeObject(new SearchExportResponse
+                                {
+                                    Success = true,
+                                    TotalIndexedCount = queryResult?.TotalIndexedCount ?? 0,
+                                    TotalMatchedCount = queryResult?.TotalMatchedCount ?? 0,
+                                    IsTruncated = queryResult?.IsTruncated ?? false,
+                                    Results = (queryResult?.Results ?? new List<ScannedFileInfo>())
+                                        .Select(r => new SearchExportItem
+                                        {
+                                            FullPath = r.FullPath,
+                                            FileName = r.FileName,
+                                            SizeBytes = r.SizeBytes,
+                                            ModifiedTimeUtc = r.ModifiedTimeUtc,
+                                            RootPath = r.RootPath,
+                                            RootDisplayName = r.RootDisplayName,
+                                            IsDirectory = r.IsDirectory
+                                        })
+                                        .ToList()
+                                }));
+                            }
+                            catch (IOException)
+                            {
+                            }
+                            catch (Exception ex)
+                            {
+                                try
+                                {
+                                    writer.WriteLine(JsonConvert.SerializeObject(new SearchExportResponse
+                                    {
+                                        Success = false,
+                                        ErrorMessage = ex.Message
+                                    }));
+                                }
+                                catch
+                                {
+                                }
+                            }
+                        }
+                    }
+                }
+
+                scanService.SaveAllCaches();
+                return 0;
+            }
+            catch
+            {
+                try { scanService.SaveAllCaches(); } catch { }
+                return 1;
+            }
+        }
+
         private static List<ScanRoot> ParseRoots(string[] args)
         {
             var roots = new List<ScanRoot>();
@@ -420,6 +570,14 @@ namespace MftScanner
             public string RootPath { get; set; }
             public string RootDisplayName { get; set; }
             public bool IsDirectory { get; set; }
+        }
+
+        private sealed class StartupHelperRequest
+        {
+            public string Action { get; set; }
+            public string Keyword { get; set; }
+            public int MaxResults { get; set; }
+            public bool ForceRescan { get; set; }
         }
     }
 }

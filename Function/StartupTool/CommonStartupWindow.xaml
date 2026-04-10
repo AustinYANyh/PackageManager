@@ -8,6 +8,8 @@
         Height="680" Width="1000"
         MinHeight="500" MinWidth="760"
         WindowStartupLocation="CenterOwner"
+        Loaded="Window_Loaded"
+        Closed="Window_Closed"
         Background="#F5F5F5">
     <Grid Margin="16">
         <Grid.RowDefinitions>
@@ -38,6 +40,7 @@
                          BorderBrush="#CCCCCC" BorderThickness="1"
                          Background="#FAFAFA"
                          Text=""
+                         TextChanged="SearchBox_TextChanged"
                          KeyDown="SearchBox_KeyDown">
                     <TextBox.Style>
                         <Style TargetType="TextBox">
@@ -60,7 +63,7 @@
                         </Style>
                     </TextBox.Style>
                 </TextBox>
-                <button:CButton Grid.Column="2" Content="扫描" Width="72" Height="32"
+                <button:CButton Grid.Column="2" Content="重建索引" Width="88" Height="32"
                                 Click="ScanButton_Click"/>
                 <button:CButton Grid.Column="4" Content="停止" Width="72" Height="32"
                                 x:Name="StopButton" IsEnabled="False"
