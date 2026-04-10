@@ -6,6 +6,7 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Windows;
+using Newtonsoft.Json;
 
 namespace MftScanner
 {
@@ -20,8 +21,7 @@ namespace MftScanner
         {
             base.OnStartup(e);
 
-            var args = e.Args;
-            var mmfArgIndex = Array.IndexOf(args, "--mmf");
+            var args = e.Args ?? Array.Empty<string>();
 
             // --self-test DingtalkLauncher.exe
             var selfTestIndex = Array.IndexOf(args, "--self-test");
@@ -34,6 +34,16 @@ namespace MftScanner
                 return;
             }
 
+            var searchExportIndex = Array.IndexOf(args, "--search-export");
+            if (searchExportIndex >= 0 && searchExportIndex + 1 < args.Length)
+            {
+                var resultPath = args[searchExportIndex + 1];
+                var exitCode = RunHeadlessSearchExport(resultPath, args);
+                Shutdown(exitCode);
+                return;
+            }
+
+            var mmfArgIndex = Array.IndexOf(args, "--mmf");
             if (mmfArgIndex >= 0 && mmfArgIndex + 1 < args.Length)
             {
                 // 无头 CLI 模式：在 StartupUri 窗口创建前 Shutdown，阻止任何窗口显示
@@ -46,7 +56,7 @@ namespace MftScanner
             // 交互模式：手动创建窗口，捕获初始化异常
             try
             {
-                var window = new EverythingSearchWindow();
+                var window = CreateInteractiveWindow(args);
                 MainWindow = window;
                 window.Show();
             }
@@ -55,6 +65,25 @@ namespace MftScanner
                 MessageBox.Show($"窗口初始化失败：{ex.Message}\n\n{ex.StackTrace}",
                     "MftScanner 错误", MessageBoxButton.OK, MessageBoxImage.Error);
                 Shutdown(1);
+            }
+        }
+
+        private static Window CreateInteractiveWindow(string[] args)
+        {
+            var windowArgIndex = Array.IndexOf(args, "--window");
+            var windowMode = windowArgIndex >= 0 && windowArgIndex + 1 < args.Length
+                ? (args[windowArgIndex + 1] ?? string.Empty).Trim()
+                : string.Empty;
+
+            switch (windowMode.ToLowerInvariant())
+            {
+                case "cleanup":
+                    return new RevitFileCleanupWindow();
+                case "":
+                case "search":
+                    return new EverythingSearchWindow();
+                default:
+                    throw new InvalidOperationException($"不支持的窗口模式：{windowMode}");
             }
         }
 
@@ -166,7 +195,7 @@ namespace MftScanner
 
             var drives = DriveInfo.GetDrives()
                 .Where(d => d.DriveType == DriveType.Fixed)
-                .Select(d => $"{d.RootDirectory.FullName.TrimEnd('\\')}|{d.Name.TrimEnd('\\', '/')}盘")
+                .Select(d => $"{d.RootDirectory.FullName}|{d.Name.TrimEnd('\\', '/')}盘")
                 .ToArray();
 
             // 构造与主进程相同的 args 数组
@@ -241,6 +270,156 @@ namespace MftScanner
                 writer.Write(0); // RecordCount = 0
                 writer.Write(new byte[6]);
             }
+        }
+
+        private static int RunHeadlessSearchExport(string resultPath, string[] args)
+        {
+            try
+            {
+                var keyword = GetOptionValue(args, "--keyword") ?? string.Empty;
+                var maxResultsText = GetOptionValue(args, "--max-results");
+                var maxResults = 500;
+                if (!string.IsNullOrWhiteSpace(maxResultsText) && int.TryParse(maxResultsText, out var parsedMaxResults) && parsedMaxResults > 0)
+                {
+                    maxResults = parsedMaxResults;
+                }
+
+                var forceRescan = args.Any(a => string.Equals(a, "--force-rescan", StringComparison.OrdinalIgnoreCase));
+                var roots = ParseRoots(args);
+                if (roots.Count == 0)
+                {
+                    roots = DriveInfo.GetDrives()
+                        .Where(d => d.DriveType == DriveType.Fixed)
+                        .Select(d => new ScanRoot
+                        {
+                            Path = d.RootDirectory.FullName,
+                            DisplayName = d.Name.TrimEnd('\\', '/')
+                        })
+                        .ToList();
+                }
+
+                var scanService = new MftScanService();
+                if (forceRescan)
+                {
+                    scanService.InvalidateCache();
+                }
+
+                var queryResult = scanService
+                    .SearchByKeywordAsync(roots, keyword, maxResults, null, CancellationToken.None)
+                    .GetAwaiter()
+                    .GetResult();
+                scanService.SaveAllCaches();
+
+                WriteSearchExportResult(resultPath, new SearchExportResponse
+                {
+                    Success = true,
+                    TotalIndexedCount = queryResult?.TotalIndexedCount ?? 0,
+                    TotalMatchedCount = queryResult?.TotalMatchedCount ?? 0,
+                    IsTruncated = queryResult?.IsTruncated ?? false,
+                    Results = (queryResult?.Results ?? new List<ScannedFileInfo>())
+                        .Select(r => new SearchExportItem
+                        {
+                            FullPath = r.FullPath,
+                            FileName = r.FileName,
+                            SizeBytes = r.SizeBytes,
+                            ModifiedTimeUtc = r.ModifiedTimeUtc,
+                            RootPath = r.RootPath,
+                            RootDisplayName = r.RootDisplayName,
+                            IsDirectory = r.IsDirectory
+                        })
+                        .ToList()
+                });
+
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                try
+                {
+                    WriteSearchExportResult(resultPath, new SearchExportResponse
+                    {
+                        Success = false,
+                        ErrorMessage = ex.Message
+                    });
+                }
+                catch
+                {
+                }
+
+                return 1;
+            }
+        }
+
+        private static List<ScanRoot> ParseRoots(string[] args)
+        {
+            var roots = new List<ScanRoot>();
+            var separatorIndex = Array.IndexOf(args, "--");
+            if (separatorIndex < 0)
+            {
+                return roots;
+            }
+
+            for (var i = separatorIndex + 1; i < args.Length; i++)
+            {
+                var part = args[i];
+                if (string.IsNullOrWhiteSpace(part))
+                {
+                    continue;
+                }
+
+                var sections = part.Split(new[] { '|' }, 2);
+                roots.Add(new ScanRoot
+                {
+                    Path = sections[0],
+                    DisplayName = sections.Length > 1 ? sections[1] : sections[0]
+                });
+            }
+
+            return roots;
+        }
+
+        private static string GetOptionValue(string[] args, string optionName)
+        {
+            var index = Array.IndexOf(args, optionName);
+            return index >= 0 && index + 1 < args.Length ? args[index + 1] : null;
+        }
+
+        private static void WriteSearchExportResult(string resultPath, SearchExportResponse response)
+        {
+            if (string.IsNullOrWhiteSpace(resultPath))
+            {
+                throw new ArgumentException("结果文件路径不能为空。", nameof(resultPath));
+            }
+
+            var directory = Path.GetDirectoryName(resultPath);
+            if (!string.IsNullOrWhiteSpace(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            var json = JsonConvert.SerializeObject(response);
+            File.WriteAllText(resultPath, json, Encoding.UTF8);
+        }
+
+        private sealed class SearchExportResponse
+        {
+            public bool Success { get; set; }
+            public string ErrorMessage { get; set; }
+            public int TotalIndexedCount { get; set; }
+            public int TotalMatchedCount { get; set; }
+            public bool IsTruncated { get; set; }
+            public List<SearchExportItem> Results { get; set; } = new List<SearchExportItem>();
+        }
+
+        private sealed class SearchExportItem
+        {
+            public string FullPath { get; set; }
+            public string FileName { get; set; }
+            public long SizeBytes { get; set; }
+            public DateTime ModifiedTimeUtc { get; set; }
+            public string RootPath { get; set; }
+            public string RootDisplayName { get; set; }
+            public bool IsDirectory { get; set; }
         }
     }
 }

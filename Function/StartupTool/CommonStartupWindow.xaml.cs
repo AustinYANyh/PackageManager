@@ -4,17 +4,23 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Threading;using System.Threading.Tasks;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
+using Newtonsoft.Json;
 using PackageManager.Services;
 
 namespace PackageManager.Function.StartupTool;
 
 public partial class CommonStartupWindow : Window
 {
+    private const int MaxDisplayedResults = 500;
+    private static readonly string[] LaunchableExtensions = { ".exe", ".bat", ".cmd", ".ps1", ".lnk" };
+
     private readonly DataPersistenceService _persistence;
     private CancellationTokenSource _scanCts;
+    private Process _scanProcess;
     private readonly ObservableCollection<ScanResultItem> _scanResults = new();
     private readonly ObservableCollection<StartupItemVm> _startupItems = new();
 
@@ -63,6 +69,15 @@ public partial class CommonStartupWindow : Window
     private void StopButton_Click(object sender, RoutedEventArgs e)
     {
         _scanCts?.Cancel();
+        var proc = Interlocked.Exchange(ref _scanProcess, null);
+        try
+        {
+            if (proc != null && !proc.HasExited)
+                proc.Kill();
+        }
+        catch
+        {
+        }
     }
 
     private void StartScan()
@@ -81,10 +96,11 @@ public partial class CommonStartupWindow : Window
         _scanResults.Clear();
         ScanCountText.Text = "";
         SetScanningState(true);
-        StatusText.Text = "正在提取扫描工具…";
+        StatusText.Text = "正在启动 MFT 检索服务…";
 
         _ = Task.Run(async () =>
         {
+            string resultPath = null;
             try
             {
                 var exePath = await Task.Run(() =>
@@ -100,32 +116,19 @@ public partial class CommonStartupWindow : Window
                     return;
                 }
 
-                Dispatcher.Invoke(() => StatusText.Text = "正在扫描（需要管理员权限）…");
-
-                // 构建扩展名列表：若关键词含扩展名则直接用，否则扫全盘常见可执行类型
-                var extensions = GetExtensionsForKeyword(keyword);
-                var mmfName = Guid.NewGuid().ToString("N");
-                var doneEvent = new EventWaitHandle(false, EventResetMode.ManualReset, mmfName + "_done");
-
-                // 使用 MemoryMappedFile 协议（与 MftIndexProvider 相同）
-                using var mmf = System.IO.MemoryMappedFiles.MemoryMappedFile.CreateNew(mmfName, 32 * 1024 * 1024);
-
-                // 动态枚举所有固定磁盘
-                var drives = System.IO.DriveInfo.GetDrives()
-                    .Where(d => d.DriveType == System.IO.DriveType.Fixed)
-                    .Select(d => $"\"{d.RootDirectory.FullName.TrimEnd('\\')}|{d.Name.TrimEnd('\\', '/')}盘\"");
-                var args = $"--mmf {mmfName} {string.Join(" ", extensions)} -- {string.Join(" ", drives)}";
+                resultPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "PackageManager", "startup_search_" + Guid.NewGuid().ToString("N") + ".json");
                 var psi = new ProcessStartInfo
                 {
                     FileName = exePath,
-                    Arguments = args,
-                    UseShellExecute = true   // MftScanner.exe 自带 requireAdministrator 清单
+                    Arguments = BuildSearchArguments(resultPath, keyword),
+                    UseShellExecute = true
                 };
 
                 Process proc;
                 try
                 {
                     proc = Process.Start(psi);
+                    Interlocked.Exchange(ref _scanProcess, proc);
                 }
                 catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
                 {
@@ -134,13 +137,22 @@ public partial class CommonStartupWindow : Window
                         StatusText.Text = "用户取消了 UAC 提权，扫描已中止。";
                         SetScanningState(false);
                     });
-                    doneEvent.Dispose();
                     return;
                 }
 
-                // 等待完成事件（最多 5 分钟）
-                await Task.Run(() => doneEvent.WaitOne(TimeSpan.FromMinutes(5)), ct);
-                doneEvent.Dispose();
+                if (proc == null)
+                {
+                    Dispatcher.Invoke(() =>
+                    {
+                        StatusText.Text = "扫描进程启动失败。";
+                        SetScanningState(false);
+                    });
+                    return;
+                }
+
+                Dispatcher.Invoke(() => StatusText.Text = "正在通过最新 MFT 检索封装扫描（需要管理员权限）…");
+
+                await Task.Run(() => proc?.WaitForExit(), ct);
 
                 if (ct.IsCancellationRequested)
                 {
@@ -153,8 +165,28 @@ public partial class CommonStartupWindow : Window
                     return;
                 }
 
-                // 读取结果
-                var results = ReadMmfResults(mmf, keyword);
+                var response = await Task.Run(() => ReadSearchResults(resultPath), ct);
+                if (response == null)
+                {
+                    Dispatcher.Invoke(() =>
+                    {
+                        StatusText.Text = "扫描结果读取失败。";
+                        SetScanningState(false);
+                    });
+                    return;
+                }
+
+                if (!response.Success)
+                {
+                    Dispatcher.Invoke(() =>
+                    {
+                        StatusText.Text = $"扫描失败：{response.ErrorMessage ?? "未知错误"}";
+                        SetScanningState(false);
+                    });
+                    return;
+                }
+
+                var results = FilterStartupResults(response.Results);
 
                 Dispatcher.Invoke(() =>
                 {
@@ -162,7 +194,20 @@ public partial class CommonStartupWindow : Window
                     foreach (var r in results)
                         _scanResults.Add(r);
                     ScanCountText.Text = $"共 {results.Count} 项";
-                    StatusText.Text = results.Count == 0 ? "未找到匹配项。" : $"找到 {results.Count} 个文件。";
+                    if (results.Count == 0)
+                    {
+                        StatusText.Text = response.TotalMatchedCount > 0
+                            ? "检索到匹配对象，但没有可直接作为启动项的文件。"
+                            : "未找到匹配项。";
+                    }
+                    else if (response.IsTruncated)
+                    {
+                        StatusText.Text = $"显示 {results.Count} 个启动项（共检索到 {response.TotalMatchedCount} 个对象，输入更多字符可继续缩小）。";
+                    }
+                    else
+                    {
+                        StatusText.Text = $"找到 {results.Count} 个启动项（索引对象 {response.TotalIndexedCount} 个）。";
+                    }
                     SetScanningState(false);
                 });
             }
@@ -182,53 +227,89 @@ public partial class CommonStartupWindow : Window
                     SetScanningState(false);
                 });
             }
+            finally
+            {
+                var proc = Interlocked.Exchange(ref _scanProcess, null);
+                try
+                {
+                    if (!string.IsNullOrWhiteSpace(resultPath) && File.Exists(resultPath))
+                        File.Delete(resultPath);
+                }
+                catch
+                {
+                }
+
+                proc?.Dispose();
+            }
         }, ct);
     }
 
-    private static string[] GetExtensionsForKeyword(string keyword)
+    private static string BuildSearchArguments(string resultPath, string keyword)
     {
-        var ext = System.IO.Path.GetExtension(keyword);
-        if (!string.IsNullOrEmpty(ext) && ext != ".*")
-            return new[] { ext.TrimStart('.') };
-        return new[] { "exe", "bat", "cmd", "ps1", "lnk" };
+        var roots = DriveInfo.GetDrives()
+            .Where(d => d.DriveType == DriveType.Fixed)
+            .Select(d => Quote($"{d.RootDirectory.FullName}|{d.Name.TrimEnd('\\', '/')}盘"));
+
+        return $"--search-export {Quote(resultPath)} --keyword {Quote(keyword)} --max-results {MaxDisplayedResults} -- {string.Join(" ", roots)}";
     }
 
-    private static System.Collections.Generic.List<ScanResultItem> ReadMmfResults(
-        System.IO.MemoryMappedFiles.MemoryMappedFile mmf, string keyword)
+    private static StartupSearchResponse ReadSearchResults(string resultPath)
     {
-        var results = new System.Collections.Generic.List<ScanResultItem>();
-        using var accessor = mmf.CreateViewAccessor(0, 0, System.IO.MemoryMappedFiles.MemoryMappedFileAccess.Read);
-
-        long pos = 0;
-        var magic = accessor.ReadInt32(pos); pos += 4;
-        if (magic != 0x4D4D4650) return results;
-        var version = accessor.ReadInt32(pos); pos += 4;
-        if (version != 1) return results;
-        var status = accessor.ReadInt32(pos); pos += 4;
-        if (status != 0) return results;
-        var count = accessor.ReadInt32(pos); pos += 4;
-
-        var kw = keyword.Replace("*", "").ToLowerInvariant();
-
-        for (int i = 0; i < count; i++)
+        if (string.IsNullOrWhiteSpace(resultPath) || !File.Exists(resultPath))
         {
-            var pathLen = accessor.ReadInt32(pos); pos += 4;
-            var pathBytes = new byte[pathLen];
-            accessor.ReadArray(pos, pathBytes, 0, pathLen); pos += pathLen;
-            var fullPath = System.Text.Encoding.Unicode.GetString(pathBytes);
-
-            var sizeBytes = accessor.ReadInt64(pos); pos += 8;
-            var modTicks = accessor.ReadInt64(pos); pos += 8;
-
-            var nameLen = accessor.ReadInt32(pos); pos += 4;
-            pos += nameLen; // skip display name
-
-            var fileName = System.IO.Path.GetFileName(fullPath);
-            if (string.IsNullOrEmpty(kw) || fileName.ToLowerInvariant().Contains(kw))
-                results.Add(new ScanResultItem { FileName = fileName, FullPath = fullPath });
+            return null;
         }
 
-        return results;
+        var json = File.ReadAllText(resultPath);
+        return JsonConvert.DeserializeObject<StartupSearchResponse>(json);
+    }
+
+    private static System.Collections.Generic.List<ScanResultItem> FilterStartupResults(System.Collections.Generic.IEnumerable<StartupSearchResultItem> results)
+    {
+        var filtered = new System.Collections.Generic.List<ScanResultItem>();
+        var dedup = new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var item in results ?? Enumerable.Empty<StartupSearchResultItem>())
+        {
+            if (item == null || item.IsDirectory || !IsLaunchableFile(item.FullPath))
+            {
+                continue;
+            }
+
+            if (!dedup.Add(item.FullPath))
+            {
+                continue;
+            }
+
+            filtered.Add(new ScanResultItem
+            {
+                FileName = string.IsNullOrWhiteSpace(item.FileName) ? System.IO.Path.GetFileName(item.FullPath) : item.FileName,
+                FullPath = item.FullPath
+            });
+        }
+
+        return filtered;
+    }
+
+    private static bool IsLaunchableFile(string fullPath)
+    {
+        if (string.IsNullOrWhiteSpace(fullPath))
+        {
+            return false;
+        }
+
+        var ext = System.IO.Path.GetExtension(fullPath);
+        return LaunchableExtensions.Contains(ext, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static string Quote(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return "\"\"";
+        }
+
+        return text.Contains(" ") ? "\"" + text + "\"" : text;
     }
 
     private void SetScanningState(bool scanning)
@@ -358,6 +439,27 @@ public class ScanResultItem
 {
     public string FileName { get; set; }
     public string FullPath { get; set; }
+}
+
+internal sealed class StartupSearchResponse
+{
+    public bool Success { get; set; }
+    public string ErrorMessage { get; set; }
+    public int TotalIndexedCount { get; set; }
+    public int TotalMatchedCount { get; set; }
+    public bool IsTruncated { get; set; }
+    public System.Collections.Generic.List<StartupSearchResultItem> Results { get; set; } = new();
+}
+
+internal sealed class StartupSearchResultItem
+{
+    public string FullPath { get; set; }
+    public string FileName { get; set; }
+    public long SizeBytes { get; set; }
+    public DateTime ModifiedTimeUtc { get; set; }
+    public string RootPath { get; set; }
+    public string RootDisplayName { get; set; }
+    public bool IsDirectory { get; set; }
 }
 
 public class StartupItemVm : INotifyPropertyChanged

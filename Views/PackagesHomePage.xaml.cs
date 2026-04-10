@@ -349,6 +349,7 @@ public partial class PackagesHomePage : Page
             var psi = new ProcessStartInfo
             {
                 FileName = exePath,
+                Arguments = "--window cleanup",
                 UseShellExecute = true
             };
             Process.Start(psi);
