@@ -93,21 +93,54 @@ namespace MftScanner
         private sealed class VolumeCache
         {
             public Dictionary<ulong, MftEntry> Directories { get; } = new Dictionary<ulong, MftEntry>();
-            // key = FRN，保证同一物理文件不重复计数
-            public Dictionary<ulong, MftEntry> MatchedFiles { get; } = new Dictionary<ulong, MftEntry>();
+            // key = FRN，存储全部文件（不按扩展名过滤），查询时再筛选
+            public Dictionary<ulong, MftEntry> AllFiles { get; } = new Dictionary<ulong, MftEntry>();
+            public Dictionary<ulong, string> DirectoryPathCache { get; } = new Dictionary<ulong, string>();
             public long NextUsn { get; set; }
             public ulong UsnJournalId { get; set; }
         }
 
+        private sealed class SearchCandidate
+        {
+            public char DriveLetter { get; set; }
+            public ulong FileFrn { get; set; }
+            public ulong ParentFrn { get; set; }
+            public string FileName { get; set; }
+            public string FullPath { get; set; }
+            public string RootPath { get; set; }
+            public string RootDisplayName { get; set; }
+        }
+
+        private sealed class SearchCandidateComparer : IComparer<SearchCandidate>
+        {
+            public static SearchCandidateComparer Instance { get; } = new SearchCandidateComparer();
+
+            public int Compare(SearchCandidate x, SearchCandidate y)
+            {
+                if (ReferenceEquals(x, y)) return 0;
+                if (x == null) return -1;
+                if (y == null) return 1;
+
+                var result = StringComparer.OrdinalIgnoreCase.Compare(x.FileName, y.FileName);
+                if (result != 0) return result;
+
+                result = x.DriveLetter.CompareTo(y.DriveLetter);
+                if (result != 0) return result;
+
+                return x.FileFrn.CompareTo(y.FileFrn);
+            }
+        }
+
         // 魔数 + 版本，格式变更时递增版本号使旧缓存自动失效
         private const uint CacheMagic = 0x4D465443; // "MFTC"
-        private const ushort CacheVersion = 1;
+        private const ushort CacheVersion = 3; // v3: 扩展名无关，存储全部文件
 
         private static readonly string CacheDir = IOPath.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
             "PackageManager");
 
         private readonly Dictionary<char, VolumeCache> _volumeCaches = new Dictionary<char, VolumeCache>();
+        private static readonly char[] PathSearchSeparators = { '\\', '/', ':' };
 
         /// <summary>
         /// 清除指定卷（或全部卷）的内存缓存及磁盘缓存文件，下次扫描将重新全量枚举 MFT。
@@ -173,7 +206,7 @@ namespace MftScanner
                         var frn = br.ReadUInt64();
                         var name = br.ReadString();
                         var parentFrn = br.ReadUInt64();
-                        cache.MatchedFiles[frn] = new MftEntry { Name = name, ParentFrn = parentFrn, NameLength = name.Length };
+                        cache.AllFiles[frn] = new MftEntry { Name = name, ParentFrn = parentFrn, NameLength = name.Length };
                     }
 
                     _volumeCaches[driveLetter] = cache;
@@ -208,8 +241,8 @@ namespace MftScanner
                         bw.Write(kv.Value.ParentFrn);
                     }
 
-                    bw.Write(cache.MatchedFiles.Count);
-                    foreach (var kv in cache.MatchedFiles)
+                    bw.Write(cache.AllFiles.Count);
+                    foreach (var kv in cache.AllFiles)
                     {
                         bw.Write(kv.Key);
                         bw.Write(kv.Value.Name);
@@ -234,16 +267,17 @@ namespace MftScanner
             return Task.Run(() =>
             {
                 var extSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var ext in extensions)
+                if (extensions != null)
                 {
-                    var e = ext.Trim();
-                    if (!e.StartsWith(".", StringComparison.Ordinal)) e = "." + e;
-                    extSet.Add(e.ToLowerInvariant());
+                    foreach (var ext in extensions)
+                    {
+                        var e = ext.Trim();
+                        if (!e.StartsWith(".", StringComparison.Ordinal)) e = "." + e;
+                        extSet.Add(e.ToLowerInvariant());
+                    }
                 }
 
-                var volumeGroups = roots
-                    .Where(r => r != null && !string.IsNullOrWhiteSpace(r.Path) && r.Path.Length >= 2 && r.Path[1] == ':')
-                    .GroupBy(r => char.ToUpperInvariant(r.Path[0]));
+                var volumeGroups = GroupRootsByVolume(roots);
 
                 var results = new List<ScannedFileInfo>();
 
@@ -251,59 +285,28 @@ namespace MftScanner
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     var driveLetter = group.Key;
-                    var volumeRoots = group
-                        .Select(r => new ScanRoot { Path = NormalizePath(r.Path), DisplayName = r.DisplayName })
-                        .Where(r => r.Path != null)
-                        .ToList();
+                    var volumeRoots = group.Value;
+                    var cache = GetOrRefreshVolumeCache(driveLetter, progress, cancellationToken);
 
-                    VolumeCache cache;
-                    if (!_volumeCaches.ContainsKey(driveLetter))
-                        TryLoadCache(driveLetter); // 内存没有时尝试从磁盘加载
+                    progress?.Report($"正在解析路径... 共 {cache.AllFiles.Count} 个文件");
 
-                    if (_volumeCaches.TryGetValue(driveLetter, out var existing))
-                    {
-                        progress?.Report($"正在通过 USN 日志增量更新卷 {driveLetter}:...");
-                        if (TryApplyUsnDelta(driveLetter, existing, extSet, cancellationToken))
-                        {
-                            cache = existing;
-                        }
-                        else
-                        {
-                            progress?.Report($"USN 日志已失效，正在重新全量扫描卷 {driveLetter}:...");
-                            cache = FullScanVolume(driveLetter, extSet, cancellationToken);
-                            _volumeCaches[driveLetter] = cache;
-                            TrySaveCache(driveLetter, cache);
-                        }
-                    }
-                    else
-                    {
-                        progress?.Report($"正在通过 MFT 全量扫描卷 {driveLetter}:...");
-                        cache = FullScanVolume(driveLetter, extSet, cancellationToken);
-                        _volumeCaches[driveLetter] = cache;
-                        TrySaveCache(driveLetter, cache);
-                    }
-
-                    progress?.Report($"正在解析路径... 找到 {cache.MatchedFiles.Count} 个匹配文件");
-
-                    var pathCache = new Dictionary<ulong, string>();
-                    foreach (var kv in cache.MatchedFiles)
+                    foreach (var kv in cache.AllFiles)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
                         var file = kv.Value;
-                        var dirPath = ReconstructPath(file.ParentFrn, cache.Directories, driveLetter, pathCache);
+
+                        // 查询时按扩展名过滤（extSet 为空则不过滤）
+                        if (extSet.Count > 0)
+                        {
+                            var fileExt = GetExtension(file.Name);
+                            if (fileExt == null || !extSet.Contains(fileExt)) continue;
+                        }
+                        var dirPath = ReconstructPath(file.ParentFrn, cache.Directories, driveLetter, cache.DirectoryPathCache);
                         if (dirPath == null) continue;
                         var fullPath = NormalizePath(Path.Combine(dirPath, file.Name));
                         if (fullPath == null) continue;
 
-                        ScanRoot matchedRoot = null;
-                        foreach (var root in volumeRoots)
-                        {
-                            if (IsPathUnderRoot(fullPath, root.Path))
-                            {
-                                matchedRoot = root;
-                                break;
-                            }
-                        }
+                        var matchedRoot = FindMatchedRoot(fullPath, volumeRoots);
                         if (matchedRoot == null) continue;
 
                         try
@@ -328,10 +331,296 @@ namespace MftScanner
             }, cancellationToken);
         }
 
-        private VolumeCache FullScanVolume(char driveLetter, HashSet<string> extSet, CancellationToken ct)
+        public Task<int> PrepareSearchIndexAsync(IReadOnlyList<ScanRoot> roots, IProgress<string> progress, CancellationToken cancellationToken)
+        {
+            return Task.Run(() =>
+            {
+                var volumeGroups = GroupRootsByVolume(roots);
+                var totalCount = 0;
+
+                foreach (var group in volumeGroups)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var driveLetter = group.Key;
+                    var volumeRoots = group.Value;
+                    var cache = GetOrRefreshVolumeCache(driveLetter, progress, cancellationToken);
+                    totalCount += CountFilesUnderRoots(cache, driveLetter, volumeRoots, cancellationToken);
+                }
+
+                return totalCount;
+            }, cancellationToken);
+        }
+
+        public Task<SearchQueryResult> SearchByKeywordAsync(IReadOnlyList<ScanRoot> roots, string keyword,
+            int maxResults, IProgress<string> progress, CancellationToken cancellationToken)
+        {
+            return Task.Run(() =>
+            {
+                var volumeGroups = GroupRootsByVolume(roots);
+                var trimmedKeyword = (keyword ?? string.Empty).Trim();
+                var kwLower = trimmedKeyword.ToLowerInvariant();
+                var isPathQuery = trimmedKeyword.IndexOfAny(PathSearchSeparators) >= 0;
+
+                var exactMatches = new SortedSet<SearchCandidate>(SearchCandidateComparer.Instance);
+                var prefixMatches = new SortedSet<SearchCandidate>(SearchCandidateComparer.Instance);
+                var containsMatches = new SortedSet<SearchCandidate>(SearchCandidateComparer.Instance);
+                var pathMatches = new SortedSet<SearchCandidate>(SearchCandidateComparer.Instance);
+
+                var totalIndexedCount = 0;
+                var totalMatchedCount = 0;
+
+                foreach (var group in volumeGroups)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var driveLetter = group.Key;
+                    var volumeRoots = group.Value;
+                    var wholeVolumeRoots = AreWholeVolumeRoots(volumeRoots, driveLetter);
+                    var cache = GetOrRefreshVolumeCache(driveLetter, progress, cancellationToken);
+
+                    totalIndexedCount += CountFilesUnderRoots(cache, driveLetter, volumeRoots, cancellationToken);
+                    progress?.Report($"正在搜索卷 {driveLetter}:...");
+
+                    foreach (var kv in cache.AllFiles)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var file = kv.Value;
+                        var fileName = file.Name ?? string.Empty;
+
+                        SearchCandidate candidate = null;
+                        var nameMatched = fileName.IndexOf(trimmedKeyword, StringComparison.OrdinalIgnoreCase) >= 0;
+
+                        if (!isPathQuery)
+                        {
+                            if (!nameMatched) continue;
+                            candidate = CreateSearchCandidate(driveLetter, kv.Key, file, cache, volumeRoots, requireFullPath: !wholeVolumeRoots);
+                            if (candidate == null) continue;
+                        }
+                        else
+                        {
+                            candidate = CreateSearchCandidate(driveLetter, kv.Key, file, cache, volumeRoots, requireFullPath: true);
+                            if (candidate == null) continue;
+
+                            var pathMatched = candidate.FullPath.IndexOf(trimmedKeyword, StringComparison.OrdinalIgnoreCase) >= 0;
+                            if (!nameMatched && !pathMatched) continue;
+                        }
+
+                        totalMatchedCount++;
+
+                        if (nameMatched)
+                        {
+                            var normalizedName = fileName.ToLowerInvariant();
+                            if (normalizedName == kwLower)
+                            {
+                                AddBoundedCandidate(exactMatches, candidate, maxResults);
+                            }
+                            else if (normalizedName.StartsWith(kwLower, StringComparison.Ordinal))
+                            {
+                                AddBoundedCandidate(prefixMatches, candidate, maxResults);
+                            }
+                            else
+                            {
+                                AddBoundedCandidate(containsMatches, candidate, maxResults);
+                            }
+                        }
+                        else
+                        {
+                            AddBoundedCandidate(pathMatches, candidate, maxResults);
+                        }
+                    }
+                }
+
+                var candidates = exactMatches
+                    .Concat(prefixMatches)
+                    .Concat(containsMatches)
+                    .Concat(pathMatches)
+                    .Take(maxResults)
+                    .ToList();
+
+                var results = new List<ScannedFileInfo>(candidates.Count);
+                foreach (var candidate in candidates)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (!_volumeCaches.TryGetValue(candidate.DriveLetter, out var cache)) continue;
+
+                    var info = CreateScannedFileInfo(candidate, cache);
+                    if (info != null)
+                        results.Add(info);
+                }
+
+                return new SearchQueryResult
+                {
+                    TotalIndexedCount = totalIndexedCount,
+                    TotalMatchedCount = totalMatchedCount,
+                    IsTruncated = totalMatchedCount > results.Count,
+                    Results = results
+                };
+            }, cancellationToken);
+        }
+
+        private static Dictionary<char, List<ScanRoot>> GroupRootsByVolume(IReadOnlyList<ScanRoot> roots)
+        {
+            var normalizedRoots = (roots ?? Array.Empty<ScanRoot>())
+                .Where(r => r != null && !string.IsNullOrWhiteSpace(r.Path))
+                .Select(r => new ScanRoot
+                {
+                    Path = NormalizePath(r.Path),
+                    DisplayName = r.DisplayName
+                })
+                .Where(r => !string.IsNullOrWhiteSpace(r.Path) && r.Path.Length >= 2 && r.Path[1] == ':')
+                .GroupBy(r => char.ToUpperInvariant(r.Path[0]))
+                .ToDictionary(g => g.Key, g => g.ToList());
+
+            return normalizedRoots;
+        }
+
+        private VolumeCache GetOrRefreshVolumeCache(char driveLetter, IProgress<string> progress, CancellationToken cancellationToken)
+        {
+            if (!_volumeCaches.ContainsKey(driveLetter))
+                TryLoadCache(driveLetter);
+
+            if (_volumeCaches.TryGetValue(driveLetter, out var existingCache))
+            {
+                progress?.Report($"正在通过 USN 日志增量更新卷 {driveLetter}:...");
+                if (TryApplyUsnDelta(driveLetter, existingCache, cancellationToken))
+                    return existingCache;
+
+                progress?.Report($"USN 日志已失效，正在重新全量扫描卷 {driveLetter}:...");
+            }
+            else
+            {
+                progress?.Report($"正在通过 MFT 全量扫描卷 {driveLetter}:...");
+            }
+
+            var rebuiltCache = FullScanVolume(driveLetter, cancellationToken);
+            _volumeCaches[driveLetter] = rebuiltCache;
+            TrySaveCache(driveLetter, rebuiltCache);
+            return rebuiltCache;
+        }
+
+        private static bool AreWholeVolumeRoots(IReadOnlyList<ScanRoot> roots, char driveLetter)
+        {
+            if (roots == null || roots.Count == 0) return false;
+            var expectedRoot = $"{char.ToUpperInvariant(driveLetter)}:\\";
+            return roots.All(r => string.Equals(r.Path, expectedRoot, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private static int CountFilesUnderRoots(VolumeCache cache, char driveLetter, IReadOnlyList<ScanRoot> volumeRoots, CancellationToken cancellationToken)
+        {
+            if (AreWholeVolumeRoots(volumeRoots, driveLetter))
+                return cache.AllFiles.Count;
+
+            var count = 0;
+            foreach (var kv in cache.AllFiles)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var dirPath = ReconstructPath(kv.Value.ParentFrn, cache.Directories, driveLetter, cache.DirectoryPathCache);
+                if (dirPath == null) continue;
+
+                var fullPath = NormalizePath(Path.Combine(dirPath, kv.Value.Name));
+                if (fullPath == null) continue;
+
+                if (FindMatchedRoot(fullPath, volumeRoots) != null)
+                    count++;
+            }
+
+            return count;
+        }
+
+        private static ScanRoot FindMatchedRoot(string fullPath, IReadOnlyList<ScanRoot> volumeRoots)
+        {
+            foreach (var root in volumeRoots)
+            {
+                if (IsPathUnderRoot(fullPath, root.Path))
+                    return root;
+            }
+
+            return null;
+        }
+
+        private static void AddBoundedCandidate(SortedSet<SearchCandidate> bucket, SearchCandidate candidate, int maxResults)
+        {
+            bucket.Add(candidate);
+            if (bucket.Count > maxResults)
+                bucket.Remove(bucket.Max);
+        }
+
+        private static SearchCandidate CreateSearchCandidate(char driveLetter, ulong fileFrn, MftEntry file,
+            VolumeCache cache, IReadOnlyList<ScanRoot> volumeRoots, bool requireFullPath)
+        {
+            if (volumeRoots == null || volumeRoots.Count == 0) return null;
+
+            var wholeVolumeRoots = AreWholeVolumeRoots(volumeRoots, driveLetter);
+            if (!requireFullPath && wholeVolumeRoots)
+            {
+                var root = volumeRoots[0];
+                return new SearchCandidate
+                {
+                    DriveLetter = driveLetter,
+                    FileFrn = fileFrn,
+                    ParentFrn = file.ParentFrn,
+                    FileName = file.Name,
+                    RootPath = root.Path,
+                    RootDisplayName = root.DisplayName
+                };
+            }
+
+            var dirPath = ReconstructPath(file.ParentFrn, cache.Directories, driveLetter, cache.DirectoryPathCache);
+            if (dirPath == null) return null;
+
+            var fullPath = NormalizePath(Path.Combine(dirPath, file.Name));
+            if (fullPath == null) return null;
+
+            var matchedRoot = wholeVolumeRoots ? volumeRoots[0] : FindMatchedRoot(fullPath, volumeRoots);
+            if (matchedRoot == null) return null;
+
+            return new SearchCandidate
+            {
+                DriveLetter = driveLetter,
+                FileFrn = fileFrn,
+                ParentFrn = file.ParentFrn,
+                FileName = file.Name,
+                FullPath = fullPath,
+                RootPath = matchedRoot.Path,
+                RootDisplayName = matchedRoot.DisplayName
+            };
+        }
+
+        private static ScannedFileInfo CreateScannedFileInfo(SearchCandidate candidate, VolumeCache cache)
+        {
+            var fullPath = candidate.FullPath;
+            if (fullPath == null)
+            {
+                var dirPath = ReconstructPath(candidate.ParentFrn, cache.Directories, candidate.DriveLetter, cache.DirectoryPathCache);
+                if (dirPath == null) return null;
+                fullPath = NormalizePath(Path.Combine(dirPath, candidate.FileName));
+                if (fullPath == null) return null;
+            }
+
+            try
+            {
+                var fi = new FileInfo(fullPath);
+                if (!fi.Exists) return null;
+
+                return new ScannedFileInfo
+                {
+                    FullPath = fullPath,
+                    FileName = fi.Name,
+                    SizeBytes = fi.Length,
+                    ModifiedTimeUtc = fi.LastWriteTimeUtc,
+                    RootPath = candidate.RootPath,
+                    RootDisplayName = candidate.RootDisplayName
+                };
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        private VolumeCache FullScanVolume(char driveLetter, CancellationToken ct)
         {
             var cache = new VolumeCache();
-            EnumerateMft(driveLetter, extSet, cache.Directories, cache.MatchedFiles, ct);
+            EnumerateMft(driveLetter, cache.Directories, cache.AllFiles, ct);
 
             var volumePath = @"\\.\" + driveLetter + ":";
             var handle = CreateFile(volumePath, GENERIC_READ,
@@ -354,7 +643,7 @@ namespace MftScanner
             return cache;
         }
 
-        private bool TryApplyUsnDelta(char driveLetter, VolumeCache cache, HashSet<string> extSet, CancellationToken ct)
+        private bool TryApplyUsnDelta(char driveLetter, VolumeCache cache, CancellationToken ct)
         {
             var volumePath = @"\\.\" + driveLetter + ":";
             var handle = CreateFile(volumePath, GENERIC_READ,
@@ -438,16 +727,11 @@ namespace MftScanner
                                 else
                                 {
                                     if (isDelete)
-                                    {
-                                        cache.MatchedFiles.Remove(frn);
-                                    }
+                                        cache.AllFiles.Remove(frn);
                                     else if (isCreate)
                                     {
-                                        var ext = GetExtension(fileName);
-                                        if (ext != null && extSet.Contains(ext))
-                                            cache.MatchedFiles[frn] = new MftEntry { Name = fileName, ParentFrn = parentFrn, NameLength = fileName.Length };
-                                        else
-                                            cache.MatchedFiles.Remove(frn); // 重命名为不匹配扩展名
+                                        if (!cache.AllFiles.TryGetValue(frn, out var existingFile) || fileName.Length > existingFile.NameLength)
+                                            cache.AllFiles[frn] = new MftEntry { Name = fileName, ParentFrn = parentFrn, NameLength = fileName.Length };
                                     }
                                 }
                             }
@@ -473,8 +757,8 @@ namespace MftScanner
             }
         }
 
-        private static void EnumerateMft(char driveLetter, HashSet<string> extensions,
-            Dictionary<ulong, MftEntry> directories, Dictionary<ulong, MftEntry> matchingFiles,
+        private static void EnumerateMft(char driveLetter,
+            Dictionary<ulong, MftEntry> directories, Dictionary<ulong, MftEntry> allFiles,
             CancellationToken cancellationToken)
         {
             var volumePath = @"\\.\" + driveLetter + ":";
@@ -536,12 +820,8 @@ namespace MftScanner
                             }
                             else
                             {
-                                var ext = GetExtension(fileName);
-                                if (ext != null && extensions.Contains(ext))
-                                {
-                                    if (!matchingFiles.TryGetValue(frn, out var existingFile) || fileName.Length > existingFile.NameLength)
-                                        matchingFiles[frn] = new MftEntry { Name = fileName, ParentFrn = parentFrn, NameLength = fileName.Length };
-                                }
+                                if (!allFiles.TryGetValue(frn, out var existingFile) || fileName.Length > existingFile.NameLength)
+                                    allFiles[frn] = new MftEntry { Name = fileName, ParentFrn = parentFrn, NameLength = fileName.Length };
                             }
                         }
 
@@ -645,6 +925,14 @@ namespace MftScanner
         public DateTime ModifiedTimeUtc { get; set; }
         public string RootPath { get; set; }
         public string RootDisplayName { get; set; }
+    }
+
+    public sealed class SearchQueryResult
+    {
+        public int TotalIndexedCount { get; set; }
+        public int TotalMatchedCount { get; set; }
+        public bool IsTruncated { get; set; }
+        public List<ScannedFileInfo> Results { get; set; } = new List<ScannedFileInfo>();
     }
 
     public sealed class ScanRoot

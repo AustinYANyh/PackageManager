@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.MemoryMappedFiles;
+using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Windows;
@@ -22,6 +23,17 @@ namespace MftScanner
             var args = e.Args;
             var mmfArgIndex = Array.IndexOf(args, "--mmf");
 
+            // --self-test DingtalkLauncher.exe
+            var selfTestIndex = Array.IndexOf(args, "--self-test");
+            if (selfTestIndex >= 0)
+            {
+                // 自测模式：自己创建 MMF + Event，跑无头扫描，读结果并弹窗显示
+                var keyword = selfTestIndex + 1 < args.Length ? args[selfTestIndex + 1] : "*.exe";
+                RunSelfTest(keyword);
+                Shutdown(0);
+                return;
+            }
+
             if (mmfArgIndex >= 0 && mmfArgIndex + 1 < args.Length)
             {
                 // 无头 CLI 模式：在 StartupUri 窗口创建前 Shutdown，阻止任何窗口显示
@@ -34,7 +46,7 @@ namespace MftScanner
             // 交互模式：手动创建窗口，捕获初始化异常
             try
             {
-                var window = new RevitFileCleanupWindow();
+                var window = new EverythingSearchWindow();
                 MainWindow = window;
                 window.Show();
             }
@@ -143,6 +155,78 @@ namespace MftScanner
                     writer.Write(dispBytes.Length);
                     writer.Write(dispBytes);
                 }
+            }
+        }
+
+        private static void RunSelfTest(string keyword)
+        {
+            var mmfName = "SelfTest_" + Guid.NewGuid().ToString("N");
+            var ext = Path.GetExtension(keyword).TrimStart('.');
+            if (string.IsNullOrEmpty(ext)) ext = "exe";
+
+            var drives = DriveInfo.GetDrives()
+                .Where(d => d.DriveType == DriveType.Fixed)
+                .Select(d => $"{d.RootDirectory.FullName.TrimEnd('\\')}|{d.Name.TrimEnd('\\', '/')}盘")
+                .ToArray();
+
+            // 构造与主进程相同的 args 数组
+            var scanArgs = new List<string> { "--mmf", mmfName, ext, "--" };
+            scanArgs.AddRange(drives);
+
+            using (var mmf = MemoryMappedFile.CreateNew(mmfName, 32 * 1024 * 1024))
+            using (var doneEvent = new EventWaitHandle(false, EventResetMode.ManualReset, mmfName + "_Done"))
+            {
+                RunHeadlessScan(mmfName, scanArgs.ToArray());
+
+                // 读取结果
+                var sb = new StringBuilder();
+                sb.AppendLine($"关键词：{keyword}  扩展名：{ext}");
+                sb.AppendLine();
+
+                using (var accessor = mmf.CreateViewAccessor(0, 0, MemoryMappedFileAccess.Read))
+                {
+                    long pos = 0;
+                    var magic = accessor.ReadInt32(pos); pos += 4;
+                    var version = accessor.ReadInt16(pos); pos += 2;
+                    var status = accessor.ReadInt32(pos); pos += 4;
+                    var count = accessor.ReadInt32(pos); pos += 4;
+                    pos += 6; // reserved
+
+                    if (magic != (int)MmfMagic || status != MmfStatusSuccess)
+                    {
+                        sb.AppendLine($"扫描失败或无结果（magic=0x{magic:X8} status={status}）");
+                    }
+                    else
+                    {
+                        sb.AppendLine($"共 {count} 条结果：");
+                        var kw = keyword.Replace("*", "").ToLowerInvariant();
+                        int shown = 0;
+                        for (int i = 0; i < count; i++)
+                        {
+                            var pathLen = accessor.ReadInt32(pos); pos += 4;
+                            var pathBytes = new byte[pathLen];
+                            accessor.ReadArray(pos, pathBytes, 0, pathLen); pos += pathLen;
+                            var fullPath = Encoding.Unicode.GetString(pathBytes);
+
+                            pos += 8; // SizeBytes
+                            pos += 8; // ModifiedTimeUtc.Ticks
+
+                            var dispLen = accessor.ReadInt32(pos); pos += 4;
+                            pos += dispLen; // RootDisplayName
+
+                            var fileName = Path.GetFileName(fullPath);
+                            if (string.IsNullOrEmpty(kw) || fileName.ToLowerInvariant().Contains(kw))
+                            {
+                                sb.AppendLine(fullPath);
+                                shown++;
+                            }
+                        }
+                        if (shown == 0) sb.AppendLine("（无匹配项）");
+                    }
+                }
+
+                MessageBox.Show(sb.ToString(), "MftScanner 自测结果",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
             }
         }
 
