@@ -48,6 +48,7 @@
         <Reference Include="System.Core"/>
         <Reference Include="System.Data"/>
         <Reference Include="System.Configuration"/>
+        <Reference Include="System.Management"/>
         <Reference Include="System.Security"/>
         <Reference Include="System.Windows.Forms"/>
         <Reference Include="System.Xml"/>

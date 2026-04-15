@@ -4,6 +4,8 @@ using System.IO;
 using System.IO.MemoryMappedFiles;
 using System.IO.Pipes;
 using System.Linq;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -378,29 +380,52 @@ namespace MftScanner
                 .ToList();
 
             var scanService = new MftScanService();
-            var warmupTask = scanService.PrepareSearchIndexAsync(roots, null, CancellationToken.None);
+
+            // 先完成 warmup，再进入连接循环，避免首次请求时阻塞管道
+            try
+            {
+                scanService.PrepareSearchIndexAsync(roots, null, CancellationToken.None)
+                    .GetAwaiter().GetResult();
+            }
+            catch { }
 
             try
             {
                 while (true)
                 {
-                    using (var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.None))
+                    NamedPipeServerStream server;
+                    try
+                    {
+                        // 显式授权 Everyone 读写，允许非管理员的主进程连接
+                        var security = new PipeSecurity();
+                        security.AddAccessRule(new PipeAccessRule(
+                            new SecurityIdentifier(WellKnownSidType.WorldSid, null),
+                            PipeAccessRights.ReadWrite,
+                            AccessControlType.Allow));
+                        server = new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1,
+                            PipeTransmissionMode.Byte, PipeOptions.Asynchronous,
+                            inBufferSize: 0, outBufferSize: 0, security);
+                    }
+                    catch
+                    {
+                        break;
+                    }
+
+                    bool shutdown = false;
+                    using (server)
                     {
                         try
                         {
-                            client.Connect(500);
+                            server.WaitForConnection();
                         }
-                        catch (TimeoutException)
+                        catch (IOException)
                         {
-                            Thread.Sleep(100);
                             continue;
                         }
 
-                        using (var reader = new StreamReader(client, Encoding.UTF8, false, 4096, leaveOpen: true))
-                        using (var writer = new StreamWriter(client, new UTF8Encoding(false), 4096, leaveOpen: true) { AutoFlush = true })
+                        using (var reader = new StreamReader(server, Encoding.UTF8, false, 4096, leaveOpen: true))
+                        using (var writer = new StreamWriter(server, new UTF8Encoding(false), 4096, leaveOpen: true) { AutoFlush = true })
                         {
-                            StartupHelperRequest request = null;
-
                             try
                             {
                                 var requestJson = reader.ReadLine();
@@ -409,7 +434,7 @@ namespace MftScanner
                                     continue;
                                 }
 
-                                request = JsonConvert.DeserializeObject<StartupHelperRequest>(requestJson);
+                                var request = JsonConvert.DeserializeObject<StartupHelperRequest>(requestJson);
                                 if (request == null)
                                 {
                                     writer.WriteLine(JsonConvert.SerializeObject(new SearchExportResponse
@@ -423,6 +448,7 @@ namespace MftScanner
                                 if (string.Equals(request.Action, "shutdown", StringComparison.OrdinalIgnoreCase))
                                 {
                                     writer.WriteLine(JsonConvert.SerializeObject(new SearchExportResponse { Success = true }));
+                                    shutdown = true;
                                     break;
                                 }
 
@@ -439,13 +465,13 @@ namespace MftScanner
                                 if (request.ForceRescan)
                                 {
                                     scanService.InvalidateCache();
-                                    warmupTask = scanService.PrepareSearchIndexAsync(roots, null, CancellationToken.None);
+                                    scanService.PrepareSearchIndexAsync(roots, null, CancellationToken.None)
+                                        .GetAwaiter().GetResult();
                                 }
 
-                                warmupTask.GetAwaiter().GetResult();
-
                                 var queryResult = scanService
-                                    .SearchByKeywordAsync(roots, request.Keyword ?? string.Empty, request.MaxResults > 0 ? request.MaxResults : 500, null, CancellationToken.None)
+                                    .SearchByKeywordAsync(roots, request.Keyword ?? string.Empty,
+                                        request.MaxResults > 0 ? request.MaxResults : 500, null, CancellationToken.None)
                                     .GetAwaiter()
                                     .GetResult();
 
@@ -488,6 +514,8 @@ namespace MftScanner
                             }
                         }
                     }
+
+                    if (shutdown) break;
                 }
 
                 scanService.SaveAllCaches();

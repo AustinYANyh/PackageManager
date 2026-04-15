@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Pipes;
 using System.Linq;
+using System.Management;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -23,14 +24,12 @@ public partial class CommonStartupWindow : Window
     private readonly DataPersistenceService _persistence;
     private readonly DispatcherTimer _debounceTimer;
     private readonly object _helperGate = new();
-    private readonly object _activeClientGate = new();
     private readonly ObservableCollection<ScanResultItem> _scanResults = new();
     private readonly ObservableCollection<StartupItemVm> _startupItems = new();
     private CancellationTokenSource _scanCts;
     private Task<bool> _ensureHelperTask;
     private Process _helperProcess;
     private string _helperPipeName;
-    private NamedPipeServerStream _activeServer;
     private int _searchVersion;
 
     public CommonStartupWindow(DataPersistenceService persistence)
@@ -131,7 +130,6 @@ public partial class CommonStartupWindow : Window
         _scanCts?.Cancel();
         _scanCts?.Dispose();
         _scanCts = null;
-        DisposeActiveServer();
     }
 
     private async Task StartScanAsync(bool forceRescan)
@@ -221,6 +219,7 @@ public partial class CommonStartupWindow : Window
         {
             if (currentVersion == _searchVersion)
             {
+                LoggingService.LogError(ex, $"[StartupSearch] StartScanAsync failed: {ex.GetType().FullName}: {ex.Message}\n{ex.StackTrace}");
                 StatusText.Text = $"检索出错：{ex.Message}";
             }
         }
@@ -283,8 +282,15 @@ public partial class CommonStartupWindow : Window
         try
         {
             StatusText.Text = "正在启动 MFT 检索服务，首次需要管理员权限…";
+            LoggingService.LogInfo("[StartupSearch] StartSearchHelperAsync: begin");
+
+            // 提取前先杀掉已有的 MftScanner 后台进程，避免文件被占用导致写入失败
+            await Task.Run(() => KillExistingMftScannerProcesses()).ConfigureAwait(true);
+
             var exePath = await Task.Run(() =>
                 AdminElevationService.ExtractEmbeddedTool("MftScanner.exe", "MftScanner.exe")).ConfigureAwait(true);
+
+            LoggingService.LogInfo($"[StartupSearch] ExtractEmbeddedTool result: {exePath ?? "(null)"}");
 
             if (string.IsNullOrEmpty(exePath))
             {
@@ -293,6 +299,8 @@ public partial class CommonStartupWindow : Window
             }
 
             var pipeName = "PackageManager.StartupSearch." + Guid.NewGuid().ToString("N");
+            LoggingService.LogInfo($"[StartupSearch] Starting helper: {exePath} --startup-helper {pipeName}");
+
             var psi = new ProcessStartInfo
             {
                 FileName = exePath,
@@ -303,24 +311,100 @@ public partial class CommonStartupWindow : Window
             var proc = Process.Start(psi);
             if (proc == null)
             {
+                LoggingService.LogWarning("[StartupSearch] Process.Start returned null");
                 StatusText.Text = "检索服务启动失败。";
                 return false;
             }
 
+            LoggingService.LogInfo($"[StartupSearch] Helper started, PID={proc.Id}");
             _helperPipeName = pipeName;
             _helperProcess = proc;
             return true;
         }
         catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
         {
+            LoggingService.LogInfo("[StartupSearch] UAC cancelled by user");
             StatusText.Text = "用户取消了管理员授权，无法启用 MFT 快速检索。";
             return false;
         }
         catch (Exception ex)
         {
+            LoggingService.LogError(ex, "[StartupSearch] StartSearchHelperAsync failed");
             StatusText.Text = $"启动检索服务失败：{ex.Message}";
             return false;
         }
+    }
+
+    private static void KillExistingMftScannerProcesses()
+    {
+        var targetPath = System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "PackageManager", "tools", "MftScanner.exe");
+
+        var currentPid = Process.GetCurrentProcess().Id;
+
+        try
+        {
+            foreach (var proc in Process.GetProcessesByName("MftScanner"))
+            {
+                try
+                {
+                    string procPath = null;
+                    try { procPath = proc.MainModule?.FileName; } catch { }
+
+                    bool shouldKill;
+                    if (!string.IsNullOrEmpty(procPath))
+                    {
+                        // 能读到路径：只杀提取目录里的
+                        shouldKill = string.Equals(procPath, targetPath, StringComparison.OrdinalIgnoreCase);
+                    }
+                    else
+                    {
+                        // 读不到路径（通常是以管理员权限运行的 helper）：
+                        // 检查父进程是否还存在，孤儿进程说明是上次遗留的 helper
+                        int parentPid = GetParentProcessId(proc.Id);
+                        bool parentAlive = parentPid > 0 && IsProcessAlive(parentPid);
+                        // 父进程已死 = 遗留 helper；父进程是当前进程 = 本次刚启动的（不杀）
+                        shouldKill = !parentAlive && parentPid != currentPid;
+                    }
+
+                    if (shouldKill)
+                    {
+                        proc.Kill();
+                        proc.WaitForExit(3000);
+                    }
+                }
+                catch { }
+                finally { proc.Dispose(); }
+            }
+        }
+        catch { }
+    }
+
+    private static int GetParentProcessId(int pid)
+    {
+        try
+        {
+            using (var searcher = new System.Management.ManagementObjectSearcher(
+                $"SELECT ParentProcessId FROM Win32_Process WHERE ProcessId = {pid}"))
+            using (var results = searcher.Get())
+            {
+                foreach (System.Management.ManagementObject obj in results)
+                    return Convert.ToInt32(obj["ParentProcessId"]);
+            }
+        }
+        catch { }
+        return -1;
+    }
+
+    private static bool IsProcessAlive(int pid)
+    {
+        try
+        {
+            var p = Process.GetProcessById(pid);
+            return !p.HasExited;
+        }
+        catch { return false; }
     }
 
     private async Task<StartupSearchResponse> QueryHelperAsync(StartupHelperRequest request, CancellationToken cancellationToken, string pipeNameOverride = null)
@@ -331,57 +415,57 @@ public partial class CommonStartupWindow : Window
             throw new InvalidOperationException("检索服务未启动。");
         }
 
-        NamedPipeServerStream server = null;
-        try
+        LoggingService.LogInfo($"[StartupSearch] QueryHelperAsync: action={request.Action} keyword={request.Keyword} pipe={pipeName}");
+
+        // helper 是 server，主项目作为 client 连接；带重试以等待 helper 就绪
+        var deadline = DateTime.UtcNow.AddSeconds(60);
+        int attempt = 0;
+        while (true)
         {
-            server = CreateServer(pipeName);
-            SetActiveServer(server);
-            await WaitForHelperConnectionAsync(server, cancellationToken).ConfigureAwait(false);
-
-            using (var writer = new StreamWriter(server, new System.Text.UTF8Encoding(false), 4096, leaveOpen: true) { AutoFlush = true })
-            using (var reader = new StreamReader(server, System.Text.Encoding.UTF8, false, 4096, leaveOpen: true))
+            cancellationToken.ThrowIfCancellationRequested();
+            attempt++;
+            using (var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous))
             {
-                var payload = JsonConvert.SerializeObject(request);
-                await writer.WriteLineAsync(payload).ConfigureAwait(false);
-                cancellationToken.ThrowIfCancellationRequested();
-
-                var responseJson = await reader.ReadLineAsync().ConfigureAwait(false);
-                cancellationToken.ThrowIfCancellationRequested();
-
-                if (string.IsNullOrWhiteSpace(responseJson))
+                try
                 {
-                    return null;
+                    await Task.Run(() => client.Connect(2000), cancellationToken).ConfigureAwait(false);
+                    LoggingService.LogInfo($"[StartupSearch] Pipe connected (attempt {attempt})");
+                }
+                catch (TimeoutException)
+                {
+                    LoggingService.LogInfo($"[StartupSearch] Connect timeout (attempt {attempt}), retrying...");
+                    if (DateTime.UtcNow >= deadline)
+                    {
+                        LoggingService.LogWarning("[StartupSearch] Connect deadline exceeded, giving up");
+                        return null;
+                    }
+                    continue;
+                }
+                catch (Exception ex)
+                {
+                    LoggingService.LogError(ex, $"[StartupSearch] Connect failed (attempt {attempt}): {ex.GetType().Name}: {ex.Message}");
+                    throw;
                 }
 
-                return JsonConvert.DeserializeObject<StartupSearchResponse>(responseJson);
-            }
-        }
-        finally
-        {
-            ClearActiveServer(server);
-            server?.Dispose();
-        }
-    }
+                cancellationToken.ThrowIfCancellationRequested();
 
-    private static NamedPipeServerStream CreateServer(string pipeName)
-    {
-        return new NamedPipeServerStream(pipeName, PipeDirection.InOut, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
-    }
+                using (var writer = new StreamWriter(client, new System.Text.UTF8Encoding(false), 4096, leaveOpen: true) { AutoFlush = true })
+                using (var reader = new StreamReader(client, System.Text.Encoding.UTF8, false, 4096, leaveOpen: true))
+                {
+                    var payload = JsonConvert.SerializeObject(request);
+                    await writer.WriteLineAsync(payload).ConfigureAwait(false);
+                    cancellationToken.ThrowIfCancellationRequested();
 
-    private static async Task WaitForHelperConnectionAsync(NamedPipeServerStream server, CancellationToken cancellationToken)
-    {
-        using (cancellationToken.Register(() =>
-               {
-                   try { server.Dispose(); } catch { }
-               }))
-        {
-            try
-            {
-                await Task.Run(() => server.WaitForConnection(), cancellationToken).ConfigureAwait(false);
-            }
-            catch (ObjectDisposedException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw new OperationCanceledException(cancellationToken);
+                    var responseJson = await reader.ReadLineAsync().ConfigureAwait(false);
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    LoggingService.LogInfo($"[StartupSearch] Response received, length={responseJson?.Length ?? -1}");
+
+                    if (string.IsNullOrWhiteSpace(responseJson))
+                        return null;
+
+                    return JsonConvert.DeserializeObject<StartupSearchResponse>(responseJson);
+                }
             }
         }
     }
@@ -410,43 +494,6 @@ public partial class CommonStartupWindow : Window
     private bool IsHelperAlive()
     {
         return (_helperProcess != null) && !_helperProcess.HasExited && !string.IsNullOrWhiteSpace(_helperPipeName);
-    }
-
-    private void SetActiveServer(NamedPipeServerStream server)
-    {
-        lock (_activeClientGate)
-        {
-            _activeServer = server;
-        }
-    }
-
-    private void ClearActiveServer(NamedPipeServerStream server)
-    {
-        lock (_activeClientGate)
-        {
-            if (ReferenceEquals(_activeServer, server))
-            {
-                _activeServer = null;
-            }
-        }
-    }
-
-    private void DisposeActiveServer()
-    {
-        lock (_activeClientGate)
-        {
-            try
-            {
-                _activeServer?.Dispose();
-            }
-            catch
-            {
-            }
-            finally
-            {
-                _activeServer = null;
-            }
-        }
     }
 
     private async Task ShutdownHelperAsync()

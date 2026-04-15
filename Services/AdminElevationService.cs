@@ -175,10 +175,7 @@ namespace PackageManager.Services
                 var targetDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PackageManager", "tools");
                 Directory.CreateDirectory(targetDir);
                 var targetPath = Path.Combine(targetDir, outputFileName);
-                // if (File.Exists(targetPath))
-                // {
-                //     return targetPath;
-                // }
+                try { File.Delete(targetPath); } catch { }
                 using (var stream = asm.GetManifestResourceStream(name))
                 {
                     if (stream == null) return null;

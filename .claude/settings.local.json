@@ -96,7 +96,10 @@
       "Bash(nuget restore:*)",
       "Bash(\"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" \"Tools\\\\MftScanner\\\\MftScanner.csproj\" -p:Configuration=Release -verbosity:minimal)",
       "Bash(\"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" \"PackageManager.csproj\" -p:Configuration=Release -verbosity:minimal)",
-      "Bash(xargs grep:*)"
+      "Bash(xargs grep:*)",
+      "Bash(tasklist /FI \"IMAGENAME eq MftScanner.exe\")",
+      "Bash(wmic process:*)",
+      "Bash(powershell:*)"
     ]
   }
 }
