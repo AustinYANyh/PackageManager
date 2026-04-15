@@ -148,7 +148,6 @@ namespace MftScanner
                 {
                     results = scanService.ScanAsync(roots, extensions, null, CancellationToken.None)
                                          .GetAwaiter().GetResult();
-                    scanService.SaveAllCaches();
                 }
                 catch
                 {
@@ -314,14 +313,12 @@ namespace MftScanner
                 var scanService = new MftScanService();
                 if (forceRescan)
                 {
-                    scanService.InvalidateCache();
                 }
 
                 var queryResult = scanService
                     .SearchByKeywordAsync(roots, keyword, maxResults, null, CancellationToken.None)
                     .GetAwaiter()
                     .GetResult();
-                scanService.SaveAllCaches();
 
                 WriteSearchExportResult(resultPath, new SearchExportResponse
                 {
@@ -464,14 +461,14 @@ namespace MftScanner
 
                                 if (request.ForceRescan)
                                 {
-                                    scanService.InvalidateCache();
                                     scanService.PrepareSearchIndexAsync(roots, null, CancellationToken.None)
                                         .GetAwaiter().GetResult();
                                 }
 
                                 var queryResult = scanService
                                     .SearchByKeywordAsync(roots, request.Keyword ?? string.Empty,
-                                        request.MaxResults > 0 ? request.MaxResults : 500, null, CancellationToken.None)
+                                        request.MaxResults > 0 ? request.MaxResults : 500, null, CancellationToken.None,
+                                        skipFileStats: true)
                                     .GetAwaiter()
                                     .GetResult();
 
@@ -518,12 +515,10 @@ namespace MftScanner
                     if (shutdown) break;
                 }
 
-                scanService.SaveAllCaches();
                 return 0;
             }
             catch
             {
-                try { scanService.SaveAllCaches(); } catch { }
                 return 1;
             }
         }

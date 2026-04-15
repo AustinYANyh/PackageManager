@@ -98,6 +98,7 @@ namespace MftScanner
             public Dictionary<ulong, string> DirectoryPathCache { get; } = new Dictionary<ulong, string>();
             public long NextUsn { get; set; }
             public ulong UsnJournalId { get; set; }
+            public DateTime LastUsnCheckUtc { get; set; } = DateTime.MinValue;
         }
 
         private sealed class SearchCandidate
@@ -132,135 +133,8 @@ namespace MftScanner
             }
         }
 
-        // 魔数 + 版本，格式变更时递增版本号使旧缓存自动失效
-        private const uint CacheMagic = 0x4D465443; // "MFTC"
-        private const ushort CacheVersion = 3; // v3: 扩展名无关，存储全部文件
-
-        private static readonly string CacheDir = IOPath.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "PackageManager");
-
         private readonly Dictionary<char, VolumeCache> _volumeCaches = new Dictionary<char, VolumeCache>();
         private static readonly char[] PathSearchSeparators = { '\\', '/', ':' };
-
-        /// <summary>
-        /// 清除指定卷（或全部卷）的内存缓存及磁盘缓存文件，下次扫描将重新全量枚举 MFT。
-        /// </summary>
-        public void InvalidateCache(char? driveLetter = null)
-        {
-            if (driveLetter.HasValue)
-            {
-                var key = char.ToUpperInvariant(driveLetter.Value);
-                _volumeCaches.Remove(key);
-                TryDeleteCacheFile(key);
-            }
-            else
-            {
-                foreach (var key in _volumeCaches.Keys.ToList())
-                    TryDeleteCacheFile(key);
-                _volumeCaches.Clear();
-            }
-        }
-
-        /// <summary>
-        /// 将当前所有内存缓存写入磁盘，供下次启动时加载。
-        /// </summary>
-        public void SaveAllCaches()
-        {
-            foreach (var kv in _volumeCaches)
-                TrySaveCache(kv.Key, kv.Value);
-        }
-
-        /// <summary>
-        /// 从磁盘加载指定卷的缓存（若存在且格式有效）。
-        /// </summary>
-        private void TryLoadCache(char driveLetter)
-        {
-            var path = GetCacheFilePath(driveLetter);
-            if (!File.Exists(path)) return;
-            try
-            {
-                using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
-                using (var br = new BinaryReader(fs))
-                {
-                    if (br.ReadUInt32() != CacheMagic) return;
-                    if (br.ReadUInt16() != CacheVersion) return;
-
-                    var cache = new VolumeCache
-                    {
-                        UsnJournalId = br.ReadUInt64(),
-                        NextUsn = br.ReadInt64(),
-                    };
-
-                    var dirCount = br.ReadInt32();
-                    for (var i = 0; i < dirCount; i++)
-                    {
-                        var frn = br.ReadUInt64();
-                        var name = br.ReadString();
-                        var parentFrn = br.ReadUInt64();
-                        cache.Directories[frn] = new MftEntry { Name = name, ParentFrn = parentFrn, NameLength = name.Length };
-                    }
-
-                    var fileCount = br.ReadInt32();
-                    for (var i = 0; i < fileCount; i++)
-                    {
-                        var frn = br.ReadUInt64();
-                        var name = br.ReadString();
-                        var parentFrn = br.ReadUInt64();
-                        cache.AllFiles[frn] = new MftEntry { Name = name, ParentFrn = parentFrn, NameLength = name.Length };
-                    }
-
-                    _volumeCaches[driveLetter] = cache;
-                }
-            }
-            catch
-            {
-                // 缓存损坏，忽略，下次全量扫描会重建
-                TryDeleteCacheFile(driveLetter);
-            }
-        }
-
-        private void TrySaveCache(char driveLetter, VolumeCache cache)
-        {
-            try
-            {
-                Directory.CreateDirectory(CacheDir);
-                var path = GetCacheFilePath(driveLetter);
-                using (var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None))
-                using (var bw = new BinaryWriter(fs))
-                {
-                    bw.Write(CacheMagic);
-                    bw.Write(CacheVersion);
-                    bw.Write(cache.UsnJournalId);
-                    bw.Write(cache.NextUsn);
-
-                    bw.Write(cache.Directories.Count);
-                    foreach (var kv in cache.Directories)
-                    {
-                        bw.Write(kv.Key);
-                        bw.Write(kv.Value.Name);
-                        bw.Write(kv.Value.ParentFrn);
-                    }
-
-                    bw.Write(cache.AllFiles.Count);
-                    foreach (var kv in cache.AllFiles)
-                    {
-                        bw.Write(kv.Key);
-                        bw.Write(kv.Value.Name);
-                        bw.Write(kv.Value.ParentFrn);
-                    }
-                }
-            }
-            catch { }
-        }
-
-        private static string GetCacheFilePath(char driveLetter)
-            => IOPath.Combine(CacheDir, $"mft_cache_{char.ToUpperInvariant(driveLetter)}.bin");
-
-        private static void TryDeleteCacheFile(char driveLetter)
-        {
-            try { File.Delete(GetCacheFilePath(driveLetter)); } catch { }
-        }
 
         public Task<List<ScannedFileInfo>> ScanAsync(IReadOnlyList<ScanRoot> roots, IReadOnlyList<string> extensions,
             IProgress<string> progress, CancellationToken cancellationToken)
@@ -353,7 +227,8 @@ namespace MftScanner
         }
 
         public Task<SearchQueryResult> SearchByKeywordAsync(IReadOnlyList<ScanRoot> roots, string keyword,
-            int maxResults, IProgress<string> progress, CancellationToken cancellationToken)
+            int maxResults, IProgress<string> progress, CancellationToken cancellationToken,
+            bool skipFileStats = false)
         {
             return Task.Run(() =>
             {
@@ -381,6 +256,7 @@ namespace MftScanner
                     totalIndexedCount += CountEntriesUnderRoots(cache, driveLetter, volumeRoots, cancellationToken);
                     progress?.Report($"正在搜索卷 {driveLetter}:...");
 
+                    // 线性扫描（路径查询或通用搜索）
                     CollectMatchesForEntries(cache.AllFiles, isDirectory: false, driveLetter, volumeRoots, wholeVolumeRoots, cache,
                         trimmedKeyword, kwLower, isPathQuery, maxResults, cancellationToken,
                         exactMatches, prefixMatches, containsMatches, pathMatches, ref totalMatchedCount);
@@ -403,7 +279,7 @@ namespace MftScanner
                     cancellationToken.ThrowIfCancellationRequested();
                     if (!_volumeCaches.TryGetValue(candidate.DriveLetter, out var cache)) continue;
 
-                    var info = CreateScannedFileInfo(candidate, cache);
+                    var info = CreateScannedFileInfo(candidate, cache, skipFileStats);
                     if (info != null)
                         results.Add(info);
                 }
@@ -436,14 +312,18 @@ namespace MftScanner
 
         private VolumeCache GetOrRefreshVolumeCache(char driveLetter, IProgress<string> progress, CancellationToken cancellationToken)
         {
-            if (!_volumeCaches.ContainsKey(driveLetter))
-                TryLoadCache(driveLetter);
-
             if (_volumeCaches.TryGetValue(driveLetter, out var existingCache))
             {
-                progress?.Report($"正在通过 USN 日志增量更新卷 {driveLetter}:...");
-                if (TryApplyUsnDelta(driveLetter, existingCache, cancellationToken))
+                // 5 秒内跳过 USN 检查，避免每次搜索都打开卷句柄
+                if ((DateTime.UtcNow - existingCache.LastUsnCheckUtc).TotalSeconds < 5)
                     return existingCache;
+
+                progress?.Report($"正在通过 USN 日志增量更新卷 {driveLetter}:...");
+                existingCache.LastUsnCheckUtc = DateTime.UtcNow;
+                if (TryApplyUsnDelta(driveLetter, existingCache, cancellationToken, out _))
+                {
+                    return existingCache;
+                }
 
                 progress?.Report($"USN 日志已失效，正在重新全量扫描卷 {driveLetter}:...");
             }
@@ -454,7 +334,6 @@ namespace MftScanner
 
             var rebuiltCache = FullScanVolume(driveLetter, cancellationToken);
             _volumeCaches[driveLetter] = rebuiltCache;
-            TrySaveCache(driveLetter, rebuiltCache);
             return rebuiltCache;
         }
 
@@ -628,7 +507,7 @@ namespace MftScanner
             };
         }
 
-        private static ScannedFileInfo CreateScannedFileInfo(SearchCandidate candidate, VolumeCache cache)
+        private static ScannedFileInfo CreateScannedFileInfo(SearchCandidate candidate, VolumeCache cache, bool skipFileStats = false)
         {
             var fullPath = candidate.FullPath;
             if (fullPath == null)
@@ -637,6 +516,20 @@ namespace MftScanner
                 if (dirPath == null) return null;
                 fullPath = NormalizePath(Path.Combine(dirPath, candidate.FileName));
                 if (fullPath == null) return null;
+            }
+
+            if (skipFileStats)
+            {
+                return new ScannedFileInfo
+                {
+                    FullPath = fullPath,
+                    FileName = candidate.FileName,
+                    SizeBytes = 0,
+                    ModifiedTimeUtc = DateTime.MinValue,
+                    RootPath = candidate.RootPath,
+                    RootDisplayName = candidate.RootDisplayName,
+                    IsDirectory = candidate.IsDirectory
+                };
             }
 
             try
@@ -704,8 +597,9 @@ namespace MftScanner
             return cache;
         }
 
-        private bool TryApplyUsnDelta(char driveLetter, VolumeCache cache, CancellationToken ct)
+        private bool TryApplyUsnDelta(char driveLetter, VolumeCache cache, CancellationToken ct, out bool hadChanges)
         {
+            hadChanges = false;
             var volumePath = @"\\.\" + driveLetter + ":";
             var handle = CreateFile(volumePath, GENERIC_READ,
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
@@ -778,21 +672,33 @@ namespace MftScanner
                                 if (isDir)
                                 {
                                     if (isDelete)
+                                    {
                                         cache.Directories.Remove(frn);
+                                        hadChanges = true;
+                                    }
                                     else if (isCreate)
                                     {
                                         if (!cache.Directories.TryGetValue(frn, out var existingDir) || fileName.Length > existingDir.NameLength)
+                                        {
                                             cache.Directories[frn] = new MftEntry { Name = fileName, ParentFrn = parentFrn, NameLength = fileName.Length };
+                                            hadChanges = true;
+                                        }
                                     }
                                 }
                                 else
                                 {
                                     if (isDelete)
+                                    {
                                         cache.AllFiles.Remove(frn);
+                                        hadChanges = true;
+                                    }
                                     else if (isCreate)
                                     {
                                         if (!cache.AllFiles.TryGetValue(frn, out var existingFile) || fileName.Length > existingFile.NameLength)
+                                        {
                                             cache.AllFiles[frn] = new MftEntry { Name = fileName, ParentFrn = parentFrn, NameLength = fileName.Length };
+                                            hadChanges = true;
+                                        }
                                     }
                                 }
                             }
@@ -809,7 +715,6 @@ namespace MftScanner
                 }
 
                 cache.NextUsn = journalData.NextUsn;
-                TrySaveCache(driveLetter, cache);
                 return true;
             }
             finally

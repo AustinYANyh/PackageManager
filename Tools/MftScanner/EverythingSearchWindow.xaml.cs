@@ -48,7 +48,7 @@ namespace MftScanner
         public long SizeBytes { get; set; }
         public bool IsDirectory { get; set; }
 
-        private static string FormatSize(long bytes)
+        internal static string FormatSize(long bytes)
         {
             if (bytes <= 0) return "0 B";
             var units = new[] { "B", "KB", "MB", "GB", "TB" };
@@ -63,7 +63,8 @@ namespace MftScanner
     {
         private const int MaxDisplayedResults = 500;
 
-        private readonly MftScanService _scanService = new MftScanService();
+        private readonly IndexService _indexService = new IndexService();
+        private readonly IncrementalFilter _filter;
         private readonly List<ScanRoot> _roots;
         public ObservableCollection<EverythingSearchResultItem> _displayedResults { get; set; }
             = new ObservableCollection<EverythingSearchResultItem>();
@@ -77,6 +78,8 @@ namespace MftScanner
         {
             InitializeComponent();
             ResultsGrid.ItemsSource = _displayedResults;
+
+            _filter = new IncrementalFilter(_indexService);
 
             _roots = DriveInfo.GetDrives()
                 .Where(d => d.DriveType == DriveType.Fixed)
@@ -104,7 +107,6 @@ namespace MftScanner
             _searchCts?.Cancel();
             _searchCts?.Dispose();
             _debounceTimer.Stop();
-            _scanService.SaveAllCaches();
         }
 
         private async Task StartIndexingAsync(bool forceRescan)
@@ -123,9 +125,6 @@ namespace MftScanner
             IndexingProgress.Visibility = Visibility.Visible;
             StatusText.Text = "正在建立索引...";
 
-            if (forceRescan)
-                _scanService.InvalidateCache();
-
             try
             {
                 var progress = new Progress<string>(msg =>
@@ -134,7 +133,9 @@ namespace MftScanner
                         StatusText.Text = msg;
                 });
 
-                _indexedCount = await _scanService.PrepareSearchIndexAsync(_roots, progress, ct).ConfigureAwait(true);
+                _indexedCount = forceRescan
+                    ? await _indexService.RebuildIndexAsync(progress, ct).ConfigureAwait(true)
+                    : await _indexService.BuildIndexAsync(progress, ct).ConfigureAwait(true);
 
                 _indexReady = true;
                 IndexingProgress.Visibility = Visibility.Collapsed;
@@ -194,14 +195,8 @@ namespace MftScanner
 
             try
             {
-                var progress = new Progress<string>(msg =>
-                {
-                    if (!string.IsNullOrWhiteSpace(msg))
-                        StatusText.Text = msg;
-                });
-
-                var queryResult = await _scanService
-                    .SearchByKeywordAsync(_roots, kw, MaxDisplayedResults, progress, ct)
+                var queryResult = await _filter
+                    .QueryAsync(kw, MaxDisplayedResults, ct)
                     .ConfigureAwait(true);
 
                 foreach (var item in queryResult.Results.Select(r => new EverythingSearchResultItem(r.FullPath, r.SizeBytes, r.ModifiedTimeUtc, r.IsDirectory)))
@@ -240,6 +235,47 @@ namespace MftScanner
         {
             if (ResultsGrid.SelectedItem is EverythingSearchResultItem item)
                 OpenItem(item);
+        }
+
+        private void ResultsGrid_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+        {
+            if (ResultsGrid.SelectedItem is not EverythingSearchResultItem item)
+            {
+                // 无选中项时恢复计数显示
+                if (_indexReady)
+                    StatusText.Text = _displayedResults.Count > 0
+                        ? $"{_displayedResults.Count} 个对象"
+                        : $"{_indexedCount} 个对象";
+                return;
+            }
+
+            try
+            {
+                if (item.IsDirectory)
+                {
+                    var di = new DirectoryInfo(item.FullPath);
+                    if (!di.Exists)
+                    {
+                        StatusText.Text = "文件已不存在";
+                        return;
+                    }
+                    StatusText.Text = $"修改时间：{di.LastWriteTime:yyyy-MM-dd HH:mm:ss}";
+                }
+                else
+                {
+                    var fi = new FileInfo(item.FullPath);
+                    if (!fi.Exists)
+                    {
+                        StatusText.Text = "文件已不存在";
+                        return;
+                    }
+                    StatusText.Text = $"大小：{EverythingSearchResultItem.FormatSize(fi.Length)}  修改时间：{fi.LastWriteTime:yyyy-MM-dd HH:mm:ss}";
+                }
+            }
+            catch
+            {
+                StatusText.Text = "文件已不存在";
+            }
         }
 
         private void OpenContainingFolder_Click(object sender, RoutedEventArgs e)

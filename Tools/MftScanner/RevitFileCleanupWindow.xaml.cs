@@ -262,7 +262,6 @@ public partial class RevitFileCleanupWindow : Window, INotifyPropertyChanged
         scanCts?.Cancel();
         scanCts?.Dispose();
         scanCts = null;
-        scanService.SaveAllCaches();
         base.OnClosing(e);
     }
 
@@ -365,7 +364,6 @@ public partial class RevitFileCleanupWindow : Window, INotifyPropertyChanged
 
     private async void ForceRescanButton_Click(object sender, RoutedEventArgs e)
     {
-        scanService.InvalidateCache();
         await StartScanAsync();
     }
 

@@ -65,6 +65,13 @@
     <Compile Include="App.xaml.cs">
       <DependentUpon>App.xaml</DependentUpon>
     </Compile>
+    <Compile Include="FileRecord.cs" />
+    <Compile Include="TrieNode.cs" />
+    <Compile Include="MemoryIndex.cs" />
+    <Compile Include="MftEnumerator.cs" />
+    <Compile Include="IndexService.cs" />
+    <Compile Include="IncrementalFilter.cs" />
+    <Compile Include="UsnWatcher.cs" />
     <Compile Include="MftScanService.cs" />
     <Compile Include="RevitFileCleanupWindow.xaml.cs">
       <DependentUpon>RevitFileCleanupWindow.xaml</DependentUpon>

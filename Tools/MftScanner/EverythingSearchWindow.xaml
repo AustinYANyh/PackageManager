@@ -47,7 +47,8 @@
                             TextAlignment="Left"
                             IsReadOnly="True"
                             EnableAutoTemplateSelection="True"
-                            MouseDoubleClick="ResultsGrid_MouseDoubleClick">
+                            MouseDoubleClick="ResultsGrid_MouseDoubleClick"
+                            SelectionChanged="ResultsGrid_SelectionChanged">
             <dataGrid:CDataGrid.ContextMenu>
                 <ContextMenu>
                     <MenuItem Header="打开所在位置" Click="OpenContainingFolder_Click"/>
