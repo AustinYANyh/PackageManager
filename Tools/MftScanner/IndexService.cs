@@ -49,39 +49,33 @@ namespace MftScanner
                 _progress = progress;
             return Task.Run(() =>
             {
-                var newIndex = new MemoryIndex();
-                var allRecords = new List<FileRecord>(1_000_000);
+                // 先清空旧索引释放内存，再构建新索引，避免两份数据同时存在
+                _index.Build(Array.Empty<FileRecord>());
+
+                var allRecords = new List<FileRecord>(500_000);
+                var successfulDrives = new List<(char letter, long nextUsn, ulong journalId)>();
 
                 foreach (var drive in DriveInfo.GetDrives())
                 {
                     ct.ThrowIfCancellationRequested();
-
-                    if (drive.DriveType != DriveType.Fixed)
-                        continue;
-
+                    if (drive.DriveType != DriveType.Fixed) continue;
                     var driveLetter = drive.Name[0];
-
                     try
                     {
-                        var entries = _enumerator.EnumerateVolume(driveLetter, ct);
-                        var volumeRecords = BuildVolumeRecords(driveLetter, entries, ct);
-                        allRecords.AddRange(volumeRecords);
+                        var (entries, nextUsn, journalId) = _enumerator.EnumerateVolumeWithUsn(driveLetter, ct);
+                        BuildVolumeRecords(driveLetter, entries, allRecords);
+                        successfulDrives.Add((driveLetter, nextUsn, journalId));
                     }
-                    catch (OperationCanceledException)
-                    {
-                        throw;
-                    }
-                    catch (Exception ex)
-                    {
-                        _progress?.Report($"跳过卷 {driveLetter}:：{ex.Message}");
-                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception ex) { _progress?.Report($"跳过卷 {driveLetter}:：{ex.Message}"); }
                 }
 
                 ct.ThrowIfCancellationRequested();
-                newIndex.Build(allRecords);
+                _index.Build(allRecords);
 
-                // 原子替换索引引用（需求 6.5）
-                Interlocked.Exchange(ref _index, newIndex);
+                _usnWatcher.StopWatching();
+                foreach (var (letter, nextUsn, journalId) in successfulDrives)
+                    _usnWatcher.StartWatching(letter, nextUsn, journalId, ct);
 
                 _progress?.Report($"已索引 {_index.TotalCount} 个对象");
                 return _index.TotalCount;
@@ -107,7 +101,8 @@ namespace MftScanner
             var record = new FileRecord(
                 lowerName:    args.FileName.ToLowerInvariant(),
                 originalName: args.FileName,
-                fullPath:     args.FullPath,
+                parentFrn:    args.ParentFrn,
+                driveLetter:  args.DriveLetter,
                 isDirectory:  args.IsDirectory);
             _index.Insert(record);
         }
@@ -115,13 +110,13 @@ namespace MftScanner
         /// <summary>文件删除：从索引中移除记录。需求 6.3</summary>
         private void OnFileDeleted(object sender, UsnFileDeletedEventArgs args)
         {
-            _index.Remove(args.LowerName, args.FullPath);
+            _index.Remove(args.LowerName, args.ParentFrn, args.DriveLetter);
         }
 
         /// <summary>文件重命名：先移除旧记录，再插入新记录。需求 6.4</summary>
         private void OnFileRenamed(object sender, UsnFileRenamedEventArgs args)
         {
-            _index.Rename(args.OldLowerName, args.OldFullPath, args.NewRecord);
+            _index.Rename(args.OldLowerName, args.OldParentFrn, args.DriveLetter, args.NewRecord);
         }
 
         /// <summary>
@@ -320,9 +315,7 @@ namespace MftScanner
         {
             return Task.Run(() =>
             {
-                // 关键词为空时返回空结果（需求 3.5）
                 if (string.IsNullOrWhiteSpace(keyword))
-                {
                     return new SearchQueryResult
                     {
                         TotalIndexedCount = _index.TotalCount,
@@ -330,15 +323,10 @@ namespace MftScanner
                         IsTruncated = false,
                         Results = new List<ScannedFileInfo>()
                     };
-                }
 
-                // 获取当前索引快照（无锁读，需求 3.5）
                 var idx = _index;
-
-                // 识别匹配模式
                 var (mode, normalizedQuery) = DetectMatchMode(keyword);
 
-                // 根据模式调用对应匹配方法
                 List<FileRecord> matched;
                 switch (mode)
                 {
@@ -351,26 +339,27 @@ namespace MftScanner
                     case MatchMode.Regex:
                         matched = RegexMatch(normalizedQuery, idx.SortedArray, maxResults, progress);
                         break;
-                    default: // Contains
+                    default:
                         matched = ContainsMatch(normalizedQuery, idx.ExactHashMap, idx.SortedArray, maxResults);
                         break;
                 }
 
                 ct.ThrowIfCancellationRequested();
 
-                // 将 FileRecord 列表转换为 SearchQueryResult（需求 3.6、7.6）
+                // 按需解析完整路径：用 _enumerator 的 FRN 字典（每卷独立缓存）
                 var results = new List<ScannedFileInfo>(matched.Count);
                 foreach (var record in matched)
                 {
+                    var fullPath = _enumerator.ResolveFullPath(record.DriveLetter, record.ParentFrn, record.OriginalName);
                     results.Add(new ScannedFileInfo
                     {
-                        FullPath = record.FullPath,
-                        FileName = record.OriginalName,
-                        SizeBytes = 0,
+                        FullPath        = fullPath ?? (record.DriveLetter + ":\\" + record.OriginalName),
+                        FileName        = record.OriginalName,
+                        SizeBytes       = 0,
                         ModifiedTimeUtc = DateTime.MinValue,
-                        RootPath = string.Empty,
+                        RootPath        = string.Empty,
                         RootDisplayName = string.Empty,
-                        IsDirectory = record.IsDirectory
+                        IsDirectory     = record.IsDirectory
                     });
                 }
 
@@ -378,8 +367,8 @@ namespace MftScanner
                 {
                     TotalIndexedCount = idx.TotalCount,
                     TotalMatchedCount = results.Count,
-                    IsTruncated = results.Count >= maxResults,
-                    Results = results
+                    IsTruncated       = results.Count >= maxResults,
+                    Results           = results
                 };
             }, ct);
         }
@@ -388,191 +377,55 @@ namespace MftScanner
 
         private int BuildIndex(IProgress<string> progress, CancellationToken ct)
         {
-            var allRecords = new List<FileRecord>(1_000_000);
-            var successfulDrives = new List<char>();
+            var allRecords = new List<FileRecord>(500_000);
+            var successfulDrives = new List<(char letter, long nextUsn, ulong journalId)>();
 
             foreach (var drive in DriveInfo.GetDrives())
             {
                 ct.ThrowIfCancellationRequested();
-
-                if (drive.DriveType != DriveType.Fixed)
-                    continue;
-
-                var driveLetter = drive.Name[0]; // e.g. 'C'
-
+                if (drive.DriveType != DriveType.Fixed) continue;
+                var driveLetter = drive.Name[0];
                 try
                 {
-                    var entries = _enumerator.EnumerateVolume(driveLetter, ct);
-                    var volumeRecords = BuildVolumeRecords(driveLetter, entries, ct);
-                    allRecords.AddRange(volumeRecords);
-                    successfulDrives.Add(driveLetter);
+                    var (entries, nextUsn, journalId) = _enumerator.EnumerateVolumeWithUsn(driveLetter, ct);
+                    BuildVolumeRecords(driveLetter, entries, allRecords);
+                    successfulDrives.Add((driveLetter, nextUsn, journalId));
+                    progress?.Report($"卷 {driveLetter}: 已枚举 {entries.Count} 条");
                 }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
-                catch (InvalidOperationException ex)
-                {
-                    // 权限不足或无法打开卷，跳过并上报原因（需求 1.5）
-                    progress?.Report($"跳过卷 {driveLetter}:：{ex.Message}");
-                }
-                catch (Exception ex)
-                {
-                    progress?.Report($"跳过卷 {driveLetter}:：{ex.Message}");
-                }
+                catch (OperationCanceledException) { throw; }
+                catch (InvalidOperationException ex) { progress?.Report($"跳过卷 {driveLetter}:：{ex.Message}"); }
+                catch (Exception ex) { progress?.Report($"跳过卷 {driveLetter}:：{ex.Message}"); }
             }
 
             ct.ThrowIfCancellationRequested();
-
             _index.Build(allRecords);
-
-            // 需求 1.4：上报已索引总数
             progress?.Report($"已索引 {_index.TotalCount} 个对象");
 
-            // 需求 6.1：BuildIndex 完成后为每个成功扫描的卷启动 UsnWatcher
-            foreach (var driveLetter in successfulDrives)
-            {
-                _usnWatcher.StartWatching(driveLetter, 0, 0, ct);
-            }
+            foreach (var (letter, nextUsn, journalId) in successfulDrives)
+                _usnWatcher.StartWatching(letter, nextUsn, journalId, ct);
 
             return _index.TotalCount;
         }
 
         /// <summary>
-        /// 将单个卷的 <see cref="RawMftEntry"/> 序列转换为 <see cref="FileRecord"/> 列表。
-        /// 先收集所有条目建立 FRN→(name, parentFrn) 字典，再逐条解析完整路径。
+        /// 将 MFT 条目转换为 FileRecord（只存文件名+ParentFrn，不拼路径）并追加到 allRecords。
         /// </summary>
-        private static List<FileRecord> BuildVolumeRecords(
+        private static void BuildVolumeRecords(
             char driveLetter,
-            IEnumerable<RawMftEntry> entries,
-            CancellationToken ct)
+            List<MftEnumerator.RawMftEntry> entries,
+            List<FileRecord> allRecords)
         {
-            // 第一遍：收集所有条目
-            var entryMap = new Dictionary<ulong, (string name, ulong parentFrn, bool isDir)>(200_000);
             foreach (var e in entries)
             {
-                ct.ThrowIfCancellationRequested();
-                if (!string.IsNullOrEmpty(e.FileName))
-                    entryMap[e.Frn] = (e.FileName, e.ParentFrn, e.IsDirectory);
-            }
-
-            // 路径缓存，避免重复向上遍历
-            var pathCache = new Dictionary<ulong, string>(entryMap.Count);
-
-            var records = new List<FileRecord>(entryMap.Count);
-
-            // 第二遍：解析完整路径并构建 FileRecord
-            foreach (var kv in entryMap)
-            {
-                ct.ThrowIfCancellationRequested();
-
-                var frn = kv.Key;
-                var (name, parentFrn, isDir) = kv.Value;
-
-                var fullPath = ResolveFullPath(frn, name, parentFrn, driveLetter, entryMap, pathCache);
-                if (fullPath == null)
-                    continue;
-
-                records.Add(new FileRecord(
-                    lowerName: name.ToLowerInvariant(),
-                    originalName: name,
-                    fullPath: fullPath,
-                    isDirectory: isDir));
-            }
-
-            return records;
-        }
-
-        /// <summary>
-        /// 通过向上遍历父 FRN 链，解析文件或目录的完整路径。
-        /// NTFS 根目录的 FRN 通常为 5（或其他已知根 FRN），当父 FRN 不在 entryMap 中时视为卷根。
-        /// </summary>
-        private static string ResolveFullPath(
-            ulong frn,
-            string name,
-            ulong parentFrn,
-            char driveLetter,
-            Dictionary<ulong, (string name, ulong parentFrn, bool isDir)> entryMap,
-            Dictionary<ulong, string> pathCache)
-        {
-            // 如果已缓存此 FRN 的目录路径，直接拼接
-            if (pathCache.TryGetValue(frn, out var cached))
-                return cached;
-
-            var dirPath = ResolveDirectoryPath(parentFrn, driveLetter, entryMap, pathCache);
-            if (dirPath == null)
-                return null;
-
-            var fullPath = dirPath.Length > 0
-                ? dirPath + "\\" + name
-                : driveLetter + ":\\" + name;
-
-            // 缓存此条目自身的目录路径（供其子项使用）
-            pathCache[frn] = fullPath;
-            return fullPath;
-        }
-
-        /// <summary>
-        /// 递归解析目录的完整路径（带缓存）。
-        /// </summary>
-        private static string ResolveDirectoryPath(
-            ulong dirFrn,
-            char driveLetter,
-            Dictionary<ulong, (string name, ulong parentFrn, bool isDir)> entryMap,
-            Dictionary<ulong, string> pathCache)
-        {
-            // 防止无限循环（FRN 5 是 NTFS 根，其父 FRN 也是 5）
-            const int maxDepth = 64;
-            var depth = 0;
-
-            var segments = new List<string>(8);
-            var current = dirFrn;
-
-            while (true)
-            {
-                if (depth++ > maxDepth)
-                    return null; // 路径过深，放弃
-
-                if (pathCache.TryGetValue(current, out var cachedPath))
-                {
-                    // 找到缓存节点，拼接剩余 segments
-                    return BuildPath(cachedPath, segments);
-                }
-
-                if (!entryMap.TryGetValue(current, out var entry))
-                {
-                    // 父 FRN 不在 map 中 → 已到达卷根
-                    var root = driveLetter + ":";
-                    return BuildPath(root, segments);
-                }
-
-                // 检测根节点：父 FRN 等于自身（NTFS 根目录特征）
-                if (entry.parentFrn == current)
-                {
-                    var root = driveLetter + ":";
-                    pathCache[current] = root;
-                    return BuildPath(root, segments);
-                }
-
-                segments.Add(entry.name);
-                current = entry.parentFrn;
+                if (string.IsNullOrEmpty(e.FileName)) continue;
+                allRecords.Add(new FileRecord(
+                    lowerName:    e.FileName.ToLowerInvariant(),
+                    originalName: e.FileName,
+                    parentFrn:    e.ParentFrn,
+                    driveLetter:  driveLetter,
+                    isDirectory:  e.IsDirectory));
             }
         }
 
-        /// <summary>
-        /// 将 segments（逆序）拼接到 basePath 后面，构成完整路径。
-        /// </summary>
-        private static string BuildPath(string basePath, List<string> segments)
-        {
-            if (segments.Count == 0)
-                return basePath;
-
-            var parts = new string[segments.Count + 1];
-            parts[0] = basePath;
-            for (var i = 0; i < segments.Count; i++)
-                parts[i + 1] = segments[segments.Count - 1 - i]; // 逆序还原
-
-            return string.Join("\\", parts);
-        }
     }
 }

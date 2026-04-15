@@ -10,57 +10,47 @@ namespace MftScanner
     /// <summary>文件创建事件参数。需求 6.2</summary>
     public sealed class UsnFileCreatedEventArgs : EventArgs
     {
-        public UsnFileCreatedEventArgs(string fileName, string fullPath, bool isDirectory)
+        public UsnFileCreatedEventArgs(string fileName, ulong parentFrn, char driveLetter, bool isDirectory)
         {
             FileName    = fileName;
-            FullPath    = fullPath;
+            ParentFrn   = parentFrn;
+            DriveLetter = driveLetter;
             IsDirectory = isDirectory;
         }
-
-        /// <summary>文件名（原始大小写）。</summary>
-        public string FileName { get; }
-
-        /// <summary>完整路径（含盘符）。</summary>
-        public string FullPath { get; }
-
-        /// <summary>是否为目录。</summary>
-        public bool IsDirectory { get; }
+        public string FileName    { get; }
+        public ulong  ParentFrn   { get; }
+        public char   DriveLetter { get; }
+        public bool   IsDirectory { get; }
     }
 
     /// <summary>文件删除事件参数。需求 6.3</summary>
     public sealed class UsnFileDeletedEventArgs : EventArgs
     {
-        public UsnFileDeletedEventArgs(string lowerName, string fullPath)
+        public UsnFileDeletedEventArgs(string lowerName, ulong parentFrn, char driveLetter)
         {
-            LowerName = lowerName;
-            FullPath  = fullPath;
+            LowerName   = lowerName;
+            ParentFrn   = parentFrn;
+            DriveLetter = driveLetter;
         }
-
-        /// <summary>文件名小写，用于索引键查找。</summary>
-        public string LowerName { get; }
-
-        /// <summary>完整路径（含盘符）。</summary>
-        public string FullPath { get; }
+        public string LowerName   { get; }
+        public ulong  ParentFrn   { get; }
+        public char   DriveLetter { get; }
     }
 
     /// <summary>文件重命名事件参数。需求 6.4</summary>
     public sealed class UsnFileRenamedEventArgs : EventArgs
     {
-        public UsnFileRenamedEventArgs(string oldLowerName, string oldFullPath, FileRecord newRecord)
+        public UsnFileRenamedEventArgs(string oldLowerName, ulong oldParentFrn, char driveLetter, FileRecord newRecord)
         {
             OldLowerName = oldLowerName;
-            OldFullPath  = oldFullPath;
+            OldParentFrn = oldParentFrn;
+            DriveLetter  = driveLetter;
             NewRecord    = newRecord;
         }
-
-        /// <summary>旧文件名小写，用于从索引中移除。</summary>
-        public string OldLowerName { get; }
-
-        /// <summary>旧完整路径。</summary>
-        public string OldFullPath { get; }
-
-        /// <summary>重命名后的新记录。</summary>
-        public FileRecord NewRecord { get; }
+        public string     OldLowerName { get; }
+        public ulong      OldParentFrn { get; }
+        public char       DriveLetter  { get; }
+        public FileRecord NewRecord    { get; }
     }
 
     // ── UsnWatcher ──────────────────────────────────────────────────────────────
@@ -293,8 +283,8 @@ namespace MftScanner
             CancellationToken ct)
         {
             // 用于跟踪 RENAME_OLD_NAME 记录，等待配对的 RENAME_NEW_NAME
-            string pendingOldName     = null;
-            string pendingOldFullPath = null;
+            string pendingOldName   = null;
+            ulong  pendingOldParent = 0;
 
             var readData = new ReadUsnJournalData
             {
@@ -362,38 +352,40 @@ namespace MftScanner
 
                         if (isOldName)
                         {
-                            // 保存旧名称，等待配对的 RENAME_NEW_NAME
-                            pendingOldName     = fileName;
-                            pendingOldFullPath = _driveLetter + ":\\" + fileName; // 近似路径，IndexService 按 lowerName 查找
+                            pendingOldName   = fileName;
+                            pendingOldParent = parentFrn;
                         }
                         else if (isNewName && pendingOldName != null)
                         {
-                            // 配对成功，触发重命名事件
                             var newRecord = new FileRecord(
                                 lowerName:    fileName.ToLowerInvariant(),
                                 originalName: fileName,
-                                fullPath:     _driveLetter + ":\\" + fileName,
+                                parentFrn:    parentFrn,
+                                driveLetter:  _driveLetter,
                                 isDirectory:  isDir);
 
                             FileRenamed?.Invoke(this, new UsnFileRenamedEventArgs(
                                 oldLowerName: pendingOldName.ToLowerInvariant(),
-                                oldFullPath:  pendingOldFullPath,
+                                oldParentFrn: pendingOldParent,
+                                driveLetter:  _driveLetter,
                                 newRecord:    newRecord));
 
-                            pendingOldName     = null;
-                            pendingOldFullPath = null;
+                            pendingOldName   = null;
+                            pendingOldParent = 0;
                         }
                         else if (isDelete)
                         {
                             FileDeleted?.Invoke(this, new UsnFileDeletedEventArgs(
-                                lowerName: fileName.ToLowerInvariant(),
-                                fullPath:  _driveLetter + ":\\" + fileName));
+                                lowerName:   fileName.ToLowerInvariant(),
+                                parentFrn:   parentFrn,
+                                driveLetter: _driveLetter));
                         }
                         else if (isCreate)
                         {
                             FileCreated?.Invoke(this, new UsnFileCreatedEventArgs(
                                 fileName:    fileName,
-                                fullPath:    _driveLetter + ":\\" + fileName,
+                                parentFrn:   parentFrn,
+                                driveLetter: _driveLetter,
                                 isDirectory: isDir));
                         }
                     }
