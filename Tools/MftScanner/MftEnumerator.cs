@@ -129,6 +129,9 @@ namespace MftScanner
             ulong journalId = 0;
             var startCount = output.Count;
 
+            // 同时存储 isDir，供第二遍构建 FileRecord 使用
+            var frnIsDir = new Dictionary<ulong, bool>(300_000);
+
             try
             {
                 var enumData = new MftEnumDataV0
@@ -171,14 +174,13 @@ namespace MftScanner
                         {
                             var fileName = Marshal.PtrToStringUni(IntPtr.Add(buffer, offset + fileNameOffset), fileNameLength / 2);
                             var isDir = (fileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-                            // 直接构建 FileRecord，省去中间 entries 列表
-                            output.Add(new FileRecord(
-                                lowerName:    fileName.ToLowerInvariant(),
-                                originalName: fileName,
-                                parentFrn:    parentFrn,
-                                driveLetter:  dl,
-                                isDirectory:  isDir));
-                            frnMap[frn] = (fileName, parentFrn);
+
+                            // 同一 FRN 可能有多条记录（短文件名 8.3 等），保留最长文件名（长文件名）
+                            if (!frnMap.TryGetValue(frn, out var existing) || fileName.Length > existing.name.Length)
+                            {
+                                frnMap[frn] = (fileName, parentFrn);
+                                frnIsDir[frn] = isDir;
+                            }
                         }
 
                         offset += recordLength;
@@ -204,10 +206,36 @@ namespace MftScanner
                 CloseHandle(handle);
             }
 
+            // 第二遍：从去重后的 frnMap 构建 FileRecord
+            foreach (var kv in frnMap)
+            {
+                var (name, parentFrn) = kv.Value;
+                var isDir = frnIsDir.TryGetValue(kv.Key, out var d) && d;
+                output.Add(new FileRecord(
+                    lowerName:    name.ToLowerInvariant(),
+                    originalName: name,
+                    parentFrn:    parentFrn,
+                    driveLetter:  dl,
+                    isDirectory:  isDir));
+            }
+
             _frnMaps[dl]    = frnMap;
             _pathCaches[dl] = new Dictionary<ulong, string>();
 
             return (output.Count - startCount, nextUsn, journalId);
+        }
+
+        /// <summary>
+        /// 将另一个 MftEnumerator 实例的 FRN 字典合并到本实例（用于多线程并行枚举后合并）。
+        /// </summary>
+        public void MergeFrnMap(char driveLetter, MftEnumerator source)
+        {
+            var dl = char.ToUpperInvariant(driveLetter);
+            if (source._frnMaps.TryGetValue(dl, out var srcMap))
+            {
+                _frnMaps[dl] = srcMap;
+                _pathCaches[dl] = new Dictionary<ulong, string>();
+            }
         }
 
         /// <summary>

@@ -316,11 +316,14 @@ namespace MftScanner
             var kw = (SearchBox.Text ?? string.Empty).Trim();
             if (string.IsNullOrEmpty(kw)) return;
 
+            UsnDiagLog.Write($"[UI IndexChange] type={e.Type} lowerName={e.LowerName} results={_displayedResults.Count}");
+
             switch (e.Type)
             {
                 case IndexChangeType.Deleted:
                     for (var i = _displayedResults.Count - 1; i >= 0; i--)
                     {
+                        UsnDiagLog.Write($"[UI DELETE CHECK] item.FileName={_displayedResults[i].FileName} vs e.LowerName={e.LowerName}");
                         if (string.Equals(_displayedResults[i].FileName, e.LowerName,
                                 StringComparison.OrdinalIgnoreCase))
                             _displayedResults.RemoveAt(i);
@@ -329,7 +332,18 @@ namespace MftScanner
 
                 case IndexChangeType.Created:
                     if (e.FullPath != null && MatchesCurrentKeyword(e.LowerName, kw))
-                        _displayedResults.Add(new EverythingSearchResultItem(e.FullPath, 0, DateTime.MinValue, false));
+                    {
+                        // 避免重复添加（同一文件的 USN 事件可能触发多次）
+                        var alreadyInList = false;
+                        for (var i = 0; i < _displayedResults.Count; i++)
+                        {
+                            if (string.Equals(_displayedResults[i].FileName, e.LowerName,
+                                    StringComparison.OrdinalIgnoreCase))
+                            { alreadyInList = true; break; }
+                        }
+                        if (!alreadyInList)
+                            _displayedResults.Add(new EverythingSearchResultItem(e.FullPath, 0, DateTime.MinValue, false));
+                    }
                     break;
 
                 case IndexChangeType.Renamed:

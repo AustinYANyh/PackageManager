@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -52,35 +53,9 @@ namespace MftScanner
                 _progress = progress;
             return Task.Run(() =>
             {
-                // 先清空旧索引释放内存，再构建新索引，避免两份数据同时存在
                 _index.Build(Array.Empty<FileRecord>());
-
-                var allRecords = new List<FileRecord>(500_000);
-                var successfulDrives = new List<(char letter, long nextUsn, ulong journalId)>();
-
-                foreach (var drive in DriveInfo.GetDrives())
-                {
-                    ct.ThrowIfCancellationRequested();
-                    if (drive.DriveType != DriveType.Fixed) continue;
-                    var driveLetter = drive.Name[0];
-                    try
-                    {
-                        var (count, nextUsn, journalId) = _enumerator.EnumerateVolumeIntoRecords(driveLetter, allRecords, ct);
-                        successfulDrives.Add((driveLetter, nextUsn, journalId));
-                    }
-                    catch (OperationCanceledException) { throw; }
-                    catch (Exception ex) { _progress?.Report($"跳过卷 {driveLetter}:：{ex.Message}"); }
-                }
-
-                ct.ThrowIfCancellationRequested();
-                _index.Build(allRecords);
-
-                _usnWatcher.StopWatching();
-                foreach (var (letter, nextUsn, journalId) in successfulDrives)
-                    _usnWatcher.StartWatching(letter, nextUsn, journalId, ct);
-
-                _progress?.Report($"已索引 {_index.TotalCount} 个对象");
-                return _index.TotalCount;
+                var result = BuildIndex(_progress, ct);
+                return result;
             }, ct);
         }
 
@@ -101,8 +76,18 @@ namespace MftScanner
         private void OnFileCreated(object sender, UsnFileCreatedEventArgs args)
         {
             _enumerator.RegisterFrn(args.DriveLetter, args.Frn, args.FileName, args.ParentFrn);
+
+            var lowerName = args.FileName.ToLowerInvariant();
+
+            // 同一文件的 USN 事件可能触发多次（创建+写入+关闭），用 FRN 去重
+            // 如果索引里已有相同 (lowerName, parentFrn, driveLetter) 的记录，跳过
+            var idx = _index;
+            if (idx.ExactHashMap.TryGetValue(lowerName, out var existing)
+                && existing.Exists(r => r.ParentFrn == args.ParentFrn && r.DriveLetter == args.DriveLetter))
+                return;
+
             var record = new FileRecord(
-                lowerName:    args.FileName.ToLowerInvariant(),
+                lowerName:    lowerName,
                 originalName: args.FileName,
                 parentFrn:    args.ParentFrn,
                 driveLetter:  args.DriveLetter,
@@ -110,13 +95,14 @@ namespace MftScanner
             _index.Insert(record);
             var fullPath = _enumerator.ResolveFullPath(args.DriveLetter, args.ParentFrn, args.FileName);
             IndexChanged?.Invoke(this, new IndexChangedEventArgs(
-                IndexChangeType.Created, args.FileName.ToLowerInvariant(), fullPath));
+                IndexChangeType.Created, lowerName, fullPath));
         }
 
         /// <summary>文件删除：从索引中移除记录。需求 6.3</summary>
         private void OnFileDeleted(object sender, UsnFileDeletedEventArgs args)
         {
             _index.Remove(args.LowerName, args.ParentFrn, args.DriveLetter);
+            UsnDiagLog.Write($"[USN DELETE] drive={args.DriveLetter} lowerName={args.LowerName} parentFrn={args.ParentFrn}");
             IndexChanged?.Invoke(this, new IndexChangedEventArgs(
                 IndexChangeType.Deleted, args.LowerName, fullPath: null));
         }
@@ -392,26 +378,53 @@ namespace MftScanner
 
         private int BuildIndex(IProgress<string> progress, CancellationToken ct)
         {
-            var allRecords = new List<FileRecord>(500_000);
-            var successfulDrives = new List<(char letter, long nextUsn, ulong journalId)>();
+            var fixedDrives = DriveInfo.GetDrives()
+                .Where(d => d.DriveType == DriveType.Fixed)
+                .Select(d => d.Name[0])
+                .ToArray();
 
-            foreach (var drive in DriveInfo.GetDrives())
+            if (fixedDrives.Length == 0) return 0;
+
+            // 多卷并行枚举
+            var perVolume = new (List<FileRecord> records, long nextUsn, ulong journalId, char letter)[fixedDrives.Length];
+            var exceptions = new System.Collections.Concurrent.ConcurrentBag<(char, Exception)>();
+
+            System.Threading.Tasks.Parallel.For(0, fixedDrives.Length, new ParallelOptions
             {
-                ct.ThrowIfCancellationRequested();
-                if (drive.DriveType != DriveType.Fixed) continue;
-                var driveLetter = drive.Name[0];
+                MaxDegreeOfParallelism = Math.Min(fixedDrives.Length, Environment.ProcessorCount),
+                CancellationToken = ct
+            }, i =>
+            {
+                var dl = fixedDrives[i];
+                var buf = new List<FileRecord>(300_000);
                 try
                 {
-                    var (count, nextUsn, journalId) = _enumerator.EnumerateVolumeIntoRecords(driveLetter, allRecords, ct);
-                    successfulDrives.Add((driveLetter, nextUsn, journalId));
-                    progress?.Report($"卷 {driveLetter}: 已枚举 {count} 条");
+                    var enumerator = new MftEnumerator(); // 每线程独立实例
+                    var (count, nextUsn, journalId) = enumerator.EnumerateVolumeIntoRecords(dl, buf, ct);
+                    // 把 frnMap 合并到主 enumerator
+                    _enumerator.MergeFrnMap(dl, enumerator);
+                    perVolume[i] = (buf, nextUsn, journalId, dl);
                 }
                 catch (OperationCanceledException) { throw; }
-                catch (InvalidOperationException ex) { progress?.Report($"跳过卷 {driveLetter}:：{ex.Message}"); }
-                catch (Exception ex) { progress?.Report($"跳过卷 {driveLetter}:：{ex.Message}"); }
-            }
+                catch (Exception ex) { exceptions.Add((dl, ex)); }
+            });
+
+            foreach (var (dl, ex) in exceptions)
+                progress?.Report($"跳过卷 {dl}:：{ex.Message}");
 
             ct.ThrowIfCancellationRequested();
+
+            // 合并所有卷的记录
+            var total = perVolume.Where(v => v.records != null).Sum(v => v.records.Count);
+            var allRecords = new List<FileRecord>(total);
+            var successfulDrives = new List<(char letter, long nextUsn, ulong journalId)>();
+            foreach (var v in perVolume)
+            {
+                if (v.records == null) continue;
+                allRecords.AddRange(v.records);
+                successfulDrives.Add((v.letter, v.nextUsn, v.journalId));
+            }
+
             _index.Build(allRecords);
             progress?.Report($"已索引 {_index.TotalCount} 个对象");
 
@@ -448,3 +461,22 @@ namespace MftScanner
         public string          NewLowerName    { get; }
     }
 }
+
+    /// <summary>轻量诊断日志，写到桌面 usn_diag.log，用完后删除。</summary>
+    internal static class UsnDiagLog
+    {
+        private static readonly string _path = System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "usn_diag.log");
+        private static readonly object _lock = new object();
+
+        public static void Write(string msg)
+        {
+            try
+            {
+                lock (_lock)
+                    System.IO.File.AppendAllText(_path,
+                        $"{DateTime.Now:HH:mm:ss.fff} {msg}{Environment.NewLine}");
+            }
+            catch { }
+        }
+    }

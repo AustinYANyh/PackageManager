@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -142,12 +143,19 @@ namespace MftScanner
             public ulong UsnJournalID;
         }
 
-        // ── 状态 ────────────────────────────────────────────────────────────────
-        private char   _driveLetter;
-        private long   _nextUsn;
-        private ulong  _journalId;
-        private Task   _watchTask;
-        private CancellationTokenSource _cts;
+        // ── 状态（每卷独立）────────────────────────────────────────────────────
+        private sealed class VolumeWatchState
+        {
+            public char   DriveLetter;
+            public long   NextUsn;
+            public ulong  JournalId;
+            public CancellationTokenSource Cts;
+            public Task   WatchTask;
+        }
+
+        private readonly Dictionary<char, VolumeWatchState> _volumes
+            = new Dictionary<char, VolumeWatchState>();
+        private readonly object _volumesLock = new object();
 
         // ── 公开事件 ────────────────────────────────────────────────────────────
 
@@ -177,27 +185,48 @@ namespace MftScanner
         /// <param name="ct">外部取消令牌。</param>
         public void StartWatching(char driveLetter, long startUsn, ulong journalId, CancellationToken ct)
         {
-            StopWatching();
+            var dl = char.ToUpperInvariant(driveLetter);
 
-            _driveLetter = char.ToUpperInvariant(driveLetter);
-            _nextUsn     = startUsn;
-            _journalId   = journalId;
-            _cts         = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            // 停止该卷已有的 watcher
+            lock (_volumesLock)
+            {
+                if (_volumes.TryGetValue(dl, out var old))
+                {
+                    old.Cts?.Cancel();
+                    _volumes.Remove(dl);
+                }
+            }
 
-            var token = _cts.Token;
-            _watchTask = Task.Run(() => WatchLoop(token), token);
+            var state = new VolumeWatchState
+            {
+                DriveLetter = dl,
+                NextUsn     = startUsn,
+                JournalId   = journalId,
+                Cts         = CancellationTokenSource.CreateLinkedTokenSource(ct)
+            };
+
+            UsnDiagLog.Write($"[WATCHER START] drive={dl} startUsn={startUsn} journalId={journalId}");
+
+            state.WatchTask = Task.Run(() => WatchLoop(state), state.Cts.Token);
+
+            lock (_volumesLock)
+                _volumes[dl] = state;
         }
 
-        /// <summary>
-        /// 停止后台监听循环，等待其退出。
-        /// </summary>
         public void StopWatching()
         {
-            _cts?.Cancel();
-            try { _watchTask?.Wait(TimeSpan.FromSeconds(5)); } catch { }
-            _cts?.Dispose();
-            _cts      = null;
-            _watchTask = null;
+            List<VolumeWatchState> all;
+            lock (_volumesLock)
+            {
+                all = new List<VolumeWatchState>(_volumes.Values);
+                _volumes.Clear();
+            }
+            foreach (var s in all)
+            {
+                s.Cts?.Cancel();
+                try { s.WatchTask?.Wait(TimeSpan.FromSeconds(3)); } catch { }
+                s.Cts?.Dispose();
+            }
         }
 
         // ── 私有实现 ────────────────────────────────────────────────────────────
@@ -206,126 +235,104 @@ namespace MftScanner
         /// 后台轮询循环：每隔 1 秒读取一批 USN 记录，解析后触发对应事件。
         /// 若检测到日志溢出（ERROR_JOURNAL_ENTRY_DELETED）或日志 ID 变更，触发 JournalOverflow。
         /// </summary>
-        private void WatchLoop(CancellationToken ct)
+        private void WatchLoop(VolumeWatchState state)
         {
+            var ct = state.Cts.Token;
             const int bufferSize = 64 * 1024;
             var buffer = Marshal.AllocHGlobal(bufferSize);
+            UsnDiagLog.Write($"[WATCHER LOOP START] drive={state.DriveLetter}");
             try
             {
                 while (!ct.IsCancellationRequested)
                 {
-                    // 轮询间隔：1 秒
                     try { Task.Delay(1000, ct).Wait(ct); }
                     catch (OperationCanceledException) { break; }
 
                     if (ct.IsCancellationRequested) break;
 
-                    var volumePath = @"\\.\" + _driveLetter + ":";
-                    var handle = CreateFile(
-                        volumePath,
-                        GENERIC_READ,
+                    var volumePath = @"\\.\" + state.DriveLetter + ":";
+                    var handle = CreateFile(volumePath, GENERIC_READ,
                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                        IntPtr.Zero,
-                        OPEN_EXISTING,
-                        0,
-                        IntPtr.Zero);
+                        IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
 
                     if (handle == INVALID_HANDLE_VALUE)
+                    {
+                        UsnDiagLog.Write($"[WATCHER] drive={state.DriveLetter} cannot open volume err={Marshal.GetLastWin32Error()}");
                         continue;
+                    }
 
                     try
                     {
-                        // 查询当前日志状态
-                        if (!DeviceIoControlQueryUsn(
-                            handle,
-                            FSCTL_QUERY_USN_JOURNAL,
-                            IntPtr.Zero, 0,
-                            out var journalData,
-                            Marshal.SizeOf(typeof(UsnJournalData)),
-                            out _,
-                            IntPtr.Zero))
-                            continue;
-
-                        // 日志被重建或游标已过期 → 溢出
-                        if (journalData.UsnJournalID != _journalId ||
-                            _nextUsn < journalData.LowestValidUsn)
+                        if (!DeviceIoControlQueryUsn(handle, FSCTL_QUERY_USN_JOURNAL,
+                            IntPtr.Zero, 0, out var journalData,
+                            Marshal.SizeOf(typeof(UsnJournalData)), out _, IntPtr.Zero))
                         {
-                            JournalOverflow?.Invoke(this, EventArgs.Empty);
-                            // 重置游标到当前最新位置，避免重复触发
-                            _nextUsn   = journalData.NextUsn;
-                            _journalId = journalData.UsnJournalID;
+                            UsnDiagLog.Write($"[WATCHER] drive={state.DriveLetter} QueryUsn failed err={Marshal.GetLastWin32Error()}");
                             continue;
                         }
 
-                        // 没有新变更
-                        if (_nextUsn >= journalData.NextUsn)
+                        if (journalData.UsnJournalID != state.JournalId ||
+                            state.NextUsn < journalData.LowestValidUsn)
+                        {
+                            UsnDiagLog.Write($"[WATCHER OVERFLOW] drive={state.DriveLetter} storedId={state.JournalId} actualId={journalData.UsnJournalID} nextUsn={state.NextUsn} lowestValid={journalData.LowestValidUsn}");
+                            JournalOverflow?.Invoke(this, EventArgs.Empty);
+                            state.NextUsn   = journalData.NextUsn;
+                            state.JournalId = journalData.UsnJournalID;
+                            continue;
+                        }
+
+                        if (state.NextUsn >= journalData.NextUsn)
                             continue;
 
-                        // 读取增量记录
-                        ReadUsnBatch(handle, ref journalData, buffer, bufferSize, ct);
+                        UsnDiagLog.Write($"[WATCHER POLL] drive={state.DriveLetter} nextUsn={state.NextUsn} journalNextUsn={journalData.NextUsn}");
+                        ReadUsnBatch(state, handle, ref journalData, buffer, bufferSize, ct);
                     }
-                    finally
-                    {
-                        CloseHandle(handle);
-                    }
+                    finally { CloseHandle(handle); }
                 }
             }
             finally
             {
                 Marshal.FreeHGlobal(buffer);
+                UsnDiagLog.Write($"[WATCHER LOOP END] drive={state.DriveLetter}");
             }
         }
 
-        /// <summary>
-        /// 循环读取 USN 记录批次，直到追上 journalData.NextUsn 或读取失败。
-        /// </summary>
-        private void ReadUsnBatch(
-            IntPtr handle,
-            ref UsnJournalData journalData,
-            IntPtr buffer,
-            int bufferSize,
-            CancellationToken ct)
+        private void ReadUsnBatch(VolumeWatchState state, IntPtr handle,
+            ref UsnJournalData journalData, IntPtr buffer, int bufferSize, CancellationToken ct)
         {
-            // 用于跟踪 RENAME_OLD_NAME 记录，等待配对的 RENAME_NEW_NAME
             string pendingOldName   = null;
             ulong  pendingOldParent = 0;
 
             var readData = new ReadUsnJournalData
             {
-                StartUsn          = _nextUsn,
+                StartUsn          = state.NextUsn,
                 ReasonMask        = USN_REASON_FILE_CREATE | USN_REASON_FILE_DELETE
                                   | USN_REASON_RENAME_OLD_NAME | USN_REASON_RENAME_NEW_NAME,
                 ReturnOnlyOnClose = 0,
                 Timeout           = 0,
                 BytesToWaitFor    = 0,
-                UsnJournalID      = _journalId,
+                UsnJournalID      = state.JournalId,
             };
 
             while (!ct.IsCancellationRequested)
             {
-                if (!DeviceIoControlReadUsn(
-                    handle,
-                    FSCTL_READ_USN_JOURNAL,
-                    ref readData,
-                    Marshal.SizeOf(typeof(ReadUsnJournalData)),
-                    buffer,
-                    bufferSize,
-                    out var bytesReturned,
-                    IntPtr.Zero))
+                if (!DeviceIoControlReadUsn(handle, FSCTL_READ_USN_JOURNAL,
+                    ref readData, Marshal.SizeOf(typeof(ReadUsnJournalData)),
+                    buffer, bufferSize, out var bytesReturned, IntPtr.Zero))
                 {
                     var err = Marshal.GetLastWin32Error();
+                    UsnDiagLog.Write($"[WATCHER READ FAIL] drive={state.DriveLetter} err={err}");
                     if (err == ERROR_JOURNAL_ENTRY_DELETED)
                     {
                         JournalOverflow?.Invoke(this, EventArgs.Empty);
-                        _nextUsn   = journalData.NextUsn;
-                        _journalId = journalData.UsnJournalID;
+                        state.NextUsn   = journalData.NextUsn;
+                        state.JournalId = journalData.UsnJournalID;
                     }
                     break;
                 }
 
                 if (bytesReturned <= 8) break;
 
-                // 前 8 字节是下一批的起始 USN
                 readData.StartUsn = Marshal.ReadInt64(buffer, 0);
 
                 var offset = 8;
@@ -341,18 +348,18 @@ namespace MftScanner
                     var fileNameLength = (ushort)Marshal.ReadInt16(buffer, offset + 56);
                     var fileNameOffset = (ushort)Marshal.ReadInt16(buffer, offset + 58);
 
-                    if (fileNameLength > 0 &&
-                        offset + fileNameOffset + fileNameLength <= bytesReturned)
+                    if (fileNameLength > 0 && offset + fileNameOffset + fileNameLength <= bytesReturned)
                     {
                         var fileName = Marshal.PtrToStringUni(
-                            IntPtr.Add(buffer, offset + fileNameOffset),
-                            fileNameLength / 2);
+                            IntPtr.Add(buffer, offset + fileNameOffset), fileNameLength / 2);
 
                         var isDir     = (fileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
                         var isOldName = (reason & USN_REASON_RENAME_OLD_NAME) != 0;
                         var isNewName = (reason & USN_REASON_RENAME_NEW_NAME) != 0;
                         var isDelete  = (reason & USN_REASON_FILE_DELETE) != 0;
                         var isCreate  = (reason & USN_REASON_FILE_CREATE) != 0;
+
+                        UsnDiagLog.Write($"[USN RECORD] drive={state.DriveLetter} file={fileName} reason=0x{reason:X} del={isDelete} create={isCreate} oldName={isOldName} newName={isNewName}");
 
                         if (isOldName)
                         {
@@ -365,14 +372,14 @@ namespace MftScanner
                                 lowerName:    fileName.ToLowerInvariant(),
                                 originalName: fileName,
                                 parentFrn:    parentFrn,
-                                driveLetter:  _driveLetter,
+                                driveLetter:  state.DriveLetter,
                                 isDirectory:  isDir);
 
                             FileRenamed?.Invoke(this, new UsnFileRenamedEventArgs(
                                 oldLowerName: pendingOldName.ToLowerInvariant(),
                                 oldParentFrn: pendingOldParent,
                                 newFrn:       frn,
-                                driveLetter:  _driveLetter,
+                                driveLetter:  state.DriveLetter,
                                 newRecord:    newRecord));
 
                             pendingOldName   = null;
@@ -383,7 +390,7 @@ namespace MftScanner
                             FileDeleted?.Invoke(this, new UsnFileDeletedEventArgs(
                                 lowerName:   fileName.ToLowerInvariant(),
                                 parentFrn:   parentFrn,
-                                driveLetter: _driveLetter));
+                                driveLetter: state.DriveLetter));
                         }
                         else if (isCreate)
                         {
@@ -391,7 +398,7 @@ namespace MftScanner
                                 frn:         frn,
                                 fileName:    fileName,
                                 parentFrn:   parentFrn,
-                                driveLetter: _driveLetter,
+                                driveLetter: state.DriveLetter,
                                 isDirectory: isDir));
                         }
                     }
@@ -402,7 +409,7 @@ namespace MftScanner
                 if (readData.StartUsn >= journalData.NextUsn) break;
             }
 
-            _nextUsn = readData.StartUsn;
+            state.NextUsn = readData.StartUsn;
         }
     }
 }
