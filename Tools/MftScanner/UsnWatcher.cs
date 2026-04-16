@@ -6,6 +6,53 @@ using System.Threading.Tasks;
 
 namespace MftScanner
 {
+    public enum UsnChangeKind
+    {
+        Create,
+        Delete,
+        Rename
+    }
+
+    public sealed class UsnChangeEntry
+    {
+        public UsnChangeEntry(
+            UsnChangeKind kind,
+            ulong frn,
+            string lowerName,
+            string originalName,
+            ulong parentFrn,
+            char driveLetter,
+            bool isDirectory,
+            string oldLowerName = null,
+            ulong oldParentFrn = 0)
+        {
+            Kind = kind;
+            Frn = frn;
+            LowerName = lowerName;
+            OriginalName = originalName;
+            ParentFrn = parentFrn;
+            DriveLetter = driveLetter;
+            IsDirectory = isDirectory;
+            OldLowerName = oldLowerName;
+            OldParentFrn = oldParentFrn;
+        }
+
+        public UsnChangeKind Kind { get; }
+        public ulong Frn { get; }
+        public string LowerName { get; }
+        public string OriginalName { get; }
+        public ulong ParentFrn { get; }
+        public char DriveLetter { get; }
+        public bool IsDirectory { get; }
+        public string OldLowerName { get; }
+        public ulong OldParentFrn { get; }
+
+        public FileRecord ToRecord()
+        {
+            return new FileRecord(LowerName, OriginalName, ParentFrn, DriveLetter, IsDirectory);
+        }
+    }
+
     // ── 事件参数 ────────────────────────────────────────────────────────────────
 
     /// <summary>文件创建事件参数。需求 6.2</summary>
@@ -259,7 +306,7 @@ namespace MftScanner
             if (handle == INVALID_HANDLE_VALUE)
                 return false;
 
-            const int bufferSize = 64 * 1024;
+            const int bufferSize = 1024 * 1024;
             var buffer = Marshal.AllocHGlobal(bufferSize);
             try
             {
@@ -286,7 +333,66 @@ namespace MftScanner
                     JournalId = journalId
                 };
 
-                if (!ReadUsnBatch(state, handle, ref journalData, buffer, bufferSize, ct, raiseOverflowEvent: false))
+                if (!ReadUsnBatch(state, handle, ref journalData, buffer, bufferSize, ct,
+                        raiseOverflowEvent: false, collectedChanges: null))
+                    return false;
+                nextUsn = state.NextUsn;
+                latestJournalId = state.JournalId;
+                return true;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+                CloseHandle(handle);
+            }
+        }
+
+        public bool TryCollectCatchUpChanges(char driveLetter, long startUsn, ulong journalId, CancellationToken ct,
+            out List<UsnChangeEntry> changes, out long nextUsn, out ulong latestJournalId)
+        {
+            changes = new List<UsnChangeEntry>(256);
+
+            var dl = char.ToUpperInvariant(driveLetter);
+            nextUsn = startUsn;
+            latestJournalId = journalId;
+
+            var volumePath = @"\\.\" + dl + ":";
+            var handle = CreateFile(volumePath, GENERIC_READ,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
+
+            if (handle == INVALID_HANDLE_VALUE)
+                return false;
+
+            const int bufferSize = 1024 * 1024;
+            var buffer = Marshal.AllocHGlobal(bufferSize);
+            try
+            {
+                if (!DeviceIoControlQueryUsn(handle, FSCTL_QUERY_USN_JOURNAL,
+                    IntPtr.Zero, 0, out var journalData,
+                    Marshal.SizeOf(typeof(UsnJournalData)), out _, IntPtr.Zero))
+                    return false;
+
+                latestJournalId = journalData.UsnJournalID;
+
+                if (journalData.UsnJournalID != journalId || startUsn < journalData.LowestValidUsn)
+                    return false;
+
+                if (startUsn >= journalData.NextUsn)
+                {
+                    nextUsn = journalData.NextUsn;
+                    return true;
+                }
+
+                var state = new VolumeWatchState
+                {
+                    DriveLetter = dl,
+                    NextUsn = startUsn,
+                    JournalId = journalId
+                };
+
+                if (!ReadUsnBatch(state, handle, ref journalData, buffer, bufferSize, ct,
+                        raiseOverflowEvent: false, collectedChanges: changes))
                     return false;
                 nextUsn = state.NextUsn;
                 latestJournalId = state.JournalId;
@@ -308,7 +414,7 @@ namespace MftScanner
         private void WatchLoop(VolumeWatchState state)
         {
             var ct = state.Cts.Token;
-            const int bufferSize = 64 * 1024;
+            const int bufferSize = 1024 * 1024;
             var buffer = Marshal.AllocHGlobal(bufferSize);
             UsnDiagLog.Write($"[WATCHER LOOP START] drive={state.DriveLetter}");
             try
@@ -355,7 +461,8 @@ namespace MftScanner
                             continue;
 
                         UsnDiagLog.Write($"[WATCHER POLL] drive={state.DriveLetter} nextUsn={state.NextUsn} journalNextUsn={journalData.NextUsn}");
-                        ReadUsnBatch(state, handle, ref journalData, buffer, bufferSize, ct, raiseOverflowEvent: true);
+                        ReadUsnBatch(state, handle, ref journalData, buffer, bufferSize, ct,
+                            raiseOverflowEvent: true, collectedChanges: null);
                     }
                     finally { CloseHandle(handle); }
                 }
@@ -368,7 +475,8 @@ namespace MftScanner
         }
 
         private bool ReadUsnBatch(VolumeWatchState state, IntPtr handle,
-            ref UsnJournalData journalData, IntPtr buffer, int bufferSize, CancellationToken ct, bool raiseOverflowEvent)
+            ref UsnJournalData journalData, IntPtr buffer, int bufferSize, CancellationToken ct,
+            bool raiseOverflowEvent, ICollection<UsnChangeEntry> collectedChanges)
         {
             string pendingOldName   = null;
             ulong  pendingOldParent = 0;
@@ -439,38 +547,86 @@ namespace MftScanner
                         }
                         else if (isNewName && pendingOldName != null)
                         {
-                            var newRecord = new FileRecord(
-                                lowerName:    fileName.ToLowerInvariant(),
-                                originalName: fileName,
-                                parentFrn:    parentFrn,
-                                driveLetter:  state.DriveLetter,
-                                isDirectory:  isDir);
+                            var lowerName = fileName.ToLowerInvariant();
+                            var oldLowerName = pendingOldName.ToLowerInvariant();
+                            if (collectedChanges != null)
+                            {
+                                collectedChanges.Add(new UsnChangeEntry(
+                                    kind: UsnChangeKind.Rename,
+                                    frn: frn,
+                                    lowerName: lowerName,
+                                    originalName: fileName,
+                                    parentFrn: parentFrn,
+                                    driveLetter: state.DriveLetter,
+                                    isDirectory: isDir,
+                                    oldLowerName: oldLowerName,
+                                    oldParentFrn: pendingOldParent));
+                            }
+                            else
+                            {
+                                var newRecord = new FileRecord(
+                                    lowerName: lowerName,
+                                    originalName: fileName,
+                                    parentFrn: parentFrn,
+                                    driveLetter: state.DriveLetter,
+                                    isDirectory: isDir);
 
-                            FileRenamed?.Invoke(this, new UsnFileRenamedEventArgs(
-                                oldLowerName: pendingOldName.ToLowerInvariant(),
-                                oldParentFrn: pendingOldParent,
-                                newFrn:       frn,
-                                driveLetter:  state.DriveLetter,
-                                newRecord:    newRecord));
+                                FileRenamed?.Invoke(this, new UsnFileRenamedEventArgs(
+                                    oldLowerName: oldLowerName,
+                                    oldParentFrn: pendingOldParent,
+                                    newFrn: frn,
+                                    driveLetter: state.DriveLetter,
+                                    newRecord: newRecord));
+                            }
 
                             pendingOldName   = null;
                             pendingOldParent = 0;
                         }
                         else if (isDelete)
                         {
-                            FileDeleted?.Invoke(this, new UsnFileDeletedEventArgs(
-                                lowerName:   fileName.ToLowerInvariant(),
-                                parentFrn:   parentFrn,
-                                driveLetter: state.DriveLetter));
+                            var lowerName = fileName.ToLowerInvariant();
+                            if (collectedChanges != null)
+                            {
+                                collectedChanges.Add(new UsnChangeEntry(
+                                    kind: UsnChangeKind.Delete,
+                                    frn: frn,
+                                    lowerName: lowerName,
+                                    originalName: fileName,
+                                    parentFrn: parentFrn,
+                                    driveLetter: state.DriveLetter,
+                                    isDirectory: isDir));
+                            }
+                            else
+                            {
+                                FileDeleted?.Invoke(this, new UsnFileDeletedEventArgs(
+                                    lowerName: lowerName,
+                                    parentFrn: parentFrn,
+                                    driveLetter: state.DriveLetter));
+                            }
                         }
                         else if (isCreate)
                         {
-                            FileCreated?.Invoke(this, new UsnFileCreatedEventArgs(
-                                frn:         frn,
-                                fileName:    fileName,
-                                parentFrn:   parentFrn,
-                                driveLetter: state.DriveLetter,
-                                isDirectory: isDir));
+                            var lowerName = fileName.ToLowerInvariant();
+                            if (collectedChanges != null)
+                            {
+                                collectedChanges.Add(new UsnChangeEntry(
+                                    kind: UsnChangeKind.Create,
+                                    frn: frn,
+                                    lowerName: lowerName,
+                                    originalName: fileName,
+                                    parentFrn: parentFrn,
+                                    driveLetter: state.DriveLetter,
+                                    isDirectory: isDir));
+                            }
+                            else
+                            {
+                                FileCreated?.Invoke(this, new UsnFileCreatedEventArgs(
+                                    frn: frn,
+                                    fileName: fileName,
+                                    parentFrn: parentFrn,
+                                    driveLetter: state.DriveLetter,
+                                    isDirectory: isDir));
+                            }
                         }
                     }
 

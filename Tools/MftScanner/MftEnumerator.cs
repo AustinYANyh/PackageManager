@@ -343,6 +343,39 @@ namespace MftScanner
             }
         }
 
+        public void ApplyUsnChanges(IReadOnlyList<UsnChangeEntry> changes)
+        {
+            if (changes == null || changes.Count == 0)
+                return;
+
+            lock (_mapsLock)
+            {
+                for (var i = 0; i < changes.Count; i++)
+                {
+                    var change = changes[i];
+                    var dl = char.ToUpperInvariant(change.DriveLetter);
+                    if (!_frnMaps.TryGetValue(dl, out var frnMap))
+                        continue;
+
+                    if (!_pathCaches.TryGetValue(dl, out var pathCache))
+                        pathCache = _pathCaches[dl] = new Dictionary<ulong, string>();
+
+                    switch (change.Kind)
+                    {
+                        case UsnChangeKind.Create:
+                        case UsnChangeKind.Rename:
+                            frnMap[change.Frn] = (change.OriginalName, change.ParentFrn, change.IsDirectory);
+                            pathCache.Remove(change.Frn);
+                            break;
+                        case UsnChangeKind.Delete:
+                            frnMap.Remove(change.Frn);
+                            pathCache.Remove(change.Frn);
+                            break;
+                    }
+                }
+            }
+        }
+
         /// <summary>
         /// 按需解析完整路径（带缓存）。搜索结果展示时调用，不在构建阶段调用。
         /// </summary>

@@ -175,5 +175,84 @@ namespace MftScanner
             }
             finally { _lock.ExitWriteLock(); }
         }
+
+        public void ApplyBatch(IReadOnlyList<UsnChangeEntry> changes)
+        {
+            if (changes == null || changes.Count == 0)
+                return;
+
+            _lock.EnterWriteLock();
+            try
+            {
+                var map = new Dictionary<RecordKey, FileRecord>(SortedArray.Length + changes.Count);
+                foreach (var record in SortedArray)
+                    map[new RecordKey(record.LowerName, record.ParentFrn, record.DriveLetter)] = record;
+
+                for (var i = 0; i < changes.Count; i++)
+                {
+                    var change = changes[i];
+                    switch (change.Kind)
+                    {
+                        case UsnChangeKind.Create:
+                            map[new RecordKey(change.LowerName, change.ParentFrn, change.DriveLetter)] = change.ToRecord();
+                            break;
+                        case UsnChangeKind.Delete:
+                            map.Remove(new RecordKey(change.LowerName, change.ParentFrn, change.DriveLetter));
+                            break;
+                        case UsnChangeKind.Rename:
+                            map.Remove(new RecordKey(change.OldLowerName, change.OldParentFrn, change.DriveLetter));
+                            map[new RecordKey(change.LowerName, change.ParentFrn, change.DriveLetter)] = change.ToRecord();
+                            break;
+                    }
+                }
+
+                var arr = new FileRecord[map.Count];
+                var index = 0;
+                foreach (var record in map.Values)
+                    arr[index++] = record;
+
+                Array.Sort(arr, ByLowerName);
+                ExactHashMap = BuildExactHashMap(arr);
+                SortedArray = arr;
+            }
+            finally { _lock.ExitWriteLock(); }
+        }
+
+        private struct RecordKey : IEquatable<RecordKey>
+        {
+            public RecordKey(string lowerName, ulong parentFrn, char driveLetter)
+            {
+                LowerName = lowerName;
+                ParentFrn = parentFrn;
+                DriveLetter = driveLetter;
+            }
+
+            public string LowerName { get; }
+            public ulong ParentFrn { get; }
+            public char DriveLetter { get; }
+
+            public bool Equals(RecordKey other)
+            {
+                return ParentFrn == other.ParentFrn
+                       && DriveLetter == other.DriveLetter
+                       && string.Equals(LowerName, other.LowerName, StringComparison.Ordinal);
+            }
+
+            public override bool Equals(object obj)
+            {
+                return obj is RecordKey other && Equals(other);
+            }
+
+            public override int GetHashCode()
+            {
+                unchecked
+                {
+                    var hash = LowerName != null ? StringComparer.Ordinal.GetHashCode(LowerName) : 0;
+                    hash = (hash * 397) ^ ParentFrn.GetHashCode();
+                    hash = (hash * 397) ^ DriveLetter.GetHashCode();
+                    return hash;
+                }
+            }
+        }
     }
 }

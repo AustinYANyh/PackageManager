@@ -595,8 +595,8 @@ namespace MftScanner
 
                 var volume = snapshot.Volumes[i];
                 var volumeCatchUpStopwatch = Stopwatch.StartNew();
-                if (!_usnWatcher.TryCatchUp(volume.DriveLetter, volume.NextUsn, volume.JournalId, ct,
-                        out var nextUsn, out var latestJournalId))
+                if (!_usnWatcher.TryCollectCatchUpChanges(volume.DriveLetter, volume.NextUsn, volume.JournalId, ct,
+                        out var changes, out var nextUsn, out var latestJournalId))
                 {
                     volumeCatchUpStopwatch.Stop();
                     catchUpStopwatch.Stop();
@@ -607,10 +607,17 @@ namespace MftScanner
                     _index.Build(Array.Empty<FileRecord>());
                     return false;
                 }
+
+                if (changes.Count > 0)
+                {
+                    _enumerator.ApplyUsnChanges(changes);
+                    _index.ApplyBatch(changes);
+                }
+
                 volumeCatchUpStopwatch.Stop();
                 UsnDiagLog.Write(
                     $"[SNAPSHOT CATCHUP] drive={volume.DriveLetter} elapsedMs={volumeCatchUpStopwatch.ElapsedMilliseconds} " +
-                    $"startUsn={volume.NextUsn} nextUsn={nextUsn} journalId={latestJournalId}");
+                    $"startUsn={volume.NextUsn} nextUsn={nextUsn} journalId={latestJournalId} changes={changes.Count}");
 
                 checkpoints[i] = (volume.DriveLetter, nextUsn, latestJournalId);
             }
