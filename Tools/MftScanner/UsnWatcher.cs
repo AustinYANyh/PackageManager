@@ -114,6 +114,8 @@ namespace MftScanner
     /// </summary>
     public sealed class UsnWatcher
     {
+        private const bool LogUsnRecords = false;
+
         // ── Win32 常量 ──────────────────────────────────────────────────────────
         private const uint GENERIC_READ              = 0x80000000;
         private const uint FILE_SHARE_READ           = 1;
@@ -476,7 +478,7 @@ namespace MftScanner
 
         private bool ReadUsnBatch(VolumeWatchState state, IntPtr handle,
             ref UsnJournalData journalData, IntPtr buffer, int bufferSize, CancellationToken ct,
-            bool raiseOverflowEvent, ICollection<UsnChangeEntry> collectedChanges)
+            bool raiseOverflowEvent, List<UsnChangeEntry> collectedChanges)
         {
             string pendingOldName   = null;
             ulong  pendingOldParent = 0;
@@ -538,7 +540,10 @@ namespace MftScanner
                         var isDelete  = (reason & USN_REASON_FILE_DELETE) != 0;
                         var isCreate  = (reason & USN_REASON_FILE_CREATE) != 0;
 
-                        UsnDiagLog.Write($"[USN RECORD] drive={state.DriveLetter} file={fileName} reason=0x{reason:X} del={isDelete} create={isCreate} oldName={isOldName} newName={isNewName}");
+                        if (LogUsnRecords)
+                        {
+                            UsnDiagLog.Write($"[USN RECORD] drive={state.DriveLetter} file={fileName} reason=0x{reason:X} del={isDelete} create={isCreate} oldName={isOldName} newName={isNewName}");
+                        }
 
                         if (isOldName)
                         {
@@ -551,7 +556,7 @@ namespace MftScanner
                             var oldLowerName = pendingOldName.ToLowerInvariant();
                             if (collectedChanges != null)
                             {
-                                collectedChanges.Add(new UsnChangeEntry(
+                                AppendCollectedChange(collectedChanges, new UsnChangeEntry(
                                     kind: UsnChangeKind.Rename,
                                     frn: frn,
                                     lowerName: lowerName,
@@ -587,7 +592,7 @@ namespace MftScanner
                             var lowerName = fileName.ToLowerInvariant();
                             if (collectedChanges != null)
                             {
-                                collectedChanges.Add(new UsnChangeEntry(
+                                AppendCollectedChange(collectedChanges, new UsnChangeEntry(
                                     kind: UsnChangeKind.Delete,
                                     frn: frn,
                                     lowerName: lowerName,
@@ -609,7 +614,7 @@ namespace MftScanner
                             var lowerName = fileName.ToLowerInvariant();
                             if (collectedChanges != null)
                             {
-                                collectedChanges.Add(new UsnChangeEntry(
+                                AppendCollectedChange(collectedChanges, new UsnChangeEntry(
                                     kind: UsnChangeKind.Create,
                                     frn: frn,
                                     lowerName: lowerName,
@@ -638,6 +643,24 @@ namespace MftScanner
 
             state.NextUsn = readData.StartUsn;
             return true;
+        }
+
+        private static void AppendCollectedChange(List<UsnChangeEntry> changes, UsnChangeEntry change)
+        {
+            if (changes.Count > 0)
+            {
+                var last = changes[changes.Count - 1];
+                if (last.Kind == change.Kind
+                    && last.Frn == change.Frn
+                    && last.ParentFrn == change.ParentFrn
+                    && last.DriveLetter == change.DriveLetter
+                    && string.Equals(last.LowerName, change.LowerName, StringComparison.Ordinal)
+                    && string.Equals(last.OldLowerName, change.OldLowerName, StringComparison.Ordinal)
+                    && last.OldParentFrn == change.OldParentFrn)
+                    return;
+            }
+
+            changes.Add(change);
         }
     }
 }
