@@ -81,6 +81,7 @@ namespace MftScanner
         private string _activeKeyword = string.Empty;
         private int _totalMatchedCount;
         private int _loadedResultCount;
+        private bool _isSearchInProgress;
         private bool _isLoadingMore;
         private ScrollViewer _resultsScrollViewer;
         private string _cachedKeyword;
@@ -126,6 +127,7 @@ namespace MftScanner
             _searchCts?.Cancel();
             _searchCts?.Dispose();
             _debounceTimer.Stop();
+            _indexService.Shutdown();
             if (_resultsScrollViewer != null)
                 _resultsScrollViewer.ScrollChanged -= ResultsScrollViewer_ScrollChanged;
         }
@@ -147,6 +149,7 @@ namespace MftScanner
             _activeKeyword = string.Empty;
             _totalMatchedCount = 0;
             _loadedResultCount = 0;
+            _isSearchInProgress = false;
             _isLoadingMore = false;
             _cachedKeyword = null;
             _cachedRegex = null;
@@ -207,6 +210,7 @@ namespace MftScanner
             _activeKeyword = string.Empty;
             _totalMatchedCount = 0;
             _loadedResultCount = 0;
+            _isSearchInProgress = false;
             _isLoadingMore = false;
             _cachedKeyword = null;
             _cachedRegex = null;
@@ -226,6 +230,7 @@ namespace MftScanner
             }
 
             _activeKeyword = kw;
+            _isSearchInProgress = true;
             IndexingProgress.Visibility = Visibility.Visible;
             StatusText.Text = $"正在搜索 \"{kw}\"...";
 
@@ -248,8 +253,12 @@ namespace MftScanner
             }
             finally
             {
+                _isSearchInProgress = false;
                 if (!ct.IsCancellationRequested)
+                {
                     IndexingProgress.Visibility = Visibility.Collapsed;
+                    UpdateSummaryStatus();
+                }
             }
         }
 
@@ -269,6 +278,9 @@ namespace MftScanner
         {
             if (ResultsGrid.SelectedItem is not EverythingSearchResultItem item)
             {
+                if (_isSearchInProgress)
+                    return;
+
                 if (_indexReady)
                     UpdateSummaryStatus();
                 return;
@@ -376,7 +388,10 @@ namespace MftScanner
             {
                 _isLoadingMore = false;
                 if (_searchCts == null || !_searchCts.IsCancellationRequested)
+                {
                     IndexingProgress.Visibility = Visibility.Collapsed;
+                    UpdateSummaryStatus();
+                }
             }
         }
 
@@ -584,6 +599,18 @@ namespace MftScanner
             if (!_indexReady)
             {
                 StatusText.Text = "正在建立索引，请稍候...";
+                return;
+            }
+
+            if (_isSearchInProgress)
+            {
+                StatusText.Text = $"正在搜索 \"{_activeKeyword}\"...";
+                return;
+            }
+
+            if (_isLoadingMore)
+            {
+                StatusText.Text = $"正在继续加载 \"{_activeKeyword}\"...";
                 return;
             }
 

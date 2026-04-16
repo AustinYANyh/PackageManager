@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -19,7 +20,11 @@ namespace MftScanner
         private readonly IndexSnapshotStore _snapshotStore = new IndexSnapshotStore();
         private readonly UsnWatcher _usnWatcher = new UsnWatcher();
         private volatile MemoryIndex _index = new MemoryIndex();
+        private readonly object _snapshotSaveLock = new object();
         private bool _watcherInitialized;
+        private CancellationTokenSource _snapshotSaveCts;
+
+        private const int SnapshotSaveDebounceMilliseconds = 5000;
 
         // 保存 progress 引用，供 OnJournalOverflow 使用（需求 6.5）
         private IProgress<string> _progress;
@@ -55,11 +60,19 @@ namespace MftScanner
                 _progress = progress;
             return Task.Run(() =>
             {
+                CancelPendingSnapshotSave();
                 _usnWatcher.StopWatching();
                 _index.Build(Array.Empty<FileRecord>());
                 var result = BuildIndexFromMft(_progress, ct);
                 return result;
             }, ct);
+        }
+
+        public void Shutdown()
+        {
+            CancelPendingSnapshotSave();
+            SaveCurrentSnapshot("shutdown");
+            _usnWatcher.StopWatching();
         }
 
         // ── UsnWatcher 集成 ──────────────────────────────────────────────────────
@@ -101,6 +114,7 @@ namespace MftScanner
                 isDirectory:  args.IsDirectory);
             _index.Insert(record);
             var fullPath = _enumerator.ResolveFullPath(args.DriveLetter, args.ParentFrn, args.FileName);
+            ScheduleSnapshotSave();
             IndexChanged?.Invoke(this, new IndexChangedEventArgs(
                 IndexChangeType.Created, lowerName, fullPath));
         }
@@ -111,6 +125,7 @@ namespace MftScanner
             // 删除前先解析路径（FRN 字典此时还未清除），供 UI 精确匹配
             var fullPath = _enumerator.ResolveFullPath(args.DriveLetter, args.ParentFrn, args.LowerName);
             _index.Remove(args.LowerName, args.ParentFrn, args.DriveLetter);
+            ScheduleSnapshotSave();
             IndexChanged?.Invoke(this, new IndexChangedEventArgs(
                 IndexChangeType.Deleted, args.LowerName, fullPath));
         }
@@ -125,6 +140,7 @@ namespace MftScanner
             _index.Rename(args.OldLowerName, args.OldParentFrn, args.DriveLetter, args.NewRecord);
             var newFullPath = _enumerator.ResolveFullPath(
                 args.DriveLetter, args.NewRecord.ParentFrn, args.NewRecord.OriginalName);
+            ScheduleSnapshotSave();
             IndexChanged?.Invoke(this, new IndexChangedEventArgs(
                 IndexChangeType.Renamed, args.OldLowerName, newFullPath,
                 oldFullPath,
@@ -531,6 +547,7 @@ namespace MftScanner
 
         private int BuildIndex(IProgress<string> progress, CancellationToken ct)
         {
+            CancelPendingSnapshotSave();
             _usnWatcher.StopWatching();
 
             if (TryRestoreFromSnapshot(progress, ct, out var restoredCount))
@@ -542,35 +559,64 @@ namespace MftScanner
         private bool TryRestoreFromSnapshot(IProgress<string> progress, CancellationToken ct, out int restoredCount)
         {
             restoredCount = 0;
+            var totalStopwatch = Stopwatch.StartNew();
 
             progress?.Report("正在加载索引快照...");
-            if (!_snapshotStore.TryLoad(out var snapshot) ||
+            var snapshotLoadStopwatch = Stopwatch.StartNew();
+            if (!_snapshotStore.TryLoad(out var snapshot, out var snapshotMetrics) ||
                 snapshot?.Records == null || snapshot.Volumes == null ||
                 snapshot.Volumes.Length == 0)
+            {
+                snapshotLoadStopwatch.Stop();
+                UsnDiagLog.Write($"[SNAPSHOT LOAD] miss elapsedMs={snapshotLoadStopwatch.ElapsedMilliseconds}");
                 return false;
+            }
+            snapshotLoadStopwatch.Stop();
+            UsnDiagLog.Write(
+                $"[SNAPSHOT LOAD] hit elapsedMs={snapshotLoadStopwatch.ElapsedMilliseconds} " +
+                $"version={snapshotMetrics.Version} fileBytes={snapshotMetrics.FileBytes} records={snapshotMetrics.RecordCount} " +
+                $"volumes={snapshotMetrics.VolumeCount} frnEntries={snapshotMetrics.FrnEntryCount} stringPool={snapshotMetrics.StringPoolCount}");
 
             ct.ThrowIfCancellationRequested();
 
+            progress?.Report("正在恢复内存索引...");
+            var restoreStopwatch = Stopwatch.StartNew();
             _enumerator.LoadVolumeSnapshots(snapshot.Volumes);
             _index.LoadSortedRecords(snapshot.Records);
+            restoreStopwatch.Stop();
+            UsnDiagLog.Write($"[SNAPSHOT RESTORE] elapsedMs={restoreStopwatch.ElapsedMilliseconds} records={snapshot.Records.Length} volumes={snapshot.Volumes.Length}");
 
             var checkpoints = new (char driveLetter, long nextUsn, ulong journalId)[snapshot.Volumes.Length];
+            progress?.Report("正在追平 USN 变更...");
+            var catchUpStopwatch = Stopwatch.StartNew();
             for (var i = 0; i < snapshot.Volumes.Length; i++)
             {
                 ct.ThrowIfCancellationRequested();
 
                 var volume = snapshot.Volumes[i];
+                var volumeCatchUpStopwatch = Stopwatch.StartNew();
                 if (!_usnWatcher.TryCatchUp(volume.DriveLetter, volume.NextUsn, volume.JournalId, ct,
                         out var nextUsn, out var latestJournalId))
                 {
+                    volumeCatchUpStopwatch.Stop();
+                    catchUpStopwatch.Stop();
+                    UsnDiagLog.Write(
+                        $"[SNAPSHOT CATCHUP] drive={volume.DriveLetter} expired elapsedMs={volumeCatchUpStopwatch.ElapsedMilliseconds} " +
+                        $"startUsn={volume.NextUsn} journalId={volume.JournalId}");
                     progress?.Report("索引快照已过期，正在重建索引...");
                     _index.Build(Array.Empty<FileRecord>());
                     return false;
                 }
+                volumeCatchUpStopwatch.Stop();
+                UsnDiagLog.Write(
+                    $"[SNAPSHOT CATCHUP] drive={volume.DriveLetter} elapsedMs={volumeCatchUpStopwatch.ElapsedMilliseconds} " +
+                    $"startUsn={volume.NextUsn} nextUsn={nextUsn} journalId={latestJournalId}");
 
                 checkpoints[i] = (volume.DriveLetter, nextUsn, latestJournalId);
             }
+            catchUpStopwatch.Stop();
 
+            var watcherStartStopwatch = Stopwatch.StartNew();
             var volumeSnapshots = _enumerator.CreateVolumeSnapshots(checkpoints);
 
             for (var i = 0; i < checkpoints.Length; i++)
@@ -578,9 +624,15 @@ namespace MftScanner
                 var checkpoint = checkpoints[i];
                 _usnWatcher.StartWatching(checkpoint.driveLetter, checkpoint.nextUsn, checkpoint.journalId, ct);
             }
+            watcherStartStopwatch.Stop();
 
             restoredCount = _index.TotalCount;
+            totalStopwatch.Stop();
             progress?.Report($"已从快照恢复 {restoredCount} 个对象");
+            UsnDiagLog.Write(
+                $"[SNAPSHOT RESTORE TOTAL] totalMs={totalStopwatch.ElapsedMilliseconds} loadMs={snapshotLoadStopwatch.ElapsedMilliseconds} " +
+                $"restoreMs={restoreStopwatch.ElapsedMilliseconds} catchUpMs={catchUpStopwatch.ElapsedMilliseconds} " +
+                $"watcherStartMs={watcherStartStopwatch.ElapsedMilliseconds} restoredCount={restoredCount}");
 
             QueueSnapshotSave(_index.SortedArray, volumeSnapshots);
             return true;
@@ -664,12 +716,95 @@ namespace MftScanner
             {
                 try
                 {
-                    _snapshotStore.Save(new IndexSnapshot(recordCopy, volumeCopy));
+                    var saveStopwatch = Stopwatch.StartNew();
+                    var metrics = _snapshotStore.Save(new IndexSnapshot(recordCopy, volumeCopy));
+                    saveStopwatch.Stop();
+                    if (metrics != null)
+                    {
+                        UsnDiagLog.Write(
+                            $"[SNAPSHOT SAVE] elapsedMs={saveStopwatch.ElapsedMilliseconds} version={metrics.Version} " +
+                            $"fileBytes={metrics.FileBytes} records={metrics.RecordCount} volumes={metrics.VolumeCount} frnEntries={metrics.FrnEntryCount}");
+                    }
                 }
                 catch
                 {
                 }
             });
+        }
+
+        private void ScheduleSnapshotSave()
+        {
+            CancellationTokenSource cts;
+            lock (_snapshotSaveLock)
+            {
+                var old = _snapshotSaveCts;
+                if (old != null)
+                {
+                    old.Cancel();
+                    old.Dispose();
+                }
+
+                cts = new CancellationTokenSource();
+                _snapshotSaveCts = cts;
+            }
+
+            Task.Run(async () =>
+            {
+                try
+                {
+                    await Task.Delay(SnapshotSaveDebounceMilliseconds, cts.Token).ConfigureAwait(false);
+                    SaveCurrentSnapshot("debounce");
+                }
+                catch (OperationCanceledException)
+                {
+                }
+            });
+        }
+
+        private void CancelPendingSnapshotSave()
+        {
+            lock (_snapshotSaveLock)
+            {
+                var cts = _snapshotSaveCts;
+                _snapshotSaveCts = null;
+                if (cts == null)
+                    return;
+
+                cts.Cancel();
+                cts.Dispose();
+            }
+        }
+
+        private void SaveCurrentSnapshot(string reason)
+        {
+            try
+            {
+                var checkpoints = _usnWatcher.GetVolumeCheckpoints();
+                if (checkpoints == null || checkpoints.Length == 0)
+                    return;
+
+                var records = _index.SortedArray;
+                if (records == null || records.Length == 0)
+                    return;
+
+                var recordCopy = new FileRecord[records.Length];
+                Array.Copy(records, recordCopy, records.Length);
+                var volumeSnapshots = _enumerator.CreateVolumeSnapshots(checkpoints);
+
+                var saveStopwatch = Stopwatch.StartNew();
+                var metrics = _snapshotStore.Save(new IndexSnapshot(recordCopy, volumeSnapshots));
+                saveStopwatch.Stop();
+
+                if (metrics != null)
+                {
+                    UsnDiagLog.Write(
+                        $"[SNAPSHOT SAVE LIVE] reason={reason} elapsedMs={saveStopwatch.ElapsedMilliseconds} version={metrics.Version} " +
+                        $"fileBytes={metrics.FileBytes} records={metrics.RecordCount} volumes={metrics.VolumeCount} frnEntries={metrics.FrnEntryCount}");
+                }
+            }
+            catch
+            {
+            }
         }
 
     }

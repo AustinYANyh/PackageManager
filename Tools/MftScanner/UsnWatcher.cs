@@ -229,6 +229,21 @@ namespace MftScanner
             }
         }
 
+        public (char driveLetter, long nextUsn, ulong journalId)[] GetVolumeCheckpoints()
+        {
+            lock (_volumesLock)
+            {
+                var checkpoints = new (char driveLetter, long nextUsn, ulong journalId)[_volumes.Count];
+                var index = 0;
+                foreach (var item in _volumes.Values)
+                {
+                    checkpoints[index++] = (item.DriveLetter, item.NextUsn, item.JournalId);
+                }
+
+                return checkpoints;
+            }
+        }
+
         public bool TryCatchUp(char driveLetter, long startUsn, ulong journalId, CancellationToken ct,
             out long nextUsn, out ulong latestJournalId)
         {

@@ -99,6 +99,7 @@ namespace MftScanner
 
         private readonly Dictionary<char, Dictionary<ulong, string>> _pathCaches
             = new Dictionary<char, Dictionary<ulong, string>>();
+        private readonly object _mapsLock = new object();
 
         // ── 公开 API ────────────────────────────────────────────────────────────
 
@@ -214,8 +215,11 @@ namespace MftScanner
                     isDirectory:  isDir));
             }
 
-            _frnMaps[dl]    = frnMap;
-            _pathCaches[dl] = new Dictionary<ulong, string>();
+            lock (_mapsLock)
+            {
+                _frnMaps[dl] = frnMap;
+                _pathCaches[dl] = new Dictionary<ulong, string>();
+            }
 
             return (output.Count - startCount, nextUsn, journalId);
         }
@@ -226,10 +230,16 @@ namespace MftScanner
         public void MergeFrnMap(char driveLetter, MftEnumerator source)
         {
             var dl = char.ToUpperInvariant(driveLetter);
-            if (source._frnMaps.TryGetValue(dl, out var srcMap))
+            lock (source._mapsLock)
             {
-                _frnMaps[dl] = srcMap;
-                _pathCaches[dl] = new Dictionary<ulong, string>();
+                if (!source._frnMaps.TryGetValue(dl, out var srcMap))
+                    return;
+
+                lock (_mapsLock)
+                {
+                    _frnMaps[dl] = srcMap;
+                    _pathCaches[dl] = new Dictionary<ulong, string>();
+                }
             }
         }
 
@@ -239,28 +249,31 @@ namespace MftScanner
                 return Array.Empty<VolumeSnapshot>();
 
             var snapshots = new VolumeSnapshot[checkpoints.Length];
-            for (var i = 0; i < checkpoints.Length; i++)
+            lock (_mapsLock)
             {
-                var checkpoint = checkpoints[i];
-                var dl = char.ToUpperInvariant(checkpoint.driveLetter);
-                if (!_frnMaps.TryGetValue(dl, out var frnMap))
+                for (var i = 0; i < checkpoints.Length; i++)
                 {
-                    snapshots[i] = new VolumeSnapshot(dl, checkpoint.nextUsn, checkpoint.journalId, Array.Empty<FrnSnapshotEntry>());
-                    continue;
-                }
+                    var checkpoint = checkpoints[i];
+                    var dl = char.ToUpperInvariant(checkpoint.driveLetter);
+                    if (!_frnMaps.TryGetValue(dl, out var frnMap))
+                    {
+                        snapshots[i] = new VolumeSnapshot(dl, checkpoint.nextUsn, checkpoint.journalId, Array.Empty<FrnSnapshotEntry>());
+                        continue;
+                    }
 
-                var entries = new FrnSnapshotEntry[frnMap.Count];
-                var index = 0;
-                foreach (var kv in frnMap)
-                {
-                    entries[index++] = new FrnSnapshotEntry(
-                        kv.Key,
-                        kv.Value.name,
-                        kv.Value.parentFrn,
-                        kv.Value.isDirectory);
-                }
+                    var entries = new FrnSnapshotEntry[frnMap.Count];
+                    var index = 0;
+                    foreach (var kv in frnMap)
+                    {
+                        entries[index++] = new FrnSnapshotEntry(
+                            kv.Key,
+                            kv.Value.name,
+                            kv.Value.parentFrn,
+                            kv.Value.isDirectory);
+                    }
 
-                snapshots[i] = new VolumeSnapshot(dl, checkpoint.nextUsn, checkpoint.journalId, entries);
+                    snapshots[i] = new VolumeSnapshot(dl, checkpoint.nextUsn, checkpoint.journalId, entries);
+                }
             }
 
             return snapshots;
@@ -268,30 +281,33 @@ namespace MftScanner
 
         public void LoadVolumeSnapshots(IReadOnlyList<VolumeSnapshot> snapshots)
         {
-            _frnMaps.Clear();
-            _pathCaches.Clear();
-
-            if (snapshots == null)
-                return;
-
-            for (var i = 0; i < snapshots.Count; i++)
+            lock (_mapsLock)
             {
-                var snapshot = snapshots[i];
-                var dl = char.ToUpperInvariant(snapshot.DriveLetter);
-                var map = new Dictionary<ulong, (string name, ulong parentFrn, bool isDirectory)>(
-                    Math.Max(snapshot.FrnEntries?.Length ?? 0, 0));
+                _frnMaps.Clear();
+                _pathCaches.Clear();
 
-                if (snapshot.FrnEntries != null)
+                if (snapshots == null)
+                    return;
+
+                for (var i = 0; i < snapshots.Count; i++)
                 {
-                    for (var j = 0; j < snapshot.FrnEntries.Length; j++)
-                    {
-                        var entry = snapshot.FrnEntries[j];
-                        map[entry.Frn] = (entry.Name, entry.ParentFrn, entry.IsDirectory);
-                    }
-                }
+                    var snapshot = snapshots[i];
+                    var dl = char.ToUpperInvariant(snapshot.DriveLetter);
+                    var map = new Dictionary<ulong, (string name, ulong parentFrn, bool isDirectory)>(
+                        Math.Max(snapshot.FrnEntries?.Length ?? 0, 0));
 
-                _frnMaps[dl] = map;
-                _pathCaches[dl] = new Dictionary<ulong, string>();
+                    if (snapshot.FrnEntries != null)
+                    {
+                        for (var j = 0; j < snapshot.FrnEntries.Length; j++)
+                        {
+                            var entry = snapshot.FrnEntries[j];
+                            map[entry.Frn] = (entry.Name, entry.ParentFrn, entry.IsDirectory);
+                        }
+                    }
+
+                    _frnMaps[dl] = map;
+                    _pathCaches[dl] = new Dictionary<ulong, string>();
+                }
             }
         }
 
@@ -302,12 +318,14 @@ namespace MftScanner
         public void RegisterFrn(char driveLetter, ulong frn, string fileName, ulong parentFrn, bool isDirectory)
         {
             var dl = char.ToUpperInvariant(driveLetter);
-            if (!_frnMaps.TryGetValue(dl, out var frnMap))
-                return; // 该卷尚未枚举，忽略
-            frnMap[frn] = (fileName, parentFrn, isDirectory);
-            // 使路径缓存中该 FRN 的旧缓存失效（如果有）
-            if (_pathCaches.TryGetValue(dl, out var pathCache))
-                pathCache.Remove(frn);
+            lock (_mapsLock)
+            {
+                if (!_frnMaps.TryGetValue(dl, out var frnMap))
+                    return; // 该卷尚未枚举，忽略
+                frnMap[frn] = (fileName, parentFrn, isDirectory);
+                if (_pathCaches.TryGetValue(dl, out var pathCache))
+                    pathCache.Remove(frn);
+            }
         }
 
         /// <summary>
@@ -316,10 +334,13 @@ namespace MftScanner
         public void UnregisterFrn(char driveLetter, ulong frn)
         {
             var dl = char.ToUpperInvariant(driveLetter);
-            if (_frnMaps.TryGetValue(dl, out var frnMap))
-                frnMap.Remove(frn);
-            if (_pathCaches.TryGetValue(dl, out var pathCache))
-                pathCache.Remove(frn);
+            lock (_mapsLock)
+            {
+                if (_frnMaps.TryGetValue(dl, out var frnMap))
+                    frnMap.Remove(frn);
+                if (_pathCaches.TryGetValue(dl, out var pathCache))
+                    pathCache.Remove(frn);
+            }
         }
 
         /// <summary>
@@ -328,14 +349,17 @@ namespace MftScanner
         public string ResolveFullPath(char driveLetter, ulong parentFrn, string fileName)
         {
             var dl = char.ToUpperInvariant(driveLetter);
-            if (!_frnMaps.TryGetValue(dl, out var frnMap))
-                return dl + ":\\" + fileName;
+            lock (_mapsLock)
+            {
+                if (!_frnMaps.TryGetValue(dl, out var frnMap))
+                    return dl + ":\\" + fileName;
 
-            if (!_pathCaches.TryGetValue(dl, out var pathCache))
-                pathCache = _pathCaches[dl] = new Dictionary<ulong, string>();
+                if (!_pathCaches.TryGetValue(dl, out var pathCache))
+                    pathCache = _pathCaches[dl] = new Dictionary<ulong, string>();
 
-            var dirPath = ResolveDir(parentFrn, dl, frnMap, pathCache);
-            return dirPath + "\\" + fileName;
+                var dirPath = ResolveDir(parentFrn, dl, frnMap, pathCache);
+                return dirPath + "\\" + fileName;
+            }
         }
 
         private static string ResolveDir(ulong dirFrn,
