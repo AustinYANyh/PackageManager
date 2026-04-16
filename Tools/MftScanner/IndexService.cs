@@ -16,8 +16,10 @@ namespace MftScanner
     public sealed class IndexService
     {
         private readonly MftEnumerator _enumerator = new MftEnumerator();
+        private readonly IndexSnapshotStore _snapshotStore = new IndexSnapshotStore();
         private readonly UsnWatcher _usnWatcher = new UsnWatcher();
         private volatile MemoryIndex _index = new MemoryIndex();
+        private bool _watcherInitialized;
 
         // 保存 progress 引用，供 OnJournalOverflow 使用（需求 6.5）
         private IProgress<string> _progress;
@@ -53,8 +55,9 @@ namespace MftScanner
                 _progress = progress;
             return Task.Run(() =>
             {
+                _usnWatcher.StopWatching();
                 _index.Build(Array.Empty<FileRecord>());
-                var result = BuildIndex(_progress, ct);
+                var result = BuildIndexFromMft(_progress, ct);
                 return result;
             }, ct);
         }
@@ -66,16 +69,20 @@ namespace MftScanner
         /// </summary>
         private void SetupUsnWatcher()
         {
+            if (_watcherInitialized)
+                return;
+
             _usnWatcher.FileCreated    += OnFileCreated;
             _usnWatcher.FileDeleted    += OnFileDeleted;
             _usnWatcher.FileRenamed    += OnFileRenamed;
             _usnWatcher.JournalOverflow += OnJournalOverflow;
+            _watcherInitialized = true;
         }
 
         /// <summary>文件创建：插入新 FileRecord，同时更新 FRN 字典供路径解析。需求 6.2</summary>
         private void OnFileCreated(object sender, UsnFileCreatedEventArgs args)
         {
-            _enumerator.RegisterFrn(args.DriveLetter, args.Frn, args.FileName, args.ParentFrn);
+            _enumerator.RegisterFrn(args.DriveLetter, args.Frn, args.FileName, args.ParentFrn, args.IsDirectory);
 
             var lowerName = args.FileName.ToLowerInvariant();
 
@@ -114,7 +121,7 @@ namespace MftScanner
             var oldFullPath = _enumerator.ResolveFullPath(
                 args.DriveLetter, args.OldParentFrn, args.OldLowerName);
             _enumerator.RegisterFrn(args.DriveLetter, args.NewFrn,
-                args.NewRecord.OriginalName, args.NewRecord.ParentFrn);
+                args.NewRecord.OriginalName, args.NewRecord.ParentFrn, args.NewRecord.IsDirectory);
             _index.Rename(args.OldLowerName, args.OldParentFrn, args.DriveLetter, args.NewRecord);
             var newFullPath = _enumerator.ResolveFullPath(
                 args.DriveLetter, args.NewRecord.ParentFrn, args.NewRecord.OriginalName);
@@ -524,6 +531,63 @@ namespace MftScanner
 
         private int BuildIndex(IProgress<string> progress, CancellationToken ct)
         {
+            _usnWatcher.StopWatching();
+
+            if (TryRestoreFromSnapshot(progress, ct, out var restoredCount))
+                return restoredCount;
+
+            return BuildIndexFromMft(progress, ct);
+        }
+
+        private bool TryRestoreFromSnapshot(IProgress<string> progress, CancellationToken ct, out int restoredCount)
+        {
+            restoredCount = 0;
+
+            progress?.Report("正在加载索引快照...");
+            if (!_snapshotStore.TryLoad(out var snapshot) ||
+                snapshot?.Records == null || snapshot.Volumes == null ||
+                snapshot.Volumes.Length == 0)
+                return false;
+
+            ct.ThrowIfCancellationRequested();
+
+            _enumerator.LoadVolumeSnapshots(snapshot.Volumes);
+            _index.LoadSortedRecords(snapshot.Records);
+
+            var checkpoints = new (char driveLetter, long nextUsn, ulong journalId)[snapshot.Volumes.Length];
+            for (var i = 0; i < snapshot.Volumes.Length; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+
+                var volume = snapshot.Volumes[i];
+                if (!_usnWatcher.TryCatchUp(volume.DriveLetter, volume.NextUsn, volume.JournalId, ct,
+                        out var nextUsn, out var latestJournalId))
+                {
+                    progress?.Report("索引快照已过期，正在重建索引...");
+                    _index.Build(Array.Empty<FileRecord>());
+                    return false;
+                }
+
+                checkpoints[i] = (volume.DriveLetter, nextUsn, latestJournalId);
+            }
+
+            var volumeSnapshots = _enumerator.CreateVolumeSnapshots(checkpoints);
+
+            for (var i = 0; i < checkpoints.Length; i++)
+            {
+                var checkpoint = checkpoints[i];
+                _usnWatcher.StartWatching(checkpoint.driveLetter, checkpoint.nextUsn, checkpoint.journalId, ct);
+            }
+
+            restoredCount = _index.TotalCount;
+            progress?.Report($"已从快照恢复 {restoredCount} 个对象");
+
+            QueueSnapshotSave(_index.SortedArray, volumeSnapshots);
+            return true;
+        }
+
+        private int BuildIndexFromMft(IProgress<string> progress, CancellationToken ct)
+        {
             var fixedDrives = DriveInfo.GetDrives()
                 .Where(d => d.DriveType == DriveType.Fixed)
                 .Select(d => d.Name[0])
@@ -562,22 +626,50 @@ namespace MftScanner
 
             // 合并所有卷的记录
             var total = perVolume.Where(v => v.records != null).Sum(v => v.records.Count);
-            var allRecords = new List<FileRecord>(total);
+            var allRecords = new FileRecord[total];
+            var offset = 0;
             var successfulDrives = new List<(char letter, long nextUsn, ulong journalId)>();
             foreach (var v in perVolume)
             {
                 if (v.records == null) continue;
-                allRecords.AddRange(v.records);
+                v.records.CopyTo(allRecords, offset);
+                offset += v.records.Count;
                 successfulDrives.Add((v.letter, v.nextUsn, v.journalId));
             }
 
             _index.Build(allRecords);
             progress?.Report($"已索引 {_index.TotalCount} 个对象");
 
+            var volumeSnapshots = _enumerator.CreateVolumeSnapshots(successfulDrives.ToArray());
+
             foreach (var (letter, nextUsn, journalId) in successfulDrives)
                 _usnWatcher.StartWatching(letter, nextUsn, journalId, ct);
 
+            QueueSnapshotSave(allRecords, volumeSnapshots);
+
             return _index.TotalCount;
+        }
+
+        private void QueueSnapshotSave(FileRecord[] records, VolumeSnapshot[] volumeSnapshots)
+        {
+            if (records == null || volumeSnapshots == null || volumeSnapshots.Length == 0)
+                return;
+
+            var recordCopy = new FileRecord[records.Length];
+            Array.Copy(records, recordCopy, records.Length);
+            var volumeCopy = new VolumeSnapshot[volumeSnapshots.Length];
+            Array.Copy(volumeSnapshots, volumeCopy, volumeSnapshots.Length);
+
+            Task.Run(() =>
+            {
+                try
+                {
+                    _snapshotStore.Save(new IndexSnapshot(recordCopy, volumeCopy));
+                }
+                catch
+                {
+                }
+            });
         }
 
     }

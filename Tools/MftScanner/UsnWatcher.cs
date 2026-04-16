@@ -229,6 +229,61 @@ namespace MftScanner
             }
         }
 
+        public bool TryCatchUp(char driveLetter, long startUsn, ulong journalId, CancellationToken ct,
+            out long nextUsn, out ulong latestJournalId)
+        {
+            var dl = char.ToUpperInvariant(driveLetter);
+            nextUsn = startUsn;
+            latestJournalId = journalId;
+
+            var volumePath = @"\\.\" + dl + ":";
+            var handle = CreateFile(volumePath, GENERIC_READ,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
+
+            if (handle == INVALID_HANDLE_VALUE)
+                return false;
+
+            const int bufferSize = 64 * 1024;
+            var buffer = Marshal.AllocHGlobal(bufferSize);
+            try
+            {
+                if (!DeviceIoControlQueryUsn(handle, FSCTL_QUERY_USN_JOURNAL,
+                    IntPtr.Zero, 0, out var journalData,
+                    Marshal.SizeOf(typeof(UsnJournalData)), out _, IntPtr.Zero))
+                    return false;
+
+                latestJournalId = journalData.UsnJournalID;
+
+                if (journalData.UsnJournalID != journalId || startUsn < journalData.LowestValidUsn)
+                    return false;
+
+                if (startUsn >= journalData.NextUsn)
+                {
+                    nextUsn = journalData.NextUsn;
+                    return true;
+                }
+
+                var state = new VolumeWatchState
+                {
+                    DriveLetter = dl,
+                    NextUsn = startUsn,
+                    JournalId = journalId
+                };
+
+                if (!ReadUsnBatch(state, handle, ref journalData, buffer, bufferSize, ct, raiseOverflowEvent: false))
+                    return false;
+                nextUsn = state.NextUsn;
+                latestJournalId = state.JournalId;
+                return true;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+                CloseHandle(handle);
+            }
+        }
+
         // ── 私有实现 ────────────────────────────────────────────────────────────
 
         /// <summary>
@@ -285,7 +340,7 @@ namespace MftScanner
                             continue;
 
                         UsnDiagLog.Write($"[WATCHER POLL] drive={state.DriveLetter} nextUsn={state.NextUsn} journalNextUsn={journalData.NextUsn}");
-                        ReadUsnBatch(state, handle, ref journalData, buffer, bufferSize, ct);
+                        ReadUsnBatch(state, handle, ref journalData, buffer, bufferSize, ct, raiseOverflowEvent: true);
                     }
                     finally { CloseHandle(handle); }
                 }
@@ -297,8 +352,8 @@ namespace MftScanner
             }
         }
 
-        private void ReadUsnBatch(VolumeWatchState state, IntPtr handle,
-            ref UsnJournalData journalData, IntPtr buffer, int bufferSize, CancellationToken ct)
+        private bool ReadUsnBatch(VolumeWatchState state, IntPtr handle,
+            ref UsnJournalData journalData, IntPtr buffer, int bufferSize, CancellationToken ct, bool raiseOverflowEvent)
         {
             string pendingOldName   = null;
             ulong  pendingOldParent = 0;
@@ -324,11 +379,12 @@ namespace MftScanner
                     UsnDiagLog.Write($"[WATCHER READ FAIL] drive={state.DriveLetter} err={err}");
                     if (err == ERROR_JOURNAL_ENTRY_DELETED)
                     {
-                        JournalOverflow?.Invoke(this, EventArgs.Empty);
+                        if (raiseOverflowEvent)
+                            JournalOverflow?.Invoke(this, EventArgs.Empty);
                         state.NextUsn   = journalData.NextUsn;
                         state.JournalId = journalData.UsnJournalID;
                     }
-                    break;
+                    return false;
                 }
 
                 if (bytesReturned <= 8) break;
@@ -410,6 +466,7 @@ namespace MftScanner
             }
 
             state.NextUsn = readData.StartUsn;
+            return true;
         }
     }
 }

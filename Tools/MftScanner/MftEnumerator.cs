@@ -94,8 +94,8 @@ namespace MftScanner
 
         // ── FRN 字典（按卷存储，供路径解析使用）──────────────────────────────────
         // key = driveLetter(upper), value = FRN → (name, parentFrn)
-        private readonly Dictionary<char, Dictionary<ulong, (string name, ulong parentFrn)>> _frnMaps
-            = new Dictionary<char, Dictionary<ulong, (string name, ulong parentFrn)>>();
+        private readonly Dictionary<char, Dictionary<ulong, (string name, ulong parentFrn, bool isDirectory)>> _frnMaps
+            = new Dictionary<char, Dictionary<ulong, (string name, ulong parentFrn, bool isDirectory)>>();
 
         private readonly Dictionary<char, Dictionary<ulong, string>> _pathCaches
             = new Dictionary<char, Dictionary<ulong, string>>();
@@ -122,15 +122,12 @@ namespace MftScanner
             if (handle == INVALID_HANDLE_VALUE)
                 throw new InvalidOperationException($"无法打开卷 {volumePath}，错误码={Marshal.GetLastWin32Error()}");
 
-            const int bufferSize = 256 * 1024; // 256KB 减少 DeviceIoControl 调用次数
+            const int bufferSize = 1024 * 1024; // 1MB，进一步减少 DeviceIoControl 调用次数
             var buffer  = Marshal.AllocHGlobal(bufferSize);
-            var frnMap  = new Dictionary<ulong, (string name, ulong parentFrn)>(300_000);
+            var frnMap  = new Dictionary<ulong, (string name, ulong parentFrn, bool isDirectory)>(300_000);
             long nextUsn  = 0;
             ulong journalId = 0;
             var startCount = output.Count;
-
-            // 同时存储 isDir，供第二遍构建 FileRecord 使用
-            var frnIsDir = new Dictionary<ulong, bool>(300_000);
 
             try
             {
@@ -178,8 +175,7 @@ namespace MftScanner
                             // 同一 FRN 可能有多条记录（短文件名 8.3 等），保留最长文件名（长文件名）
                             if (!frnMap.TryGetValue(frn, out var existing) || fileName.Length > existing.name.Length)
                             {
-                                frnMap[frn] = (fileName, parentFrn);
-                                frnIsDir[frn] = isDir;
+                                frnMap[frn] = (fileName, parentFrn, isDir);
                             }
                         }
 
@@ -209,8 +205,7 @@ namespace MftScanner
             // 第二遍：从去重后的 frnMap 构建 FileRecord
             foreach (var kv in frnMap)
             {
-                var (name, parentFrn) = kv.Value;
-                var isDir = frnIsDir.TryGetValue(kv.Key, out var d) && d;
+                var (name, parentFrn, isDir) = kv.Value;
                 output.Add(new FileRecord(
                     lowerName:    name.ToLowerInvariant(),
                     originalName: name,
@@ -238,16 +233,78 @@ namespace MftScanner
             }
         }
 
+        public VolumeSnapshot[] CreateVolumeSnapshots((char driveLetter, long nextUsn, ulong journalId)[] checkpoints)
+        {
+            if (checkpoints == null || checkpoints.Length == 0)
+                return Array.Empty<VolumeSnapshot>();
+
+            var snapshots = new VolumeSnapshot[checkpoints.Length];
+            for (var i = 0; i < checkpoints.Length; i++)
+            {
+                var checkpoint = checkpoints[i];
+                var dl = char.ToUpperInvariant(checkpoint.driveLetter);
+                if (!_frnMaps.TryGetValue(dl, out var frnMap))
+                {
+                    snapshots[i] = new VolumeSnapshot(dl, checkpoint.nextUsn, checkpoint.journalId, Array.Empty<FrnSnapshotEntry>());
+                    continue;
+                }
+
+                var entries = new FrnSnapshotEntry[frnMap.Count];
+                var index = 0;
+                foreach (var kv in frnMap)
+                {
+                    entries[index++] = new FrnSnapshotEntry(
+                        kv.Key,
+                        kv.Value.name,
+                        kv.Value.parentFrn,
+                        kv.Value.isDirectory);
+                }
+
+                snapshots[i] = new VolumeSnapshot(dl, checkpoint.nextUsn, checkpoint.journalId, entries);
+            }
+
+            return snapshots;
+        }
+
+        public void LoadVolumeSnapshots(IReadOnlyList<VolumeSnapshot> snapshots)
+        {
+            _frnMaps.Clear();
+            _pathCaches.Clear();
+
+            if (snapshots == null)
+                return;
+
+            for (var i = 0; i < snapshots.Count; i++)
+            {
+                var snapshot = snapshots[i];
+                var dl = char.ToUpperInvariant(snapshot.DriveLetter);
+                var map = new Dictionary<ulong, (string name, ulong parentFrn, bool isDirectory)>(
+                    Math.Max(snapshot.FrnEntries?.Length ?? 0, 0));
+
+                if (snapshot.FrnEntries != null)
+                {
+                    for (var j = 0; j < snapshot.FrnEntries.Length; j++)
+                    {
+                        var entry = snapshot.FrnEntries[j];
+                        map[entry.Frn] = (entry.Name, entry.ParentFrn, entry.IsDirectory);
+                    }
+                }
+
+                _frnMaps[dl] = map;
+                _pathCaches[dl] = new Dictionary<ulong, string>();
+            }
+        }
+
         /// <summary>
         /// USN 事件新增文件时调用，将 frn→(name, parentFrn) 写入字典，
         /// 确保后续 ResolveFullPath 能正确解析该文件及其子文件的路径。
         /// </summary>
-        public void RegisterFrn(char driveLetter, ulong frn, string fileName, ulong parentFrn)
+        public void RegisterFrn(char driveLetter, ulong frn, string fileName, ulong parentFrn, bool isDirectory)
         {
             var dl = char.ToUpperInvariant(driveLetter);
             if (!_frnMaps.TryGetValue(dl, out var frnMap))
                 return; // 该卷尚未枚举，忽略
-            frnMap[frn] = (fileName, parentFrn);
+            frnMap[frn] = (fileName, parentFrn, isDirectory);
             // 使路径缓存中该 FRN 的旧缓存失效（如果有）
             if (_pathCaches.TryGetValue(dl, out var pathCache))
                 pathCache.Remove(frn);
@@ -283,7 +340,7 @@ namespace MftScanner
 
         private static string ResolveDir(ulong dirFrn,
                                          char dl,
-                                         Dictionary<ulong, (string name, ulong parentFrn)> frnMap,
+                                         Dictionary<ulong, (string name, ulong parentFrn, bool isDirectory)> frnMap,
                                          Dictionary<ulong, string> pathCache)
         {
             if (pathCache.TryGetValue(dirFrn, out var hit)) return hit;
@@ -324,7 +381,7 @@ namespace MftScanner
 
         private static void BackfillPathCache(List<ulong> chain,
                                               string anchorPath,
-                                              Dictionary<ulong, (string name, ulong parentFrn)> frnMap,
+                                              Dictionary<ulong, (string name, ulong parentFrn, bool isDirectory)> frnMap,
                                               Dictionary<ulong, string> pathCache)
         {
             var path = anchorPath;

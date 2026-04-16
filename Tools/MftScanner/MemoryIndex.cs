@@ -20,26 +20,23 @@ namespace MftScanner
         private static readonly IComparer<FileRecord> ByLowerName =
             Comparer<FileRecord>.Create((a, b) => string.CompareOrdinal(a.LowerName, b.LowerName));
 
-        public void Build(IEnumerable<FileRecord> records)
+        public void LoadSortedRecords(IReadOnlyList<FileRecord> sortedRecords)
         {
-            // 如果传入的已经是 List，直接用；否则转换一次
-            var list = records as List<FileRecord> ?? new List<FileRecord>(records);
-            var arr  = list.ToArray();
+            var arr = CopyRecords(sortedRecords);
+            Publish(arr, BuildExactHashMap(arr));
+        }
 
-            // 用 StringComparer.Ordinal 直接比较，避免委托调用开销
-            Array.Sort(arr, (a, b) => string.CompareOrdinal(a.LowerName, b.LowerName));
-
-            var map = new Dictionary<string, List<FileRecord>>(arr.Length);
-            foreach (var r in arr)
+        public void Build(IReadOnlyList<FileRecord> records)
+        {
+            if (records == null || records.Count == 0)
             {
-                if (!map.TryGetValue(r.LowerName, out var bucket))
-                    map[r.LowerName] = bucket = new List<FileRecord>(1);
-                bucket.Add(r);
+                Publish(Array.Empty<FileRecord>(), new Dictionary<string, List<FileRecord>>());
+                return;
             }
 
-            _lock.EnterWriteLock();
-            try { ExactHashMap = map; SortedArray = arr; }
-            finally { _lock.ExitWriteLock(); }
+            var arr = CopyRecords(records);
+            Array.Sort(arr, ByLowerName);
+            Publish(arr, BuildExactHashMap(arr));
         }
 
         public void Insert(FileRecord record)
@@ -136,6 +133,45 @@ namespace MftScanner
                 newArr[insertIdx] = newRecord;
                 Array.Copy(arr, insertIdx, newArr, insertIdx + 1, arr.Length - insertIdx);
                 SortedArray = newArr;
+            }
+            finally { _lock.ExitWriteLock(); }
+        }
+
+        private static FileRecord[] CopyRecords(IReadOnlyList<FileRecord> records)
+        {
+            if (records == null || records.Count == 0)
+                return Array.Empty<FileRecord>();
+
+            var arr = records as FileRecord[];
+            if (arr != null)
+                return arr;
+
+            arr = new FileRecord[records.Count];
+            for (var i = 0; i < records.Count; i++)
+                arr[i] = records[i];
+            return arr;
+        }
+
+        private static Dictionary<string, List<FileRecord>> BuildExactHashMap(FileRecord[] arr)
+        {
+            var map = new Dictionary<string, List<FileRecord>>(arr.Length);
+            foreach (var r in arr)
+            {
+                if (!map.TryGetValue(r.LowerName, out var bucket))
+                    map[r.LowerName] = bucket = new List<FileRecord>(1);
+                bucket.Add(r);
+            }
+
+            return map;
+        }
+
+        private void Publish(FileRecord[] arr, Dictionary<string, List<FileRecord>> map)
+        {
+            _lock.EnterWriteLock();
+            try
+            {
+                ExactHashMap = map;
+                SortedArray = arr;
             }
             finally { _lock.ExitWriteLock(); }
         }
