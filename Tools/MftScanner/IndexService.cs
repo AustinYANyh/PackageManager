@@ -101,10 +101,11 @@ namespace MftScanner
         /// <summary>文件删除：从索引中移除记录。需求 6.3</summary>
         private void OnFileDeleted(object sender, UsnFileDeletedEventArgs args)
         {
+            // 删除前先解析路径（FRN 字典此时还未清除），供 UI 精确匹配
+            var fullPath = _enumerator.ResolveFullPath(args.DriveLetter, args.ParentFrn, args.LowerName);
             _index.Remove(args.LowerName, args.ParentFrn, args.DriveLetter);
-            UsnDiagLog.Write($"[USN DELETE] drive={args.DriveLetter} lowerName={args.LowerName} parentFrn={args.ParentFrn}");
             IndexChanged?.Invoke(this, new IndexChangedEventArgs(
-                IndexChangeType.Deleted, args.LowerName, fullPath: null));
+                IndexChangeType.Deleted, args.LowerName, fullPath));
         }
 
         /// <summary>文件重命名：更新 FRN 字典，先移除旧记录再插入新记录。需求 6.4</summary>
@@ -132,7 +133,7 @@ namespace MftScanner
         // ── 匹配模式识别 ────────────────────────────────────────────────────────
 
         /// <summary>四种匹配模式。需求 7.1–7.4</summary>
-        private enum MatchMode { Contains, Prefix, Suffix, Regex }
+        private enum MatchMode { Contains, Prefix, Suffix, Regex, Wildcard }
 
         /// <summary>
         /// 根据关键词格式识别匹配模式，并返回规范化后的查询字符串。
@@ -144,6 +145,35 @@ namespace MftScanner
         /// </list>
         /// 需求 7.1、7.2、7.3、7.4
         /// </summary>
+        /// <summary>
+        /// 解析路径范围限定查询，格式为 <c>&lt;路径前缀&gt; &lt;搜索词&gt;</c>。
+        /// 路径前缀必须以盘符（如 <c>C:\</c>）或 <c>\</c> 开头才视为合法。
+        /// 需求 10.1、10.6
+        /// </summary>
+        /// <returns>
+        /// 合法时返回 <c>(pathPrefix, searchTerm)</c>；
+        /// 不合法时返回 <c>(null, keyword)</c>，整体作为搜索词。
+        /// </returns>
+        private static (string pathPrefix, string searchTerm) ParsePathScope(string keyword)
+        {
+            var spaceIdx = keyword.IndexOf(' ');
+            if (spaceIdx <= 0)
+                return (null, keyword);
+
+            var candidate = keyword.Substring(0, spaceIdx);
+            var isValidPath = (candidate.Length >= 3
+                               && char.IsLetter(candidate[0])
+                               && candidate[1] == ':'
+                               && candidate[2] == '\\')
+                           || candidate.StartsWith("\\");
+
+            if (!isValidPath)
+                return (null, keyword);
+
+            var term = keyword.Substring(spaceIdx).TrimStart();
+            return (candidate, string.IsNullOrEmpty(term) ? string.Empty : term);
+        }
+
         private static (MatchMode mode, string normalizedQuery) DetectMatchMode(string keyword)
         {
             if (keyword.StartsWith("^"))
@@ -154,6 +184,10 @@ namespace MftScanner
 
             if (keyword.Length >= 3 && keyword.StartsWith("/") && keyword.EndsWith("/"))
                 return (MatchMode.Regex, keyword.Substring(1, keyword.Length - 2));
+
+            // 需求 9.1：含 * 或 ? 则识别为通配符模式
+            if (keyword.IndexOfAny(new[] { '*', '?' }) >= 0)
+                return (MatchMode.Wildcard, keyword.ToLowerInvariant());
 
             return (MatchMode.Contains, keyword.ToLowerInvariant());
         }
@@ -196,19 +230,22 @@ namespace MftScanner
         /// 后缀匹配：对 SortedArray 执行线性扫描，返回 LowerName 以 suffix 结尾的记录。
         /// 需求 3.3、7.3
         /// </summary>
-        private static List<FileRecord> SuffixMatch(string suffix, FileRecord[] sortedArray, int maxResults)
+        private static (List<FileRecord> page, int total) SuffixMatch(string suffix, FileRecord[] sortedArray, int maxResults, CancellationToken ct)
         {
-            var results = new List<FileRecord>(Math.Min(maxResults, 64));
+            var page = new List<FileRecord>(Math.Min(maxResults, 64));
+            var total = 0;
+            var i = 0;
             foreach (var record in sortedArray)
             {
+                if ((++i & 0xFFF) == 0) ct.ThrowIfCancellationRequested();
                 if (record.LowerName.EndsWith(suffix, StringComparison.Ordinal))
                 {
-                    results.Add(record);
-                    if (results.Count >= maxResults)
-                        break;
+                    total++;
+                    if (page.Count < maxResults)
+                        page.Add(record);
                 }
             }
-            return results;
+            return (page, total);
         }
 
         /// <summary>
@@ -216,11 +253,12 @@ namespace MftScanner
         /// 若正则无效，通过 <paramref name="progress"/> 上报错误并返回空列表。
         /// 需求 3.4、7.4、7.5
         /// </summary>
-        private static List<FileRecord> RegexMatch(
+        private static (List<FileRecord> page, int total) RegexMatch(
             string pattern,
             FileRecord[] sortedArray,
             int maxResults,
-            IProgress<string> progress)
+            IProgress<string> progress,
+            CancellationToken ct = default)
         {
             Regex regex;
             try
@@ -230,71 +268,93 @@ namespace MftScanner
             catch (ArgumentException)
             {
                 progress?.Report("正则表达式无效");
-                return new List<FileRecord>();
+                return (new List<FileRecord>(), 0);
             }
 
-            var results = new List<FileRecord>(Math.Min(maxResults, 64));
+            var page = new List<FileRecord>(Math.Min(maxResults, 64));
+            var total = 0;
+            var i = 0;
             foreach (var record in sortedArray)
             {
+                if ((++i & 0xFFF) == 0) ct.ThrowIfCancellationRequested();
                 try
                 {
                     if (regex.IsMatch(record.LowerName))
                     {
-                        results.Add(record);
-                        if (results.Count >= maxResults)
-                            break;
+                        total++;
+                        if (page.Count < maxResults)
+                            page.Add(record);
                     }
                 }
                 catch (RegexMatchTimeoutException)
                 {
                     progress?.Report("正则表达式无效");
-                    return new List<FileRecord>();
+                    return (new List<FileRecord>(), 0);
                 }
             }
-            return results;
+            return (page, total);
+        }
+
+        /// <summary>
+        /// 将通配符模式转换为等价的正则表达式字符串。
+        /// <c>*</c> → <c>.*</c>，<c>?</c> → <c>.</c>，其余字符使用 <see cref="Regex.Escape"/> 转义。
+        /// 结果以 <c>^</c> 开头、<c>$</c> 结尾，确保全名匹配语义。
+        /// 需求 9.2、9.3、9.7
+        /// </summary>
+        private static string WildcardToRegex(string pattern)
+        {
+            var sb = new System.Text.StringBuilder("^");
+            foreach (char c in pattern)
+            {
+                switch (c)
+                {
+                    case '*': sb.Append(".*"); break;
+                    case '?': sb.Append('.');  break;
+                    default:  sb.Append(Regex.Escape(c.ToString())); break;
+                }
+            }
+            sb.Append('$');
+            return sb.ToString();
         }
 
         /// <summary>
         /// 包含匹配：先查 ExactHashMap（精确命中），再对 SortedArray 执行二分定位后线性扫描。
         /// 需求 3.1、3.3、7.1
         /// </summary>
-        private static List<FileRecord> ContainsMatch(
+        private static (List<FileRecord> page, int total) ContainsMatch(
             string query,
             Dictionary<string, List<FileRecord>> exactHashMap,
             FileRecord[] sortedArray,
-            int maxResults)
+            int maxResults,
+            CancellationToken ct = default)
         {
-            var results = new List<FileRecord>(Math.Min(maxResults, 64));
+            var page = new List<FileRecord>(Math.Min(maxResults, 64));
+            var total = 0;
 
-            // 先尝试精确匹配（O(1)）
             if (exactHashMap.TryGetValue(query, out var exactBucket))
             {
                 foreach (var r in exactBucket)
                 {
-                    results.Add(r);
-                    if (results.Count >= maxResults)
-                        return results;
+                    total++;
+                    if (page.Count < maxResults)
+                        page.Add(r);
                 }
             }
 
-            // 再对 SortedArray 做包含扫描（跳过已精确命中的记录）
-            // 用二分找到第一个 LowerName >= query 的位置作为扫描起点，
-            // 但包含匹配需要全量扫描，因此直接线性扫描整个数组。
+            var i = 0;
             foreach (var record in sortedArray)
             {
-                // 跳过已通过精确匹配加入的记录
-                if (record.LowerName == query)
-                    continue;
-
+                if ((++i & 0xFFF) == 0) ct.ThrowIfCancellationRequested();
+                if (record.LowerName == query) continue;
                 if (record.LowerName.Contains(query))
                 {
-                    results.Add(record);
-                    if (results.Count >= maxResults)
-                        break;
+                    total++;
+                    if (page.Count < maxResults)
+                        page.Add(record);
                 }
             }
 
-            return results;
+            return (page, total);
         }
 
         // ── 搜索入口 ─────────────────────────────────────────────────────────────
@@ -326,22 +386,45 @@ namespace MftScanner
                     };
 
                 var idx = _index;
-                var (mode, normalizedQuery) = DetectMatchMode(keyword);
+
+                // 需求 10.1：路径范围解析，在 DetectMatchMode 之前执行
+                var (pathPrefix, searchTerm) = ParsePathScope(keyword);
+
+                // 若 searchTerm 为空（用户只输入了路径前缀），直接返回空结果
+                if (string.IsNullOrWhiteSpace(searchTerm))
+                    return new SearchQueryResult
+                    {
+                        TotalIndexedCount = idx.TotalCount,
+                        TotalMatchedCount = 0,
+                        IsTruncated = false,
+                        Results = new List<ScannedFileInfo>()
+                    };
+
+                var (mode, normalizedQuery) = DetectMatchMode(searchTerm);
+
+                // 需求 10.4：路径范围限定时，线性扫描类匹配需要扫描全量索引再过滤，
+                // 因此不设 fetchLimit 上限（int.MaxValue），前缀匹配仍用 maxResults。
+                var fetchLimit = pathPrefix != null ? int.MaxValue : maxResults;
 
                 List<FileRecord> matched;
+                int totalMatched;
                 switch (mode)
                 {
                     case MatchMode.Prefix:
-                        matched = PrefixMatch(normalizedQuery, idx.SortedArray, maxResults);
+                        matched = PrefixMatch(normalizedQuery, idx.SortedArray, fetchLimit);
+                        totalMatched = matched.Count;
                         break;
                     case MatchMode.Suffix:
-                        matched = SuffixMatch(normalizedQuery, idx.SortedArray, maxResults);
+                        { var r = SuffixMatch(normalizedQuery, idx.SortedArray, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
                         break;
                     case MatchMode.Regex:
-                        matched = RegexMatch(normalizedQuery, idx.SortedArray, maxResults, progress);
+                        { var r = RegexMatch(normalizedQuery, idx.SortedArray, fetchLimit, progress, ct); matched = r.page; totalMatched = r.total; }
+                        break;
+                    case MatchMode.Wildcard:
+                        { var r = RegexMatch(WildcardToRegex(normalizedQuery), idx.SortedArray, fetchLimit, progress, ct); matched = r.page; totalMatched = r.total; }
                         break;
                     default:
-                        matched = ContainsMatch(normalizedQuery, idx.ExactHashMap, idx.SortedArray, maxResults);
+                        { var r = ContainsMatch(normalizedQuery, idx.ExactHashMap, idx.SortedArray, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
                         break;
                 }
 
@@ -351,6 +434,7 @@ namespace MftScanner
                 var results = new List<ScannedFileInfo>(matched.Count);
                 foreach (var record in matched)
                 {
+                    ct.ThrowIfCancellationRequested();
                     var fullPath = _enumerator.ResolveFullPath(record.DriveLetter, record.ParentFrn, record.OriginalName);
                     results.Add(new ScannedFileInfo
                     {
@@ -364,11 +448,30 @@ namespace MftScanner
                     });
                 }
 
+                // 需求 10.2、10.3：路径前缀后置过滤（大小写不敏感）
+                // 确保路径前缀以 \ 结尾，避免误匹配同名前缀目录（如 C:\Users\Desktop2）
+                if (pathPrefix != null)
+                {
+                    var normalizedPrefix = pathPrefix.EndsWith("\\")
+                        ? pathPrefix
+                        : pathPrefix + "\\";
+                    results = results
+                        .Where(r => r.FullPath != null &&
+                                    r.FullPath.StartsWith(normalizedPrefix, StringComparison.OrdinalIgnoreCase))
+                        .Take(maxResults)
+                        .ToList();
+                    totalMatched = results.Count;
+
+                    // 需求 10.7：路径范围内无匹配时上报提示
+                    if (results.Count == 0)
+                        progress?.Report("指定路径下无匹配结果");
+                }
+
                 return new SearchQueryResult
                 {
                     TotalIndexedCount = idx.TotalCount,
-                    TotalMatchedCount = results.Count,
-                    IsTruncated       = results.Count >= maxResults,
+                    TotalMatchedCount = totalMatched,
+                    IsTruncated       = totalMatched > maxResults,
                     Results           = results
                 };
             }, ct);

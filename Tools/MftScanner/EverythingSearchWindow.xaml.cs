@@ -75,6 +75,10 @@ namespace MftScanner
         private bool _indexReady;
         private int _indexedCount;
 
+        // 缓存当前关键词对应的编译正则，避免每次 USN 事件都重新构造
+        private string _cachedKeyword;
+        private Regex _cachedRegex;
+
         public EverythingSearchWindow()
         {
             InitializeComponent();
@@ -180,6 +184,10 @@ namespace MftScanner
             _searchCts?.Dispose();
             _searchCts = new CancellationTokenSource();
             var ct = _searchCts.Token;
+
+            // 关键词变化时清掉缓存的正则，下次 USN 事件会用新关键词重建
+            _cachedKeyword = null;
+            _cachedRegex = null;
 
             _displayedResults.Clear();
 
@@ -316,28 +324,52 @@ namespace MftScanner
             var kw = (SearchBox.Text ?? string.Empty).Trim();
             if (string.IsNullOrEmpty(kw)) return;
 
-            UsnDiagLog.Write($"[UI IndexChange] type={e.Type} lowerName={e.LowerName} results={_displayedResults.Count}");
+            // 解析当前关键词中的路径前缀（与 IndexService.ParsePathScope 逻辑一致）
+            string pathPrefix = null;
+            string searchTerm = kw;
+            var spaceIdx = kw.IndexOf(' ');
+            if (spaceIdx > 0)
+            {
+                var candidate = kw.Substring(0, spaceIdx);
+                var isValidPath = (candidate.Length >= 3
+                                   && char.IsLetter(candidate[0])
+                                   && candidate[1] == ':'
+                                   && candidate[2] == '\\')
+                               || candidate.StartsWith("\\");
+                if (isValidPath)
+                {
+                    pathPrefix = candidate.EndsWith("\\") ? candidate : candidate + "\\";
+                    searchTerm = kw.Substring(spaceIdx).TrimStart();
+                }
+            }
 
             switch (e.Type)
             {
                 case IndexChangeType.Deleted:
                     for (var i = _displayedResults.Count - 1; i >= 0; i--)
                     {
-                        UsnDiagLog.Write($"[UI DELETE CHECK] item.FileName={_displayedResults[i].FileName} vs e.LowerName={e.LowerName}");
-                        if (string.Equals(_displayedResults[i].FileName, e.LowerName,
-                                StringComparison.OrdinalIgnoreCase))
+                        var item = _displayedResults[i];
+                        // 优先用 FullPath 精确匹配，避免误删同名不同路径的文件
+                        bool matches = e.FullPath != null
+                            ? string.Equals(item.FullPath, e.FullPath, StringComparison.OrdinalIgnoreCase)
+                            : string.Equals(item.FileName, e.LowerName, StringComparison.OrdinalIgnoreCase);
+                        if (matches)
                             _displayedResults.RemoveAt(i);
                     }
                     break;
 
                 case IndexChangeType.Created:
-                    if (e.FullPath != null && MatchesCurrentKeyword(e.LowerName, kw))
+                    if (e.FullPath != null && MatchesCurrentKeyword(e.LowerName, searchTerm))
                     {
-                        // 避免重复添加（同一文件的 USN 事件可能触发多次）
+                        // 路径前缀过滤
+                        if (pathPrefix != null &&
+                            !e.FullPath.StartsWith(pathPrefix, StringComparison.OrdinalIgnoreCase))
+                            break;
+
                         var alreadyInList = false;
                         for (var i = 0; i < _displayedResults.Count; i++)
                         {
-                            if (string.Equals(_displayedResults[i].FileName, e.LowerName,
+                            if (string.Equals(_displayedResults[i].FullPath, e.FullPath,
                                     StringComparison.OrdinalIgnoreCase))
                             { alreadyInList = true; break; }
                         }
@@ -347,32 +379,85 @@ namespace MftScanner
                     break;
 
                 case IndexChangeType.Renamed:
+                    // 移除旧路径
                     for (var i = _displayedResults.Count - 1; i >= 0; i--)
                     {
                         if (string.Equals(_displayedResults[i].FileName, e.LowerName,
                                 StringComparison.OrdinalIgnoreCase))
                             _displayedResults.RemoveAt(i);
                     }
-                    if (e.FullPath != null && e.NewLowerName != null && MatchesCurrentKeyword(e.NewLowerName, kw))
-                        _displayedResults.Add(new EverythingSearchResultItem(e.FullPath, 0, DateTime.MinValue, false));
+                    // 新名称满足搜索词且路径前缀时才加入
+                    if (e.FullPath != null && e.NewLowerName != null && MatchesCurrentKeyword(e.NewLowerName, searchTerm))
+                    {
+                        if (pathPrefix == null ||
+                            e.FullPath.StartsWith(pathPrefix, StringComparison.OrdinalIgnoreCase))
+                            _displayedResults.Add(new EverythingSearchResultItem(e.FullPath, 0, DateTime.MinValue, false));
+                    }
                     break;
             }
+
+            UpdateStatusAfterIndexChange();
         }
 
-        /// <summary>判断文件名小写是否匹配当前搜索词（复用 DetectMatchMode 逻辑的简化版）。</summary>
-        private static bool MatchesCurrentKeyword(string lowerName, string keyword)
+        private void UpdateStatusAfterIndexChange()
+        {
+            if (_displayedResults.Count == 0)
+                StatusText.Text = $"未找到匹配项（共 {_indexedCount} 个对象）";
+            else
+                StatusText.Text = $"{_displayedResults.Count} 个对象（共 {_indexedCount} 个）";
+        }
+
+        /// <summary>
+        /// 判断文件名小写是否匹配当前搜索词。
+        /// 通配符和正则模式使用缓存的 Regex 对象，避免每次 USN 事件重复构造。
+        /// </summary>
+        private bool MatchesCurrentKeyword(string lowerName, string keyword)
         {
             var kw = keyword.ToLowerInvariant();
             if (kw.StartsWith("^"))
                 return lowerName.StartsWith(kw.Substring(1), StringComparison.Ordinal);
             if (kw.EndsWith("$"))
                 return lowerName.EndsWith(kw.Substring(0, kw.Length - 1), StringComparison.Ordinal);
-            if (kw.Length >= 3 && kw.StartsWith("/") && kw.EndsWith("/"))
+
+            // 正则或通配符：使用缓存的 Regex
+            bool needsRegex = (kw.Length >= 3 && kw.StartsWith("/") && kw.EndsWith("/"))
+                           || kw.IndexOfAny(new[] { '*', '?' }) >= 0;
+            if (needsRegex)
             {
-                try { return Regex.IsMatch(lowerName, kw.Substring(1, kw.Length - 2), RegexOptions.IgnoreCase); }
+                if (_cachedKeyword != kw || _cachedRegex == null)
+                {
+                    _cachedKeyword = kw;
+                    try
+                    {
+                        string pattern = (kw.Length >= 3 && kw.StartsWith("/") && kw.EndsWith("/"))
+                            ? kw.Substring(1, kw.Length - 2)
+                            : WildcardToRegex(kw);
+                        _cachedRegex = new Regex(pattern, RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(100));
+                    }
+                    catch { _cachedRegex = null; }
+                }
+                if (_cachedRegex == null) return false;
+                try { return _cachedRegex.IsMatch(lowerName); }
                 catch { return false; }
             }
+
             return lowerName.Contains(kw);
+        }
+
+        private static string WildcardToRegex(string pattern)
+        {
+            var sb = new System.Text.StringBuilder("^");
+            foreach (char c in pattern)
+            {
+                switch (c)
+                {
+                    case '*': sb.Append(".*"); break;
+                    case '?': sb.Append('.');  break;
+                    default:  sb.Append(System.Text.RegularExpressions.Regex.Escape(c.ToString())); break;
+                }
+            }
+            sb.Append('$');
+            return sb.ToString();
         }
 
         private static void OpenItem(EverythingSearchResultItem item)
