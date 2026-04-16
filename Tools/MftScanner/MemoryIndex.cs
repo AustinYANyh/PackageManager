@@ -22,18 +22,20 @@ namespace MftScanner
 
         public void Build(IEnumerable<FileRecord> records)
         {
-            var list = new List<FileRecord>(records);
-            var map  = new Dictionary<string, List<FileRecord>>(list.Count);
+            // 如果传入的已经是 List，直接用；否则转换一次
+            var list = records as List<FileRecord> ?? new List<FileRecord>(records);
+            var arr  = list.ToArray();
 
-            foreach (var r in list)
+            // 用 StringComparer.Ordinal 直接比较，避免委托调用开销
+            Array.Sort(arr, (a, b) => string.CompareOrdinal(a.LowerName, b.LowerName));
+
+            var map = new Dictionary<string, List<FileRecord>>(arr.Length);
+            foreach (var r in arr)
             {
                 if (!map.TryGetValue(r.LowerName, out var bucket))
-                    map[r.LowerName] = bucket = new List<FileRecord>();
+                    map[r.LowerName] = bucket = new List<FileRecord>(1);
                 bucket.Add(r);
             }
-
-            var arr = list.ToArray();
-            Array.Sort(arr, ByLowerName);
 
             _lock.EnterWriteLock();
             try { ExactHashMap = map; SortedArray = arr; }
@@ -61,7 +63,10 @@ namespace MftScanner
             finally { _lock.ExitWriteLock(); }
         }
 
-        /// <summary>按 lowerName + parentFrn + driveLetter 唯一定位并移除记录。</summary>
+        /// <summary>
+        /// 移除记录。优先用 (lowerName, parentFrn, driveLetter) 精确匹配；
+        /// 若 parentFrn == 0（USN 删除事件有时不提供），则退化为按 (lowerName, driveLetter) 移除第一条。
+        /// </summary>
         public void Remove(string lowerName, ulong parentFrn, char driveLetter)
         {
             _lock.EnterWriteLock();
@@ -69,16 +74,19 @@ namespace MftScanner
             {
                 if (ExactHashMap.TryGetValue(lowerName, out var bucket))
                 {
-                    bucket.RemoveAll(r => r.ParentFrn == parentFrn && r.DriveLetter == driveLetter);
+                    if (parentFrn != 0)
+                        bucket.RemoveAll(r => r.ParentFrn == parentFrn && r.DriveLetter == driveLetter);
+                    else
+                        bucket.RemoveAll(r => r.DriveLetter == driveLetter);
                     if (bucket.Count == 0) ExactHashMap.Remove(lowerName);
                 }
 
                 var arr = SortedArray;
                 for (var i = 0; i < arr.Length; i++)
                 {
-                    if (arr[i].LowerName == lowerName &&
-                        arr[i].ParentFrn == parentFrn &&
-                        arr[i].DriveLetter == driveLetter)
+                    var match = arr[i].LowerName == lowerName && arr[i].DriveLetter == driveLetter
+                                && (parentFrn == 0 || arr[i].ParentFrn == parentFrn);
+                    if (match)
                     {
                         var newArr = new FileRecord[arr.Length - 1];
                         Array.Copy(arr, 0, newArr, 0, i);

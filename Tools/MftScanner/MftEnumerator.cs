@@ -103,9 +103,11 @@ namespace MftScanner
         // ── 公开 API ────────────────────────────────────────────────────────────
 
         /// <summary>
-        /// 枚举卷上所有 MFT 记录，保留 FRN 字典供路径解析，同时返回 USN 游标。
+        /// 枚举卷上所有 MFT 记录，直接构建 FileRecord 写入 output（省去中间 entries 层），
+        /// 同时保留 FRN 字典供路径解析，返回 USN 游标。
         /// </summary>
-        public (List<RawMftEntry> entries, long nextUsn, ulong journalId) EnumerateVolumeWithUsn(char driveLetter, CancellationToken ct)
+        public (int count, long nextUsn, ulong journalId) EnumerateVolumeIntoRecords(
+            char driveLetter, List<FileRecord> output, CancellationToken ct)
         {
             var dl = char.ToUpperInvariant(driveLetter);
             var volumePath = @"\\.\" + dl + ":";
@@ -120,12 +122,12 @@ namespace MftScanner
             if (handle == INVALID_HANDLE_VALUE)
                 throw new InvalidOperationException($"无法打开卷 {volumePath}，错误码={Marshal.GetLastWin32Error()}");
 
-            const int bufferSize = 128 * 1024;
-            var buffer = Marshal.AllocHGlobal(bufferSize);
-            var entries = new List<RawMftEntry>(200_000);
-            var frnMap = new Dictionary<ulong, (string name, ulong parentFrn)>(200_000);
-            long nextUsn = 0;
+            const int bufferSize = 256 * 1024; // 256KB 减少 DeviceIoControl 调用次数
+            var buffer  = Marshal.AllocHGlobal(bufferSize);
+            var frnMap  = new Dictionary<ulong, (string name, ulong parentFrn)>(300_000);
+            long nextUsn  = 0;
             ulong journalId = 0;
+            var startCount = output.Count;
 
             try
             {
@@ -169,11 +171,13 @@ namespace MftScanner
                         {
                             var fileName = Marshal.PtrToStringUni(IntPtr.Add(buffer, offset + fileNameOffset), fileNameLength / 2);
                             var isDir = (fileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-                            entries.Add(new RawMftEntry
-                            {
-                                Frn = frn, ParentFrn = parentFrn, FileName = fileName,
-                                FileAttributes = fileAttributes, IsDirectory = isDir
-                            });
+                            // 直接构建 FileRecord，省去中间 entries 列表
+                            output.Add(new FileRecord(
+                                lowerName:    fileName.ToLowerInvariant(),
+                                originalName: fileName,
+                                parentFrn:    parentFrn,
+                                driveLetter:  dl,
+                                isDirectory:  isDir));
                             frnMap[frn] = (fileName, parentFrn);
                         }
 
@@ -200,10 +204,37 @@ namespace MftScanner
                 CloseHandle(handle);
             }
 
-            _frnMaps[dl] = frnMap;
+            _frnMaps[dl]    = frnMap;
             _pathCaches[dl] = new Dictionary<ulong, string>();
 
-            return (entries, nextUsn, journalId);
+            return (output.Count - startCount, nextUsn, journalId);
+        }
+
+        /// <summary>
+        /// USN 事件新增文件时调用，将 frn→(name, parentFrn) 写入字典，
+        /// 确保后续 ResolveFullPath 能正确解析该文件及其子文件的路径。
+        /// </summary>
+        public void RegisterFrn(char driveLetter, ulong frn, string fileName, ulong parentFrn)
+        {
+            var dl = char.ToUpperInvariant(driveLetter);
+            if (!_frnMaps.TryGetValue(dl, out var frnMap))
+                return; // 该卷尚未枚举，忽略
+            frnMap[frn] = (fileName, parentFrn);
+            // 使路径缓存中该 FRN 的旧缓存失效（如果有）
+            if (_pathCaches.TryGetValue(dl, out var pathCache))
+                pathCache.Remove(frn);
+        }
+
+        /// <summary>
+        /// USN 事件删除文件时调用，从字典中移除对应 FRN。
+        /// </summary>
+        public void UnregisterFrn(char driveLetter, ulong frn)
+        {
+            var dl = char.ToUpperInvariant(driveLetter);
+            if (_frnMaps.TryGetValue(dl, out var frnMap))
+                frnMap.Remove(frn);
+            if (_pathCaches.TryGetValue(dl, out var pathCache))
+                pathCache.Remove(frn);
         }
 
         /// <summary>

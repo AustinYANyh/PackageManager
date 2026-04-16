@@ -10,13 +10,15 @@ namespace MftScanner
     /// <summary>文件创建事件参数。需求 6.2</summary>
     public sealed class UsnFileCreatedEventArgs : EventArgs
     {
-        public UsnFileCreatedEventArgs(string fileName, ulong parentFrn, char driveLetter, bool isDirectory)
+        public UsnFileCreatedEventArgs(ulong frn, string fileName, ulong parentFrn, char driveLetter, bool isDirectory)
         {
+            Frn         = frn;
             FileName    = fileName;
             ParentFrn   = parentFrn;
             DriveLetter = driveLetter;
             IsDirectory = isDirectory;
         }
+        public ulong  Frn         { get; }
         public string FileName    { get; }
         public ulong  ParentFrn   { get; }
         public char   DriveLetter { get; }
@@ -40,15 +42,17 @@ namespace MftScanner
     /// <summary>文件重命名事件参数。需求 6.4</summary>
     public sealed class UsnFileRenamedEventArgs : EventArgs
     {
-        public UsnFileRenamedEventArgs(string oldLowerName, ulong oldParentFrn, char driveLetter, FileRecord newRecord)
+        public UsnFileRenamedEventArgs(string oldLowerName, ulong oldParentFrn, ulong newFrn, char driveLetter, FileRecord newRecord)
         {
             OldLowerName = oldLowerName;
             OldParentFrn = oldParentFrn;
+            NewFrn       = newFrn;
             DriveLetter  = driveLetter;
             NewRecord    = newRecord;
         }
         public string     OldLowerName { get; }
         public ulong      OldParentFrn { get; }
+        public ulong      NewFrn       { get; }
         public char       DriveLetter  { get; }
         public FileRecord NewRecord    { get; }
     }
@@ -345,10 +349,10 @@ namespace MftScanner
                             fileNameLength / 2);
 
                         var isDir     = (fileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-                        var isDelete  = (reason & (USN_REASON_FILE_DELETE | USN_REASON_RENAME_OLD_NAME)) != 0;
-                        var isCreate  = (reason & (USN_REASON_FILE_CREATE | USN_REASON_RENAME_NEW_NAME)) != 0;
                         var isOldName = (reason & USN_REASON_RENAME_OLD_NAME) != 0;
                         var isNewName = (reason & USN_REASON_RENAME_NEW_NAME) != 0;
+                        var isDelete  = (reason & USN_REASON_FILE_DELETE) != 0;
+                        var isCreate  = (reason & USN_REASON_FILE_CREATE) != 0;
 
                         if (isOldName)
                         {
@@ -367,6 +371,7 @@ namespace MftScanner
                             FileRenamed?.Invoke(this, new UsnFileRenamedEventArgs(
                                 oldLowerName: pendingOldName.ToLowerInvariant(),
                                 oldParentFrn: pendingOldParent,
+                                newFrn:       frn,
                                 driveLetter:  _driveLetter,
                                 newRecord:    newRecord));
 
@@ -383,6 +388,7 @@ namespace MftScanner
                         else if (isCreate)
                         {
                             FileCreated?.Invoke(this, new UsnFileCreatedEventArgs(
+                                frn:         frn,
                                 fileName:    fileName,
                                 parentFrn:   parentFrn,
                                 driveLetter: _driveLetter,

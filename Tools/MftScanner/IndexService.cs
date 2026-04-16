@@ -24,6 +24,9 @@ namespace MftScanner
         /// <summary>当前内存索引实例（供 SearchAsync 使用）。</summary>
         public MemoryIndex Index => _index;
 
+        /// <summary>文件系统增量变更事件，携带变更类型和文件信息，供 UI 直接更新列表。</summary>
+        public event EventHandler<IndexChangedEventArgs> IndexChanged;
+
         /// <summary>
         /// 枚举所有固定磁盘卷，构建纯内存索引，完成后启动 UsnWatcher。
         /// 需求 1.1、1.4、1.5、6.1
@@ -62,8 +65,7 @@ namespace MftScanner
                     var driveLetter = drive.Name[0];
                     try
                     {
-                        var (entries, nextUsn, journalId) = _enumerator.EnumerateVolumeWithUsn(driveLetter, ct);
-                        BuildVolumeRecords(driveLetter, entries, allRecords);
+                        var (count, nextUsn, journalId) = _enumerator.EnumerateVolumeIntoRecords(driveLetter, allRecords, ct);
                         successfulDrives.Add((driveLetter, nextUsn, journalId));
                     }
                     catch (OperationCanceledException) { throw; }
@@ -95,9 +97,10 @@ namespace MftScanner
             _usnWatcher.JournalOverflow += OnJournalOverflow;
         }
 
-        /// <summary>文件创建：插入新 FileRecord。需求 6.2</summary>
+        /// <summary>文件创建：插入新 FileRecord，同时更新 FRN 字典供路径解析。需求 6.2</summary>
         private void OnFileCreated(object sender, UsnFileCreatedEventArgs args)
         {
+            _enumerator.RegisterFrn(args.DriveLetter, args.Frn, args.FileName, args.ParentFrn);
             var record = new FileRecord(
                 lowerName:    args.FileName.ToLowerInvariant(),
                 originalName: args.FileName,
@@ -105,18 +108,30 @@ namespace MftScanner
                 driveLetter:  args.DriveLetter,
                 isDirectory:  args.IsDirectory);
             _index.Insert(record);
+            var fullPath = _enumerator.ResolveFullPath(args.DriveLetter, args.ParentFrn, args.FileName);
+            IndexChanged?.Invoke(this, new IndexChangedEventArgs(
+                IndexChangeType.Created, args.FileName.ToLowerInvariant(), fullPath));
         }
 
         /// <summary>文件删除：从索引中移除记录。需求 6.3</summary>
         private void OnFileDeleted(object sender, UsnFileDeletedEventArgs args)
         {
             _index.Remove(args.LowerName, args.ParentFrn, args.DriveLetter);
+            IndexChanged?.Invoke(this, new IndexChangedEventArgs(
+                IndexChangeType.Deleted, args.LowerName, fullPath: null));
         }
 
-        /// <summary>文件重命名：先移除旧记录，再插入新记录。需求 6.4</summary>
+        /// <summary>文件重命名：更新 FRN 字典，先移除旧记录再插入新记录。需求 6.4</summary>
         private void OnFileRenamed(object sender, UsnFileRenamedEventArgs args)
         {
+            _enumerator.RegisterFrn(args.DriveLetter, args.NewFrn,
+                args.NewRecord.OriginalName, args.NewRecord.ParentFrn);
             _index.Rename(args.OldLowerName, args.OldParentFrn, args.DriveLetter, args.NewRecord);
+            var newFullPath = _enumerator.ResolveFullPath(
+                args.DriveLetter, args.NewRecord.ParentFrn, args.NewRecord.OriginalName);
+            IndexChanged?.Invoke(this, new IndexChangedEventArgs(
+                IndexChangeType.Renamed, args.OldLowerName, newFullPath,
+                args.NewRecord.OriginalName, args.NewRecord.LowerName));
         }
 
         /// <summary>
@@ -387,10 +402,9 @@ namespace MftScanner
                 var driveLetter = drive.Name[0];
                 try
                 {
-                    var (entries, nextUsn, journalId) = _enumerator.EnumerateVolumeWithUsn(driveLetter, ct);
-                    BuildVolumeRecords(driveLetter, entries, allRecords);
+                    var (count, nextUsn, journalId) = _enumerator.EnumerateVolumeIntoRecords(driveLetter, allRecords, ct);
                     successfulDrives.Add((driveLetter, nextUsn, journalId));
-                    progress?.Report($"卷 {driveLetter}: 已枚举 {entries.Count} 条");
+                    progress?.Report($"卷 {driveLetter}: 已枚举 {count} 条");
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (InvalidOperationException ex) { progress?.Report($"跳过卷 {driveLetter}:：{ex.Message}"); }
@@ -407,25 +421,30 @@ namespace MftScanner
             return _index.TotalCount;
         }
 
-        /// <summary>
-        /// 将 MFT 条目转换为 FileRecord（只存文件名+ParentFrn，不拼路径）并追加到 allRecords。
-        /// </summary>
-        private static void BuildVolumeRecords(
-            char driveLetter,
-            List<MftEnumerator.RawMftEntry> entries,
-            List<FileRecord> allRecords)
+    }
+
+    public enum IndexChangeType { Created, Deleted, Renamed }
+
+    public sealed class IndexChangedEventArgs : EventArgs
+    {
+        public IndexChangedEventArgs(IndexChangeType type, string lowerName, string fullPath,
+            string newOriginalName = null, string newLowerName = null)
         {
-            foreach (var e in entries)
-            {
-                if (string.IsNullOrEmpty(e.FileName)) continue;
-                allRecords.Add(new FileRecord(
-                    lowerName:    e.FileName.ToLowerInvariant(),
-                    originalName: e.FileName,
-                    parentFrn:    e.ParentFrn,
-                    driveLetter:  driveLetter,
-                    isDirectory:  e.IsDirectory));
-            }
+            Type            = type;
+            LowerName       = lowerName;
+            FullPath        = fullPath;
+            NewOriginalName = newOriginalName;
+            NewLowerName    = newLowerName;
         }
 
+        public IndexChangeType Type            { get; }
+        /// <summary>变更文件名小写（用于匹配当前搜索词）。</summary>
+        public string          LowerName       { get; }
+        /// <summary>完整路径（Created/Renamed 时有值，Deleted 时为 null）。</summary>
+        public string          FullPath        { get; }
+        /// <summary>重命名后的原始文件名（仅 Renamed）。</summary>
+        public string          NewOriginalName { get; }
+        /// <summary>重命名后的文件名小写（仅 Renamed）。</summary>
+        public string          NewLowerName    { get; }
     }
 }

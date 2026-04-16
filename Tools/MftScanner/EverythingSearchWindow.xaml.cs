@@ -4,6 +4,7 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -92,6 +93,12 @@ namespace MftScanner
 
             _debounceTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
             _debounceTimer.Tick += DebounceTimer_Tick;
+
+            // 索引增量变更：直接操作结果列表，不重新搜索
+            _indexService.IndexChanged += (s, e) =>
+            {
+                Dispatcher.BeginInvoke(new Action(() => ApplyIndexChange(e)));
+            };
         }
 
         private void EverythingSearchWindow_Loaded(object sender, RoutedEventArgs e)
@@ -296,6 +303,62 @@ namespace MftScanner
         private void ForceRescanButton_Click(object sender, RoutedEventArgs e)
         {
             _ = StartIndexingAsync(forceRescan: true);
+        }
+
+        /// <summary>
+        /// 根据 USN 增量变更直接操作结果列表，不重新搜索。
+        /// 只有当变更文件名匹配当前搜索词时才修改列表。
+        /// </summary>
+        private void ApplyIndexChange(IndexChangedEventArgs e)
+        {
+            if (!_indexReady) return;
+
+            var kw = (SearchBox.Text ?? string.Empty).Trim();
+            if (string.IsNullOrEmpty(kw)) return;
+
+            switch (e.Type)
+            {
+                case IndexChangeType.Deleted:
+                    for (var i = _displayedResults.Count - 1; i >= 0; i--)
+                    {
+                        if (string.Equals(_displayedResults[i].FileName, e.LowerName,
+                                StringComparison.OrdinalIgnoreCase))
+                            _displayedResults.RemoveAt(i);
+                    }
+                    break;
+
+                case IndexChangeType.Created:
+                    if (e.FullPath != null && MatchesCurrentKeyword(e.LowerName, kw))
+                        _displayedResults.Add(new EverythingSearchResultItem(e.FullPath, 0, DateTime.MinValue, false));
+                    break;
+
+                case IndexChangeType.Renamed:
+                    for (var i = _displayedResults.Count - 1; i >= 0; i--)
+                    {
+                        if (string.Equals(_displayedResults[i].FileName, e.LowerName,
+                                StringComparison.OrdinalIgnoreCase))
+                            _displayedResults.RemoveAt(i);
+                    }
+                    if (e.FullPath != null && e.NewLowerName != null && MatchesCurrentKeyword(e.NewLowerName, kw))
+                        _displayedResults.Add(new EverythingSearchResultItem(e.FullPath, 0, DateTime.MinValue, false));
+                    break;
+            }
+        }
+
+        /// <summary>判断文件名小写是否匹配当前搜索词（复用 DetectMatchMode 逻辑的简化版）。</summary>
+        private static bool MatchesCurrentKeyword(string lowerName, string keyword)
+        {
+            var kw = keyword.ToLowerInvariant();
+            if (kw.StartsWith("^"))
+                return lowerName.StartsWith(kw.Substring(1), StringComparison.Ordinal);
+            if (kw.EndsWith("$"))
+                return lowerName.EndsWith(kw.Substring(0, kw.Length - 1), StringComparison.Ordinal);
+            if (kw.Length >= 3 && kw.StartsWith("/") && kw.EndsWith("/"))
+            {
+                try { return Regex.IsMatch(lowerName, kw.Substring(1, kw.Length - 2), RegexOptions.IgnoreCase); }
+                catch { return false; }
+            }
+            return lowerName.Contains(kw);
         }
 
         private static void OpenItem(EverythingSearchResultItem item)
