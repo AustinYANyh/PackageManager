@@ -111,6 +111,8 @@ namespace MftScanner
         /// <summary>文件重命名：更新 FRN 字典，先移除旧记录再插入新记录。需求 6.4</summary>
         private void OnFileRenamed(object sender, UsnFileRenamedEventArgs args)
         {
+            var oldFullPath = _enumerator.ResolveFullPath(
+                args.DriveLetter, args.OldParentFrn, args.OldLowerName);
             _enumerator.RegisterFrn(args.DriveLetter, args.NewFrn,
                 args.NewRecord.OriginalName, args.NewRecord.ParentFrn);
             _index.Rename(args.OldLowerName, args.OldParentFrn, args.DriveLetter, args.NewRecord);
@@ -118,6 +120,7 @@ namespace MftScanner
                 args.DriveLetter, args.NewRecord.ParentFrn, args.NewRecord.OriginalName);
             IndexChanged?.Invoke(this, new IndexChangedEventArgs(
                 IndexChangeType.Renamed, args.OldLowerName, newFullPath,
+                oldFullPath,
                 args.NewRecord.OriginalName, args.NewRecord.LowerName));
         }
 
@@ -199,11 +202,16 @@ namespace MftScanner
         /// 然后向后扫描直到 LowerName 不再以 prefix 开头。O(log n + m)。
         /// 需求 3.2、7.2
         /// </summary>
-        private static List<FileRecord> PrefixMatch(string prefix, FileRecord[] sortedArray, int maxResults)
+        private static (List<FileRecord> page, int total) PrefixMatch(
+            string prefix,
+            FileRecord[] sortedArray,
+            int offset,
+            int maxResults,
+            CancellationToken ct)
         {
-            var results = new List<FileRecord>(Math.Min(maxResults, 64));
+            var page = new List<FileRecord>(Math.Min(maxResults, 64));
             if (sortedArray.Length == 0 || string.IsNullOrEmpty(prefix))
-                return results;
+                return (page, 0);
 
             // 二分找第一个 LowerName >= prefix 的位置
             int lo = 0, hi = sortedArray.Length - 1, start = sortedArray.Length;
@@ -216,21 +224,31 @@ namespace MftScanner
                 { start = mid; hi = mid - 1; }
             }
 
-            for (var i = start; i < sortedArray.Length && results.Count < maxResults; i++)
+            var total = 0;
+            for (var i = start; i < sortedArray.Length; i++)
             {
+                if (((i - start + 1) & 0xFFF) == 0) ct.ThrowIfCancellationRequested();
                 if (!sortedArray[i].LowerName.StartsWith(prefix, StringComparison.Ordinal))
                     break;
-                results.Add(sortedArray[i]);
+
+                total++;
+                if (total > offset && page.Count < maxResults)
+                    page.Add(sortedArray[i]);
             }
 
-            return results;
+            return (page, total);
         }
 
         /// <summary>
         /// 后缀匹配：对 SortedArray 执行线性扫描，返回 LowerName 以 suffix 结尾的记录。
         /// 需求 3.3、7.3
         /// </summary>
-        private static (List<FileRecord> page, int total) SuffixMatch(string suffix, FileRecord[] sortedArray, int maxResults, CancellationToken ct)
+        private static (List<FileRecord> page, int total) SuffixMatch(
+            string suffix,
+            FileRecord[] sortedArray,
+            int offset,
+            int maxResults,
+            CancellationToken ct)
         {
             var page = new List<FileRecord>(Math.Min(maxResults, 64));
             var total = 0;
@@ -241,7 +259,7 @@ namespace MftScanner
                 if (record.LowerName.EndsWith(suffix, StringComparison.Ordinal))
                 {
                     total++;
-                    if (page.Count < maxResults)
+                    if (total > offset && page.Count < maxResults)
                         page.Add(record);
                 }
             }
@@ -256,6 +274,7 @@ namespace MftScanner
         private static (List<FileRecord> page, int total) RegexMatch(
             string pattern,
             FileRecord[] sortedArray,
+            int offset,
             int maxResults,
             IProgress<string> progress,
             CancellationToken ct = default)
@@ -282,7 +301,7 @@ namespace MftScanner
                     if (regex.IsMatch(record.LowerName))
                     {
                         total++;
-                        if (page.Count < maxResults)
+                        if (total > offset && page.Count < maxResults)
                             page.Add(record);
                     }
                 }
@@ -325,6 +344,7 @@ namespace MftScanner
             string query,
             Dictionary<string, List<FileRecord>> exactHashMap,
             FileRecord[] sortedArray,
+            int offset,
             int maxResults,
             CancellationToken ct = default)
         {
@@ -336,7 +356,7 @@ namespace MftScanner
                 foreach (var r in exactBucket)
                 {
                     total++;
-                    if (page.Count < maxResults)
+                    if (total > offset && page.Count < maxResults)
                         page.Add(r);
                 }
             }
@@ -349,7 +369,7 @@ namespace MftScanner
                 if (record.LowerName.Contains(query))
                 {
                     total++;
-                    if (page.Count < maxResults)
+                    if (total > offset && page.Count < maxResults)
                         page.Add(record);
                 }
             }
@@ -371,6 +391,7 @@ namespace MftScanner
         public Task<SearchQueryResult> SearchAsync(
             string keyword,
             int maxResults,
+            int offset,
             IProgress<string> progress,
             CancellationToken ct)
         {
@@ -402,51 +423,36 @@ namespace MftScanner
 
                 var (mode, normalizedQuery) = DetectMatchMode(searchTerm);
 
-                // 需求 10.4：路径范围限定时，线性扫描类匹配需要扫描全量索引再过滤，
-                // 因此不设 fetchLimit 上限（int.MaxValue），前缀匹配仍用 maxResults。
-                var fetchLimit = pathPrefix != null ? int.MaxValue : maxResults;
+                var normalizedOffset = Math.Max(offset, 0);
+                var normalizedMaxResults = Math.Max(maxResults, 0);
+                var fetchLimit = pathPrefix != null ? int.MaxValue : normalizedMaxResults;
+                var fetchOffset = pathPrefix != null ? 0 : normalizedOffset;
 
                 List<FileRecord> matched;
                 int totalMatched;
                 switch (mode)
                 {
                     case MatchMode.Prefix:
-                        matched = PrefixMatch(normalizedQuery, idx.SortedArray, fetchLimit);
-                        totalMatched = matched.Count;
+                        { var r = PrefixMatch(normalizedQuery, idx.SortedArray, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
                         break;
                     case MatchMode.Suffix:
-                        { var r = SuffixMatch(normalizedQuery, idx.SortedArray, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
+                        { var r = SuffixMatch(normalizedQuery, idx.SortedArray, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
                         break;
                     case MatchMode.Regex:
-                        { var r = RegexMatch(normalizedQuery, idx.SortedArray, fetchLimit, progress, ct); matched = r.page; totalMatched = r.total; }
+                        { var r = RegexMatch(normalizedQuery, idx.SortedArray, fetchOffset, fetchLimit, progress, ct); matched = r.page; totalMatched = r.total; }
                         break;
                     case MatchMode.Wildcard:
-                        { var r = RegexMatch(WildcardToRegex(normalizedQuery), idx.SortedArray, fetchLimit, progress, ct); matched = r.page; totalMatched = r.total; }
+                        { var r = RegexMatch(WildcardToRegex(normalizedQuery), idx.SortedArray, fetchOffset, fetchLimit, progress, ct); matched = r.page; totalMatched = r.total; }
                         break;
                     default:
-                        { var r = ContainsMatch(normalizedQuery, idx.ExactHashMap, idx.SortedArray, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
+                        { var r = ContainsMatch(normalizedQuery, idx.ExactHashMap, idx.SortedArray, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
                         break;
                 }
 
                 ct.ThrowIfCancellationRequested();
 
                 // 按需解析完整路径：用 _enumerator 的 FRN 字典（每卷独立缓存）
-                var results = new List<ScannedFileInfo>(matched.Count);
-                foreach (var record in matched)
-                {
-                    ct.ThrowIfCancellationRequested();
-                    var fullPath = _enumerator.ResolveFullPath(record.DriveLetter, record.ParentFrn, record.OriginalName);
-                    results.Add(new ScannedFileInfo
-                    {
-                        FullPath        = fullPath ?? (record.DriveLetter + ":\\" + record.OriginalName),
-                        FileName        = record.OriginalName,
-                        SizeBytes       = 0,
-                        ModifiedTimeUtc = DateTime.MinValue,
-                        RootPath        = string.Empty,
-                        RootDisplayName = string.Empty,
-                        IsDirectory     = record.IsDirectory
-                    });
-                }
+                var results = new List<ScannedFileInfo>(Math.Min(matched.Count, normalizedMaxResults));
 
                 // 需求 10.2、10.3：路径前缀后置过滤（大小写不敏感）
                 // 确保路径前缀以 \ 结尾，避免误匹配同名前缀目录（如 C:\Users\Desktop2）
@@ -455,23 +461,60 @@ namespace MftScanner
                     var normalizedPrefix = pathPrefix.EndsWith("\\")
                         ? pathPrefix
                         : pathPrefix + "\\";
-                    results = results
-                        .Where(r => r.FullPath != null &&
-                                    r.FullPath.StartsWith(normalizedPrefix, StringComparison.OrdinalIgnoreCase))
-                        .Take(maxResults)
-                        .ToList();
-                    totalMatched = results.Count;
+                    var filteredTotal = 0;
+                    foreach (var record in matched)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        var fullPath = _enumerator.ResolveFullPath(record.DriveLetter, record.ParentFrn, record.OriginalName)
+                                       ?? (record.DriveLetter + ":\\" + record.OriginalName);
+                        if (!fullPath.StartsWith(normalizedPrefix, StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        filteredTotal++;
+                        if (filteredTotal <= normalizedOffset || results.Count >= normalizedMaxResults)
+                            continue;
+
+                        results.Add(new ScannedFileInfo
+                        {
+                            FullPath = fullPath,
+                            FileName = record.OriginalName,
+                            SizeBytes = 0,
+                            ModifiedTimeUtc = DateTime.MinValue,
+                            RootPath = string.Empty,
+                            RootDisplayName = string.Empty,
+                            IsDirectory = record.IsDirectory
+                        });
+                    }
+                    totalMatched = filteredTotal;
 
                     // 需求 10.7：路径范围内无匹配时上报提示
-                    if (results.Count == 0)
+                    if (totalMatched == 0)
                         progress?.Report("指定路径下无匹配结果");
+                }
+                else
+                {
+                    foreach (var record in matched)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        var fullPath = _enumerator.ResolveFullPath(record.DriveLetter, record.ParentFrn, record.OriginalName);
+                        results.Add(new ScannedFileInfo
+                        {
+                            FullPath = fullPath ?? (record.DriveLetter + ":\\" + record.OriginalName),
+                            FileName = record.OriginalName,
+                            SizeBytes = 0,
+                            ModifiedTimeUtc = DateTime.MinValue,
+                            RootPath = string.Empty,
+                            RootDisplayName = string.Empty,
+                            IsDirectory = record.IsDirectory
+                        });
+                    }
                 }
 
                 return new SearchQueryResult
                 {
                     TotalIndexedCount = idx.TotalCount,
                     TotalMatchedCount = totalMatched,
-                    IsTruncated       = totalMatched > maxResults,
+                    IsTruncated       = totalMatched > normalizedOffset + results.Count,
                     Results           = results
                 };
             }, ct);
@@ -544,11 +587,12 @@ namespace MftScanner
     public sealed class IndexChangedEventArgs : EventArgs
     {
         public IndexChangedEventArgs(IndexChangeType type, string lowerName, string fullPath,
-            string newOriginalName = null, string newLowerName = null)
+            string oldFullPath = null, string newOriginalName = null, string newLowerName = null)
         {
             Type            = type;
             LowerName       = lowerName;
             FullPath        = fullPath;
+            OldFullPath     = oldFullPath;
             NewOriginalName = newOriginalName;
             NewLowerName    = newLowerName;
         }
@@ -558,6 +602,8 @@ namespace MftScanner
         public string          LowerName       { get; }
         /// <summary>完整路径（Created/Renamed 时有值，Deleted 时为 null）。</summary>
         public string          FullPath        { get; }
+        /// <summary>重命名前的完整路径（仅 Renamed）。</summary>
+        public string          OldFullPath     { get; }
         /// <summary>重命名后的原始文件名（仅 Renamed）。</summary>
         public string          NewOriginalName { get; }
         /// <summary>重命名后的文件名小写（仅 Renamed）。</summary>

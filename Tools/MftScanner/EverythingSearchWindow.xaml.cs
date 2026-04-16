@@ -8,7 +8,9 @@ using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Threading;
 using CustomControlLibrary.CustomControl.Attribute.DataGrid;
 
@@ -62,11 +64,13 @@ namespace MftScanner
 
     public partial class EverythingSearchWindow : Window
     {
-        private const int MaxDisplayedResults = 500;
+        private const int SearchBatchSize = 500;
+        private const double LoadMoreThreshold = 24d;
 
         private readonly IndexService _indexService = new IndexService();
         private readonly IncrementalFilter _filter;
         private readonly List<ScanRoot> _roots;
+        private readonly HashSet<string> _displayedPathSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         public ObservableCollection<EverythingSearchResultItem> _displayedResults { get; set; }
             = new ObservableCollection<EverythingSearchResultItem>();
         private CancellationTokenSource _indexCts;
@@ -74,8 +78,11 @@ namespace MftScanner
         private readonly DispatcherTimer _debounceTimer;
         private bool _indexReady;
         private int _indexedCount;
-
-        // 缓存当前关键词对应的编译正则，避免每次 USN 事件都重新构造
+        private string _activeKeyword = string.Empty;
+        private int _totalMatchedCount;
+        private int _loadedResultCount;
+        private bool _isLoadingMore;
+        private ScrollViewer _resultsScrollViewer;
         private string _cachedKeyword;
         private Regex _cachedRegex;
 
@@ -98,7 +105,7 @@ namespace MftScanner
             _debounceTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
             _debounceTimer.Tick += DebounceTimer_Tick;
 
-            // 索引增量变更：直接操作结果列表，不重新搜索
+            // 索引增量变更：直接更新当前已显示结果与命中总数，保持实时反馈
             _indexService.IndexChanged += (s, e) =>
             {
                 Dispatcher.BeginInvoke(new Action(() => ApplyIndexChange(e)));
@@ -108,6 +115,7 @@ namespace MftScanner
         private void EverythingSearchWindow_Loaded(object sender, RoutedEventArgs e)
         {
             SearchBox.Focus();
+            AttachResultsScrollViewer();
             _ = StartIndexingAsync(forceRescan: false);
         }
 
@@ -118,6 +126,8 @@ namespace MftScanner
             _searchCts?.Cancel();
             _searchCts?.Dispose();
             _debounceTimer.Stop();
+            if (_resultsScrollViewer != null)
+                _resultsScrollViewer.ScrollChanged -= ResultsScrollViewer_ScrollChanged;
         }
 
         private async Task StartIndexingAsync(bool forceRescan)
@@ -131,8 +141,15 @@ namespace MftScanner
             _searchCts?.Dispose();
             _searchCts = null;
             _displayedResults.Clear();
+            _displayedPathSet.Clear();
             _indexReady = false;
             _indexedCount = 0;
+            _activeKeyword = string.Empty;
+            _totalMatchedCount = 0;
+            _loadedResultCount = 0;
+            _isLoadingMore = false;
+            _cachedKeyword = null;
+            _cachedRegex = null;
             IndexingProgress.Visibility = Visibility.Visible;
             StatusText.Text = "正在建立索引...";
 
@@ -185,11 +202,14 @@ namespace MftScanner
             _searchCts = new CancellationTokenSource();
             var ct = _searchCts.Token;
 
-            // 关键词变化时清掉缓存的正则，下次 USN 事件会用新关键词重建
+            _displayedResults.Clear();
+            _displayedPathSet.Clear();
+            _activeKeyword = string.Empty;
+            _totalMatchedCount = 0;
+            _loadedResultCount = 0;
+            _isLoadingMore = false;
             _cachedKeyword = null;
             _cachedRegex = null;
-
-            _displayedResults.Clear();
 
             if (!_indexReady)
             {
@@ -201,34 +221,27 @@ namespace MftScanner
             if (string.IsNullOrEmpty(kw))
             {
                 IndexingProgress.Visibility = Visibility.Collapsed;
-                StatusText.Text = $"{_indexedCount} 个对象";
+                UpdateSummaryStatus();
                 return;
             }
 
+            _activeKeyword = kw;
             IndexingProgress.Visibility = Visibility.Visible;
             StatusText.Text = $"正在搜索 \"{kw}\"...";
 
             try
             {
                 var queryResult = await _filter
-                    .QueryAsync(kw, MaxDisplayedResults, ct)
+                    .QueryAsync(kw, SearchBatchSize, 0, ct)
                     .ConfigureAwait(true);
 
-                foreach (var item in queryResult.Results.Select(r => new EverythingSearchResultItem(r.FullPath, r.SizeBytes, r.ModifiedTimeUtc, r.IsDirectory)))
-                    _displayedResults.Add(item);
+                if (ct.IsCancellationRequested || !string.Equals(_activeKeyword, kw, StringComparison.Ordinal))
+                    return;
 
-                if (_displayedResults.Count == 0)
-                {
-                    StatusText.Text = $"未找到匹配项（共 {_indexedCount} 个对象）";
-                }
-                else if (queryResult.IsTruncated)
-                {
-                    StatusText.Text = $"显示 {_displayedResults.Count} 个对象（共 {queryResult.TotalMatchedCount} 个，输入更多字符可继续缩小）";
-                }
-                else
-                {
-                    StatusText.Text = $"{_displayedResults.Count} 个对象（共 {queryResult.TotalIndexedCount} 个）";
-                }
+                AppendResults(queryResult);
+                _totalMatchedCount = queryResult.TotalMatchedCount;
+                _loadedResultCount = queryResult.Results.Count;
+                UpdateSummaryStatus();
             }
             catch (OperationCanceledException)
             {
@@ -256,11 +269,8 @@ namespace MftScanner
         {
             if (ResultsGrid.SelectedItem is not EverythingSearchResultItem item)
             {
-                // 无选中项时恢复计数显示
                 if (_indexReady)
-                    StatusText.Text = _displayedResults.Count > 0
-                        ? $"{_displayedResults.Count} 个对象"
-                        : $"{_indexedCount} 个对象";
+                    UpdateSummaryStatus();
                 return;
             }
 
@@ -313,115 +323,196 @@ namespace MftScanner
             _ = StartIndexingAsync(forceRescan: true);
         }
 
-        /// <summary>
-        /// 根据 USN 增量变更直接操作结果列表，不重新搜索。
-        /// 只有当变更文件名匹配当前搜索词时才修改列表。
-        /// </summary>
+        private async void ResultsScrollViewer_ScrollChanged(object sender, ScrollChangedEventArgs e)
+        {
+            if (e.VerticalChange <= 0)
+                return;
+
+            if (_isLoadingMore || string.IsNullOrWhiteSpace(_activeKeyword))
+                return;
+
+            if (_displayedResults.Count >= _totalMatchedCount)
+                return;
+
+            var remaining = e.ExtentHeight - e.ViewportHeight - e.VerticalOffset;
+            if (remaining > LoadMoreThreshold)
+                return;
+
+            await LoadMoreResultsAsync().ConfigureAwait(true);
+        }
+
+        private async Task LoadMoreResultsAsync()
+        {
+            if (_isLoadingMore || string.IsNullOrWhiteSpace(_activeKeyword))
+                return;
+
+            var currentOffset = _loadedResultCount;
+            if (currentOffset >= _totalMatchedCount)
+                return;
+
+            _isLoadingMore = true;
+            IndexingProgress.Visibility = Visibility.Visible;
+            StatusText.Text = $"正在继续加载 \"{_activeKeyword}\"...";
+
+            try
+            {
+                var ct = _searchCts?.Token ?? CancellationToken.None;
+                var queryResult = await _filter
+                    .QueryAsync(_activeKeyword, SearchBatchSize, currentOffset, ct)
+                    .ConfigureAwait(true);
+
+                if (ct.IsCancellationRequested)
+                    return;
+
+                AppendResults(queryResult);
+                _totalMatchedCount = queryResult.TotalMatchedCount;
+                _loadedResultCount += queryResult.Results.Count;
+                UpdateSummaryStatus();
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            finally
+            {
+                _isLoadingMore = false;
+                if (_searchCts == null || !_searchCts.IsCancellationRequested)
+                    IndexingProgress.Visibility = Visibility.Collapsed;
+            }
+        }
+
+        private void AppendResults(SearchQueryResult queryResult)
+        {
+            foreach (var item in queryResult.Results)
+            {
+                TryAddDisplayedResult(item.FullPath, item.SizeBytes, item.ModifiedTimeUtc, item.IsDirectory);
+            }
+        }
+
         private void ApplyIndexChange(IndexChangedEventArgs e)
         {
-            if (!_indexReady) return;
+            if (!_indexReady || string.IsNullOrWhiteSpace(_activeKeyword))
+                return;
 
-            var kw = (SearchBox.Text ?? string.Empty).Trim();
-            if (string.IsNullOrEmpty(kw)) return;
-
-            // 解析当前关键词中的路径前缀（与 IndexService.ParsePathScope 逻辑一致）
-            string pathPrefix = null;
-            string searchTerm = kw;
-            var spaceIdx = kw.IndexOf(' ');
-            if (spaceIdx > 0)
-            {
-                var candidate = kw.Substring(0, spaceIdx);
-                var isValidPath = (candidate.Length >= 3
-                                   && char.IsLetter(candidate[0])
-                                   && candidate[1] == ':'
-                                   && candidate[2] == '\\')
-                               || candidate.StartsWith("\\");
-                if (isValidPath)
-                {
-                    pathPrefix = candidate.EndsWith("\\") ? candidate : candidate + "\\";
-                    searchTerm = kw.Substring(spaceIdx).TrimStart();
-                }
-            }
+            var allLoadedBeforeChange = _displayedResults.Count >= _totalMatchedCount;
+            var (pathPrefix, searchTerm) = ParsePathScope(_activeKeyword);
+            if (string.IsNullOrWhiteSpace(searchTerm))
+                return;
 
             switch (e.Type)
             {
                 case IndexChangeType.Deleted:
-                    for (var i = _displayedResults.Count - 1; i >= 0; i--)
-                    {
-                        var item = _displayedResults[i];
-                        // 优先用 FullPath 精确匹配，避免误删同名不同路径的文件
-                        bool matches = e.FullPath != null
-                            ? string.Equals(item.FullPath, e.FullPath, StringComparison.OrdinalIgnoreCase)
-                            : string.Equals(item.FileName, e.LowerName, StringComparison.OrdinalIgnoreCase);
-                        if (matches)
-                            _displayedResults.RemoveAt(i);
-                    }
-                    break;
+                {
+                    var deletedMatches = MatchesCurrentQuery(e.LowerName, e.FullPath, searchTerm, pathPrefix);
+                    if (deletedMatches && _totalMatchedCount > 0)
+                        _totalMatchedCount--;
 
+                    RemoveDisplayedResult(e.FullPath, e.LowerName);
+                    break;
+                }
                 case IndexChangeType.Created:
-                    if (e.FullPath != null && MatchesCurrentKeyword(e.LowerName, searchTerm))
+                {
+                    if (MatchesCurrentQuery(e.LowerName, e.FullPath, searchTerm, pathPrefix))
                     {
-                        // 路径前缀过滤
-                        if (pathPrefix != null &&
-                            !e.FullPath.StartsWith(pathPrefix, StringComparison.OrdinalIgnoreCase))
-                            break;
-
-                        var alreadyInList = false;
-                        for (var i = 0; i < _displayedResults.Count; i++)
-                        {
-                            if (string.Equals(_displayedResults[i].FullPath, e.FullPath,
-                                    StringComparison.OrdinalIgnoreCase))
-                            { alreadyInList = true; break; }
-                        }
-                        if (!alreadyInList)
-                            _displayedResults.Add(new EverythingSearchResultItem(e.FullPath, 0, DateTime.MinValue, false));
+                        _totalMatchedCount++;
+                        if (allLoadedBeforeChange)
+                            TryAddDisplayedResult(e.FullPath, 0, DateTime.MinValue, false);
                     }
                     break;
-
+                }
                 case IndexChangeType.Renamed:
-                    // 移除旧路径
-                    for (var i = _displayedResults.Count - 1; i >= 0; i--)
+                {
+                    var oldMatches = MatchesCurrentQuery(e.LowerName, e.OldFullPath, searchTerm, pathPrefix);
+                    var newMatches = MatchesCurrentQuery(e.NewLowerName, e.FullPath, searchTerm, pathPrefix);
+
+                    if (oldMatches && _totalMatchedCount > 0)
+                        _totalMatchedCount--;
+                    if (oldMatches || !string.IsNullOrWhiteSpace(e.OldFullPath))
+                        RemoveDisplayedResult(e.OldFullPath, e.LowerName);
+
+                    if (newMatches)
                     {
-                        if (string.Equals(_displayedResults[i].FileName, e.LowerName,
-                                StringComparison.OrdinalIgnoreCase))
-                            _displayedResults.RemoveAt(i);
-                    }
-                    // 新名称满足搜索词且路径前缀时才加入
-                    if (e.FullPath != null && e.NewLowerName != null && MatchesCurrentKeyword(e.NewLowerName, searchTerm))
-                    {
-                        if (pathPrefix == null ||
-                            e.FullPath.StartsWith(pathPrefix, StringComparison.OrdinalIgnoreCase))
-                            _displayedResults.Add(new EverythingSearchResultItem(e.FullPath, 0, DateTime.MinValue, false));
+                        _totalMatchedCount++;
+                        if (allLoadedBeforeChange)
+                            TryAddDisplayedResult(e.FullPath, 0, DateTime.MinValue, false);
                     }
                     break;
+                }
             }
 
-            UpdateStatusAfterIndexChange();
+            if (allLoadedBeforeChange)
+                _loadedResultCount = _displayedResults.Count;
+
+            UpdateSummaryStatus();
         }
 
-        private void UpdateStatusAfterIndexChange()
+        private bool TryAddDisplayedResult(string fullPath, long sizeBytes, DateTime modifiedUtc, bool isDirectory)
         {
-            if (_displayedResults.Count == 0)
-                StatusText.Text = $"未找到匹配项（共 {_indexedCount} 个对象）";
-            else
-                StatusText.Text = $"{_displayedResults.Count} 个对象（共 {_indexedCount} 个）";
+            var normalizedPath = fullPath ?? string.Empty;
+            if (!_displayedPathSet.Add(normalizedPath))
+                return false;
+
+            _displayedResults.Add(new EverythingSearchResultItem(fullPath, sizeBytes, modifiedUtc, isDirectory));
+            return true;
         }
 
-        /// <summary>
-        /// 判断文件名小写是否匹配当前搜索词。
-        /// 通配符和正则模式使用缓存的 Regex 对象，避免每次 USN 事件重复构造。
-        /// </summary>
+        private bool RemoveDisplayedResult(string fullPath, string lowerName)
+        {
+            if (!string.IsNullOrWhiteSpace(fullPath) && _displayedPathSet.Remove(fullPath))
+            {
+                for (var i = _displayedResults.Count - 1; i >= 0; i--)
+                {
+                    if (string.Equals(_displayedResults[i].FullPath, fullPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        _displayedResults.RemoveAt(i);
+                        return true;
+                    }
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(lowerName))
+                return false;
+
+            for (var i = _displayedResults.Count - 1; i >= 0; i--)
+            {
+                if (!string.Equals(_displayedResults[i].FileName, lowerName, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                _displayedPathSet.Remove(_displayedResults[i].FullPath ?? string.Empty);
+                _displayedResults.RemoveAt(i);
+                return true;
+            }
+
+            return false;
+        }
+
+        private bool MatchesCurrentQuery(string lowerName, string fullPath, string searchTerm, string pathPrefix)
+        {
+            if (string.IsNullOrWhiteSpace(lowerName))
+                return false;
+
+            if (!MatchesCurrentKeyword(lowerName, searchTerm))
+                return false;
+
+            if (pathPrefix == null)
+                return true;
+
+            return !string.IsNullOrWhiteSpace(fullPath)
+                   && fullPath.StartsWith(pathPrefix, StringComparison.OrdinalIgnoreCase);
+        }
+
         private bool MatchesCurrentKeyword(string lowerName, string keyword)
         {
-            var kw = keyword.ToLowerInvariant();
+            var kw = (keyword ?? string.Empty).ToLowerInvariant();
+            if (string.IsNullOrEmpty(kw))
+                return false;
+
             if (kw.StartsWith("^"))
                 return lowerName.StartsWith(kw.Substring(1), StringComparison.Ordinal);
             if (kw.EndsWith("$"))
                 return lowerName.EndsWith(kw.Substring(0, kw.Length - 1), StringComparison.Ordinal);
 
-            // 正则或通配符：使用缓存的 Regex
-            bool needsRegex = (kw.Length >= 3 && kw.StartsWith("/") && kw.EndsWith("/"))
-                           || kw.IndexOfAny(new[] { '*', '?' }) >= 0;
+            var needsRegex = (kw.Length >= 3 && kw.StartsWith("/") && kw.EndsWith("/"))
+                             || kw.IndexOfAny(new[] { '*', '?' }) >= 0;
             if (needsRegex)
             {
                 if (_cachedKeyword != kw || _cachedRegex == null)
@@ -429,14 +520,20 @@ namespace MftScanner
                     _cachedKeyword = kw;
                     try
                     {
-                        string pattern = (kw.Length >= 3 && kw.StartsWith("/") && kw.EndsWith("/"))
+                        var pattern = (kw.Length >= 3 && kw.StartsWith("/") && kw.EndsWith("/"))
                             ? kw.Substring(1, kw.Length - 2)
                             : WildcardToRegex(kw);
                         _cachedRegex = new Regex(pattern, RegexOptions.IgnoreCase, TimeSpan.FromMilliseconds(100));
                     }
-                    catch { _cachedRegex = null; }
+                    catch
+                    {
+                        _cachedRegex = null;
+                    }
                 }
-                if (_cachedRegex == null) return false;
+
+                if (_cachedRegex == null)
+                    return false;
+
                 try { return _cachedRegex.IsMatch(lowerName); }
                 catch { return false; }
             }
@@ -444,20 +541,107 @@ namespace MftScanner
             return lowerName.Contains(kw);
         }
 
+        private static (string pathPrefix, string searchTerm) ParsePathScope(string keyword)
+        {
+            var kw = (keyword ?? string.Empty).Trim();
+            var spaceIdx = kw.IndexOf(' ');
+            if (spaceIdx <= 0)
+                return (null, kw);
+
+            var candidate = kw.Substring(0, spaceIdx);
+            var isValidPath = (candidate.Length >= 3
+                               && char.IsLetter(candidate[0])
+                               && candidate[1] == ':'
+                               && candidate[2] == '\\')
+                           || candidate.StartsWith("\\");
+            if (!isValidPath)
+                return (null, kw);
+
+            var normalizedPrefix = candidate.EndsWith("\\") ? candidate : candidate + "\\";
+            var searchTerm = kw.Substring(spaceIdx).TrimStart();
+            return (normalizedPrefix, searchTerm);
+        }
+
         private static string WildcardToRegex(string pattern)
         {
             var sb = new System.Text.StringBuilder("^");
-            foreach (char c in pattern)
+            foreach (var c in pattern)
             {
                 switch (c)
                 {
                     case '*': sb.Append(".*"); break;
-                    case '?': sb.Append('.');  break;
-                    default:  sb.Append(System.Text.RegularExpressions.Regex.Escape(c.ToString())); break;
+                    case '?': sb.Append('.'); break;
+                    default: sb.Append(Regex.Escape(c.ToString())); break;
                 }
             }
+
             sb.Append('$');
             return sb.ToString();
+        }
+
+        private void UpdateSummaryStatus()
+        {
+            if (!_indexReady)
+            {
+                StatusText.Text = "正在建立索引，请稍候...";
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(_activeKeyword))
+            {
+                StatusText.Text = $"{_indexedCount} 个对象";
+                return;
+            }
+
+            if (_totalMatchedCount <= 0 || _displayedResults.Count == 0)
+            {
+                StatusText.Text = $"未找到匹配项（共 {_indexedCount} 个对象）";
+                return;
+            }
+
+            if (_displayedResults.Count < _totalMatchedCount)
+            {
+                StatusText.Text = $"已显示 {_displayedResults.Count} 个对象（共 {_totalMatchedCount} 个，滚动到底继续加载）";
+                return;
+            }
+
+            StatusText.Text = $"{_displayedResults.Count} 个对象（共 {_totalMatchedCount} 个）";
+        }
+
+        private void AttachResultsScrollViewer()
+        {
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (_resultsScrollViewer != null)
+                {
+                    _resultsScrollViewer.ScrollChanged -= ResultsScrollViewer_ScrollChanged;
+                    _resultsScrollViewer = null;
+                }
+
+                _resultsScrollViewer = FindDescendant<ScrollViewer>(ResultsGrid);
+                if (_resultsScrollViewer != null)
+                    _resultsScrollViewer.ScrollChanged += ResultsScrollViewer_ScrollChanged;
+            }), DispatcherPriority.Loaded);
+        }
+
+        private static T FindDescendant<T>(DependencyObject root) where T : DependencyObject
+        {
+            if (root == null)
+                return null;
+
+            var childCount = VisualTreeHelper.GetChildrenCount(root);
+            for (var i = 0; i < childCount; i++)
+            {
+                var child = VisualTreeHelper.GetChild(root, i);
+                if (child is T matched)
+                    return matched;
+
+                var descendant = FindDescendant<T>(child);
+                if (descendant != null)
+                    return descendant;
+            }
+
+            return null;
         }
 
         private static void OpenItem(EverythingSearchResultItem item)

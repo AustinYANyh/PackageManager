@@ -33,6 +33,7 @@ namespace MftScanner
         public async Task<SearchQueryResult> QueryAsync(
             string keyword,
             int maxResults,
+            int offset = 0,
             CancellationToken externalCt = default)
         {
             CancellationTokenSource newCts;
@@ -54,7 +55,7 @@ namespace MftScanner
 
             try
             {
-                return await _indexService.SearchAsync(keyword, maxResults, null, newCts.Token)
+                return await _indexService.SearchAsync(keyword, maxResults, offset, null, newCts.Token)
                     .ConfigureAwait(false);
             }
             catch (TaskCanceledException) when (!externalCt.IsCancellationRequested)
