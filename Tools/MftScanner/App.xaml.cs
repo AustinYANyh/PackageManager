@@ -367,21 +367,12 @@ namespace MftScanner
                 return 1;
             }
 
-            var roots = DriveInfo.GetDrives()
-                .Where(d => d.DriveType == DriveType.Fixed)
-                .Select(d => new ScanRoot
-                {
-                    Path = d.RootDirectory.FullName,
-                    DisplayName = d.Name.TrimEnd('\\', '/')
-                })
-                .ToList();
-
-            var scanService = new MftScanService();
+            var indexService = new IndexService();
 
             // 先完成 warmup，再进入连接循环，避免首次请求时阻塞管道
             try
             {
-                scanService.PrepareSearchIndexAsync(roots, null, CancellationToken.None)
+                indexService.BuildIndexAsync(null, CancellationToken.None)
                     .GetAwaiter().GetResult();
             }
             catch { }
@@ -434,63 +425,38 @@ namespace MftScanner
                                 var request = JsonConvert.DeserializeObject<StartupHelperRequest>(requestJson);
                                 if (request == null)
                                 {
-                                    writer.WriteLine(JsonConvert.SerializeObject(new SearchExportResponse
+                                    WriteStartupHelperFrame(writer, new StartupHelperStreamFrame
                                     {
                                         Success = false,
-                                        ErrorMessage = "请求格式无效。"
-                                    }));
+                                        ErrorMessage = "请求格式无效。",
+                                        IsFinal = true
+                                    });
                                     continue;
                                 }
 
                                 if (string.Equals(request.Action, "shutdown", StringComparison.OrdinalIgnoreCase))
                                 {
-                                    writer.WriteLine(JsonConvert.SerializeObject(new SearchExportResponse { Success = true }));
+                                    WriteStartupHelperFrame(writer, new StartupHelperStreamFrame
+                                    {
+                                        Success = true,
+                                        IsFinal = true
+                                    });
                                     shutdown = true;
                                     break;
                                 }
 
                                 if (!string.Equals(request.Action, "search", StringComparison.OrdinalIgnoreCase))
                                 {
-                                    writer.WriteLine(JsonConvert.SerializeObject(new SearchExportResponse
+                                    WriteStartupHelperFrame(writer, new StartupHelperStreamFrame
                                     {
                                         Success = false,
-                                        ErrorMessage = $"不支持的请求：{request.Action}"
-                                    }));
+                                        ErrorMessage = $"不支持的请求：{request.Action}",
+                                        IsFinal = true
+                                    });
                                     continue;
                                 }
 
-                                if (request.ForceRescan)
-                                {
-                                    scanService.PrepareSearchIndexAsync(roots, null, CancellationToken.None)
-                                        .GetAwaiter().GetResult();
-                                }
-
-                                var queryResult = scanService
-                                    .SearchByKeywordAsync(roots, request.Keyword ?? string.Empty,
-                                        request.MaxResults > 0 ? request.MaxResults : 500, null, CancellationToken.None,
-                                        skipFileStats: true)
-                                    .GetAwaiter()
-                                    .GetResult();
-
-                                writer.WriteLine(JsonConvert.SerializeObject(new SearchExportResponse
-                                {
-                                    Success = true,
-                                    TotalIndexedCount = queryResult?.TotalIndexedCount ?? 0,
-                                    TotalMatchedCount = queryResult?.TotalMatchedCount ?? 0,
-                                    IsTruncated = queryResult?.IsTruncated ?? false,
-                                    Results = (queryResult?.Results ?? new List<ScannedFileInfo>())
-                                        .Select(r => new SearchExportItem
-                                        {
-                                            FullPath = r.FullPath,
-                                            FileName = r.FileName,
-                                            SizeBytes = r.SizeBytes,
-                                            ModifiedTimeUtc = r.ModifiedTimeUtc,
-                                            RootPath = r.RootPath,
-                                            RootDisplayName = r.RootDisplayName,
-                                            IsDirectory = r.IsDirectory
-                                        })
-                                        .ToList()
-                                }));
+                                StreamStartupSearchResults(indexService, request, reader, writer);
                             }
                             catch (IOException)
                             {
@@ -499,11 +465,12 @@ namespace MftScanner
                             {
                                 try
                                 {
-                                    writer.WriteLine(JsonConvert.SerializeObject(new SearchExportResponse
+                                    WriteStartupHelperFrame(writer, new StartupHelperStreamFrame
                                     {
                                         Success = false,
-                                        ErrorMessage = ex.Message
-                                    }));
+                                        ErrorMessage = ex.Message,
+                                        IsFinal = true
+                                    });
                                 }
                                 catch
                                 {
@@ -520,6 +487,133 @@ namespace MftScanner
             catch
             {
                 return 1;
+            }
+            finally
+            {
+                indexService.Shutdown();
+            }
+        }
+
+        private static void StreamStartupSearchResults(IndexService indexService, StartupHelperRequest request,
+            StreamReader reader, StreamWriter writer)
+        {
+            if (request.ForceRescan)
+            {
+                indexService.RebuildIndexAsync(null, CancellationToken.None)
+                    .GetAwaiter().GetResult();
+            }
+
+            var currentStatusMessage = indexService.CurrentStatusMessage;
+            var isCatchingUp = indexService.IsBackgroundCatchUpInProgress;
+
+            var initialFrame = BuildStartupSearchFrame(indexService, request, currentStatusMessage, isCatchingUp, !isCatchingUp);
+            if (!WriteStartupHelperFrame(writer, initialFrame))
+                return;
+
+            if (initialFrame.IsFinal)
+                return;
+
+            using (var updateSignal = new AutoResetEvent(false))
+            {
+                var refreshRequested = 0;
+                EventHandler<IndexStatusChangedEventArgs> statusHandler = (s, e) =>
+                {
+                    currentStatusMessage = e.Message;
+                    isCatchingUp = e.IsBackgroundCatchUpInProgress;
+                    Interlocked.Exchange(ref refreshRequested, 1);
+                    updateSignal.Set();
+                };
+
+                indexService.IndexStatusChanged += statusHandler;
+                try
+                {
+                    currentStatusMessage = indexService.CurrentStatusMessage;
+                    isCatchingUp = indexService.IsBackgroundCatchUpInProgress;
+                    if (!isCatchingUp)
+                    {
+                        WriteStartupHelperFrame(writer,
+                            BuildStartupSearchFrame(indexService, request, currentStatusMessage, false, true));
+                        return;
+                    }
+
+                    var disconnectTask = reader.ReadLineAsync();
+                    while (true)
+                    {
+                        if (disconnectTask.IsCompleted)
+                            break;
+
+                        updateSignal.WaitOne(TimeSpan.FromMilliseconds(250));
+
+                        if (disconnectTask.IsCompleted)
+                            break;
+
+                        if (Interlocked.Exchange(ref refreshRequested, 0) == 0)
+                            continue;
+                        var frame = BuildStartupSearchFrame(indexService, request, currentStatusMessage, isCatchingUp, !isCatchingUp);
+                        if (!WriteStartupHelperFrame(writer, frame))
+                            break;
+
+                        if (frame.IsFinal)
+                            break;
+                    }
+                }
+                finally
+                {
+                    indexService.IndexStatusChanged -= statusHandler;
+                }
+            }
+        }
+
+        private static StartupHelperStreamFrame BuildStartupSearchFrame(IndexService indexService, StartupHelperRequest request,
+            string statusMessage, bool isCatchingUp, bool isFinal)
+        {
+            var queryResult = indexService.SearchAsync(
+                    request.Keyword ?? string.Empty,
+                    request.MaxResults > 0 ? request.MaxResults : 500,
+                    0,
+                    null,
+                    CancellationToken.None)
+                .GetAwaiter()
+                .GetResult();
+
+            return new StartupHelperStreamFrame
+            {
+                Success = true,
+                StatusMessage = statusMessage,
+                IsCatchingUp = isCatchingUp,
+                IsFinal = isFinal,
+                TotalIndexedCount = queryResult?.TotalIndexedCount ?? indexService.Index.TotalCount,
+                TotalMatchedCount = queryResult?.TotalMatchedCount ?? 0,
+                IsTruncated = queryResult?.IsTruncated ?? false,
+                Results = (queryResult?.Results ?? new List<ScannedFileInfo>())
+                    .Select(r => new SearchExportItem
+                    {
+                        FullPath = r.FullPath,
+                        FileName = r.FileName,
+                        SizeBytes = r.SizeBytes,
+                        ModifiedTimeUtc = r.ModifiedTimeUtc,
+                        RootPath = r.RootPath,
+                        RootDisplayName = r.RootDisplayName,
+                        IsDirectory = r.IsDirectory
+                    })
+                    .ToList()
+            };
+        }
+
+        private static bool WriteStartupHelperFrame(StreamWriter writer, StartupHelperStreamFrame frame)
+        {
+            try
+            {
+                writer.WriteLine(JsonConvert.SerializeObject(frame));
+                return true;
+            }
+            catch (IOException)
+            {
+                return false;
+            }
+            catch (ObjectDisposedException)
+            {
+                return false;
             }
         }
 
@@ -601,6 +695,19 @@ namespace MftScanner
             public string Keyword { get; set; }
             public int MaxResults { get; set; }
             public bool ForceRescan { get; set; }
+        }
+
+        private sealed class StartupHelperStreamFrame
+        {
+            public bool Success { get; set; }
+            public string ErrorMessage { get; set; }
+            public string StatusMessage { get; set; }
+            public bool IsCatchingUp { get; set; }
+            public bool IsFinal { get; set; }
+            public int TotalIndexedCount { get; set; }
+            public int TotalMatchedCount { get; set; }
+            public bool IsTruncated { get; set; }
+            public List<SearchExportItem> Results { get; set; } = new List<SearchExportItem>();
         }
     }
 }

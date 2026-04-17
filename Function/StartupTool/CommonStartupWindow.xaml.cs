@@ -162,50 +162,28 @@ public partial class CommonStartupWindow : Window
                 return;
             }
 
-            var response = await QueryHelperAsync(new StartupHelperRequest
+            var receivedFrameCount = 0;
+            await QueryHelperStreamAsync(new StartupHelperRequest
             {
                 Action = "search",
                 Keyword = keyword,
                 MaxResults = MaxDisplayedResults,
                 ForceRescan = forceRescan
+            },
+            response =>
+            {
+                if (ct.IsCancellationRequested || (currentVersion != _searchVersion) || response == null)
+                {
+                    return;
+                }
+
+                receivedFrameCount++;
+                ApplySearchFrame(response);
             }, ct).ConfigureAwait(true);
 
-            if (ct.IsCancellationRequested || (currentVersion != _searchVersion))
-            {
-                return;
-            }
-
-            if (response == null)
+            if (!ct.IsCancellationRequested && (currentVersion == _searchVersion) && (receivedFrameCount == 0))
             {
                 StatusText.Text = "未收到检索结果。";
-                return;
-            }
-
-            if (!response.Success)
-            {
-                StatusText.Text = $"检索失败：{response.ErrorMessage ?? "未知错误"}";
-                return;
-            }
-
-            var results = FilterStartupResults(response.Results);
-            _scanResults.Clear();
-            foreach (var r in results)
-                _scanResults.Add(r);
-
-            ScanCountText.Text = $"共 {results.Count} 项";
-            if (results.Count == 0)
-            {
-                StatusText.Text = response.TotalMatchedCount > 0
-                    ? "检索到匹配对象，但没有可直接作为启动项的文件。"
-                    : $"未找到匹配项（共 {response.TotalIndexedCount} 个对象）";
-            }
-            else if (response.IsTruncated)
-            {
-                StatusText.Text = $"显示 {results.Count} 个启动项（共 {response.TotalMatchedCount} 个对象，输入更多字符可继续缩小）。";
-            }
-            else
-            {
-                StatusText.Text = $"{results.Count} 个启动项（共 {response.TotalIndexedCount} 个对象）";
             }
         }
         catch (OperationCanceledException)
@@ -229,6 +207,102 @@ public partial class CommonStartupWindow : Window
             {
                 SetScanningState(false);
             }
+        }
+    }
+
+    private void ApplySearchFrame(StartupSearchResponse response)
+    {
+        if (response == null)
+        {
+            return;
+        }
+
+        if (!response.Success)
+        {
+            StatusText.Text = $"检索失败：{response.ErrorMessage ?? "未知错误"}";
+            return;
+        }
+
+        var results = FilterStartupResults(response.Results);
+        ReconcileSearchResults(results);
+
+        ScanCountText.Text = $"共 {results.Count} 项";
+
+        if (results.Count == 0)
+        {
+            if (response.TotalMatchedCount > 0)
+            {
+                StatusText.Text = response.IsCatchingUp
+                    ? "检索到匹配对象，但没有可直接作为启动项的文件，后台仍在追平…"
+                    : "检索到匹配对象，但没有可直接作为启动项的文件。";
+            }
+            else
+            {
+                StatusText.Text = response.IsCatchingUp
+                    ? $"未找到匹配项（共 {response.TotalIndexedCount} 个对象，后台追平中）"
+                    : $"未找到匹配项（共 {response.TotalIndexedCount} 个对象）";
+            }
+
+            return;
+        }
+
+        if (response.IsCatchingUp)
+        {
+            StatusText.Text = $"显示 {results.Count} 个启动项（共 {response.TotalMatchedCount} 个对象，后台追平中）";
+            return;
+        }
+
+        if (response.IsTruncated)
+        {
+            StatusText.Text = $"显示 {results.Count} 个启动项（共 {response.TotalMatchedCount} 个对象，输入更多字符可继续缩小）。";
+            return;
+        }
+
+        StatusText.Text = $"{results.Count} 个启动项（共 {response.TotalIndexedCount} 个对象）";
+    }
+
+    private void ReconcileSearchResults(System.Collections.Generic.IReadOnlyList<ScanResultItem> results)
+    {
+        var incoming = results ?? Array.Empty<ScanResultItem>();
+        var incomingMap = incoming
+            .Where(item => item != null && !string.IsNullOrWhiteSpace(item.FullPath))
+            .ToDictionary(item => item.FullPath, StringComparer.OrdinalIgnoreCase);
+
+        for (var i = _scanResults.Count - 1; i >= 0; i--)
+        {
+            var existing = _scanResults[i];
+            if ((existing == null) || string.IsNullOrWhiteSpace(existing.FullPath))
+            {
+                _scanResults.RemoveAt(i);
+                continue;
+            }
+
+            if (!incomingMap.TryGetValue(existing.FullPath, out var incomingItem))
+            {
+                _scanResults.RemoveAt(i);
+                continue;
+            }
+
+            if (!string.Equals(existing.FileName, incomingItem.FileName, StringComparison.Ordinal))
+            {
+                existing.FileName = incomingItem.FileName;
+            }
+        }
+
+        var existingPathSet = new System.Collections.Generic.HashSet<string>(
+            _scanResults
+                .Where(item => item != null && !string.IsNullOrWhiteSpace(item.FullPath))
+                .Select(item => item.FullPath),
+            StringComparer.OrdinalIgnoreCase);
+
+        foreach (var item in incoming)
+        {
+            if ((item == null) || string.IsNullOrWhiteSpace(item.FullPath) || !existingPathSet.Add(item.FullPath))
+            {
+                continue;
+            }
+
+            _scanResults.Add(item);
         }
     }
 
@@ -456,7 +530,7 @@ public partial class CommonStartupWindow : Window
                     await writer.WriteLineAsync(payload).ConfigureAwait(false);
                     cancellationToken.ThrowIfCancellationRequested();
 
-                    var responseJson = await reader.ReadLineAsync().ConfigureAwait(false);
+                    var responseJson = await ReadPipeLineAsync(reader, cancellationToken).ConfigureAwait(false);
                     cancellationToken.ThrowIfCancellationRequested();
 
                     LoggingService.LogInfo($"[StartupSearch] Response received, length={responseJson?.Length ?? -1}");
@@ -468,6 +542,102 @@ public partial class CommonStartupWindow : Window
                 }
             }
         }
+    }
+
+    private async Task<int> QueryHelperStreamAsync(StartupHelperRequest request, Action<StartupSearchResponse> onFrame,
+        CancellationToken cancellationToken, string pipeNameOverride = null)
+    {
+        var pipeName = string.IsNullOrWhiteSpace(pipeNameOverride) ? _helperPipeName : pipeNameOverride;
+        if (string.IsNullOrWhiteSpace(pipeName))
+        {
+            throw new InvalidOperationException("检索服务未启动。");
+        }
+
+        LoggingService.LogInfo($"[StartupSearch] QueryHelperStreamAsync: action={request.Action} keyword={request.Keyword} pipe={pipeName}");
+
+        var deadline = DateTime.UtcNow.AddSeconds(60);
+        var attempt = 0;
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            attempt++;
+
+            using (var client = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous))
+            {
+                try
+                {
+                    await Task.Run(() => client.Connect(2000), cancellationToken);
+                    LoggingService.LogInfo($"[StartupSearch] Stream pipe connected (attempt {attempt})");
+                }
+                catch (TimeoutException)
+                {
+                    LoggingService.LogInfo($"[StartupSearch] Stream connect timeout (attempt {attempt}), retrying...");
+                    if (DateTime.UtcNow >= deadline)
+                    {
+                        LoggingService.LogWarning("[StartupSearch] Stream connect deadline exceeded, giving up");
+                        return 0;
+                    }
+
+                    continue;
+                }
+                catch (Exception ex)
+                {
+                    LoggingService.LogError(ex, $"[StartupSearch] Stream connect failed (attempt {attempt}): {ex.GetType().Name}: {ex.Message}");
+                    throw;
+                }
+
+                using (var writer = new StreamWriter(client, new System.Text.UTF8Encoding(false), 4096, leaveOpen: true) { AutoFlush = true })
+                using (var reader = new StreamReader(client, System.Text.Encoding.UTF8, false, 4096, leaveOpen: true))
+                {
+                    var payload = JsonConvert.SerializeObject(request);
+                    await writer.WriteLineAsync(payload);
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    var frameCount = 0;
+                    while (true)
+                    {
+                        var responseJson = await ReadPipeLineAsync(reader, cancellationToken);
+                        cancellationToken.ThrowIfCancellationRequested();
+
+                        if (string.IsNullOrWhiteSpace(responseJson))
+                        {
+                            return frameCount;
+                        }
+
+                        StartupSearchResponse response;
+                        try
+                        {
+                            response = JsonConvert.DeserializeObject<StartupSearchResponse>(responseJson);
+                        }
+                        catch (Exception ex)
+                        {
+                            LoggingService.LogError(ex, $"[StartupSearch] Stream frame deserialize failed: {responseJson}");
+                            throw;
+                        }
+
+                        frameCount++;
+                        onFrame?.Invoke(response);
+
+                        if ((response != null && response.IsFinal) || (response != null && !response.Success))
+                        {
+                            return frameCount;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private static async Task<string> ReadPipeLineAsync(StreamReader reader, CancellationToken cancellationToken)
+    {
+        var readTask = reader.ReadLineAsync();
+        var completedTask = await Task.WhenAny(readTask, Task.Delay(Timeout.Infinite, cancellationToken)).ConfigureAwait(false);
+        if (completedTask != readTask)
+        {
+            throw new OperationCanceledException(cancellationToken);
+        }
+
+        return await readTask.ConfigureAwait(false);
     }
 
     private static bool IsLaunchableFile(string fullPath)
@@ -661,16 +831,51 @@ public partial class CommonStartupWindow : Window
 //  辅助类型
 // ──────────────────────────────────────────────
 
-public class ScanResultItem
+public class ScanResultItem : INotifyPropertyChanged
 {
-    public string FileName { get; set; }
-    public string FullPath { get; set; }
+    private string _fileName;
+    private string _fullPath;
+
+    public string FileName
+    {
+        get => _fileName;
+        set
+        {
+            if (string.Equals(_fileName, value, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _fileName = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(FileName)));
+        }
+    }
+
+    public string FullPath
+    {
+        get => _fullPath;
+        set
+        {
+            if (string.Equals(_fullPath, value, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            _fullPath = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(FullPath)));
+        }
+    }
+
+    public event PropertyChangedEventHandler PropertyChanged;
 }
 
 internal sealed class StartupSearchResponse
 {
     public bool Success { get; set; }
     public string ErrorMessage { get; set; }
+    public string StatusMessage { get; set; }
+    public bool IsCatchingUp { get; set; }
+    public bool IsFinal { get; set; }
     public int TotalIndexedCount { get; set; }
     public int TotalMatchedCount { get; set; }
     public bool IsTruncated { get; set; }

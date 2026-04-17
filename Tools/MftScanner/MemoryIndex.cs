@@ -12,6 +12,10 @@ namespace MftScanner
         public Dictionary<string, List<FileRecord>> ExactHashMap { get; private set; }
             = new Dictionary<string, List<FileRecord>>();
 
+        /// <summary>扩展名匹配：扩展名小写（如 ".log"）→ FileRecord 列表。</summary>
+        public Dictionary<string, List<FileRecord>> ExtensionHashMap { get; private set; }
+            = new Dictionary<string, List<FileRecord>>();
+
         /// <summary>有序数组：按 LowerName 字典序排列。</summary>
         public FileRecord[] SortedArray { get; private set; } = Array.Empty<FileRecord>();
 
@@ -23,20 +27,23 @@ namespace MftScanner
         public void LoadSortedRecords(IReadOnlyList<FileRecord> sortedRecords)
         {
             var arr = CopyRecords(sortedRecords);
-            Publish(arr, BuildExactHashMap(arr));
+            Publish(arr, BuildExactHashMap(arr), BuildExtensionHashMap(arr));
         }
 
         public void Build(IReadOnlyList<FileRecord> records)
         {
             if (records == null || records.Count == 0)
             {
-                Publish(Array.Empty<FileRecord>(), new Dictionary<string, List<FileRecord>>());
+                Publish(
+                    Array.Empty<FileRecord>(),
+                    new Dictionary<string, List<FileRecord>>(),
+                    new Dictionary<string, List<FileRecord>>());
                 return;
             }
 
             var arr = CopyRecords(records);
             Array.Sort(arr, ByLowerName);
-            Publish(arr, BuildExactHashMap(arr));
+            Publish(arr, BuildExactHashMap(arr), BuildExtensionHashMap(arr));
         }
 
         public void Insert(FileRecord record)
@@ -47,6 +54,13 @@ namespace MftScanner
                 if (!ExactHashMap.TryGetValue(record.LowerName, out var bucket))
                     ExactHashMap[record.LowerName] = bucket = new List<FileRecord>();
                 bucket.Add(record);
+
+                if (TryGetIndexedExtension(record.LowerName, out var extension))
+                {
+                    if (!ExtensionHashMap.TryGetValue(extension, out var extensionBucket))
+                        ExtensionHashMap[extension] = extensionBucket = new List<FileRecord>();
+                    InsertIntoSortedBucket(extensionBucket, record);
+                }
 
                 var arr = SortedArray;
                 var idx = Array.BinarySearch(arr, record, ByLowerName);
@@ -61,28 +75,38 @@ namespace MftScanner
         }
 
         /// <summary>
-        /// 移除记录。优先用 (lowerName, parentFrn, driveLetter) 精确匹配；
-        /// 若 parentFrn == 0（USN 删除事件有时不提供），则退化为按 (lowerName, driveLetter) 移除第一条。
+        /// 移除记录。优先按 FRN 精确匹配；若 FRN 不可用，再退化到 (lowerName, parentFrn, driveLetter)。
         /// </summary>
-        public void Remove(string lowerName, ulong parentFrn, char driveLetter)
+        public void Remove(ulong frn, string lowerName, ulong parentFrn, char driveLetter)
         {
             _lock.EnterWriteLock();
             try
             {
                 if (ExactHashMap.TryGetValue(lowerName, out var bucket))
                 {
-                    if (parentFrn != 0)
+                    if (frn != 0)
+                        bucket.RemoveAll(r => r.Frn == frn && r.DriveLetter == driveLetter);
+                    else if (parentFrn != 0)
                         bucket.RemoveAll(r => r.ParentFrn == parentFrn && r.DriveLetter == driveLetter);
                     else
                         bucket.RemoveAll(r => r.DriveLetter == driveLetter);
                     if (bucket.Count == 0) ExactHashMap.Remove(lowerName);
                 }
 
+                if (TryGetIndexedExtension(lowerName, out var extension)
+                    && ExtensionHashMap.TryGetValue(extension, out var extensionBucket))
+                {
+                    RemoveFromBucket(extensionBucket, frn, lowerName, parentFrn, driveLetter);
+                    if (extensionBucket.Count == 0) ExtensionHashMap.Remove(extension);
+                }
+
                 var arr = SortedArray;
                 for (var i = 0; i < arr.Length; i++)
                 {
-                    var match = arr[i].LowerName == lowerName && arr[i].DriveLetter == driveLetter
-                                && (parentFrn == 0 || arr[i].ParentFrn == parentFrn);
+                    var match = frn != 0
+                        ? arr[i].Frn == frn && arr[i].DriveLetter == driveLetter
+                        : arr[i].LowerName == lowerName && arr[i].DriveLetter == driveLetter
+                          && (parentFrn == 0 || arr[i].ParentFrn == parentFrn);
                     if (match)
                     {
                         var newArr = new FileRecord[arr.Length - 1];
@@ -96,23 +120,36 @@ namespace MftScanner
             finally { _lock.ExitWriteLock(); }
         }
 
-        public void Rename(string oldLowerName, ulong oldParentFrn, char driveLetter, FileRecord newRecord)
+        public void Rename(ulong frn, string oldLowerName, ulong oldParentFrn, char driveLetter, FileRecord newRecord)
         {
             _lock.EnterWriteLock();
             try
             {
                 if (ExactHashMap.TryGetValue(oldLowerName, out var bucket))
                 {
-                    bucket.RemoveAll(r => r.ParentFrn == oldParentFrn && r.DriveLetter == driveLetter);
+                    if (frn != 0)
+                        bucket.RemoveAll(r => r.Frn == frn && r.DriveLetter == driveLetter);
+                    else
+                        bucket.RemoveAll(r => r.ParentFrn == oldParentFrn && r.DriveLetter == driveLetter);
                     if (bucket.Count == 0) ExactHashMap.Remove(oldLowerName);
+                }
+
+                if (TryGetIndexedExtension(oldLowerName, out var oldExtension)
+                    && ExtensionHashMap.TryGetValue(oldExtension, out var oldExtensionBucket))
+                {
+                    RemoveFromBucket(oldExtensionBucket, frn, oldLowerName, oldParentFrn, driveLetter);
+                    if (oldExtensionBucket.Count == 0) ExtensionHashMap.Remove(oldExtension);
                 }
 
                 var arr = SortedArray;
                 for (var i = 0; i < arr.Length; i++)
                 {
-                    if (arr[i].LowerName == oldLowerName &&
-                        arr[i].ParentFrn == oldParentFrn &&
-                        arr[i].DriveLetter == driveLetter)
+                    var match = frn != 0
+                        ? arr[i].Frn == frn && arr[i].DriveLetter == driveLetter
+                        : arr[i].LowerName == oldLowerName &&
+                          arr[i].ParentFrn == oldParentFrn &&
+                          arr[i].DriveLetter == driveLetter;
+                    if (match)
                     {
                         var tmp = new FileRecord[arr.Length - 1];
                         Array.Copy(arr, 0, tmp, 0, i);
@@ -125,6 +162,13 @@ namespace MftScanner
                 if (!ExactHashMap.TryGetValue(newRecord.LowerName, out var nb))
                     ExactHashMap[newRecord.LowerName] = nb = new List<FileRecord>();
                 nb.Add(newRecord);
+
+                if (TryGetIndexedExtension(newRecord.LowerName, out var newExtension))
+                {
+                    if (!ExtensionHashMap.TryGetValue(newExtension, out var newExtensionBucket))
+                        ExtensionHashMap[newExtension] = newExtensionBucket = new List<FileRecord>();
+                    InsertIntoSortedBucket(newExtensionBucket, newRecord);
+                }
 
                 var insertIdx = Array.BinarySearch(arr, newRecord, ByLowerName);
                 if (insertIdx < 0) insertIdx = ~insertIdx;
@@ -165,12 +209,32 @@ namespace MftScanner
             return map;
         }
 
-        private void Publish(FileRecord[] arr, Dictionary<string, List<FileRecord>> map)
+        private static Dictionary<string, List<FileRecord>> BuildExtensionHashMap(FileRecord[] arr)
+        {
+            var map = new Dictionary<string, List<FileRecord>>();
+            foreach (var record in arr)
+            {
+                if (!TryGetIndexedExtension(record?.LowerName, out var extension))
+                    continue;
+
+                if (!map.TryGetValue(extension, out var bucket))
+                    map[extension] = bucket = new List<FileRecord>();
+                bucket.Add(record);
+            }
+
+            return map;
+        }
+
+        private void Publish(
+            FileRecord[] arr,
+            Dictionary<string, List<FileRecord>> exactMap,
+            Dictionary<string, List<FileRecord>> extensionMap)
         {
             _lock.EnterWriteLock();
             try
             {
-                ExactHashMap = map;
+                ExactHashMap = exactMap;
+                ExtensionHashMap = extensionMap;
                 SortedArray = arr;
             }
             finally { _lock.ExitWriteLock(); }
@@ -186,7 +250,7 @@ namespace MftScanner
             {
                 var map = new Dictionary<RecordKey, FileRecord>(SortedArray.Length + changes.Count);
                 foreach (var record in SortedArray)
-                    map[new RecordKey(record.LowerName, record.ParentFrn, record.DriveLetter)] = record;
+                    map[RecordKey.FromRecord(record)] = record;
 
                 for (var i = 0; i < changes.Count; i++)
                 {
@@ -194,14 +258,14 @@ namespace MftScanner
                     switch (change.Kind)
                     {
                         case UsnChangeKind.Create:
-                            map[new RecordKey(change.LowerName, change.ParentFrn, change.DriveLetter)] = change.ToRecord();
+                            map[RecordKey.FromChange(change)] = change.ToRecord();
                             break;
                         case UsnChangeKind.Delete:
-                            map.Remove(new RecordKey(change.LowerName, change.ParentFrn, change.DriveLetter));
+                            map.Remove(RecordKey.FromChange(change));
                             break;
                         case UsnChangeKind.Rename:
-                            map.Remove(new RecordKey(change.OldLowerName, change.OldParentFrn, change.DriveLetter));
-                            map[new RecordKey(change.LowerName, change.ParentFrn, change.DriveLetter)] = change.ToRecord();
+                            map.Remove(RecordKey.FromRenameOld(change));
+                            map[RecordKey.FromChange(change)] = change.ToRecord();
                             break;
                     }
                 }
@@ -213,26 +277,85 @@ namespace MftScanner
 
                 Array.Sort(arr, ByLowerName);
                 ExactHashMap = BuildExactHashMap(arr);
+                ExtensionHashMap = BuildExtensionHashMap(arr);
                 SortedArray = arr;
             }
             finally { _lock.ExitWriteLock(); }
         }
 
+        private static bool TryGetIndexedExtension(string lowerName, out string extension)
+        {
+            extension = null;
+            if (string.IsNullOrEmpty(lowerName))
+                return false;
+
+            var dotIndex = lowerName.LastIndexOf('.');
+            if (dotIndex < 0 || dotIndex == lowerName.Length - 1)
+                return false;
+
+            extension = lowerName.Substring(dotIndex);
+            return extension.Length > 1;
+        }
+
+        private static void InsertIntoSortedBucket(List<FileRecord> bucket, FileRecord record)
+        {
+            var insertIndex = bucket.BinarySearch(record, ByLowerName);
+            if (insertIndex < 0)
+                insertIndex = ~insertIndex;
+            bucket.Insert(insertIndex, record);
+        }
+
+        private static void RemoveFromBucket(List<FileRecord> bucket, ulong frn, string lowerName, ulong parentFrn, char driveLetter)
+        {
+            if (bucket == null || bucket.Count == 0)
+                return;
+
+            if (frn != 0)
+            {
+                bucket.RemoveAll(r => r.Frn == frn && r.DriveLetter == driveLetter);
+                return;
+            }
+
+            bucket.RemoveAll(r => r.LowerName == lowerName
+                                  && r.DriveLetter == driveLetter
+                                  && (parentFrn == 0 || r.ParentFrn == parentFrn));
+        }
+
         private struct RecordKey : IEquatable<RecordKey>
         {
-            public RecordKey(string lowerName, ulong parentFrn, char driveLetter)
+            public RecordKey(ulong frn, string lowerName, ulong parentFrn, char driveLetter)
             {
+                Frn = frn;
                 LowerName = lowerName;
                 ParentFrn = parentFrn;
                 DriveLetter = driveLetter;
             }
 
+            public ulong Frn { get; }
             public string LowerName { get; }
             public ulong ParentFrn { get; }
             public char DriveLetter { get; }
 
+            public static RecordKey FromRecord(FileRecord record)
+            {
+                return new RecordKey(record?.Frn ?? 0, record?.LowerName, record?.ParentFrn ?? 0, record?.DriveLetter ?? '\0');
+            }
+
+            public static RecordKey FromChange(UsnChangeEntry change)
+            {
+                return new RecordKey(change?.Frn ?? 0, change?.LowerName, change?.ParentFrn ?? 0, change?.DriveLetter ?? '\0');
+            }
+
+            public static RecordKey FromRenameOld(UsnChangeEntry change)
+            {
+                return new RecordKey(change?.Frn ?? 0, change?.OldLowerName, change?.OldParentFrn ?? 0, change?.DriveLetter ?? '\0');
+            }
+
             public bool Equals(RecordKey other)
             {
+                if (Frn != 0 || other.Frn != 0)
+                    return Frn == other.Frn && DriveLetter == other.DriveLetter;
+
                 return ParentFrn == other.ParentFrn
                        && DriveLetter == other.DriveLetter
                        && string.Equals(LowerName, other.LowerName, StringComparison.Ordinal);
@@ -247,6 +370,12 @@ namespace MftScanner
             {
                 unchecked
                 {
+                    if (Frn != 0)
+                    {
+                        var frnHash = Frn.GetHashCode();
+                        return (frnHash * 397) ^ DriveLetter.GetHashCode();
+                    }
+
                     var hash = LowerName != null ? StringComparer.Ordinal.GetHashCode(LowerName) : 0;
                     hash = (hash * 397) ^ ParentFrn.GetHashCode();
                     hash = (hash * 397) ^ DriveLetter.GetHashCode();

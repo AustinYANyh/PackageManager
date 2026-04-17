@@ -86,6 +86,8 @@ namespace MftScanner
         private ScrollViewer _resultsScrollViewer;
         private string _cachedKeyword;
         private Regex _cachedRegex;
+        private bool _pendingRefreshFromStatus;
+        private string _latestIndexStatusMessage;
 
         public EverythingSearchWindow()
         {
@@ -110,6 +112,10 @@ namespace MftScanner
             _indexService.IndexChanged += (s, e) =>
             {
                 Dispatcher.BeginInvoke(new Action(() => ApplyIndexChange(e)));
+            };
+            _indexService.IndexStatusChanged += (s, e) =>
+            {
+                Dispatcher.BeginInvoke(new Action(() => ApplyIndexStatusChange(e)));
             };
         }
 
@@ -214,6 +220,7 @@ namespace MftScanner
             _isLoadingMore = false;
             _cachedKeyword = null;
             _cachedRegex = null;
+            _pendingRefreshFromStatus = false;
 
             if (!_indexReady)
             {
@@ -258,6 +265,12 @@ namespace MftScanner
                 {
                     IndexingProgress.Visibility = Visibility.Collapsed;
                     UpdateSummaryStatus();
+                }
+
+                if (_pendingRefreshFromStatus && !string.IsNullOrWhiteSpace(_activeKeyword))
+                {
+                    _pendingRefreshFromStatus = false;
+                    _ = ApplyFilterAsync(_activeKeyword);
                 }
             }
         }
@@ -460,6 +473,35 @@ namespace MftScanner
             UpdateSummaryStatus();
         }
 
+        private void ApplyIndexStatusChange(IndexStatusChangedEventArgs e)
+        {
+            _indexedCount = e.IndexedCount;
+            _latestIndexStatusMessage = e.Message;
+
+            if (e.IsBackgroundCatchUpInProgress)
+            {
+                IndexingProgress.Visibility = Visibility.Visible;
+                if (!_isSearchInProgress && !_isLoadingMore)
+                    UpdateSummaryStatus();
+            }
+            else if (!_isSearchInProgress && !_isLoadingMore)
+            {
+                IndexingProgress.Visibility = Visibility.Collapsed;
+                UpdateSummaryStatus();
+            }
+
+            if (!e.RequireSearchRefresh || string.IsNullOrWhiteSpace(_activeKeyword))
+                return;
+
+            if (_isSearchInProgress || _isLoadingMore)
+            {
+                _pendingRefreshFromStatus = true;
+                return;
+            }
+
+            _ = ApplyFilterAsync(_activeKeyword);
+        }
+
         private bool TryAddDisplayedResult(string fullPath, long sizeBytes, DateTime modifiedUtc, bool isDirectory)
         {
             var normalizedPath = fullPath ?? string.Empty;
@@ -616,23 +658,31 @@ namespace MftScanner
 
             if (string.IsNullOrWhiteSpace(_activeKeyword))
             {
-                StatusText.Text = $"{_indexedCount} 个对象";
+                StatusText.Text = !string.IsNullOrWhiteSpace(_latestIndexStatusMessage)
+                    ? _latestIndexStatusMessage
+                    : $"{_indexedCount} 个对象";
                 return;
             }
 
             if (_totalMatchedCount <= 0 || _displayedResults.Count == 0)
             {
-                StatusText.Text = $"未找到匹配项（共 {_indexedCount} 个对象）";
+                StatusText.Text = _indexService.IsBackgroundCatchUpInProgress
+                    ? $"未找到匹配项（共 {_indexedCount} 个对象，后台追平中）"
+                    : $"未找到匹配项（共 {_indexedCount} 个对象）";
                 return;
             }
 
             if (_displayedResults.Count < _totalMatchedCount)
             {
-                StatusText.Text = $"已显示 {_displayedResults.Count} 个对象（共 {_totalMatchedCount} 个，滚动到底继续加载）";
+                StatusText.Text = _indexService.IsBackgroundCatchUpInProgress
+                    ? $"已显示 {_displayedResults.Count} 个对象（共 {_totalMatchedCount} 个，后台追平中）"
+                    : $"已显示 {_displayedResults.Count} 个对象（共 {_totalMatchedCount} 个，滚动到底继续加载）";
                 return;
             }
 
-            StatusText.Text = $"{_displayedResults.Count} 个对象（共 {_totalMatchedCount} 个）";
+            StatusText.Text = _indexService.IsBackgroundCatchUpInProgress
+                ? $"{_displayedResults.Count} 个对象（共 {_totalMatchedCount} 个，后台追平中）"
+                : $"{_displayedResults.Count} 个对象（共 {_totalMatchedCount} 个）";
         }
 
         private void AttachResultsScrollViewer()

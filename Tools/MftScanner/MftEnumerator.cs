@@ -212,7 +212,8 @@ namespace MftScanner
                     originalName: name,
                     parentFrn:    parentFrn,
                     driveLetter:  dl,
-                    isDirectory:  isDir));
+                    isDirectory:  isDir,
+                    frn:          kv.Key));
             }
 
             lock (_mapsLock)

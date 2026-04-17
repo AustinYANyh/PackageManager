@@ -49,7 +49,7 @@ namespace MftScanner
 
         public FileRecord ToRecord()
         {
-            return new FileRecord(LowerName, OriginalName, ParentFrn, DriveLetter, IsDirectory);
+            return new FileRecord(LowerName, OriginalName, ParentFrn, DriveLetter, IsDirectory, Frn);
         }
     }
 
@@ -76,12 +76,14 @@ namespace MftScanner
     /// <summary>文件删除事件参数。需求 6.3</summary>
     public sealed class UsnFileDeletedEventArgs : EventArgs
     {
-        public UsnFileDeletedEventArgs(string lowerName, ulong parentFrn, char driveLetter)
+        public UsnFileDeletedEventArgs(ulong frn, string lowerName, ulong parentFrn, char driveLetter)
         {
+            Frn         = frn;
             LowerName   = lowerName;
             ParentFrn   = parentFrn;
             DriveLetter = driveLetter;
         }
+        public ulong  Frn         { get; }
         public string LowerName   { get; }
         public ulong  ParentFrn   { get; }
         public char   DriveLetter { get; }
@@ -574,7 +576,8 @@ namespace MftScanner
                                     originalName: fileName,
                                     parentFrn: parentFrn,
                                     driveLetter: state.DriveLetter,
-                                    isDirectory: isDir);
+                                    isDirectory: isDir,
+                                    frn: frn);
 
                                 FileRenamed?.Invoke(this, new UsnFileRenamedEventArgs(
                                     oldLowerName: oldLowerName,
@@ -604,6 +607,7 @@ namespace MftScanner
                             else
                             {
                                 FileDeleted?.Invoke(this, new UsnFileDeletedEventArgs(
+                                    frn: frn,
                                     lowerName: lowerName,
                                     parentFrn: parentFrn,
                                     driveLetter: state.DriveLetter));

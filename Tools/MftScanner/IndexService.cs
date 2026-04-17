@@ -21,8 +21,13 @@ namespace MftScanner
         private readonly UsnWatcher _usnWatcher = new UsnWatcher();
         private volatile MemoryIndex _index = new MemoryIndex();
         private readonly object _snapshotSaveLock = new object();
+        private readonly object _backgroundCatchUpLock = new object();
         private bool _watcherInitialized;
         private CancellationTokenSource _snapshotSaveCts;
+        private CancellationTokenSource _backgroundCatchUpCts;
+        private Task _backgroundCatchUpTask;
+        private volatile bool _isBackgroundCatchUpInProgress;
+        private volatile string _currentStatusMessage = string.Empty;
 
         private const int SnapshotSaveDebounceMilliseconds = 5000;
 
@@ -31,9 +36,12 @@ namespace MftScanner
 
         /// <summary>当前内存索引实例（供 SearchAsync 使用）。</summary>
         public MemoryIndex Index => _index;
+        public bool IsBackgroundCatchUpInProgress => _isBackgroundCatchUpInProgress;
+        public string CurrentStatusMessage => _currentStatusMessage;
 
         /// <summary>文件系统增量变更事件，携带变更类型和文件信息，供 UI 直接更新列表。</summary>
         public event EventHandler<IndexChangedEventArgs> IndexChanged;
+        public event EventHandler<IndexStatusChangedEventArgs> IndexStatusChanged;
 
         /// <summary>
         /// 枚举所有固定磁盘卷，构建纯内存索引，完成后启动 UsnWatcher。
@@ -61,6 +69,7 @@ namespace MftScanner
             return Task.Run(() =>
             {
                 CancelPendingSnapshotSave();
+                CancelBackgroundCatchUp();
                 _usnWatcher.StopWatching();
                 _index.Build(Array.Empty<FileRecord>());
                 var result = BuildIndexFromMft(_progress, ct);
@@ -71,6 +80,7 @@ namespace MftScanner
         public void Shutdown()
         {
             CancelPendingSnapshotSave();
+            CancelBackgroundCatchUp();
             SaveCurrentSnapshot("shutdown");
             _usnWatcher.StopWatching();
         }
@@ -111,7 +121,8 @@ namespace MftScanner
                 originalName: args.FileName,
                 parentFrn:    args.ParentFrn,
                 driveLetter:  args.DriveLetter,
-                isDirectory:  args.IsDirectory);
+                isDirectory:  args.IsDirectory,
+                frn:          args.Frn);
             _index.Insert(record);
             var fullPath = _enumerator.ResolveFullPath(args.DriveLetter, args.ParentFrn, args.FileName);
             ScheduleSnapshotSave();
@@ -124,7 +135,7 @@ namespace MftScanner
         {
             // 删除前先解析路径（FRN 字典此时还未清除），供 UI 精确匹配
             var fullPath = _enumerator.ResolveFullPath(args.DriveLetter, args.ParentFrn, args.LowerName);
-            _index.Remove(args.LowerName, args.ParentFrn, args.DriveLetter);
+            _index.Remove(args.Frn, args.LowerName, args.ParentFrn, args.DriveLetter);
             ScheduleSnapshotSave();
             IndexChanged?.Invoke(this, new IndexChangedEventArgs(
                 IndexChangeType.Deleted, args.LowerName, fullPath));
@@ -137,7 +148,7 @@ namespace MftScanner
                 args.DriveLetter, args.OldParentFrn, args.OldLowerName);
             _enumerator.RegisterFrn(args.DriveLetter, args.NewFrn,
                 args.NewRecord.OriginalName, args.NewRecord.ParentFrn, args.NewRecord.IsDirectory);
-            _index.Rename(args.OldLowerName, args.OldParentFrn, args.DriveLetter, args.NewRecord);
+            _index.Rename(args.NewFrn, args.OldLowerName, args.OldParentFrn, args.DriveLetter, args.NewRecord);
             var newFullPath = _enumerator.ResolveFullPath(
                 args.DriveLetter, args.NewRecord.ParentFrn, args.NewRecord.OriginalName);
             ScheduleSnapshotSave();
@@ -359,6 +370,98 @@ namespace MftScanner
             return sb.ToString();
         }
 
+        private static bool TryGetSimpleExtensionWildcard(string pattern, out string extension)
+        {
+            extension = null;
+            if (string.IsNullOrEmpty(pattern)
+                || pattern.Length < 3
+                || pattern[0] != '*'
+                || pattern[1] != '.'
+                || pattern.IndexOf('?') >= 0)
+            {
+                return false;
+            }
+
+            if (pattern.IndexOf('*', 1) >= 0)
+                return false;
+
+            extension = pattern.Substring(1);
+            return extension.Length > 1;
+        }
+
+        private static bool TrySimplifyWildcard(
+            string pattern,
+            out MatchMode simplifiedMode,
+            out string simplifiedQuery)
+        {
+            simplifiedMode = MatchMode.Wildcard;
+            simplifiedQuery = null;
+            if (string.IsNullOrEmpty(pattern) || pattern.IndexOf('?') >= 0)
+                return false;
+
+            var firstStar = pattern.IndexOf('*');
+            if (firstStar < 0)
+                return false;
+
+            var lastStar = pattern.LastIndexOf('*');
+            if (firstStar == lastStar)
+            {
+                if (firstStar == 0)
+                {
+                    simplifiedMode = MatchMode.Suffix;
+                    simplifiedQuery = pattern.Substring(1);
+                    return true;
+                }
+
+                if (firstStar == pattern.Length - 1)
+                {
+                    simplifiedMode = MatchMode.Prefix;
+                    simplifiedQuery = pattern.Substring(0, pattern.Length - 1);
+                    return true;
+                }
+
+                return false;
+            }
+
+            if (firstStar == 0
+                && lastStar == pattern.Length - 1
+                && pattern.IndexOf('*', 1) == lastStar)
+            {
+                simplifiedMode = MatchMode.Contains;
+                simplifiedQuery = pattern.Substring(1, pattern.Length - 2);
+                return true;
+            }
+
+            return false;
+        }
+
+        private static (List<FileRecord> page, int total) ExtensionMatch(
+            string extension,
+            Dictionary<string, List<FileRecord>> extensionHashMap,
+            int offset,
+            int maxResults,
+            CancellationToken ct = default)
+        {
+            var page = new List<FileRecord>(Math.Min(maxResults, 64));
+            if (extensionHashMap == null
+                || string.IsNullOrEmpty(extension)
+                || !extensionHashMap.TryGetValue(extension, out var bucket)
+                || bucket == null
+                || bucket.Count == 0)
+            {
+                return (page, 0);
+            }
+
+            var total = bucket.Count;
+            for (var i = Math.Max(offset, 0); i < bucket.Count && page.Count < maxResults; i++)
+            {
+                if (((i + 1) & 0xFFF) == 0) ct.ThrowIfCancellationRequested();
+                page.Add(bucket[i]);
+            }
+
+            return (page, total);
+        }
+
         /// <summary>
         /// 包含匹配：先查 ExactHashMap（精确命中），再对 SortedArray 执行二分定位后线性扫描。
         /// 需求 3.1、3.3、7.1
@@ -465,7 +568,33 @@ namespace MftScanner
                         { var r = RegexMatch(normalizedQuery, idx.SortedArray, fetchOffset, fetchLimit, progress, ct); matched = r.page; totalMatched = r.total; }
                         break;
                     case MatchMode.Wildcard:
-                        { var r = RegexMatch(WildcardToRegex(normalizedQuery), idx.SortedArray, fetchOffset, fetchLimit, progress, ct); matched = r.page; totalMatched = r.total; }
+                        if (TryGetSimpleExtensionWildcard(normalizedQuery, out var extension))
+                        {
+                            var r = ExtensionMatch(extension, idx.ExtensionHashMap, fetchOffset, fetchLimit, ct);
+                            matched = r.page;
+                            totalMatched = r.total;
+                        }
+                        else if (TrySimplifyWildcard(normalizedQuery, out var simplifiedMode, out var simplifiedQuery))
+                        {
+                            switch (simplifiedMode)
+                            {
+                                case MatchMode.Prefix:
+                                    { var r = PrefixMatch(simplifiedQuery, idx.SortedArray, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
+                                    break;
+                                case MatchMode.Suffix:
+                                    { var r = SuffixMatch(simplifiedQuery, idx.SortedArray, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
+                                    break;
+                                default:
+                                    { var r = ContainsMatch(simplifiedQuery, idx.ExactHashMap, idx.SortedArray, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
+                                    break;
+                            }
+                        }
+                        else
+                        {
+                            var r = RegexMatch(WildcardToRegex(normalizedQuery), idx.SortedArray, fetchOffset, fetchLimit, progress, ct);
+                            matched = r.page;
+                            totalMatched = r.total;
+                        }
                         break;
                     default:
                         { var r = ContainsMatch(normalizedQuery, idx.ExactHashMap, idx.SortedArray, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
@@ -519,10 +648,11 @@ namespace MftScanner
                     foreach (var record in matched)
                     {
                         ct.ThrowIfCancellationRequested();
-                        var fullPath = _enumerator.ResolveFullPath(record.DriveLetter, record.ParentFrn, record.OriginalName);
+                        var fullPath = _enumerator.ResolveFullPath(record.DriveLetter, record.ParentFrn, record.OriginalName)
+                                       ?? (record.DriveLetter + ":\\" + record.OriginalName);
                         results.Add(new ScannedFileInfo
                         {
-                            FullPath = fullPath ?? (record.DriveLetter + ":\\" + record.OriginalName),
+                            FullPath = fullPath,
                             FileName = record.OriginalName,
                             SizeBytes = 0,
                             ModifiedTimeUtc = DateTime.MinValue,
@@ -548,6 +678,7 @@ namespace MftScanner
         private int BuildIndex(IProgress<string> progress, CancellationToken ct)
         {
             CancelPendingSnapshotSave();
+            CancelBackgroundCatchUp();
             _usnWatcher.StopWatching();
 
             if (TryRestoreFromSnapshot(progress, ct, out var restoredCount))
@@ -586,62 +717,14 @@ namespace MftScanner
             restoreStopwatch.Stop();
             UsnDiagLog.Write($"[SNAPSHOT RESTORE] elapsedMs={restoreStopwatch.ElapsedMilliseconds} records={snapshot.Records.Length} volumes={snapshot.Volumes.Length}");
 
-            var checkpoints = new (char driveLetter, long nextUsn, ulong journalId)[snapshot.Volumes.Length];
-            progress?.Report("正在追平 USN 变更...");
-            var catchUpStopwatch = Stopwatch.StartNew();
-            for (var i = 0; i < snapshot.Volumes.Length; i++)
-            {
-                ct.ThrowIfCancellationRequested();
-
-                var volume = snapshot.Volumes[i];
-                var volumeCatchUpStopwatch = Stopwatch.StartNew();
-                if (!_usnWatcher.TryCollectCatchUpChanges(volume.DriveLetter, volume.NextUsn, volume.JournalId, ct,
-                        out var changes, out var nextUsn, out var latestJournalId))
-                {
-                    volumeCatchUpStopwatch.Stop();
-                    catchUpStopwatch.Stop();
-                    UsnDiagLog.Write(
-                        $"[SNAPSHOT CATCHUP] drive={volume.DriveLetter} expired elapsedMs={volumeCatchUpStopwatch.ElapsedMilliseconds} " +
-                        $"startUsn={volume.NextUsn} journalId={volume.JournalId}");
-                    progress?.Report("索引快照已过期，正在重建索引...");
-                    _index.Build(Array.Empty<FileRecord>());
-                    return false;
-                }
-
-                if (changes.Count > 0)
-                {
-                    _enumerator.ApplyUsnChanges(changes);
-                    _index.ApplyBatch(changes);
-                }
-
-                volumeCatchUpStopwatch.Stop();
-                UsnDiagLog.Write(
-                    $"[SNAPSHOT CATCHUP] drive={volume.DriveLetter} elapsedMs={volumeCatchUpStopwatch.ElapsedMilliseconds} " +
-                    $"startUsn={volume.NextUsn} nextUsn={nextUsn} journalId={latestJournalId} changes={changes.Count}");
-
-                checkpoints[i] = (volume.DriveLetter, nextUsn, latestJournalId);
-            }
-            catchUpStopwatch.Stop();
-
-            var watcherStartStopwatch = Stopwatch.StartNew();
-            var volumeSnapshots = _enumerator.CreateVolumeSnapshots(checkpoints);
-
-            for (var i = 0; i < checkpoints.Length; i++)
-            {
-                var checkpoint = checkpoints[i];
-                _usnWatcher.StartWatching(checkpoint.driveLetter, checkpoint.nextUsn, checkpoint.journalId, ct);
-            }
-            watcherStartStopwatch.Stop();
-
             restoredCount = _index.TotalCount;
             totalStopwatch.Stop();
-            progress?.Report($"已从快照恢复 {restoredCount} 个对象");
+            progress?.Report($"已从快照恢复 {restoredCount} 个对象，可立即搜索");
             UsnDiagLog.Write(
                 $"[SNAPSHOT RESTORE TOTAL] totalMs={totalStopwatch.ElapsedMilliseconds} loadMs={snapshotLoadStopwatch.ElapsedMilliseconds} " +
-                $"restoreMs={restoreStopwatch.ElapsedMilliseconds} catchUpMs={catchUpStopwatch.ElapsedMilliseconds} " +
-                $"watcherStartMs={watcherStartStopwatch.ElapsedMilliseconds} restoredCount={restoredCount}");
+                $"restoreMs={restoreStopwatch.ElapsedMilliseconds} restoredCount={restoredCount}");
 
-            QueueSnapshotSave(_index.SortedArray, volumeSnapshots);
+            StartBackgroundCatchUp(snapshot.Volumes, progress, ct);
             return true;
         }
 
@@ -705,8 +788,212 @@ namespace MftScanner
                 _usnWatcher.StartWatching(letter, nextUsn, journalId, ct);
 
             QueueSnapshotSave(allRecords, volumeSnapshots);
+            PublishIndexStatus($"已索引 {_index.TotalCount} 个对象", false, requireSearchRefresh: true);
 
             return _index.TotalCount;
+        }
+
+        private void StartBackgroundCatchUp(IReadOnlyList<VolumeSnapshot> volumes, IProgress<string> progress, CancellationToken ct)
+        {
+            CancelBackgroundCatchUp();
+
+            if (volumes == null || volumes.Count == 0)
+            {
+                PublishIndexStatus($"已索引 {_index.TotalCount} 个对象", false);
+                return;
+            }
+
+            var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            lock (_backgroundCatchUpLock)
+            {
+                _backgroundCatchUpCts = linkedCts;
+                _backgroundCatchUpTask = Task.Run(() => RunBackgroundCatchUp(volumes, progress, linkedCts), linkedCts.Token);
+            }
+        }
+
+        private void RunBackgroundCatchUp(IReadOnlyList<VolumeSnapshot> volumes, IProgress<string> progress, CancellationTokenSource backgroundCatchUpCts)
+        {
+            var ct = backgroundCatchUpCts.Token;
+            try
+            {
+                PublishIndexStatus(
+                    $"已从快照恢复 {_index.TotalCount} 个对象，可立即搜索；后台正在追平 USN...",
+                    true);
+
+                var checkpoints = new (char driveLetter, long nextUsn, ulong journalId)[volumes.Count];
+                var catchUpStopwatch = Stopwatch.StartNew();
+
+                for (var i = 0; i < volumes.Count; i++)
+                {
+                    ct.ThrowIfCancellationRequested();
+
+                    var volume = volumes[i];
+                    PublishIndexStatus(
+                        $"已从快照恢复 {_index.TotalCount} 个对象，可立即搜索；后台正在追平 {volume.DriveLetter}: ({i + 1}/{volumes.Count})",
+                        true);
+
+                    var volumeCatchUpStopwatch = Stopwatch.StartNew();
+                    if (!_usnWatcher.TryCollectCatchUpChanges(volume.DriveLetter, volume.NextUsn, volume.JournalId, ct,
+                            out var changes, out var nextUsn, out var latestJournalId))
+                    {
+                        volumeCatchUpStopwatch.Stop();
+                        catchUpStopwatch.Stop();
+                        UsnDiagLog.Write(
+                            $"[SNAPSHOT CATCHUP] drive={volume.DriveLetter} expired elapsedMs={volumeCatchUpStopwatch.ElapsedMilliseconds} " +
+                            $"startUsn={volume.NextUsn} journalId={volume.JournalId}");
+
+                        PublishIndexStatus("索引快照已过期，后台正在重建索引...", true);
+                        var rebuiltCount = BuildIndexFromMft(progress, ct);
+                        PublishIndexStatus($"已重建 {rebuiltCount} 个对象", false, requireSearchRefresh: true);
+                        return;
+                    }
+
+                    if (changes.Count > 0)
+                    {
+                        var indexChangedArgs = BuildBatchIndexChangedArgs(changes);
+                        _enumerator.ApplyUsnChanges(changes);
+                        _index.ApplyBatch(changes);
+                        PublishBatchIndexChanges(indexChangedArgs);
+                    }
+
+                    volumeCatchUpStopwatch.Stop();
+                    UsnDiagLog.Write(
+                        $"[SNAPSHOT CATCHUP] drive={volume.DriveLetter} elapsedMs={volumeCatchUpStopwatch.ElapsedMilliseconds} " +
+                        $"startUsn={volume.NextUsn} nextUsn={nextUsn} journalId={latestJournalId} changes={changes.Count}");
+
+                    checkpoints[i] = (volume.DriveLetter, nextUsn, latestJournalId);
+
+                    PublishIndexStatus(
+                        $"已从快照恢复 {_index.TotalCount} 个对象，可立即搜索；后台正在追平 USN ({i + 1}/{volumes.Count})",
+                        true);
+                }
+
+                catchUpStopwatch.Stop();
+
+                var watcherStartStopwatch = Stopwatch.StartNew();
+                var volumeSnapshots = _enumerator.CreateVolumeSnapshots(checkpoints);
+
+                for (var i = 0; i < checkpoints.Length; i++)
+                {
+                    var checkpoint = checkpoints[i];
+                    _usnWatcher.StartWatching(checkpoint.driveLetter, checkpoint.nextUsn, checkpoint.journalId, ct);
+                }
+
+                watcherStartStopwatch.Stop();
+                QueueSnapshotSave(_index.SortedArray, volumeSnapshots);
+
+                UsnDiagLog.Write(
+                    $"[SNAPSHOT CATCHUP TOTAL] catchUpMs={catchUpStopwatch.ElapsedMilliseconds} " +
+                    $"watcherStartMs={watcherStartStopwatch.ElapsedMilliseconds} indexedCount={_index.TotalCount}");
+
+                PublishIndexStatus($"已索引 {_index.TotalCount} 个对象", false);
+            }
+            catch (OperationCanceledException)
+            {
+                PublishIndexStatus($"已索引 {_index.TotalCount} 个对象", false);
+            }
+            catch (Exception ex)
+            {
+                UsnDiagLog.Write($"[SNAPSHOT CATCHUP FAIL] {ex.GetType().Name}: {ex.Message}");
+                PublishIndexStatus($"后台追平失败：{ex.Message}", false);
+            }
+            finally
+            {
+                lock (_backgroundCatchUpLock)
+                {
+                    if (ReferenceEquals(_backgroundCatchUpCts, backgroundCatchUpCts))
+                    {
+                        _backgroundCatchUpTask = null;
+                        _backgroundCatchUpCts = null;
+                    }
+                }
+            }
+        }
+
+        private void CancelBackgroundCatchUp()
+        {
+            CancellationTokenSource cts;
+            lock (_backgroundCatchUpLock)
+            {
+                cts = _backgroundCatchUpCts;
+                _backgroundCatchUpCts = null;
+                _backgroundCatchUpTask = null;
+            }
+
+            if (cts == null)
+                return;
+
+            try
+            {
+                cts.Cancel();
+            }
+            catch
+            {
+            }
+            finally
+            {
+                cts.Dispose();
+            }
+        }
+
+        private void PublishIndexStatus(string message, bool isBackgroundCatchUpInProgress, bool requireSearchRefresh = false)
+        {
+            _currentStatusMessage = message ?? string.Empty;
+            _isBackgroundCatchUpInProgress = isBackgroundCatchUpInProgress;
+            IndexStatusChanged?.Invoke(this, new IndexStatusChangedEventArgs(
+                _currentStatusMessage,
+                _index.TotalCount,
+                isBackgroundCatchUpInProgress,
+                requireSearchRefresh));
+        }
+
+        private List<IndexChangedEventArgs> BuildBatchIndexChangedArgs(IReadOnlyList<UsnChangeEntry> changes)
+        {
+            var result = new List<IndexChangedEventArgs>(changes?.Count ?? 0);
+            if (changes == null || changes.Count == 0)
+                return result;
+
+            for (var i = 0; i < changes.Count; i++)
+            {
+                var change = changes[i];
+                switch (change.Kind)
+                {
+                    case UsnChangeKind.Create:
+                        result.Add(new IndexChangedEventArgs(
+                            IndexChangeType.Created,
+                            change.LowerName,
+                            _enumerator.ResolveFullPath(change.DriveLetter, change.ParentFrn, change.OriginalName)));
+                        break;
+
+                    case UsnChangeKind.Delete:
+                        result.Add(new IndexChangedEventArgs(
+                            IndexChangeType.Deleted,
+                            change.LowerName,
+                            _enumerator.ResolveFullPath(change.DriveLetter, change.ParentFrn, change.OriginalName)));
+                        break;
+
+                    case UsnChangeKind.Rename:
+                        result.Add(new IndexChangedEventArgs(
+                            IndexChangeType.Renamed,
+                            change.OldLowerName,
+                            _enumerator.ResolveFullPath(change.DriveLetter, change.ParentFrn, change.OriginalName),
+                            _enumerator.ResolveFullPath(change.DriveLetter, change.OldParentFrn, change.OldLowerName),
+                            change.OriginalName,
+                            change.LowerName));
+                        break;
+                }
+            }
+
+            return result;
+        }
+
+        private void PublishBatchIndexChanges(IReadOnlyList<IndexChangedEventArgs> changes)
+        {
+            if (changes == null || changes.Count == 0)
+                return;
+
+            for (var i = 0; i < changes.Count; i++)
+                IndexChanged?.Invoke(this, changes[i]);
         }
 
         private void QueueSnapshotSave(FileRecord[] records, VolumeSnapshot[] volumeSnapshots)
@@ -817,6 +1104,22 @@ namespace MftScanner
     }
 
     public enum IndexChangeType { Created, Deleted, Renamed }
+
+    public sealed class IndexStatusChangedEventArgs : EventArgs
+    {
+        public IndexStatusChangedEventArgs(string message, int indexedCount, bool isBackgroundCatchUpInProgress, bool requireSearchRefresh)
+        {
+            Message = message;
+            IndexedCount = indexedCount;
+            IsBackgroundCatchUpInProgress = isBackgroundCatchUpInProgress;
+            RequireSearchRefresh = requireSearchRefresh;
+        }
+
+        public string Message { get; }
+        public int IndexedCount { get; }
+        public bool IsBackgroundCatchUpInProgress { get; }
+        public bool RequireSearchRefresh { get; }
+    }
 
     public sealed class IndexChangedEventArgs : EventArgs
     {

@@ -10,6 +10,7 @@ namespace MftScanner
     {
         private const int SnapshotVersion1 = 1;
         private const int SnapshotVersion2 = 2;
+        private const int SnapshotVersion3 = 3;
 
         private readonly string _snapshotDirectoryPath;
         private readonly string _snapshotFilePath;
@@ -41,6 +42,9 @@ namespace MftScanner
                             break;
                         case SnapshotVersion2:
                             snapshot = ReadVersion2(reader);
+                            break;
+                        case SnapshotVersion3:
+                            snapshot = ReadVersion3(reader);
                             break;
                         default:
                             return false;
@@ -76,7 +80,7 @@ namespace MftScanner
             using (var stream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
             using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: false))
             {
-                WriteVersion2(writer, snapshot);
+                WriteVersion3(writer, snapshot);
             }
 
             if (File.Exists(_snapshotFilePath))
@@ -85,7 +89,7 @@ namespace MftScanner
             File.Move(tempPath, _snapshotFilePath);
             var fileInfo = new FileInfo(_snapshotFilePath);
             return new IndexSnapshotSaveMetrics(
-                SnapshotVersion2,
+                SnapshotVersion3,
                 fileInfo.Exists ? fileInfo.Length : 0,
                 snapshot.Records?.Length ?? 0,
                 snapshot.Volumes?.Length ?? 0,
@@ -110,7 +114,11 @@ namespace MftScanner
             }
 
             var volumes = ReadVolumesV1(reader);
-            return volumes == null ? null : new IndexSnapshot(records, volumes);
+            if (volumes == null)
+                return null;
+
+            records = AttachRecordFrns(records, volumes);
+            return new IndexSnapshot(records, volumes);
         }
 
         private static IndexSnapshot ReadVersion2(BinaryReader reader)
@@ -143,6 +151,75 @@ namespace MftScanner
                     parentFrn,
                     driveLetter,
                     isDirectory);
+            }
+
+            var volumeCount = reader.ReadInt32();
+            if (volumeCount < 0)
+                return null;
+
+            var volumes = new VolumeSnapshot[volumeCount];
+            for (var i = 0; i < volumeCount; i++)
+            {
+                var driveLetter = reader.ReadChar();
+                var nextUsn = reader.ReadInt64();
+                var journalId = reader.ReadUInt64();
+                var frnCount = reader.ReadInt32();
+                if (frnCount < 0)
+                    return null;
+
+                var frnEntries = new FrnSnapshotEntry[frnCount];
+                for (var j = 0; j < frnCount; j++)
+                {
+                    var name = GetStringByIndex(stringPool, reader.ReadInt32());
+                    if (name == null)
+                        return null;
+
+                    frnEntries[j] = new FrnSnapshotEntry(
+                        reader.ReadUInt64(),
+                        name,
+                        reader.ReadUInt64(),
+                        reader.ReadBoolean());
+                }
+
+                volumes[i] = new VolumeSnapshot(driveLetter, nextUsn, journalId, frnEntries);
+            }
+
+            records = AttachRecordFrns(records, volumes);
+            return new IndexSnapshot(records, volumes, stringPool.Length);
+        }
+
+        private static IndexSnapshot ReadVersion3(BinaryReader reader)
+        {
+            var stringPoolCount = reader.ReadInt32();
+            if (stringPoolCount < 0)
+                return null;
+
+            var stringPool = new string[stringPoolCount];
+            for (var i = 0; i < stringPool.Length; i++)
+                stringPool[i] = reader.ReadString();
+
+            var recordCount = reader.ReadInt32();
+            if (recordCount < 0)
+                return null;
+
+            var records = new FileRecord[recordCount];
+            for (var i = 0; i < recordCount; i++)
+            {
+                var originalName = GetStringByIndex(stringPool, reader.ReadInt32());
+                if (originalName == null)
+                    return null;
+
+                var parentFrn = reader.ReadUInt64();
+                var driveLetter = reader.ReadChar();
+                var isDirectory = reader.ReadBoolean();
+                var frn = reader.ReadUInt64();
+                records[i] = new FileRecord(
+                    originalName.ToLowerInvariant(),
+                    originalName,
+                    parentFrn,
+                    driveLetter,
+                    isDirectory,
+                    frn);
             }
 
             var volumeCount = reader.ReadInt32();
@@ -211,9 +288,9 @@ namespace MftScanner
             return volumes;
         }
 
-        private static void WriteVersion2(BinaryWriter writer, IndexSnapshot snapshot)
+        private static void WriteVersion3(BinaryWriter writer, IndexSnapshot snapshot)
         {
-            writer.Write(SnapshotVersion2);
+            writer.Write(SnapshotVersion3);
 
             var records = snapshot.Records ?? Array.Empty<FileRecord>();
             var volumes = snapshot.Volumes ?? Array.Empty<VolumeSnapshot>();
@@ -234,6 +311,7 @@ namespace MftScanner
                 writer.Write(record.ParentFrn);
                 writer.Write(record.DriveLetter);
                 writer.Write(record.IsDirectory);
+                writer.Write(record.Frn);
             }
 
             writer.Write(volumes.Length);
@@ -285,6 +363,91 @@ namespace MftScanner
         private static string GetStringByIndex(string[] pool, int index)
         {
             return index >= 0 && index < pool.Length ? pool[index] : null;
+        }
+
+        private static FileRecord[] AttachRecordFrns(FileRecord[] records, VolumeSnapshot[] volumes)
+        {
+            if (records == null || records.Length == 0 || volumes == null || volumes.Length == 0)
+                return records ?? Array.Empty<FileRecord>();
+
+            var perDriveLookups = new Dictionary<char, Dictionary<RecordIdentity, ulong>>();
+            for (var i = 0; i < volumes.Length; i++)
+            {
+                var volume = volumes[i];
+                var map = new Dictionary<RecordIdentity, ulong>();
+                var entries = volume.FrnEntries ?? Array.Empty<FrnSnapshotEntry>();
+                for (var j = 0; j < entries.Length; j++)
+                {
+                    var entry = entries[j];
+                    map[new RecordIdentity(entry.Name, entry.ParentFrn, entry.IsDirectory)] = entry.Frn;
+                }
+
+                perDriveLookups[char.ToUpperInvariant(volume.DriveLetter)] = map;
+            }
+
+            var enriched = new FileRecord[records.Length];
+            for (var i = 0; i < records.Length; i++)
+            {
+                var record = records[i];
+                if (record == null)
+                {
+                    continue;
+                }
+
+                var driveLetter = char.ToUpperInvariant(record.DriveLetter);
+                ulong frn = 0;
+                if (perDriveLookups.TryGetValue(driveLetter, out var lookup))
+                {
+                    lookup.TryGetValue(new RecordIdentity(record.OriginalName, record.ParentFrn, record.IsDirectory), out frn);
+                }
+
+                enriched[i] = new FileRecord(
+                    record.LowerName,
+                    record.OriginalName,
+                    record.ParentFrn,
+                    record.DriveLetter,
+                    record.IsDirectory,
+                    frn);
+            }
+
+            return enriched;
+        }
+
+        private struct RecordIdentity : IEquatable<RecordIdentity>
+        {
+            public RecordIdentity(string name, ulong parentFrn, bool isDirectory)
+            {
+                Name = name ?? string.Empty;
+                ParentFrn = parentFrn;
+                IsDirectory = isDirectory;
+            }
+
+            public string Name { get; }
+            public ulong ParentFrn { get; }
+            public bool IsDirectory { get; }
+
+            public bool Equals(RecordIdentity other)
+            {
+                return ParentFrn == other.ParentFrn
+                       && IsDirectory == other.IsDirectory
+                       && string.Equals(Name, other.Name, StringComparison.Ordinal);
+            }
+
+            public override bool Equals(object obj)
+            {
+                return obj is RecordIdentity other && Equals(other);
+            }
+
+            public override int GetHashCode()
+            {
+                unchecked
+                {
+                    var hash = StringComparer.Ordinal.GetHashCode(Name ?? string.Empty);
+                    hash = (hash * 397) ^ ParentFrn.GetHashCode();
+                    hash = (hash * 397) ^ IsDirectory.GetHashCode();
+                    return hash;
+                }
+            }
         }
     }
 

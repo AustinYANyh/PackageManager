@@ -7,13 +7,14 @@ namespace MftScanner
     public sealed class FileRecord
     {
         public FileRecord(string lowerName, string originalName,
-                          ulong parentFrn, char driveLetter, bool isDirectory)
+                          ulong parentFrn, char driveLetter, bool isDirectory, ulong frn = 0)
         {
             LowerName   = lowerName;
             OriginalName = originalName;
             ParentFrn   = parentFrn;
             DriveLetter = driveLetter;
             IsDirectory = isDirectory;
+            Frn = frn;
         }
 
         /// <summary>文件名小写，用于索引键和比较。</summary>
@@ -30,5 +31,8 @@ namespace MftScanner
 
         /// <summary>是否为目录。</summary>
         public bool IsDirectory { get; }
+
+        /// <summary>文件自身 FRN；优先用于 USN 增量删除/重命名精确命中。</summary>
+        public ulong Frn { get; }
     }
 }
