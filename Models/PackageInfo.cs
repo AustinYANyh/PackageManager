@@ -1050,6 +1050,11 @@ namespace PackageManager.Models
             return applicationVersion ?? AvailableExecutableVersions?.FirstOrDefault();
         }
 
+        public ApplicationVersion GetSelectedApplicationVersion()
+        {
+            return ResolveSelectedApplicationVersion();
+        }
+
         private string ResolveRevitEntryAssemblyPath(string packageRootPath, string revitVersion)
         {
             var binDir = Path.Combine(packageRootPath, "bin");

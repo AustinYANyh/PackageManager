@@ -1,16 +1,20 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Xml.Linq;
+using CustomControlLibrary.CustomControl.Controls.Navigation;
 using PackageManager.Function.CsvTool;
 using PackageManager.Function.DnsTool;
 using PackageManager.Function.SlnTool;
 using PackageManager.Function.StartupTool;
 using PackageManager.Function.UnlockTool;
+using PackageManager.Models;
 using PackageManager.Services;
 
 namespace PackageManager.Views;
@@ -21,6 +25,11 @@ namespace PackageManager.Views;
 /// </summary>
 public partial class PackagesHomePage : Page
 {
+    private readonly RevitProcessService _revitProcessService = new RevitProcessService();
+    private readonly PackageUpdateService _packageUpdateService = new PackageUpdateService();
+    private ApplicationVersion _pendingRevitVersion;
+    private IReadOnlyList<RevitProcessInfo> _pendingRevitProcesses = Array.Empty<RevitProcessInfo>();
+
     /// <summary>
     /// 初始化 <see cref="PackagesHomePage"/> 的新实例。
     /// </summary>
@@ -35,6 +44,289 @@ public partial class PackagesHomePage : Page
     /// 获取内部包数据网格控件，供主窗口进行筛选交互。
     /// </summary>
     public CustomControlLibrary.CustomControl.Controls.DataGrid.CDataGrid PackageGrid => PackageDataGrid;
+
+    private MainWindow GetMainWindow()
+    {
+        return Window.GetWindow(this) as MainWindow;
+    }
+
+    private PackageInfo GetSelectedPackage()
+    {
+        return GetMainWindow()?.LatestActivePackage;
+    }
+
+    private bool TryGetSelectedRevitVersion(out PackageInfo package, out ApplicationVersion applicationVersion)
+    {
+        package = GetSelectedPackage();
+        applicationVersion = package?.GetSelectedApplicationVersion();
+        return package != null && applicationVersion != null;
+    }
+
+    private static string BuildRevitProcessStatusText(ApplicationVersion applicationVersion, int processCount, bool hasUnresponsive)
+    {
+        var displayName = string.IsNullOrWhiteSpace(applicationVersion?.DisPlayName) ? "Revit" : applicationVersion.DisPlayName;
+        return hasUnresponsive
+            ? $"{displayName} 已运行（{processCount} 个进程，疑似无响应）"
+            : $"{displayName} 已运行（{processCount} 个进程）";
+    }
+
+    private void OpenRevitButton_ToolTipOpening(object sender, ToolTipEventArgs e)
+    {
+        if (!(sender is FrameworkElement element))
+            return;
+
+        if (!TryGetSelectedRevitVersion(out _, out var applicationVersion))
+        {
+            element.ToolTip = "未找到可用的 Revit 版本";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(applicationVersion.ExecutablePath) || !File.Exists(applicationVersion.ExecutablePath))
+        {
+            element.ToolTip = "当前所选 Revit 可执行文件不存在";
+            return;
+        }
+
+        var processes = _revitProcessService.FindProcessesForExecutable(applicationVersion.ExecutablePath);
+        if (processes.Count == 0)
+        {
+            element.ToolTip = $"{applicationVersion.DisPlayName} 未运行，点击将直接打开";
+            return;
+        }
+
+        var hasUnresponsive = processes.Any(info => !info.IsResponding);
+        element.ToolTip = hasUnresponsive
+            ? $"{BuildRevitProcessStatusText(applicationVersion, processes.Count, true)}，点击可切换或结束"
+            : $"{BuildRevitProcessStatusText(applicationVersion, processes.Count, false)}，点击可切换或管理";
+    }
+
+    private void OpenRevitButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!TryGetSelectedRevitVersion(out _, out var applicationVersion))
+            return;
+
+        var executablePath = applicationVersion.ExecutablePath;
+        if (string.IsNullOrWhiteSpace(executablePath) || !File.Exists(executablePath))
+        {
+            MessageBox.Show("可执行文件路径无效或文件不存在", "提示", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var processes = _revitProcessService.FindProcessesForExecutable(executablePath);
+        if (processes.Count == 0)
+        {
+            LaunchRevitExecutable(executablePath);
+            return;
+        }
+
+        if (sender is FrameworkElement target)
+            ShowOpenRevitContextMenu(target, applicationVersion, processes);
+    }
+
+    private void ShowOpenRevitContextMenu(FrameworkElement target, ApplicationVersion applicationVersion, IReadOnlyList<RevitProcessInfo> processes)
+    {
+        _pendingRevitVersion = applicationVersion;
+        _pendingRevitProcesses = processes ?? Array.Empty<RevitProcessInfo>();
+
+        var processCount = _pendingRevitProcesses.Count;
+        var hasUnresponsive = _pendingRevitProcesses.Any(info => !info.IsResponding);
+        var canActivate = _pendingRevitProcesses.Any(info => info.HasMainWindow);
+
+        var menu = new CContextMenu
+        {
+            PlacementTarget = target,
+            Placement = System.Windows.Controls.Primitives.PlacementMode.Bottom
+        };
+
+        menu.Items.Add(new CMenuItem
+        {
+            Header = BuildRevitProcessStatusText(applicationVersion, processCount, hasUnresponsive),
+            IsEnabled = false
+        });
+        menu.Items.Add(new Separator());
+
+        var switchItem = new CMenuItem
+        {
+            Header = canActivate ? "切换到现有 Revit" : "切换到现有 Revit（无可用窗口）",
+            IsEnabled = canActivate
+        };
+        switchItem.Click += SwitchToExistingRevitMenuItem_Click;
+
+        var restartItem = new CMenuItem
+        {
+            Header = hasUnresponsive ? "结束无响应进程并重新打开" : "结束并重新打开"
+        };
+        restartItem.Click += RestartRevitMenuItem_Click;
+
+        var killItem = new CMenuItem
+        {
+            Header = processCount > 1 ? $"仅结束 {processCount} 个进程" : "仅结束进程"
+        };
+        killItem.Click += KillRevitMenuItem_Click;
+
+        if (hasUnresponsive)
+        {
+            menu.Items.Add(restartItem);
+            menu.Items.Add(switchItem);
+        }
+        else
+        {
+            menu.Items.Add(switchItem);
+            menu.Items.Add(restartItem);
+        }
+
+        menu.Items.Add(killItem);
+        menu.Items.Add(new CMenuItem { Header = "取消" });
+
+        target.ContextMenu = menu;
+        menu.IsOpen = true;
+    }
+
+    private void SwitchToExistingRevitMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        CloseRevitContextMenu(sender);
+
+        var targetProcess = _pendingRevitProcesses
+            .Where(info => info.HasMainWindow)
+            .OrderByDescending(info => info.StartTime ?? DateTime.MinValue)
+            .FirstOrDefault();
+        if (targetProcess == null)
+        {
+            MessageBox.Show("未找到可激活的 Revit 窗口。", "打开Revit", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (!_revitProcessService.TryActivateProcess(targetProcess))
+        {
+            MessageBox.Show("切换到现有 Revit 失败。", "打开Revit", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private async void RestartRevitMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        CloseRevitContextMenu(sender);
+        await KillSelectedRevitProcessesAsync(restartAfterKill: true);
+    }
+
+    private async void KillRevitMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        CloseRevitContextMenu(sender);
+        await KillSelectedRevitProcessesAsync(restartAfterKill: false);
+    }
+
+    private async Task KillSelectedRevitProcessesAsync(bool restartAfterKill)
+    {
+        var applicationVersion = _pendingRevitVersion;
+        var processes = _pendingRevitProcesses ?? Array.Empty<RevitProcessInfo>();
+        if (applicationVersion == null || processes.Count == 0)
+            return;
+
+        var pids = processes
+            .Select(info => info.ProcessId)
+            .Where(pid => pid > 0)
+            .Distinct()
+            .ToList();
+        if (pids.Count == 0)
+            return;
+
+        var actionName = restartAfterKill ? "结束并重新打开 Revit" : "结束 Revit 进程";
+        try
+        {
+            var killIssued = await _packageUpdateService.KillProcessesAsync(pids).ConfigureAwait(true);
+            if (!killIssued)
+            {
+                MessageBox.Show($"{actionName}失败，可能是用户取消了权限确认或结束命令未成功发起。",
+                                "打开Revit",
+                                MessageBoxButton.OK,
+                                MessageBoxImage.Warning);
+                return;
+            }
+
+            var exited = await WaitForProcessesExitAsync(pids, TimeSpan.FromSeconds(20)).ConfigureAwait(true);
+            if (!exited)
+            {
+                MessageBox.Show("Revit 进程在规定时间内未完全退出，已取消后续操作。",
+                                "打开Revit",
+                                MessageBoxButton.OK,
+                                MessageBoxImage.Warning);
+                return;
+            }
+
+            if (restartAfterKill)
+                LaunchRevitExecutable(applicationVersion.ExecutablePath);
+        }
+        catch (Exception ex)
+        {
+            LoggingService.LogError(ex, $"{actionName}失败");
+            MessageBox.Show($"{actionName}失败：{ex.Message}", "打开Revit", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private static async Task<bool> WaitForProcessesExitAsync(IEnumerable<int> pids, TimeSpan timeout)
+    {
+        var pending = new HashSet<int>((pids ?? Array.Empty<int>()).Where(pid => pid > 0));
+        if (pending.Count == 0)
+            return true;
+
+        var stopwatch = Stopwatch.StartNew();
+        while (stopwatch.Elapsed < timeout)
+        {
+            var exited = new List<int>();
+            foreach (var pid in pending)
+            {
+                try
+                {
+                    using (var process = Process.GetProcessById(pid))
+                    {
+                        if (process.HasExited)
+                            exited.Add(pid);
+                    }
+                }
+                catch (ArgumentException)
+                {
+                    exited.Add(pid);
+                }
+                catch
+                {
+                }
+            }
+
+            foreach (var pid in exited)
+                pending.Remove(pid);
+
+            if (pending.Count == 0)
+                return true;
+
+            await Task.Delay(300).ConfigureAwait(true);
+        }
+
+        return false;
+    }
+
+    private static void CloseRevitContextMenu(object sender)
+    {
+        var menuItem = sender as MenuItem;
+        var contextMenu = menuItem?.Parent as ContextMenu;
+        if (contextMenu != null)
+            contextMenu.IsOpen = false;
+    }
+
+    private static void LaunchRevitExecutable(string executablePath)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = executablePath,
+                UseShellExecute = true,
+                WorkingDirectory = Path.GetDirectoryName(executablePath) ?? string.Empty
+            });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"无法打开路径: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
 
     private static string DetectVcs(string path)
     {

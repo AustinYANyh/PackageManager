@@ -180,6 +180,7 @@
         <Compile Include="Services\RevitCleanup\RevitFileQueryModels.cs" />
         <Compile Include="Services\RevitCleanup\RevitFileQueryService.cs" />
         <Compile Include="Services\RevitCleanup\RevitLocalIndexStore.cs" />
+        <Compile Include="Services\RevitProcessService.cs" />
         <Compile Include="Services\ToastService.cs" />
         <Compile Include="Services\AppUpdateService.cs" />
         <Compile Include="Views\CommonLinksPage.xaml.cs" />
