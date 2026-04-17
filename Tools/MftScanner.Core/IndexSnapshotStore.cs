@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 
 namespace MftScanner
 {
@@ -11,6 +12,8 @@ namespace MftScanner
         private const int SnapshotVersion1 = 1;
         private const int SnapshotVersion2 = 2;
         private const int SnapshotVersion3 = 3;
+        private const string SnapshotWriteMutexName = "PackageManager.MftScannerIndex.WriteLock";
+        private const int SnapshotWriteLockTimeoutMilliseconds = 200;
 
         private readonly string _snapshotDirectoryPath;
         private readonly string _snapshotFilePath;
@@ -31,7 +34,8 @@ namespace MftScanner
 
             try
             {
-                using (var stream = new FileStream(_snapshotFilePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                using (var stream = new FileStream(_snapshotFilePath, FileMode.Open, FileAccess.Read,
+                           FileShare.ReadWrite | FileShare.Delete))
                 using (var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: false))
                 {
                     var version = reader.ReadInt32();
@@ -74,26 +78,83 @@ namespace MftScanner
             if (snapshot == null)
                 return null;
 
-            Directory.CreateDirectory(_snapshotDirectoryPath);
-            var tempPath = _snapshotFilePath + ".tmp";
+            Mutex writeMutex = null;
+            var lockTaken = false;
+            var tempPath = _snapshotFilePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
 
-            using (var stream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
-            using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: false))
+            try
             {
-                WriteVersion3(writer, snapshot);
+                Directory.CreateDirectory(_snapshotDirectoryPath);
+                writeMutex = new Mutex(false, SnapshotWriteMutexName);
+                try
+                {
+                    lockTaken = writeMutex.WaitOne(SnapshotWriteLockTimeoutMilliseconds);
+                }
+                catch (AbandonedMutexException)
+                {
+                    lockTaken = true;
+                }
+
+                if (!lockTaken)
+                {
+                    UsnDiagLog.Write("[SNAPSHOT SAVE SKIP] write lock busy");
+                    return null;
+                }
+
+                using (var stream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
+                using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: false))
+                {
+                    WriteVersion3(writer, snapshot);
+                }
+
+                if (File.Exists(_snapshotFilePath))
+                {
+                    File.Replace(tempPath, _snapshotFilePath, null, true);
+                }
+                else
+                {
+                    File.Move(tempPath, _snapshotFilePath);
+                }
+
+                var fileInfo = new FileInfo(_snapshotFilePath);
+                return new IndexSnapshotSaveMetrics(
+                    SnapshotVersion3,
+                    fileInfo.Exists ? fileInfo.Length : 0,
+                    snapshot.Records?.Length ?? 0,
+                    snapshot.Volumes?.Length ?? 0,
+                    snapshot.Volumes?.Sum(v => v.FrnEntries?.Length ?? 0) ?? 0);
             }
+            catch (Exception ex)
+            {
+                UsnDiagLog.Write($"[SNAPSHOT SAVE FAIL] {ex.GetType().Name}: {ex.Message}");
+                return null;
+            }
+            finally
+            {
+                if (lockTaken && writeMutex != null)
+                {
+                    try
+                    {
+                        writeMutex.ReleaseMutex();
+                    }
+                    catch
+                    {
+                    }
+                }
 
-            if (File.Exists(_snapshotFilePath))
-                File.Delete(_snapshotFilePath);
+                writeMutex?.Dispose();
 
-            File.Move(tempPath, _snapshotFilePath);
-            var fileInfo = new FileInfo(_snapshotFilePath);
-            return new IndexSnapshotSaveMetrics(
-                SnapshotVersion3,
-                fileInfo.Exists ? fileInfo.Length : 0,
-                snapshot.Records?.Length ?? 0,
-                snapshot.Volumes?.Length ?? 0,
-                snapshot.Volumes?.Sum(v => v.FrnEntries?.Length ?? 0) ?? 0);
+                try
+                {
+                    if (File.Exists(tempPath))
+                    {
+                        File.Delete(tempPath);
+                    }
+                }
+                catch
+                {
+                }
+            }
         }
 
         private static IndexSnapshot ReadVersion1(BinaryReader reader)
@@ -168,7 +229,7 @@ namespace MftScanner
                     return null;
 
                 var frnEntries = new FrnSnapshotEntry[frnCount];
-                for (var j = 0; j < frnCount; j++)
+                for (var j = 0; j < frnEntries.Length; j++)
                 {
                     var name = GetStringByIndex(stringPool, reader.ReadInt32());
                     if (name == null)
@@ -237,7 +298,7 @@ namespace MftScanner
                     return null;
 
                 var frnEntries = new FrnSnapshotEntry[frnCount];
-                for (var j = 0; j < frnCount; j++)
+                for (var j = 0; j < frnEntries.Length; j++)
                 {
                     var name = GetStringByIndex(stringPool, reader.ReadInt32());
                     if (name == null)

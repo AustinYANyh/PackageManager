@@ -15,8 +15,6 @@ namespace CommonStartupTool;
 
 public partial class App : Application
 {
-    private const string ShowRequestEventName = "PackageManager.CommonStartupTool.Show";
-    private const string SingleInstanceMutexName = "PackageManager.CommonStartupTool.Singleton";
     private const int SwShow = 5;
     private const int SwRestore = 9;
 
@@ -26,10 +24,17 @@ public partial class App : Application
     private Task _showRequestListenerTask;
     private Mutex _singleInstanceMutex;
     private int? _ownerProcessId;
+    private string _sessionId;
+    private string _showRequestEventName;
+    private string _singleInstanceMutexName;
 
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        _sessionId = ParseSessionId(e.Args) ?? Guid.NewGuid().ToString("N");
+        _showRequestEventName = BuildShowRequestEventName(_sessionId);
+        _singleInstanceMutexName = BuildSingleInstanceMutexName(_sessionId);
 
         if (!TryAcquireSingleInstance())
         {
@@ -57,8 +62,7 @@ public partial class App : Application
         try
         {
             _ownerMonitorTimer?.Stop();
-            _showRequestCts?.Cancel();
-            _showRequestEvent?.Dispose();
+            StopShowRequestListener();
             if (MainWindow is CommonStartupWindow window)
             {
                 window.PrepareForProcessExit();
@@ -88,7 +92,7 @@ public partial class App : Application
     private bool TryAcquireSingleInstance()
     {
         bool createdNew;
-        _singleInstanceMutex = new Mutex(true, SingleInstanceMutexName, out createdNew);
+        _singleInstanceMutex = new Mutex(true, _singleInstanceMutexName, out createdNew);
         if (createdNew)
         {
             return true;
@@ -103,17 +107,22 @@ public partial class App : Application
         {
         }
 
-        SignalExistingInstance();
+        SignalExistingInstance(_showRequestEventName);
         return false;
     }
 
-    private static void SignalExistingInstance()
+    private static void SignalExistingInstance(string showRequestEventName)
     {
+        if (string.IsNullOrWhiteSpace(showRequestEventName))
+        {
+            return;
+        }
+
         for (var i = 0; i < 20; i++)
         {
             try
             {
-                using (var showEvent = EventWaitHandle.OpenExisting(ShowRequestEventName))
+                using (var showEvent = EventWaitHandle.OpenExisting(showRequestEventName))
                 {
                     showEvent.Set();
                     return;
@@ -139,9 +148,31 @@ public partial class App : Application
             AccessControlType.Allow));
 
         bool createdNew;
-        _showRequestEvent = new EventWaitHandle(false, EventResetMode.AutoReset, ShowRequestEventName, out createdNew, security);
+        _showRequestEvent = new EventWaitHandle(false, EventResetMode.AutoReset, _showRequestEventName, out createdNew, security);
         _showRequestCts = new CancellationTokenSource();
         _showRequestListenerTask = Task.Run(() => ListenForShowRequests(_showRequestCts.Token));
+    }
+
+    private void StopShowRequestListener()
+    {
+        try
+        {
+            _showRequestCts?.Cancel();
+            _showRequestCts?.Dispose();
+            _showRequestCts = null;
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            _showRequestEvent?.Dispose();
+            _showRequestEvent = null;
+        }
+        catch
+        {
+        }
     }
 
     private void ListenForShowRequests(CancellationToken cancellationToken)
@@ -247,11 +278,17 @@ public partial class App : Application
         }
 
         _ownerMonitorTimer?.Stop();
+        StopShowRequestListener();
 
         if (MainWindow is CommonStartupWindow window)
         {
             window.PrepareForProcessExit();
-            window.Close();
+            if (window.IsVisible)
+            {
+                window.Hide();
+            }
+
+            Dispatcher.BeginInvoke(new Action(window.Close), DispatcherPriority.Background);
             return;
         }
 
@@ -272,6 +309,38 @@ public partial class App : Application
         }
 
         return int.TryParse(args[ownerPidIndex + 1], out var pid) && pid > 0 ? pid : (int?)null;
+    }
+
+    private static string ParseSessionId(string[] args)
+    {
+        if (args == null || args.Length == 0)
+        {
+            return null;
+        }
+
+        var sessionIdIndex = Array.FindIndex(args, arg => string.Equals(arg, "--session-id", StringComparison.OrdinalIgnoreCase));
+        if (sessionIdIndex < 0 || sessionIdIndex + 1 >= args.Length)
+        {
+            return null;
+        }
+
+        var sessionId = args[sessionIdIndex + 1];
+        return string.IsNullOrWhiteSpace(sessionId) ? null : sessionId.Trim();
+    }
+
+    private static string BuildShowRequestEventName(string sessionId)
+    {
+        return "PackageManager.CommonStartupTool.Show." + NormalizeSessionId(sessionId);
+    }
+
+    private static string BuildSingleInstanceMutexName(string sessionId)
+    {
+        return "PackageManager.CommonStartupTool.Singleton." + NormalizeSessionId(sessionId);
+    }
+
+    private static string NormalizeSessionId(string sessionId)
+    {
+        return string.IsNullOrWhiteSpace(sessionId) ? "default" : sessionId.Trim();
     }
 
     private static bool IsProcessAlive(int processId)

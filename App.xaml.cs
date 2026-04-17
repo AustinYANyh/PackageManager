@@ -18,6 +18,8 @@ namespace PackageManager
         private CommonStartupWindowManager _commonStartupWindowManager;
         private CommonStartupHotkeyService _commonStartupHotkeyService;
 
+        internal CommonStartupWindowManager CommonStartupWindowManager => _commonStartupWindowManager;
+
         /// <summary>
         /// 应用程序启动时执行初始化操作，包括 WebView2 加载器、日志服务和异常处理。
         /// </summary>
@@ -201,6 +203,11 @@ namespace PackageManager
             {
                 LoggingService.LogError(ex, "初始化常用启动项全局热键失败");
             }
+        }
+
+        internal void ShowCommonStartupWindow()
+        {
+            _commonStartupWindowManager?.ShowOrActivate();
         }
     }
 }

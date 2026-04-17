@@ -658,7 +658,10 @@ public partial class PackagesHomePage : Page
 
     private void OpenCommonStartupWindowButton_Click(object sender, RoutedEventArgs e)
     {
-        new CommonStartupWindowManager().ShowOrActivate();
+        if (Application.Current is App app)
+        {
+            app.ShowCommonStartupWindow();
+        }
     }
 
     private void OpenVcsMappingButton_Click(object sender, RoutedEventArgs e)    {

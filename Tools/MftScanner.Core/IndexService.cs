@@ -21,6 +21,7 @@ namespace MftScanner
         private readonly UsnWatcher _usnWatcher = new UsnWatcher();
         private volatile MemoryIndex _index = new MemoryIndex();
         private readonly object _snapshotSaveLock = new object();
+        private readonly object _snapshotWriteLock = new object();
         private readonly object _backgroundCatchUpLock = new object();
         private bool _watcherInitialized;
         private CancellationTokenSource _snapshotSaveCts;
@@ -28,8 +29,12 @@ namespace MftScanner
         private Task _backgroundCatchUpTask;
         private volatile bool _isBackgroundCatchUpInProgress;
         private volatile string _currentStatusMessage = string.Empty;
+        private readonly object _periodicSnapshotSaveLock = new object();
+        private CancellationTokenSource _periodicSnapshotSaveCts;
+        private Task _periodicSnapshotSaveTask;
 
         private const int SnapshotSaveDebounceMilliseconds = 5000;
+        private const int SnapshotPeriodicSaveMilliseconds = 120000;
 
         // 保存 progress 引用，供 OnJournalOverflow 使用（需求 6.5）
         private IProgress<string> _progress;
@@ -54,6 +59,7 @@ namespace MftScanner
         {
             _progress = progress;
             SetupUsnWatcher();
+            StartPeriodicSnapshotSaveLoop();
             return Task.Run(() => BuildIndex(progress, ct), ct);
         }
 
@@ -66,6 +72,7 @@ namespace MftScanner
         {
             if (progress != null)
                 _progress = progress;
+            StartPeriodicSnapshotSaveLoop();
             return Task.Run(() =>
             {
                 CancelPendingSnapshotSave();
@@ -79,6 +86,7 @@ namespace MftScanner
 
         public void Shutdown()
         {
+            StopPeriodicSnapshotSaveLoop();
             CancelPendingSnapshotSave();
             CancelBackgroundCatchUp();
             SaveCurrentSnapshot("shutdown");
@@ -1010,18 +1018,26 @@ namespace MftScanner
             {
                 try
                 {
-                    var saveStopwatch = Stopwatch.StartNew();
-                    var metrics = _snapshotStore.Save(new IndexSnapshot(recordCopy, volumeCopy));
-                    saveStopwatch.Stop();
+                    IndexSnapshotSaveMetrics metrics;
+                    long elapsedMilliseconds;
+                    lock (_snapshotWriteLock)
+                    {
+                        var saveStopwatch = Stopwatch.StartNew();
+                        metrics = _snapshotStore.Save(new IndexSnapshot(recordCopy, volumeCopy));
+                        saveStopwatch.Stop();
+                        elapsedMilliseconds = saveStopwatch.ElapsedMilliseconds;
+                    }
+
                     if (metrics != null)
                     {
                         UsnDiagLog.Write(
-                            $"[SNAPSHOT SAVE] elapsedMs={saveStopwatch.ElapsedMilliseconds} version={metrics.Version} " +
+                            $"[SNAPSHOT SAVE] elapsedMs={elapsedMilliseconds} version={metrics.Version} " +
                             $"fileBytes={metrics.FileBytes} records={metrics.RecordCount} volumes={metrics.VolumeCount} frnEntries={metrics.FrnEntryCount}");
                     }
                 }
-                catch
+                catch (Exception ex)
                 {
+                    UsnDiagLog.Write($"[SNAPSHOT SAVE QUEUED FAIL] {ex.GetType().Name}: {ex.Message}");
                 }
             });
         }
@@ -1055,6 +1071,83 @@ namespace MftScanner
             });
         }
 
+
+        private void StartPeriodicSnapshotSaveLoop()
+        {
+            lock (_periodicSnapshotSaveLock)
+            {
+                if (_periodicSnapshotSaveCts != null)
+                {
+                    return;
+                }
+
+                var cts = new CancellationTokenSource();
+                _periodicSnapshotSaveCts = cts;
+                _periodicSnapshotSaveTask = Task.Run(() => RunPeriodicSnapshotSaveLoop(cts));
+            }
+        }
+
+        private async Task RunPeriodicSnapshotSaveLoop(CancellationTokenSource periodicSnapshotSaveCts)
+        {
+            var ct = periodicSnapshotSaveCts.Token;
+            try
+            {
+                while (!ct.IsCancellationRequested)
+                {
+                    await Task.Delay(SnapshotPeriodicSaveMilliseconds, ct).ConfigureAwait(false);
+                    if (ct.IsCancellationRequested)
+                    {
+                        break;
+                    }
+
+                    SaveCurrentSnapshot("periodic");
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                UsnDiagLog.Write($"[SNAPSHOT PERIODIC FAIL] {ex.GetType().Name}: {ex.Message}");
+            }
+            finally
+            {
+                lock (_periodicSnapshotSaveLock)
+                {
+                    if (ReferenceEquals(_periodicSnapshotSaveCts, periodicSnapshotSaveCts))
+                    {
+                        _periodicSnapshotSaveCts = null;
+                        _periodicSnapshotSaveTask = null;
+                    }
+                }
+
+                periodicSnapshotSaveCts.Dispose();
+            }
+        }
+
+        private void StopPeriodicSnapshotSaveLoop()
+        {
+            CancellationTokenSource cts;
+            lock (_periodicSnapshotSaveLock)
+            {
+                cts = _periodicSnapshotSaveCts;
+                _periodicSnapshotSaveCts = null;
+                _periodicSnapshotSaveTask = null;
+            }
+
+            if (cts == null)
+            {
+                return;
+            }
+
+            try
+            {
+                cts.Cancel();
+            }
+            catch
+            {
+            }
+        }
         private void CancelPendingSnapshotSave()
         {
             lock (_snapshotSaveLock)
@@ -1085,19 +1178,26 @@ namespace MftScanner
                 Array.Copy(records, recordCopy, records.Length);
                 var volumeSnapshots = _enumerator.CreateVolumeSnapshots(checkpoints);
 
-                var saveStopwatch = Stopwatch.StartNew();
-                var metrics = _snapshotStore.Save(new IndexSnapshot(recordCopy, volumeSnapshots));
-                saveStopwatch.Stop();
+                IndexSnapshotSaveMetrics metrics;
+                long elapsedMilliseconds;
+                lock (_snapshotWriteLock)
+                {
+                    var saveStopwatch = Stopwatch.StartNew();
+                    metrics = _snapshotStore.Save(new IndexSnapshot(recordCopy, volumeSnapshots));
+                    saveStopwatch.Stop();
+                    elapsedMilliseconds = saveStopwatch.ElapsedMilliseconds;
+                }
 
                 if (metrics != null)
                 {
                     UsnDiagLog.Write(
-                        $"[SNAPSHOT SAVE LIVE] reason={reason} elapsedMs={saveStopwatch.ElapsedMilliseconds} version={metrics.Version} " +
+                        $"[SNAPSHOT SAVE LIVE] reason={reason} elapsedMs={elapsedMilliseconds} version={metrics.Version} " +
                         $"fileBytes={metrics.FileBytes} records={metrics.RecordCount} volumes={metrics.VolumeCount} frnEntries={metrics.FrnEntryCount}");
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                UsnDiagLog.Write($"[SNAPSHOT SAVE LIVE FAIL] reason={reason} {ex.GetType().Name}: {ex.Message}");
             }
         }
 
@@ -1166,3 +1266,4 @@ namespace MftScanner
             catch { }
         }
     }
+
