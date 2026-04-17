@@ -15,6 +15,9 @@ namespace PackageManager
     /// </summary>
     public partial class App
     {
+        private CommonStartupWindowManager _commonStartupWindowManager;
+        private CommonStartupHotkeyService _commonStartupHotkeyService;
+
         /// <summary>
         /// 应用程序启动时执行初始化操作，包括 WebView2 加载器、日志服务和异常处理。
         /// </summary>
@@ -34,6 +37,8 @@ namespace PackageManager
             {
                 return;
             }
+
+            InitializeCommonStartupHotkey();
         }
 
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
@@ -168,6 +173,33 @@ namespace PackageManager
         {
             LoggingService.LogError(e.Exception, "Task 未观察到的异常");
             e.SetObserved();
+        }
+
+        protected override void OnExit(ExitEventArgs e)
+        {
+            try
+            {
+                _commonStartupHotkeyService?.Dispose();
+            }
+            catch
+            {
+            }
+
+            base.OnExit(e);
+        }
+
+        private void InitializeCommonStartupHotkey()
+        {
+            try
+            {
+                _commonStartupWindowManager = new CommonStartupWindowManager();
+                _commonStartupHotkeyService = new CommonStartupHotkeyService(_commonStartupWindowManager);
+                _commonStartupHotkeyService.Start();
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, "初始化常用启动项全局热键失败");
+            }
         }
     }
 }
