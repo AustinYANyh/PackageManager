@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using System.Threading;
 
 namespace PackageManager.Services
 {
@@ -21,6 +22,7 @@ namespace PackageManager.Services
         private readonly LowLevelKeyboardProc _keyboardProc;
         private IntPtr _hookHandle = IntPtr.Zero;
         private bool _hotkeyConsumed;
+        private bool _hotkeyPendingActivation;
 
         public CommonStartupHotkeyService(CommonStartupWindowManager windowManager)
         {
@@ -55,6 +57,7 @@ namespace PackageManager.Services
             UnhookWindowsHookEx(_hookHandle);
             _hookHandle = IntPtr.Zero;
             _hotkeyConsumed = false;
+            _hotkeyPendingActivation = false;
         }
 
         public void Dispose()
@@ -74,14 +77,30 @@ namespace PackageManager.Services
                     if (keyInfo.VkCode == VkQ && IsOnlyControlPressed() && !_hotkeyConsumed)
                     {
                         _hotkeyConsumed = true;
-                        LoggingService.LogInfo($"触发常用启动项全局热键：{DefaultHotkeyDisplayText}");
-                        _windowManager.ShowOrActivate();
+                        _hotkeyPendingActivation = true;
                         return (IntPtr)1;
                     }
                 }
-                else if ((message == WmKeyUp || message == WmSysKeyUp) && keyInfo.VkCode == VkQ)
+                else if (message == WmKeyUp || message == WmSysKeyUp)
                 {
-                    _hotkeyConsumed = false;
+                    if (keyInfo.VkCode == VkQ)
+                    {
+                        var shouldActivate = _hotkeyPendingActivation;
+                        _hotkeyPendingActivation = false;
+                        _hotkeyConsumed = false;
+
+                        if (shouldActivate)
+                        {
+                            LoggingService.LogInfo($"触发常用启动项全局热键：{DefaultHotkeyDisplayText}");
+                            ThreadPool.QueueUserWorkItem(_ => _windowManager.ShowOrActivate());
+                            return (IntPtr)1;
+                        }
+                    }
+                    else if (keyInfo.VkCode == VkControl)
+                    {
+                        _hotkeyPendingActivation = false;
+                        _hotkeyConsumed = false;
+                    }
                 }
             }
 

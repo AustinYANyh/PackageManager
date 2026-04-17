@@ -92,4 +92,10 @@
     </PropertyGroup>
     <Error Condition="!Exists('..\..\packages\Fody.6.6.0\build\Fody.targets')" Text="$([System.String]::Format('$(ErrorText)', '..\..\packages\Fody.6.6.0\build\Fody.targets'))" />
   </Target>
+  <Target Name="CopyMftScannerToAssetsTools" AfterTargets="Build">
+    <MakeDir Directories="$(MSBuildProjectDirectory)\..\..\Assets\Tools" />
+    <Copy SourceFiles="$(TargetPath)"
+          DestinationFiles="$(MSBuildProjectDirectory)\..\..\Assets\Tools\MftScanner.exe"
+          SkipUnchangedFiles="false" />
+  </Target>
 </Project>
