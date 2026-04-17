@@ -17,6 +17,7 @@ namespace PackageManager.Function.StartupTool;
 public partial class CommonStartupWindow : Window
 {
     private const int MaxDisplayedResults = 500;
+    private const int SearchPageSize = 500;
     private static readonly string[] LaunchableExtensions = { ".exe", ".bat", ".cmd", ".ps1", ".lnk" };
 
     private readonly DataPersistenceService _persistence;
@@ -316,7 +317,7 @@ public partial class CommonStartupWindow : Window
                 }
             });
 
-            var response = await _indexService.SearchAsync(keyword, MaxDisplayedResults, 0, queryProgress, ct)
+            var searchResult = await SearchStartupResultsAsync(keyword, queryProgress, ct)
                 .ConfigureAwait(true);
 
             if (ct.IsCancellationRequested || currentVersion != _searchVersion)
@@ -324,7 +325,7 @@ public partial class CommonStartupWindow : Window
                 return;
             }
 
-            ApplySearchResult(response);
+            ApplySearchResult(searchResult.Response, searchResult.Results);
         }
         catch (OperationCanceledException)
         {
@@ -350,9 +351,8 @@ public partial class CommonStartupWindow : Window
         }
     }
 
-    private void ApplySearchResult(SearchQueryResult response)
+    private void ApplySearchResult(SearchQueryResult response, IReadOnlyList<ScanResultItem> results)
     {
-        var results = FilterStartupResults(response?.Results);
         ReconcileSearchResults(results);
 
         ScanCountText.Text = $"共 {results.Count} 项";
@@ -388,6 +388,61 @@ public partial class CommonStartupWindow : Window
         }
 
         StatusText.Text = $"{results.Count} 个启动项（共 {response?.TotalIndexedCount ?? _indexService.Index.TotalCount} 个对象）";
+    }
+
+    private async Task<StartupSearchResult> SearchStartupResultsAsync(
+        string keyword,
+        IProgress<string> progress,
+        CancellationToken ct)
+    {
+        var startupResults = new List<ScanResultItem>(MaxDisplayedResults);
+        var dedup = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        SearchQueryResult lastResponse = null;
+        var offset = 0;
+        var hasMoreRawMatches = false;
+
+        while (startupResults.Count < MaxDisplayedResults)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            if (offset > 0)
+            {
+                progress?.Report($"已筛选 {offset} 个匹配对象，继续查找可作为启动项的结果…");
+            }
+
+            var response = await _indexService.SearchAsync(keyword, SearchPageSize, offset, progress, ct)
+                .ConfigureAwait(true);
+            lastResponse = response;
+
+            var pageResults = response?.Results;
+            if (pageResults == null || pageResults.Count == 0)
+            {
+                hasMoreRawMatches = false;
+                break;
+            }
+
+            var pageFullyConsumed = AppendLaunchableResults(pageResults, startupResults, dedup, MaxDisplayedResults);
+            hasMoreRawMatches = !pageFullyConsumed || response.IsTruncated;
+
+            if (!hasMoreRawMatches)
+            {
+                break;
+            }
+
+            offset += pageResults.Count;
+        }
+
+        return new StartupSearchResult
+        {
+            Response = new SearchQueryResult
+            {
+                TotalIndexedCount = lastResponse?.TotalIndexedCount ?? _indexService.Index.TotalCount,
+                TotalMatchedCount = lastResponse?.TotalMatchedCount ?? 0,
+                IsTruncated = hasMoreRawMatches,
+                Results = new List<ScannedFileInfo>()
+            },
+            Results = startupResults
+        };
     }
 
     private void ReconcileSearchResults(IReadOnlyList<ScanResultItem> results)
@@ -435,11 +490,12 @@ public partial class CommonStartupWindow : Window
         }
     }
 
-    private static List<ScanResultItem> FilterStartupResults(IEnumerable<ScannedFileInfo> results)
+    private static bool AppendLaunchableResults(
+        IEnumerable<ScannedFileInfo> results,
+        ICollection<ScanResultItem> target,
+        ISet<string> dedup,
+        int maxCount)
     {
-        var filtered = new List<ScanResultItem>();
-        var dedup = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
         foreach (var item in results ?? Enumerable.Empty<ScannedFileInfo>())
         {
             if (item == null || item.IsDirectory || !IsLaunchableFile(item.FullPath))
@@ -452,14 +508,19 @@ public partial class CommonStartupWindow : Window
                 continue;
             }
 
-            filtered.Add(new ScanResultItem
+            target.Add(new ScanResultItem
             {
                 FileName = string.IsNullOrWhiteSpace(item.FileName) ? System.IO.Path.GetFileName(item.FullPath) : item.FileName,
                 FullPath = item.FullPath
             });
+
+            if (target.Count >= maxCount)
+            {
+                return false;
+            }
         }
 
-        return filtered;
+        return true;
     }
 
     private void IndexService_IndexStatusChanged(object sender, IndexStatusChangedEventArgs e)
@@ -628,6 +689,13 @@ public partial class CommonStartupWindow : Window
     }
 
     private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();
+
+    private sealed class StartupSearchResult
+    {
+        public SearchQueryResult Response { get; set; }
+
+        public IReadOnlyList<ScanResultItem> Results { get; set; }
+    }
 }
 
 public class ScanResultItem : INotifyPropertyChanged
