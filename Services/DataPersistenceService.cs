@@ -861,6 +861,11 @@ namespace PackageManager.Services
         /// 获取或设置常用启动项列表。
         /// </summary>
         public List<CommonStartupItem> CommonStartupItems { get; set; } = new List<CommonStartupItem>();
+
+        /// <summary>
+        /// 获取或设置常用启动项全局热键显示文本。
+        /// </summary>
+        public string CommonStartupHotkey { get; set; } = "Ctrl+Q";
     }
 
     /// <summary>

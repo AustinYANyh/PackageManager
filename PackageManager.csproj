@@ -146,6 +146,8 @@
         <Compile Include="Models\VisibilityItem.cs" />
         <Compile Include="Services\AdminElevationService.cs" />
         <Compile Include="Services\ConfigPresetStore.cs" />
+        <Compile Include="Services\CommonStartupHotkeyService.cs" />
+        <Compile Include="Services\CommonStartupWindowManager.cs" />
         <Compile Include="Services\DebugSettingsService.cs" />
         <Compile Include="Services\EmbeddedToolRunnerService.cs" />
         <Compile Include="Services\LoggingService.cs" />
