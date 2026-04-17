@@ -16,9 +16,11 @@ namespace PackageManager
     public partial class App
     {
         private CommonStartupWindowManager _commonStartupWindowManager;
+        private FileSearchWindowManager _fileSearchWindowManager;
         private CommonStartupHotkeyService _commonStartupHotkeyService;
 
         internal CommonStartupWindowManager CommonStartupWindowManager => _commonStartupWindowManager;
+        internal FileSearchWindowManager FileSearchWindowManager => _fileSearchWindowManager;
 
         /// <summary>
         /// 应用程序启动时执行初始化操作，包括 WebView2 加载器、日志服务和异常处理。
@@ -183,6 +185,7 @@ namespace PackageManager
             {
                 _commonStartupHotkeyService?.Dispose();
                 _commonStartupWindowManager?.Shutdown();
+                _fileSearchWindowManager?.Shutdown();
             }
             catch
             {
@@ -196,18 +199,24 @@ namespace PackageManager
             try
             {
                 _commonStartupWindowManager = new CommonStartupWindowManager();
-                _commonStartupHotkeyService = new CommonStartupHotkeyService(_commonStartupWindowManager);
+                _fileSearchWindowManager = new FileSearchWindowManager();
+                _commonStartupHotkeyService = new CommonStartupHotkeyService(_commonStartupWindowManager, _fileSearchWindowManager);
                 _commonStartupHotkeyService.Start();
             }
             catch (Exception ex)
             {
-                LoggingService.LogError(ex, "初始化常用启动项全局热键失败");
+                LoggingService.LogError(ex, "初始化全局热键失败");
             }
         }
 
         internal void ShowCommonStartupWindow()
         {
             _commonStartupWindowManager?.ShowOrActivate();
+        }
+
+        internal void ShowFileSearchWindow()
+        {
+            _fileSearchWindowManager?.ShowOrActivate();
         }
     }
 }

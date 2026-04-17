@@ -664,6 +664,14 @@ public partial class PackagesHomePage : Page
         }
     }
 
+    private void OpenFileSearchWindowButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (Application.Current is App app)
+        {
+            app.ShowFileSearchWindow();
+        }
+    }
+
     private void OpenVcsMappingButton_Click(object sender, RoutedEventArgs e)    {
         try
         {

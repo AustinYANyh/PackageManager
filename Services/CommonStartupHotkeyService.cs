@@ -11,6 +11,7 @@ namespace PackageManager.Services
         private const int WmSysKeyDown = 0x0104;
         private const int WmKeyUp = 0x0101;
         private const int WmSysKeyUp = 0x0105;
+        private const int VkE = 0x45;
         private const int VkQ = 0x51;
         private const int VkControl = 0x11;
         private const int VkMenu = 0x12;
@@ -19,18 +20,22 @@ namespace PackageManager.Services
         private const int VkRWin = 0x5C;
 
         private readonly CommonStartupWindowManager _windowManager;
+        private readonly FileSearchWindowManager _fileSearchWindowManager;
         private readonly LowLevelKeyboardProc _keyboardProc;
         private IntPtr _hookHandle = IntPtr.Zero;
         private bool _hotkeyConsumed;
         private bool _hotkeyPendingActivation;
+        private int _pendingHotkeyVkCode;
 
-        public CommonStartupHotkeyService(CommonStartupWindowManager windowManager)
+        public CommonStartupHotkeyService(CommonStartupWindowManager windowManager, FileSearchWindowManager fileSearchWindowManager)
         {
             _windowManager = windowManager ?? throw new ArgumentNullException(nameof(windowManager));
+            _fileSearchWindowManager = fileSearchWindowManager ?? throw new ArgumentNullException(nameof(fileSearchWindowManager));
             _keyboardProc = KeyboardHookCallback;
         }
 
         public static string DefaultHotkeyDisplayText => "Ctrl+Q";
+        public static string DefaultFileSearchHotkeyDisplayText => "Ctrl+E";
 
         public void Start()
         {
@@ -45,7 +50,7 @@ namespace PackageManager.Services
             }
             else
             {
-                LoggingService.LogInfo($"常用启动项全局热键已启用：{DefaultHotkeyDisplayText}");
+                LoggingService.LogInfo($"全局热键已启用：{DefaultHotkeyDisplayText} 打开常用启动项，{DefaultFileSearchHotkeyDisplayText} 打开文件搜索");
             }
         }
 
@@ -58,6 +63,7 @@ namespace PackageManager.Services
             _hookHandle = IntPtr.Zero;
             _hotkeyConsumed = false;
             _hotkeyPendingActivation = false;
+            _pendingHotkeyVkCode = 0;
         }
 
         public void Dispose()
@@ -74,25 +80,37 @@ namespace PackageManager.Services
 
                 if (message == WmKeyDown || message == WmSysKeyDown)
                 {
-                    if (keyInfo.VkCode == VkQ && IsOnlyControlPressed() && !_hotkeyConsumed)
+                    if ((keyInfo.VkCode == VkQ || keyInfo.VkCode == VkE) && IsOnlyControlPressed() && !_hotkeyConsumed)
                     {
                         _hotkeyConsumed = true;
                         _hotkeyPendingActivation = true;
+                        _pendingHotkeyVkCode = keyInfo.VkCode;
                         return (IntPtr)1;
                     }
                 }
                 else if (message == WmKeyUp || message == WmSysKeyUp)
                 {
-                    if (keyInfo.VkCode == VkQ)
+                    if (keyInfo.VkCode == _pendingHotkeyVkCode && _pendingHotkeyVkCode != 0)
                     {
                         var shouldActivate = _hotkeyPendingActivation;
+                        var hotkeyVkCode = _pendingHotkeyVkCode;
                         _hotkeyPendingActivation = false;
                         _hotkeyConsumed = false;
+                        _pendingHotkeyVkCode = 0;
 
                         if (shouldActivate)
                         {
-                            LoggingService.LogInfo($"触发常用启动项全局热键：{DefaultHotkeyDisplayText}");
-                            ThreadPool.QueueUserWorkItem(_ => _windowManager.ShowOrActivate());
+                            if (hotkeyVkCode == VkQ)
+                            {
+                                LoggingService.LogInfo($"触发常用启动项全局热键：{DefaultHotkeyDisplayText}");
+                                ThreadPool.QueueUserWorkItem(_ => _windowManager.ShowOrActivate());
+                            }
+                            else if (hotkeyVkCode == VkE)
+                            {
+                                LoggingService.LogInfo($"触发文件搜索全局热键：{DefaultFileSearchHotkeyDisplayText}");
+                                ThreadPool.QueueUserWorkItem(_ => _fileSearchWindowManager.ShowOrActivate());
+                            }
+
                             return (IntPtr)1;
                         }
                     }
@@ -100,6 +118,7 @@ namespace PackageManager.Services
                     {
                         _hotkeyPendingActivation = false;
                         _hotkeyConsumed = false;
+                        _pendingHotkeyVkCode = 0;
                     }
                 }
             }

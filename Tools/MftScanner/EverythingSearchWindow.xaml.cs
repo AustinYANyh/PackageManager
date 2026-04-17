@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -88,6 +89,8 @@ namespace MftScanner
         private Regex _cachedRegex;
         private bool _pendingRefreshFromStatus;
         private string _latestIndexStatusMessage;
+        private bool _hideInsteadOfClose = true;
+        private bool _allowProcessExit;
 
         public EverythingSearchWindow()
         {
@@ -119,11 +122,34 @@ namespace MftScanner
             };
         }
 
+        public void FocusSearchBoxAndSelectAll()
+        {
+            SearchBox.Focus();
+            SearchBox.SelectAll();
+        }
+
+        public void PrepareForProcessExit()
+        {
+            _allowProcessExit = true;
+            _hideInsteadOfClose = false;
+        }
+
         private void EverythingSearchWindow_Loaded(object sender, RoutedEventArgs e)
         {
             SearchBox.Focus();
             AttachResultsScrollViewer();
             _ = StartIndexingAsync(forceRescan: false);
+        }
+
+        private void EverythingSearchWindow_Closing(object sender, CancelEventArgs e)
+        {
+            if (_allowProcessExit || !_hideInsteadOfClose)
+            {
+                return;
+            }
+
+            e.Cancel = true;
+            Hide();
         }
 
         private void EverythingSearchWindow_Closed(object sender, EventArgs e)
