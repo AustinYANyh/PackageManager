@@ -4,7 +4,7 @@
     <IncludeAssemblies>
       Newtonsoft.Json
       CustomControlLibrary
+      MftScanner.Core
     </IncludeAssemblies>
   </Costura>
 </Weavers>
-

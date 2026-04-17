@@ -76,6 +76,22 @@
         <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
     </ItemGroup>
     <ItemGroup>
+        <ProjectReference Include="Tools\MftScanner.Core\MftScanner.Core.csproj">
+            <Project>{D6A9A6A3-4A4B-45F5-8E6E-7FCD4E9A0191}</Project>
+            <Name>MftScanner.Core</Name>
+        </ProjectReference>
+        <ProjectReference Include="Tools\MftScanner\MftScanner.csproj">
+            <Project>{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}</Project>
+            <Name>MftScanner</Name>
+            <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+        </ProjectReference>
+        <ProjectReference Include="Tools\CommonStartupTool\CommonStartupTool.csproj">
+            <Project>{8CC3622A-E84A-4D17-B560-E68FF8554E44}</Project>
+            <Name>CommonStartupTool</Name>
+            <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
+        </ProjectReference>
+    </ItemGroup>
+    <ItemGroup>
         <ApplicationDefinition Include="App.xaml">
             <Generator>MSBuild:Compile</Generator>
             <SubType>Designer</SubType>
@@ -392,7 +408,9 @@
       <Content Include="scripts\SignPackageManager.ps1" />
       <Content Include="UpdateSummary.txt" />
       <EmbeddedResource Include="Assets\Tools\LogViewPro.exe" />
-      <EmbeddedResource Include="Assets\Tools\MftScanner.exe" />
+      <EmbeddedResource Include="Tools\MftScanner\bin\$(Configuration)\MftScanner.exe" />
+      <EmbeddedResource Include="Tools\MftScanner.Core\bin\$(Configuration)\MftScanner.Core.dll" />
+      <EmbeddedResource Include="Tools\CommonStartupTool\bin\$(Configuration)\CommonStartupTool.exe" />
       <EmbeddedResource Include="Assets\Tools\UnlockProcessAdmin.exe" />
       <Content Include="Assets\Icons\README.txt" />
       <Content Include="Assets\Icons\source.png" />

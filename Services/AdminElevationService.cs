@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -184,11 +185,54 @@ namespace PackageManager.Services
                         stream.CopyTo(fs);
                     }
                 }
+
+                foreach (var sidecarSuffix in GetEmbeddedToolSidecars(outputFileName))
+                {
+                    ExtractEmbeddedSidecar(asm, targetDir, sidecarSuffix);
+                }
+
                 return targetPath;
             }
             catch
             {
                 return null;
+            }
+        }
+
+        private static IEnumerable<string> GetEmbeddedToolSidecars(string outputFileName)
+        {
+            if (string.Equals(outputFileName, "MftScanner.exe", StringComparison.OrdinalIgnoreCase))
+            {
+                yield return "MftScanner.Core.dll";
+            }
+        }
+
+        private static void ExtractEmbeddedSidecar(System.Reflection.Assembly asm, string targetDir, string resourceSuffix)
+        {
+            if (asm == null || string.IsNullOrWhiteSpace(targetDir) || string.IsNullOrWhiteSpace(resourceSuffix))
+            {
+                return;
+            }
+
+            var resourceName = asm.GetManifestResourceNames()
+                .FirstOrDefault(n => n.EndsWith(resourceSuffix, StringComparison.OrdinalIgnoreCase));
+            if (string.IsNullOrEmpty(resourceName))
+            {
+                return;
+            }
+
+            var targetPath = Path.Combine(targetDir, Path.GetFileName(resourceSuffix));
+            using (var stream = asm.GetManifestResourceStream(resourceName))
+            {
+                if (stream == null)
+                {
+                    return;
+                }
+
+                using (var fs = new FileStream(targetPath, FileMode.Create, FileAccess.Write, FileShare.Read))
+                {
+                    stream.CopyTo(fs);
+                }
             }
         }
         

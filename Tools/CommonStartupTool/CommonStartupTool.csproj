@@ -5,10 +5,10 @@
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
     <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
-    <ProjectGuid>{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}</ProjectGuid>
+    <ProjectGuid>{8CC3622A-E84A-4D17-B560-E68FF8554E44}</ProjectGuid>
     <OutputType>WinExe</OutputType>
-    <RootNamespace>MftScanner</RootNamespace>
-    <AssemblyName>MftScanner</AssemblyName>
+    <RootNamespace>CommonStartupTool</RootNamespace>
+    <AssemblyName>CommonStartupTool</AssemblyName>
     <TargetFrameworkVersion>v4.7</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <LangVersion>latestmajor</LangVersion>
@@ -55,25 +55,31 @@
       <Generator>MSBuild:Compile</Generator>
       <SubType>Designer</SubType>
     </ApplicationDefinition>
-    <Page Include="EverythingSearchWindow.xaml">
+    <Page Include="..\..\Function\StartupTool\CommonStartupWindow.xaml">
+      <Link>Function\StartupTool\CommonStartupWindow.xaml</Link>
       <Generator>MSBuild:Compile</Generator>
       <SubType>Designer</SubType>
     </Page>
-    <Page Include="RevitFileCleanupWindow.xaml">
+    <Page Include="..\..\Function\StartupTool\StartupItemEditWindow.xaml">
+      <Link>Function\StartupTool\StartupItemEditWindow.xaml</Link>
       <Generator>MSBuild:Compile</Generator>
       <SubType>Designer</SubType>
     </Page>
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="EverythingSearchWindow.xaml.cs">
-      <DependentUpon>EverythingSearchWindow.xaml</DependentUpon>
+    <Compile Include="..\..\Function\StartupTool\CommonStartupWindow.xaml.cs">
+      <Link>Function\StartupTool\CommonStartupWindow.xaml.cs</Link>
+      <DependentUpon>CommonStartupWindow.xaml</DependentUpon>
+    </Compile>
+    <Compile Include="..\..\Function\StartupTool\StartupItemEditWindow.xaml.cs">
+      <Link>Function\StartupTool\StartupItemEditWindow.xaml.cs</Link>
+      <DependentUpon>StartupItemEditWindow.xaml</DependentUpon>
     </Compile>
     <Compile Include="App.xaml.cs">
       <DependentUpon>App.xaml</DependentUpon>
     </Compile>
-    <Compile Include="RevitFileCleanupWindow.xaml.cs">
-      <DependentUpon>RevitFileCleanupWindow.xaml</DependentUpon>
-    </Compile>
+    <Compile Include="Services\DataPersistenceService.cs" />
+    <Compile Include="Services\LoggingService.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="app.manifest" />
@@ -81,7 +87,9 @@
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
-    <Content Include="FodyWeavers.xsd" />
+    <Content Include="..\MftScanner\FodyWeavers.xsd">
+      <Link>FodyWeavers.xsd</Link>
+    </Content>
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <Import Project="..\..\packages\Fody.6.6.0\build\Fody.targets" Condition="Exists('..\..\packages\Fody.6.6.0\build\Fody.targets')" />
