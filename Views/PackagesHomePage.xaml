@@ -210,7 +210,7 @@
                                                         Width="110"
                                                         Margin="0,0,8,8"
                                                         Click="OpenCommonStartupWindowButton_Click"/>
-                                        <button:CButton Content="文件搜索"
+                                        <button:CButton x:Name="FileSearchButton" Content="文件搜索"
                                                         Width="110"
                                                         Margin="0,0,8,8"
                                                         Click="OpenFileSearchWindowButton_Click"/>

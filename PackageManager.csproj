@@ -292,6 +292,7 @@
         <Compile Include="Services\GitProxyService.cs" />
         <Compile Include="Services\JenkinsBuildService.cs" />
         <Compile Include="Services\PackageUpdateService.cs" />
+        <Compile Include="Services\UserFeatureAccessService.cs" />
         <Compile Include="Converters\StatusConverters.cs" />
         <Compile Include="Converters\LocalPathGroupSummaryConverter.cs" />
         <Compile Include="Converters\PresetToIniConverter.cs" />

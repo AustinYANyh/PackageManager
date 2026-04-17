@@ -152,6 +152,17 @@ namespace MftScanner
             Hide();
         }
 
+        private void EverythingSearchWindow_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key != Key.Escape)
+            {
+                return;
+            }
+
+            e.Handled = true;
+            Close();
+        }
+
         private void EverythingSearchWindow_Closed(object sender, EventArgs e)
         {
             _indexCts?.Cancel();

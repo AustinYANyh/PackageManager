@@ -119,6 +119,17 @@ public partial class CommonStartupWindow : Window
         Hide();
     }
 
+    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Escape)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        Close();
+    }
+
     private void Window_Closed(object sender, EventArgs e)
     {
         _debounceTimer.Stop();

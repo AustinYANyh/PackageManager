@@ -35,8 +35,11 @@ public partial class PackagesHomePage : Page
     public PackagesHomePage()
     {
         InitializeComponent();
-        if (!Environment.UserName.Equals("AustinYanyh", StringComparison.OrdinalIgnoreCase))
+        if (!UserFeatureAccessService.CanUseAustinOnlyFeatures)
+        {
             KiroProxyButton.IsEnabled = false;
+            FileSearchButton.IsEnabled = false;
+        }
     }
 
     /// <summary>
