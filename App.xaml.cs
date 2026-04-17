@@ -180,6 +180,7 @@ namespace PackageManager
             try
             {
                 _commonStartupHotkeyService?.Dispose();
+                _commonStartupWindowManager?.Shutdown();
             }
             catch
             {
@@ -203,3 +204,4 @@ namespace PackageManager
         }
     }
 }
+

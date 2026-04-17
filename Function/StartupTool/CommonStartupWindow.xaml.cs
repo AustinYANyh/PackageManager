@@ -30,6 +30,9 @@ public partial class CommonStartupWindow : Window
     private CancellationTokenSource _indexCts;
     private Task<int> _indexTask;
     private bool _indexReady;
+    private bool _hideInsteadOfClose;
+    private bool _allowProcessExit;
+    private bool _hasInitialized;
     private int _searchVersion;
 
     public CommonStartupWindow(DataPersistenceService persistence)
@@ -46,12 +49,19 @@ public partial class CommonStartupWindow : Window
         _liveRefreshTimer.Tick += LiveRefreshTimer_Tick;
         _indexService.IndexChanged += IndexService_IndexChanged;
         _indexService.IndexStatusChanged += IndexService_IndexStatusChanged;
+        _hideInsteadOfClose = true;
     }
 
     public void FocusSearchBoxAndSelectAll()
     {
         SearchBox.Focus();
         SearchBox.SelectAll();
+    }
+
+    public void PrepareForProcessExit()
+    {
+        _allowProcessExit = true;
+        _hideInsteadOfClose = false;
     }
 
     private void LoadSavedItems()
@@ -80,8 +90,32 @@ public partial class CommonStartupWindow : Window
     private void Window_Loaded(object sender, RoutedEventArgs e)
     {
         SearchBox.Focus();
+        if (_hasInitialized)
+        {
+            if (string.IsNullOrWhiteSpace(SearchBox.Text))
+            {
+                StatusText.Text = _indexReady
+                    ? $"已索引 {_indexService.Index.TotalCount} 个对象，输入文件名关键词开始检索。"
+                    : StatusText.Text;
+            }
+
+            return;
+        }
+
+        _hasInitialized = true;
         StatusText.Text = "正在建立 MFT 索引，首次加载可能稍慢，请稍候。";
         _ = EnsureIndexAsync(forceRescan: false);
+    }
+
+    private void Window_Closing(object sender, CancelEventArgs e)
+    {
+        if (_allowProcessExit || !_hideInsteadOfClose)
+        {
+            return;
+        }
+
+        e.Cancel = true;
+        Hide();
     }
 
     private void Window_Closed(object sender, EventArgs e)

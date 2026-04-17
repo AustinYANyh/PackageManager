@@ -195,8 +195,20 @@ namespace PackageManager.Services
             }
             catch
             {
+                var existingPath = GetExtractedToolPath(outputFileName);
+                return File.Exists(existingPath) ? existingPath : null;
+            }
+        }
+
+        public static string GetExtractedToolPath(string outputFileName)
+        {
+            if (string.IsNullOrWhiteSpace(outputFileName))
+            {
                 return null;
             }
+
+            var targetDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PackageManager", "tools");
+            return Path.Combine(targetDir, outputFileName);
         }
 
         private static IEnumerable<string> GetEmbeddedToolSidecars(string outputFileName)

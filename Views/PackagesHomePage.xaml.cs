@@ -658,29 +658,7 @@ public partial class PackagesHomePage : Page
 
     private void OpenCommonStartupWindowButton_Click(object sender, RoutedEventArgs e)
     {
-        try
-        {
-            var exePath = AdminElevationService.ExtractEmbeddedTool("CommonStartupTool.exe", "CommonStartupTool.exe");
-            if (string.IsNullOrEmpty(exePath))
-            {
-                MessageBox.Show("未找到 CommonStartupTool.exe 工具，请检查安装。", "常用启动项", MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
-            }
-
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = exePath,
-                UseShellExecute = true
-            });
-        }
-        catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
-        {
-        }
-        catch (Exception ex)
-        {
-            LoggingService.LogError(ex, "打开常用启动项工具失败");
-            MessageBox.Show($"打开常用启动项工具失败：{ex.Message}", "常用启动项", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
+        new CommonStartupWindowManager().ShowOrActivate();
     }
 
     private void OpenVcsMappingButton_Click(object sender, RoutedEventArgs e)    {
@@ -829,5 +807,6 @@ public partial class PackagesHomePage : Page
         }
     }
 }
+
 
 
