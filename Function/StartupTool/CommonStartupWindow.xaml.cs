@@ -3,11 +3,15 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Media;
 using System.Windows.Threading;
 using MftScanner;
 using PackageManager.Services;
@@ -16,33 +20,56 @@ namespace PackageManager.Function.StartupTool;
 
 public partial class CommonStartupWindow : Window
 {
+    private const string AllGroupsKey = "__all_groups__";
+    private const string DefaultGroupName = "项目入口";
     private const int MaxDisplayedResults = 500;
     private const int SearchPageSize = 500;
+    private const int RecentDays = 7;
+
     private static readonly string[] LaunchableExtensions = { ".exe", ".bat", ".cmd", ".ps1", ".lnk" };
+    private static readonly string[] PresetGroupNames = { "项目入口", "开发工具", "运维脚本", "目录快捷方式", "临时工具" };
 
     private readonly DataPersistenceService _persistence;
     private readonly DispatcherTimer _debounceTimer;
     private readonly DispatcherTimer _liveRefreshTimer;
     private readonly object _indexGate = new();
-    private readonly ObservableCollection<ScanResultItem> _scanResults = new();
+    private readonly ObservableCollection<StartupNavigationItemVm> _viewItems = new();
+    private readonly ObservableCollection<StartupNavigationItemVm> _groupItems = new();
     private readonly ObservableCollection<StartupItemVm> _startupItems = new();
+    private readonly ObservableCollection<StartupItemVm> _featuredItems = new();
+    private readonly ObservableCollection<StartupItemVm> _workspaceItems = new();
+    private readonly ObservableCollection<StartupActivityVm> _recentActivities = new();
+    private readonly ObservableCollection<ScanResultItem> _scanResults = new();
+    private readonly List<CommonStartupGroup> _groupDefinitions = new();
     private readonly IndexService _indexService = new();
+    private readonly bool _canUseIntegratedFileSearch;
+
     private CancellationTokenSource _scanCts;
     private CancellationTokenSource _indexCts;
     private Task<int> _indexTask;
+    private StartupViewKind _currentView = StartupViewKind.All;
+    private StartupItemVm _selectedItem;
     private bool _indexReady;
     private bool _hideInsteadOfClose;
     private bool _allowProcessExit;
     private bool _hasInitialized;
+    private bool _suppressNavigationSelection;
     private int _searchVersion;
+    private string _currentGroupName = string.Empty;
 
     public CommonStartupWindow(DataPersistenceService persistence)
     {
         InitializeComponent();
+
         _persistence = persistence;
-        ScanResultList.ItemsSource = _scanResults;
-        StartupItemList.ItemsSource = _startupItems;
-        LoadSavedItems();
+        _canUseIntegratedFileSearch = CanUseIntegratedFileSearch();
+
+        ViewList.ItemsSource = _viewItems;
+        GroupList.ItemsSource = _groupItems;
+        FeaturedItemsControl.ItemsSource = _featuredItems;
+        WorkspaceItemsControl.ItemsSource = _workspaceItems;
+        CandidateList.ItemsSource = _scanResults;
+        ActivityList.ItemsSource = _recentActivities;
 
         _debounceTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
         _debounceTimer.Tick += DebounceTimer_Tick;
@@ -50,7 +77,11 @@ public partial class CommonStartupWindow : Window
         _liveRefreshTimer.Tick += LiveRefreshTimer_Tick;
         _indexService.IndexChanged += IndexService_IndexChanged;
         _indexService.IndexStatusChanged += IndexService_IndexStatusChanged;
+
         _hideInsteadOfClose = true;
+        LoadSavedItems();
+        UpdateKeyboardHint();
+        RefreshWorkbench();
     }
 
     public void FocusSearchBoxAndSelectAll()
@@ -68,24 +99,885 @@ public partial class CommonStartupWindow : Window
     private void LoadSavedItems()
     {
         var settings = _persistence.LoadSettings();
+        var normalized = NormalizeSettings(settings, out var changed);
+
+        _groupDefinitions.Clear();
+        _groupDefinitions.AddRange(normalized.CommonStartupGroups
+            .Where(group => !string.IsNullOrWhiteSpace(group?.Name))
+            .OrderBy(group => group.Order)
+            .ThenBy(group => group.Name, StringComparer.OrdinalIgnoreCase));
+
         _startupItems.Clear();
-        foreach (var item in settings.CommonStartupItems ?? Enumerable.Empty<CommonStartupItem>())
+        foreach (var item in normalized.CommonStartupItems
+                     .OrderBy(item => GetGroupOrder(item.GroupName))
+                     .ThenBy(item => item.Order)
+                     .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase))
         {
-            _startupItems.Add(new StartupItemVm
-            {
-                Name = item.Name,
-                FullPath = item.FullPath,
-                Arguments = item.Arguments,
-                Note = item.Note
-            });
+            var vm = StartupItemVm.FromModel(item);
+            UpdateItemRuntimeState(vm);
+            _startupItems.Add(vm);
         }
+
+        if (changed)
+        {
+            SaveItems();
+        }
+    }
+
+    private AppSettings NormalizeSettings(AppSettings settings, out bool changed)
+    {
+        settings ??= new AppSettings();
+        settings.CommonStartupItems ??= new List<CommonStartupItem>();
+        settings.CommonStartupGroups ??= new List<CommonStartupGroup>();
+
+        changed = false;
+
+        var originalCount = settings.CommonStartupItems.Count;
+        var items = settings.CommonStartupItems
+            .Where(item => item != null && !string.IsNullOrWhiteSpace(item.FullPath))
+            .ToList();
+
+        if (items.Count != originalCount)
+        {
+            changed = true;
+        }
+
+        var groups = new List<CommonStartupGroup>();
+        var knownGroups = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var preset in PresetGroupNames)
+        {
+            knownGroups.Add(preset);
+            groups.Add(new CommonStartupGroup { Name = preset });
+        }
+
+        foreach (var group in settings.CommonStartupGroups
+                     .Where(group => group != null && !string.IsNullOrWhiteSpace(group.Name))
+                     .OrderBy(group => group.Order <= 0 ? int.MaxValue : group.Order)
+                     .ThenBy(group => group.Name, StringComparer.OrdinalIgnoreCase))
+        {
+            var name = group.Name.Trim();
+            if (knownGroups.Add(name))
+            {
+                groups.Add(new CommonStartupGroup { Name = name });
+            }
+        }
+
+        foreach (var item in items)
+        {
+            item.Name = string.IsNullOrWhiteSpace(item.Name)
+                ? System.IO.Path.GetFileNameWithoutExtension(item.FullPath) ?? item.FullPath
+                : item.Name.Trim();
+            item.Arguments ??= string.Empty;
+            item.Note ??= string.Empty;
+
+            if (string.IsNullOrWhiteSpace(item.GroupName))
+            {
+                item.GroupName = DefaultGroupName;
+                changed = true;
+            }
+            else
+            {
+                item.GroupName = item.GroupName.Trim();
+            }
+
+            if (knownGroups.Add(item.GroupName))
+            {
+                groups.Add(new CommonStartupGroup { Name = item.GroupName });
+                changed = true;
+            }
+        }
+
+        for (var i = 0; i < groups.Count; i++)
+        {
+            var expectedOrder = i + 1;
+            if (groups[i].Order != expectedOrder)
+            {
+                groups[i].Order = expectedOrder;
+                changed = true;
+            }
+        }
+
+        foreach (var groupedItems in items.GroupBy(item => item.GroupName, StringComparer.OrdinalIgnoreCase))
+        {
+            var order = 1;
+            foreach (var item in groupedItems
+                         .OrderBy(item => item.Order <= 0 ? int.MaxValue : item.Order)
+                         .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase))
+            {
+                if (item.Order != order)
+                {
+                    item.Order = order;
+                    changed = true;
+                }
+
+                order++;
+            }
+        }
+
+        settings.CommonStartupGroups = groups;
+        settings.CommonStartupItems = items;
+        return settings;
     }
 
     private void SaveItems()
     {
-        var settings = _persistence.LoadSettings();
-        settings.CommonStartupItems = _startupItems.Select(v => v.ToModel()).ToList();
+        var settings = _persistence.LoadSettings() ?? new AppSettings();
+        settings.CommonStartupItems = _startupItems
+            .OrderBy(item => GetGroupOrder(item.GroupName))
+            .ThenBy(item => item.Order)
+            .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(item => item.ToModel())
+            .ToList();
+        settings.CommonStartupGroups = _groupDefinitions
+            .OrderBy(group => group.Order)
+            .ThenBy(group => group.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(group => new CommonStartupGroup
+            {
+                Name = group.Name,
+                Order = group.Order
+            })
+            .ToList();
         _persistence.SaveSettings(settings);
+    }
+
+    private void RefreshWorkbench()
+    {
+        RefreshRuntimeState();
+        RefreshNavigationCollections();
+
+        var visibleItems = GetVisibleItems().ToList();
+        var featuredItems = GetFeaturedItems(visibleItems).ToList();
+        var workspaceItems = visibleItems.Except(featuredItems).ToList();
+
+        ReplaceCollection(_featuredItems, featuredItems);
+        ReplaceCollection(_workspaceItems, workspaceItems);
+
+        FeaturedSection.Visibility = featuredItems.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        WorkspaceEmptyText.Visibility = workspaceItems.Count > 0 ? Visibility.Collapsed : Visibility.Visible;
+
+        EnsureSelectedItem(featuredItems, workspaceItems);
+        RefreshHeader(visibleItems, featuredItems, workspaceItems);
+        RefreshSummaryCards(visibleItems);
+        RefreshSidebarStats();
+        RefreshQueue();
+        RefreshDetailPane();
+        RefreshRecentActivities();
+        RefreshManagePreview();
+        RefreshCandidateSuggestions();
+        RefreshCandidatePane();
+        UpdateFilterButtons();
+    }
+
+    private void RefreshRuntimeState()
+    {
+        foreach (var item in _startupItems)
+        {
+            UpdateItemRuntimeState(item);
+        }
+    }
+
+    private void UpdateItemRuntimeState(StartupItemVm item)
+    {
+        if (item == null)
+        {
+            return;
+        }
+
+        item.IsBroken = string.IsNullOrWhiteSpace(item.FullPath) || !File.Exists(item.FullPath);
+        item.AccentBrush = ResolveAccentBrush(item.GroupName);
+    }
+
+    private Brush ResolveAccentBrush(string groupName)
+    {
+        if (string.Equals(groupName, "开发工具", StringComparison.OrdinalIgnoreCase))
+        {
+            return CreateBrush(0x38, 0x7F, 0xE0);
+        }
+
+        if (string.Equals(groupName, "运维脚本", StringComparison.OrdinalIgnoreCase))
+        {
+            return CreateBrush(0xE1, 0x90, 0x2F);
+        }
+
+        if (string.Equals(groupName, "目录快捷方式", StringComparison.OrdinalIgnoreCase))
+        {
+            return CreateBrush(0x68, 0x78, 0x72);
+        }
+
+        if (string.Equals(groupName, "临时工具", StringComparison.OrdinalIgnoreCase))
+        {
+            return CreateBrush(0x8A, 0x64, 0x2B);
+        }
+
+        return CreateBrush(0x1A, 0x6A, 0x5F);
+    }
+
+    private void RefreshNavigationCollections()
+    {
+        ReplaceCollection(_viewItems, new[]
+        {
+            CreateViewNavigationItem(StartupViewKind.All, "全部启动项", _startupItems.Count),
+            CreateViewNavigationItem(StartupViewKind.Recent, "最近启动", _startupItems.Count(IsRecentItem)),
+            CreateViewNavigationItem(StartupViewKind.Favorites, "收藏", _startupItems.Count(item => item.IsFavorite)),
+            CreateViewNavigationItem(StartupViewKind.Broken, "失效项", _startupItems.Count(item => item.IsBroken))
+        });
+
+        var groupItems = new List<StartupNavigationItemVm>
+        {
+            new()
+            {
+                Key = AllGroupsKey,
+                Title = "全部分组",
+                Count = _startupItems.Count,
+                CountBackground = CreateBrush(0xED, 0xF1, 0xEE),
+                CountForeground = CreateBrush(0x56, 0x62, 0x5B)
+            }
+        };
+
+        groupItems.AddRange(_groupDefinitions
+            .OrderBy(group => group.Order)
+            .ThenBy(group => group.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(group => new StartupNavigationItemVm
+            {
+                Key = group.Name,
+                Title = group.Name,
+                Count = _startupItems.Count(item => string.Equals(item.GroupName, group.Name, StringComparison.OrdinalIgnoreCase)),
+                CountBackground = CreateBrush(0xED, 0xF1, 0xEE),
+                CountForeground = CreateBrush(0x56, 0x62, 0x5B)
+            }));
+
+        ReplaceCollection(_groupItems, groupItems);
+
+        _suppressNavigationSelection = true;
+        ViewList.SelectedItem = _viewItems.FirstOrDefault(item => item.Key == GetViewKey(_currentView));
+        GroupList.SelectedItem = _groupItems.FirstOrDefault(item =>
+            string.Equals(item.Key, string.IsNullOrWhiteSpace(_currentGroupName) ? AllGroupsKey : _currentGroupName, StringComparison.OrdinalIgnoreCase));
+        _suppressNavigationSelection = false;
+    }
+
+    private IEnumerable<StartupItemVm> GetVisibleItems()
+    {
+        var keyword = GetSearchKeyword();
+        return _startupItems
+            .Where(MatchesCurrentView)
+            .Where(MatchesCurrentGroup)
+            .Where(item => MatchesKeyword(item, keyword))
+            .OrderByDescending(item => item.IsFavorite)
+            .ThenByDescending(item => item.LastLaunchedAt ?? DateTime.MinValue)
+            .ThenBy(item => GetGroupOrder(item.GroupName))
+            .ThenBy(item => item.Order)
+            .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private IEnumerable<StartupItemVm> GetFeaturedItems(IEnumerable<StartupItemVm> visibleItems)
+    {
+        if (_currentView == StartupViewKind.Broken)
+        {
+            return Enumerable.Empty<StartupItemVm>();
+        }
+
+        return visibleItems
+            .Where(item => item.IsFavorite || IsRecentItem(item))
+            .OrderByDescending(item => item.IsFavorite)
+            .ThenByDescending(item => item.LastLaunchedAt ?? DateTime.MinValue)
+            .ThenBy(item => item.Order)
+            .Take(4);
+    }
+
+    private void EnsureSelectedItem(IReadOnlyCollection<StartupItemVm> featuredItems, IReadOnlyCollection<StartupItemVm> workspaceItems)
+    {
+        var nextSelection = _selectedItem;
+        if (nextSelection == null || (!_startupItems.Contains(nextSelection)) || (!featuredItems.Contains(nextSelection) && !workspaceItems.Contains(nextSelection)))
+        {
+            nextSelection = featuredItems.FirstOrDefault() ?? workspaceItems.FirstOrDefault();
+        }
+
+        SelectStartupItem(nextSelection);
+    }
+
+    private void SelectStartupItem(StartupItemVm item)
+    {
+        _selectedItem = item;
+        foreach (var startupItem in _startupItems)
+        {
+            startupItem.IsSelected = ReferenceEquals(startupItem, item);
+        }
+    }
+
+    private void RefreshHeader(IReadOnlyCollection<StartupItemVm> visibleItems, IReadOnlyCollection<StartupItemVm> featuredItems, IReadOnlyCollection<StartupItemVm> workspaceItems)
+    {
+        var viewTitle = GetViewTitle(_currentView);
+        var groupTitle = string.IsNullOrWhiteSpace(_currentGroupName) ? "全部分组" : _currentGroupName;
+        var scopeTitle = string.IsNullOrWhiteSpace(_currentGroupName) ? viewTitle : $"{_currentGroupName}工作台";
+
+        WindowSubtitleText.Text = string.IsNullOrWhiteSpace(_currentGroupName)
+            ? $"Launcher Desk · {viewTitle}"
+            : $"Launcher Desk · {viewTitle} · 当前分组：{_currentGroupName}";
+        WorkbenchTitleText.Text = scopeTitle;
+        WorkbenchSubtitleText.Text = BuildWorkbenchSubtitle(visibleItems.Count, featuredItems.Count, workspaceItems.Count);
+        CurrentViewBadgeText.Text = viewTitle;
+        CurrentGroupBadgeText.Text = groupTitle;
+
+        FeaturedSectionTitleText.Text = "置顶与收藏";
+        FeaturedSectionHintText.Text = featuredItems.Count > 0
+            ? "高频入口固定放在最上层，打开窗口后不需要滚动长列表。"
+            : "当前筛选下没有高频入口，后续收藏或启动后会在这里沉淀。";
+        FeaturedBadgeText.Text = $"{featuredItems.Count} 个高频入口";
+
+        WorkspaceSectionTitleText.Text = string.IsNullOrWhiteSpace(_currentGroupName) ? "当前工作区条目" : $"{_currentGroupName}条目";
+        WorkspaceSectionHintText.Text = visibleItems.Count > 0
+            ? "卡片直接承载状态、备注、参数和最近使用，不再退化成长列表。"
+            : "换一个视图、分组或搜索关键词试试。";
+        WorkspaceBadgeText.Text = $"{workspaceItems.Count} 个条目";
+    }
+
+    private string BuildWorkbenchSubtitle(int visibleCount, int featuredCount, int workspaceCount)
+    {
+        var parts = new List<string>
+        {
+            $"{visibleCount} 个当前匹配项",
+            $"{featuredCount} 个高频入口",
+            $"{workspaceCount} 个主区卡片"
+        };
+
+        if (_currentView == StartupViewKind.Broken)
+        {
+            parts.Add("优先处理路径异常");
+        }
+        else if (_currentView == StartupViewKind.Recent)
+        {
+            parts.Add("聚焦最近 7 天使用记录");
+        }
+
+        return string.Join("，", parts) + "。";
+    }
+
+    private static string GetViewTitle(StartupViewKind view)
+    {
+        return view switch
+        {
+            StartupViewKind.Recent => "最近启动",
+            StartupViewKind.Favorites => "收藏",
+            StartupViewKind.Broken => "失效项",
+            _ => "全部启动项"
+        };
+    }
+
+    private void RefreshSummaryCards(IReadOnlyCollection<StartupItemVm> visibleItems)
+    {
+        PrimarySummaryText.Text = visibleItems.Count.ToString();
+        SecondarySummaryText.Text = visibleItems.Count(item => item.IsFavorite).ToString();
+        TertiarySummaryText.Text = visibleItems.Count(IsRecentItem).ToString();
+        QuaternarySummaryText.Text = visibleItems.Count(item => item.IsBroken).ToString();
+
+        PrimarySummaryLabel.Text = string.IsNullOrWhiteSpace(_currentGroupName) ? "当前筛选条目" : $"{_currentGroupName}条目";
+        SecondarySummaryLabel.Text = "收藏";
+        TertiarySummaryLabel.Text = $"近 {RecentDays} 天启动";
+        QuaternarySummaryLabel.Text = "状态异常";
+    }
+
+    private void RefreshSidebarStats()
+    {
+        SidebarTotalItemsText.Text = _startupItems.Count.ToString();
+        SidebarFavoriteItemsText.Text = _startupItems.Count(item => item.IsFavorite).ToString();
+        SidebarBrokenItemsText.Text = _startupItems.Count(item => item.IsBroken).ToString();
+        SidebarGroupCountText.Text = _groupDefinitions.Count.ToString();
+    }
+
+    private void RefreshQueue()
+    {
+        var brokenCount = _startupItems.Count(item => item.IsBroken);
+        QueueBrokenTitleText.Text = $"{brokenCount} 个失效项待修复";
+        QueueBrokenHintText.Text = brokenCount > 0
+            ? "建议切换到“失效项”视图集中处理。"
+            : "当前没有路径异常项。";
+
+        if (!_canUseIntegratedFileSearch)
+        {
+            QueueCandidateTitleText.Text = "文件搜索联动未启用";
+            QueueCandidateHintText.Text = "当前用户只能筛选已有工作台条目，不能调用集成文件搜索候选。";
+            return;
+        }
+
+        QueueCandidateTitleText.Text = $"{_scanResults.Count} 个搜索候选待加入";
+        QueueCandidateHintText.Text = string.IsNullOrWhiteSpace(GetSearchKeyword())
+            ? "输入关键词后，右侧会出现可直接加入当前分组的候选。"
+            : _scanResults.Count > 0
+                ? "双击候选可直接加入当前分组，也可在右侧先确认路径。"
+                : "当前关键词没有找到可加入的文件候选。";
+    }
+
+    private void RefreshDetailPane()
+    {
+        if (_selectedItem == null)
+        {
+            DetailNameText.Text = "未选择启动项";
+            DetailPathText.Text = "点击中间卡片后，这里会展示路径、备注、参数和快捷操作。";
+            DetailTagsText.Text = "暂无上下文";
+            DetailArgumentsText.Text = "未配置启动参数";
+            DetailNoteText.Text = "未填写备注";
+            DetailShortcutText.Text = "Enter 启动 · Ctrl+Enter 打开目录 · F2 编辑 · Delete 删除 · Ctrl+C 复制路径";
+            DetailIconText.Text = "?";
+            DetailIconBorder.Background = CreateBrush(0x1A, 0x6A, 0x5F);
+            SetDetailButtonsEnabled(false);
+            return;
+        }
+
+        DetailNameText.Text = _selectedItem.Name;
+        DetailPathText.Text = _selectedItem.FullPath;
+        DetailTagsText.Text = string.Join(" · ", new[]
+        {
+            _selectedItem.GroupName,
+            _selectedItem.TypeLabel,
+            _selectedItem.IsFavorite ? "已收藏" : "未收藏",
+            _selectedItem.IsBroken ? "路径异常" : "路径正常",
+            $"最近：{_selectedItem.LastLaunchDisplay}",
+            $"累计：{_selectedItem.LaunchCountDisplay}"
+        });
+        DetailArgumentsText.Text = string.IsNullOrWhiteSpace(_selectedItem.Arguments) ? "未配置启动参数" : _selectedItem.Arguments;
+        DetailNoteText.Text = string.IsNullOrWhiteSpace(_selectedItem.Note) ? "未填写备注" : _selectedItem.Note;
+        DetailShortcutText.Text = "Enter 启动 · Ctrl+Enter 打开目录 · F2 编辑 · Delete 删除 · Ctrl+C 复制路径";
+        DetailIconText.Text = _selectedItem.InitialLetter;
+        DetailIconBorder.Background = _selectedItem.AccentBrush;
+        SetDetailButtonsEnabled(true);
+    }
+
+    private void SetDetailButtonsEnabled(bool enabled)
+    {
+        DetailLaunchButton.IsEnabled = enabled;
+        DetailEditButton.IsEnabled = enabled;
+        DetailOpenFolderButton.IsEnabled = enabled;
+        DetailCopyButton.IsEnabled = enabled;
+    }
+
+    private void RefreshRecentActivities()
+    {
+        var activities = _startupItems
+            .Where(item => item.LastLaunchedAt.HasValue)
+            .OrderByDescending(item => item.LastLaunchedAt.Value)
+            .Take(5)
+            .Select(item => new StartupActivityVm
+            {
+                TimeText = item.LastLaunchedAt.Value.ToString("MM-dd HH:mm"),
+                Summary = $"{item.Name} 已启动，当前累计 {item.LaunchCountDisplay}，分组：{item.GroupName}"
+            })
+            .ToList();
+
+        if (activities.Count == 0)
+        {
+            activities.Add(new StartupActivityVm
+            {
+                TimeText = "暂无记录",
+                Summary = "启动历史会在成功启动后显示在这里。"
+            });
+        }
+
+        ReplaceCollection(_recentActivities, activities);
+    }
+
+    private void RefreshManagePreview()
+    {
+        var previewLines = _startupItems
+            .OrderByDescending(item => item.IsFavorite)
+            .ThenByDescending(item => item.LastLaunchedAt ?? DateTime.MinValue)
+            .ThenBy(item => GetGroupOrder(item.GroupName))
+            .ThenBy(item => item.Order)
+            .Take(3)
+            .Select(item =>
+                $"{item.Name} | {item.GroupName} | {item.FullPath} | {(string.IsNullOrWhiteSpace(item.Arguments) ? "-" : item.Arguments)} | {item.LastLaunchDisplay} | {(item.IsBroken ? "异常" : "正常")} | {(item.IsFavorite ? "★" : "-")} | {item.Order:00}")
+            .ToList();
+
+        ManagePreviewText.Text = previewLines.Count == 0
+            ? "暂无数据"
+            : string.Join(Environment.NewLine, previewLines);
+    }
+
+    private void RefreshCandidateSuggestions()
+    {
+        foreach (var result in _scanResults)
+        {
+            result.SuggestedGroupName = ResolveSuggestedGroup(result.FullPath);
+        }
+    }
+
+    private void RefreshCandidatePane()
+    {
+        CandidateCountText.Text = $"{_scanResults.Count} 个候选";
+
+        if (!_canUseIntegratedFileSearch)
+        {
+            CandidateHintText.Text = "当前用户未启用集成文件搜索。上方搜索仍可筛选已有启动项。";
+            CandidateNameText.Text = "未启用文件搜索联动";
+            CandidatePathText.Text = "只有本人账号会在这里展示来自 MFT 索引的候选。";
+            CandidateSuggestionText.Text = string.Empty;
+            CandidateList.IsEnabled = false;
+            SetCandidateButtonsEnabled(false);
+            return;
+        }
+
+        CandidateList.IsEnabled = true;
+
+        if (_scanResults.Count == 0)
+        {
+            CandidateHintText.Text = string.IsNullOrWhiteSpace(GetSearchKeyword())
+                ? "输入关键词后，这里会显示可直接作为启动项的文件候选。"
+                : "当前关键词没有找到可直接加入的文件候选。";
+            CandidateNameText.Text = "暂无候选";
+            CandidatePathText.Text = "候选会优先建议加入当前分组。";
+            CandidateSuggestionText.Text = string.Empty;
+            CandidateList.SelectedItem = null;
+            SetCandidateButtonsEnabled(false);
+            return;
+        }
+
+        if (CandidateList.SelectedItem is not ScanResultItem selected || !_scanResults.Contains(selected))
+        {
+            selected = _scanResults[0];
+            CandidateList.SelectedItem = selected;
+        }
+
+        CandidateHintText.Text = "搜索候选不再与工作台等宽并排，而是退到右侧作为联动区。";
+        CandidateNameText.Text = selected.FileName;
+        CandidatePathText.Text = selected.FullPath;
+        CandidateSuggestionText.Text = $"建议加入：{selected.SuggestedGroupName}";
+        SetCandidateButtonsEnabled(true);
+    }
+
+    private void SetCandidateButtonsEnabled(bool enabled)
+    {
+        AddCandidateButton.IsEnabled = enabled;
+        OpenCandidateFolderButton.IsEnabled = enabled;
+        CopyCandidatePathButton.IsEnabled = enabled;
+    }
+
+    private void AddItem(string fullPath, string targetGroupName = null, bool editBeforeSave = true)
+    {
+        if (string.IsNullOrWhiteSpace(fullPath))
+        {
+            return;
+        }
+
+        var existing = _startupItems.FirstOrDefault(item =>
+            string.Equals(item.FullPath, fullPath, StringComparison.OrdinalIgnoreCase));
+        if (existing != null)
+        {
+            if (!string.IsNullOrWhiteSpace(existing.GroupName))
+            {
+                _currentGroupName = existing.GroupName;
+            }
+
+            SelectStartupItem(existing);
+            RefreshWorkbench();
+            StatusText.Text = $"已存在：{existing.Name}";
+            return;
+        }
+
+        var candidate = new StartupItemVm
+        {
+            Name = System.IO.Path.GetFileNameWithoutExtension(fullPath) ?? fullPath,
+            FullPath = fullPath,
+            GroupName = NormalizeGroupName(targetGroupName),
+            Order = GetNextItemOrder(NormalizeGroupName(targetGroupName))
+        };
+
+        StartupItemVm finalItem;
+        if (editBeforeSave)
+        {
+            var editWindow = new StartupItemEditWindow(candidate, GetAvailableGroupNames()) { Owner = this };
+            if (editWindow.ShowDialog() != true)
+            {
+                return;
+            }
+
+            finalItem = editWindow.Result;
+            finalItem.GroupName = NormalizeGroupName(finalItem.GroupName);
+            finalItem.Order = GetNextItemOrder(finalItem.GroupName);
+        }
+        else
+        {
+            finalItem = candidate;
+        }
+
+        EnsureGroupExists(finalItem.GroupName);
+        UpdateItemRuntimeState(finalItem);
+        _startupItems.Add(finalItem);
+        _currentGroupName = finalItem.GroupName;
+        SelectStartupItem(finalItem);
+        SaveItems();
+        RefreshWorkbench();
+        StatusText.Text = $"已添加：{finalItem.Name}";
+    }
+
+    private void EditItem(StartupItemVm item)
+    {
+        if (item == null)
+        {
+            return;
+        }
+
+        var originalGroup = item.GroupName;
+        var editWindow = new StartupItemEditWindow(item.Clone(), GetAvailableGroupNames()) { Owner = this };
+        if (editWindow.ShowDialog() != true)
+        {
+            return;
+        }
+
+        var edited = editWindow.Result;
+        item.Name = edited.Name;
+        item.FullPath = edited.FullPath;
+        item.Arguments = edited.Arguments;
+        item.Note = edited.Note;
+        item.GroupName = NormalizeGroupName(edited.GroupName);
+        item.IsFavorite = edited.IsFavorite;
+        if (!string.Equals(originalGroup, item.GroupName, StringComparison.OrdinalIgnoreCase))
+        {
+            EnsureGroupExists(item.GroupName);
+            item.Order = GetNextItemOrder(item.GroupName, item);
+            _currentGroupName = item.GroupName;
+        }
+
+        UpdateItemRuntimeState(item);
+        SaveItems();
+        SelectStartupItem(item);
+        RefreshWorkbench();
+        StatusText.Text = $"已更新：{item.Name}";
+    }
+
+    private void RemoveItem(StartupItemVm item)
+    {
+        if (item == null)
+        {
+            return;
+        }
+
+        if (MessageBox.Show($"确认删除“{item.Name}”？", "常用启动项", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        _startupItems.Remove(item);
+        if (ReferenceEquals(_selectedItem, item))
+        {
+            _selectedItem = null;
+        }
+
+        SaveItems();
+        RefreshWorkbench();
+        StatusText.Text = $"已删除：{item.Name}";
+    }
+
+    private void ToggleFavorite(StartupItemVm item)
+    {
+        if (item == null)
+        {
+            return;
+        }
+
+        item.IsFavorite = !item.IsFavorite;
+        SaveItems();
+        SelectStartupItem(item);
+        RefreshWorkbench();
+        StatusText.Text = item.IsFavorite ? $"已收藏：{item.Name}" : $"已取消收藏：{item.Name}";
+    }
+
+    private void LaunchItem(StartupItemVm item)
+    {
+        if (item == null)
+        {
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = item.FullPath,
+                Arguments = item.Arguments ?? string.Empty,
+                UseShellExecute = true
+            });
+
+            item.LastLaunchedAt = DateTime.Now;
+            item.LaunchCount++;
+            SaveItems();
+            SelectStartupItem(item);
+            RefreshWorkbench();
+            StatusText.Text = $"已启动：{item.Name}";
+        }
+        catch (Exception ex)
+        {
+            UpdateItemRuntimeState(item);
+            RefreshWorkbench();
+            MessageBox.Show($"启动失败：{ex.Message}", "常用启动项", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void OpenItemFolder(string fullPath)
+    {
+        if (string.IsNullOrWhiteSpace(fullPath))
+        {
+            return;
+        }
+
+        var directory = System.IO.Path.GetDirectoryName(fullPath);
+        if (File.Exists(fullPath))
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"/select,\"{fullPath}\"",
+                UseShellExecute = true
+            });
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(directory) && Directory.Exists(directory))
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"\"{directory}\"",
+                UseShellExecute = true
+            });
+            return;
+        }
+
+        MessageBox.Show("目标路径不存在。", "常用启动项", MessageBoxButton.OK, MessageBoxImage.Warning);
+    }
+
+    private void CopyPath(string fullPath)
+    {
+        if (string.IsNullOrWhiteSpace(fullPath))
+        {
+            return;
+        }
+
+        Clipboard.SetText(fullPath);
+        StatusText.Text = "路径已复制到剪贴板。";
+    }
+
+    private void EnsureGroupExists(string groupName)
+    {
+        groupName = NormalizeGroupName(groupName);
+        if (_groupDefinitions.Any(group => string.Equals(group.Name, groupName, StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        _groupDefinitions.Add(new CommonStartupGroup
+        {
+            Name = groupName,
+            Order = _groupDefinitions.Count + 1
+        });
+    }
+
+    private int GetNextItemOrder(string groupName, StartupItemVm exclude = null)
+    {
+        groupName = NormalizeGroupName(groupName);
+        var maxOrder = _startupItems
+            .Where(item => !ReferenceEquals(item, exclude))
+            .Where(item => string.Equals(item.GroupName, groupName, StringComparison.OrdinalIgnoreCase))
+            .Select(item => item.Order)
+            .DefaultIfEmpty(0)
+            .Max();
+        return maxOrder + 1;
+    }
+
+    private IEnumerable<string> GetAvailableGroupNames()
+    {
+        return _groupDefinitions
+            .OrderBy(group => group.Order)
+            .ThenBy(group => group.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.Name);
+    }
+
+    private string NormalizeGroupName(string groupName)
+    {
+        return string.IsNullOrWhiteSpace(groupName) ? DefaultGroupName : groupName.Trim();
+    }
+
+    private void CreateNewGroup()
+    {
+        var groupName = NormalizeGroupName(NewGroupNameBox.Text);
+        if (_groupDefinitions.Any(group => string.Equals(group.Name, groupName, StringComparison.OrdinalIgnoreCase)))
+        {
+            StatusText.Text = $"分组已存在：{groupName}";
+            HideNewGroupPanel();
+            return;
+        }
+
+        _groupDefinitions.Add(new CommonStartupGroup
+        {
+            Name = groupName,
+            Order = _groupDefinitions.Count + 1
+        });
+        _currentGroupName = groupName;
+        SaveItems();
+        HideNewGroupPanel();
+        RefreshWorkbench();
+        StatusText.Text = $"已创建分组：{groupName}";
+    }
+
+    private void ShowNewGroupPanel()
+    {
+        NewGroupPanel.Visibility = Visibility.Visible;
+        NewGroupNameBox.Text = string.Empty;
+        NewGroupNameBox.Focus();
+    }
+
+    private void HideNewGroupPanel()
+    {
+        NewGroupPanel.Visibility = Visibility.Collapsed;
+        NewGroupNameBox.Text = string.Empty;
+    }
+
+    private string ResolveSuggestedGroup(string fullPath)
+    {
+        if (!string.IsNullOrWhiteSpace(_currentGroupName))
+        {
+            return _currentGroupName;
+        }
+
+        var fileName = System.IO.Path.GetFileName(fullPath) ?? string.Empty;
+        var extension = System.IO.Path.GetExtension(fullPath) ?? string.Empty;
+        var hint = (fullPath ?? string.Empty).ToLowerInvariant();
+
+        if (extension.Equals(".bat", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".cmd", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".ps1", StringComparison.OrdinalIgnoreCase)
+            || hint.Contains("script")
+            || hint.Contains("jenkins")
+            || hint.Contains("cleanup")
+            || hint.Contains("publish"))
+        {
+            return "运维脚本";
+        }
+
+        if (extension.Equals(".lnk", StringComparison.OrdinalIgnoreCase))
+        {
+            return "目录快捷方式";
+        }
+
+        if (hint.Contains("git")
+            || hint.Contains("code")
+            || hint.Contains("studio")
+            || hint.Contains("clash")
+            || hint.Contains("tool")
+            || hint.Contains("sdk")
+            || hint.Contains("proxy")
+            || fileName.IndexOf("dev", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return "开发工具";
+        }
+
+        return DefaultGroupName;
+    }
+
+    private void UpdateKeyboardHint()
+    {
+        KeyboardHintText.Text = _canUseIntegratedFileSearch
+            ? "Esc 隐藏 · Enter 启动 · Ctrl+Enter 打开目录 · F2 编辑 · Delete 删除 · Ctrl+C 复制路径"
+            : "Esc 隐藏 · Enter 启动 · Ctrl+Enter 打开目录 · F2 编辑 · Delete 删除 · Ctrl+C 复制路径 · 当前用户禁用文件搜索联动";
     }
 
     private void Window_Loaded(object sender, RoutedEventArgs e)
@@ -93,19 +985,19 @@ public partial class CommonStartupWindow : Window
         SearchBox.Focus();
         if (_hasInitialized)
         {
-            if (string.IsNullOrWhiteSpace(SearchBox.Text))
-            {
-                StatusText.Text = _indexReady
-                    ? $"已索引 {_indexService.Index.TotalCount} 个对象，输入文件名关键词开始检索。"
-                    : StatusText.Text;
-            }
-
             return;
         }
 
         _hasInitialized = true;
-        StatusText.Text = "正在建立 MFT 索引，首次加载可能稍慢，请稍候。";
-        _ = EnsureIndexAsync(forceRescan: false);
+        if (_canUseIntegratedFileSearch)
+        {
+            StatusText.Text = "正在建立 MFT 索引，首次加载可能稍慢，请稍候。";
+            _ = EnsureIndexAsync(forceRescan: false);
+        }
+        else
+        {
+            StatusText.Text = "就绪，可筛选当前工作台条目；文件搜索联动仅本人可用。";
+        }
     }
 
     private void Window_Closing(object sender, CancelEventArgs e)
@@ -119,17 +1011,6 @@ public partial class CommonStartupWindow : Window
         Hide();
     }
 
-    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
-    {
-        if (e.Key != Key.Escape)
-        {
-            return;
-        }
-
-        e.Handled = true;
-        Close();
-    }
-
     private void Window_Closed(object sender, EventArgs e)
     {
         _debounceTimer.Stop();
@@ -141,27 +1022,150 @@ public partial class CommonStartupWindow : Window
         _indexService.Shutdown();
     }
 
-    private void SearchBox_KeyDown(object sender, KeyEventArgs e)
+    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (e.Key == Key.Enter)
+        if (e.Key == Key.Escape)
         {
-            _debounceTimer.Stop();
-            _ = StartScanAsync(forceRescan: false);
+            if (NewGroupPanel.Visibility == Visibility.Visible && NewGroupNameBox.IsKeyboardFocusWithin)
+            {
+                HideNewGroupPanel();
+            }
+            else
+            {
+                Close();
+            }
+
+            e.Handled = true;
+            return;
+        }
+
+        if (CandidateList.IsKeyboardFocusWithin && HandleCandidateShortcut(e))
+        {
+            e.Handled = true;
+            return;
+        }
+
+        if (SearchBox.IsKeyboardFocusWithin || IsTextEditingControl())
+        {
+            return;
+        }
+
+        if (_selectedItem == null)
+        {
+            return;
+        }
+
+        if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.None)
+        {
+            LaunchItem(_selectedItem);
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            OpenItemFolder(_selectedItem.FullPath);
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Key.F2)
+        {
+            EditItem(_selectedItem);
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Key.Delete)
+        {
+            RemoveItem(_selectedItem);
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Key.C && Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            CopyPath(_selectedItem.FullPath);
+            e.Handled = true;
         }
     }
 
-    private void SearchBox_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
+    private bool HandleCandidateShortcut(KeyEventArgs e)
+    {
+        if (CandidateList.SelectedItem is not ScanResultItem candidate)
+        {
+            return false;
+        }
+
+        if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.None)
+        {
+            AddItem(candidate.FullPath, candidate.SuggestedGroupName, editBeforeSave: false);
+            return true;
+        }
+
+        if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            OpenItemFolder(candidate.FullPath);
+            return true;
+        }
+
+        if (e.Key == Key.C && Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            CopyPath(candidate.FullPath);
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool IsTextEditingControl()
+    {
+        return Keyboard.FocusedElement is TextBoxBase
+               || Keyboard.FocusedElement is TextBox
+               || Keyboard.FocusedElement is ComboBox;
+    }
+
+    private void SearchBox_KeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter || !_canUseIntegratedFileSearch)
+        {
+            return;
+        }
+
+        _debounceTimer.Stop();
+        _ = StartScanAsync(forceRescan: false);
+        e.Handled = true;
+    }
+
+    private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
     {
         _debounceTimer.Stop();
+        RefreshWorkbench();
 
-        var keyword = SearchBox.Text?.Trim();
-        if (string.IsNullOrEmpty(keyword))
+        var keyword = GetSearchKeyword();
+        if (!_canUseIntegratedFileSearch)
+        {
+            _scanResults.Clear();
+            RefreshCandidatePane();
+            if (string.IsNullOrWhiteSpace(keyword))
+            {
+                StatusText.Text = "就绪，可筛选当前工作台条目；文件搜索联动仅本人可用。";
+            }
+            else
+            {
+                StatusText.Text = $"正在筛选工作台条目：{keyword}";
+            }
+
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(keyword))
         {
             CancelActiveSearch();
             _scanResults.Clear();
-            ScanCountText.Text = string.Empty;
+            RefreshCandidatePane();
             StatusText.Text = _indexReady
-                ? $"已索引 {_indexService.Index.TotalCount} 个对象，输入文件名关键词开始检索。"
+                ? $"已索引 {_indexService.Index.TotalCount} 个对象，输入关键词可继续查找候选。"
                 : "正在建立 MFT 索引，请稍候。";
             SetScanningState(false);
             return;
@@ -179,8 +1183,7 @@ public partial class CommonStartupWindow : Window
     private void LiveRefreshTimer_Tick(object sender, EventArgs e)
     {
         _liveRefreshTimer.Stop();
-
-        if (!IsLoaded || string.IsNullOrWhiteSpace(SearchBox.Text))
+        if (!IsLoaded || string.IsNullOrWhiteSpace(GetSearchKeyword()) || !_canUseIntegratedFileSearch)
         {
             return;
         }
@@ -188,7 +1191,16 @@ public partial class CommonStartupWindow : Window
         _ = StartScanAsync(forceRescan: false, preserveExistingResults: true, silentRefresh: true);
     }
 
-    private void ScanButton_Click(object sender, RoutedEventArgs e) => _ = StartScanAsync(forceRescan: true);
+    private void ScanButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_canUseIntegratedFileSearch)
+        {
+            StatusText.Text = "当前用户未启用文件搜索联动。";
+            return;
+        }
+
+        _ = StartScanAsync(forceRescan: true);
+    }
 
     private void StopButton_Click(object sender, RoutedEventArgs e)
     {
@@ -221,7 +1233,7 @@ public partial class CommonStartupWindow : Window
     {
         lock (_indexGate)
         {
-            if (!forceRescan && _indexReady && _indexTask != null && !_indexTask.IsCanceled && !_indexTask.IsFaulted)
+            if (!forceRescan && _indexReady && _indexTask is { IsCanceled: false, IsFaulted: false })
             {
                 return _indexTask;
             }
@@ -258,19 +1270,15 @@ public partial class CommonStartupWindow : Window
         {
             var indexedCount = await EnsureIndexAsync(forceRescan).ConfigureAwait(true);
             _indexReady = true;
-            if (string.IsNullOrWhiteSpace(SearchBox.Text))
+            if (string.IsNullOrWhiteSpace(GetSearchKeyword()))
             {
-                StatusText.Text = $"已索引 {indexedCount} 个对象，输入文件名关键词开始检索。";
+                StatusText.Text = $"已索引 {indexedCount} 个对象，输入关键词可继续查找候选。";
             }
+
             return true;
         }
         catch (OperationCanceledException)
         {
-            if (!IsLoaded)
-            {
-                return false;
-            }
-
             StatusText.Text = forceRescan ? "索引重建已取消。" : "索引初始化已取消。";
             return false;
         }
@@ -284,16 +1292,21 @@ public partial class CommonStartupWindow : Window
 
     private async Task StartScanAsync(bool forceRescan, bool preserveExistingResults = false, bool silentRefresh = false)
     {
-        var keyword = SearchBox.Text?.Trim();
+        if (!_canUseIntegratedFileSearch)
+        {
+            return;
+        }
+
+        var keyword = GetSearchKeyword();
         CancelActiveSearch();
         _scanCts = new CancellationTokenSource();
         var ct = _scanCts.Token;
         var currentVersion = Interlocked.Increment(ref _searchVersion);
 
-        if (!preserveExistingResults && (!string.IsNullOrEmpty(keyword) || forceRescan))
+        if (!preserveExistingResults && (!string.IsNullOrWhiteSpace(keyword) || forceRescan))
         {
             _scanResults.Clear();
-            ScanCountText.Text = string.Empty;
+            RefreshCandidatePane();
         }
 
         if (!silentRefresh)
@@ -301,9 +1314,9 @@ public partial class CommonStartupWindow : Window
             SetScanningState(true);
             StatusText.Text = forceRescan
                 ? "正在重建启动项搜索索引…"
-                : string.IsNullOrEmpty(keyword)
+                : string.IsNullOrWhiteSpace(keyword)
                     ? "正在准备索引…"
-                    : $"正在搜索 \"{keyword}\"…";
+                    : $"正在搜索“{keyword}”…";
         }
 
         try
@@ -314,9 +1327,9 @@ public partial class CommonStartupWindow : Window
                 return;
             }
 
-            if (string.IsNullOrEmpty(keyword))
+            if (string.IsNullOrWhiteSpace(keyword))
             {
-                StatusText.Text = $"已索引 {_indexService.Index.TotalCount} 个对象，输入文件名关键词开始检索。";
+                StatusText.Text = $"已索引 {_indexService.Index.TotalCount} 个对象，输入关键词可继续查找候选。";
                 return;
             }
 
@@ -328,9 +1341,7 @@ public partial class CommonStartupWindow : Window
                 }
             });
 
-            var searchResult = await SearchStartupResultsAsync(keyword, queryProgress, ct)
-                .ConfigureAwait(true);
-
+            var searchResult = await SearchStartupResultsAsync(keyword, queryProgress, ct).ConfigureAwait(true);
             if (ct.IsCancellationRequested || currentVersion != _searchVersion)
             {
                 return;
@@ -365,8 +1376,9 @@ public partial class CommonStartupWindow : Window
     private void ApplySearchResult(SearchQueryResult response, IReadOnlyList<ScanResultItem> results)
     {
         ReconcileSearchResults(results);
-
-        ScanCountText.Text = $"共 {results.Count} 项";
+        RefreshCandidateSuggestions();
+        RefreshCandidatePane();
+        RefreshQueue();
 
         if (results.Count == 0)
         {
@@ -388,23 +1400,16 @@ public partial class CommonStartupWindow : Window
 
         if (_indexService.IsBackgroundCatchUpInProgress)
         {
-            StatusText.Text = $"显示 {results.Count} 个启动项（共 {response?.TotalMatchedCount ?? 0} 个对象，后台追平中）";
+            StatusText.Text = $"显示 {results.Count} 个候选（共 {response?.TotalMatchedCount ?? 0} 个对象，后台追平中）";
             return;
         }
 
-        if (response?.IsTruncated == true)
-        {
-            StatusText.Text = $"显示 {results.Count} 个启动项（共 {response.TotalMatchedCount} 个对象，输入更多字符可继续缩小）。";
-            return;
-        }
-
-        StatusText.Text = $"{results.Count} 个启动项（共 {response?.TotalIndexedCount ?? _indexService.Index.TotalCount} 个对象）";
+        StatusText.Text = response?.IsTruncated == true
+            ? $"显示 {results.Count} 个候选（共 {response.TotalMatchedCount} 个对象，输入更多字符可继续缩小）。"
+            : $"{results.Count} 个候选（共 {response?.TotalIndexedCount ?? _indexService.Index.TotalCount} 个对象）";
     }
 
-    private async Task<StartupSearchResult> SearchStartupResultsAsync(
-        string keyword,
-        IProgress<string> progress,
-        CancellationToken ct)
+    private async Task<StartupSearchResult> SearchStartupResultsAsync(string keyword, IProgress<string> progress, CancellationToken ct)
     {
         var startupResults = new List<ScanResultItem>(MaxDisplayedResults);
         var dedup = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -421,10 +1426,8 @@ public partial class CommonStartupWindow : Window
                 progress?.Report($"已筛选 {offset} 个匹配对象，继续查找可作为启动项的结果…");
             }
 
-            var response = await _indexService.SearchAsync(keyword, SearchPageSize, offset, progress, ct)
-                .ConfigureAwait(true);
+            var response = await _indexService.SearchAsync(keyword, SearchPageSize, offset, progress, ct).ConfigureAwait(true);
             lastResponse = response;
-
             var pageResults = response?.Results;
             if (pageResults == null || pageResults.Count == 0)
             {
@@ -434,7 +1437,6 @@ public partial class CommonStartupWindow : Window
 
             var pageFullyConsumed = AppendLaunchableResults(pageResults, startupResults, dedup, MaxDisplayedResults);
             hasMoreRawMatches = !pageFullyConsumed || response.IsTruncated;
-
             if (!hasMoreRawMatches)
             {
                 break;
@@ -466,7 +1468,7 @@ public partial class CommonStartupWindow : Window
         for (var i = _scanResults.Count - 1; i >= 0; i--)
         {
             var existing = _scanResults[i];
-            if ((existing == null) || string.IsNullOrWhiteSpace(existing.FullPath))
+            if (existing == null || string.IsNullOrWhiteSpace(existing.FullPath))
             {
                 _scanResults.RemoveAt(i);
                 continue;
@@ -478,21 +1480,14 @@ public partial class CommonStartupWindow : Window
                 continue;
             }
 
-            if (!string.Equals(existing.FileName, incomingItem.FileName, StringComparison.Ordinal))
-            {
-                existing.FileName = incomingItem.FileName;
-            }
+            existing.FileName = incomingItem.FileName;
+            existing.SuggestedGroupName = incomingItem.SuggestedGroupName;
         }
 
-        var existingPathSet = new HashSet<string>(
-            _scanResults
-                .Where(item => item != null && !string.IsNullOrWhiteSpace(item.FullPath))
-                .Select(item => item.FullPath),
-            StringComparer.OrdinalIgnoreCase);
-
+        var existingPaths = new HashSet<string>(_scanResults.Select(item => item.FullPath), StringComparer.OrdinalIgnoreCase);
         foreach (var item in incoming)
         {
-            if ((item == null) || string.IsNullOrWhiteSpace(item.FullPath) || !existingPathSet.Add(item.FullPath))
+            if (item == null || string.IsNullOrWhiteSpace(item.FullPath) || !existingPaths.Add(item.FullPath))
             {
                 continue;
             }
@@ -501,11 +1496,7 @@ public partial class CommonStartupWindow : Window
         }
     }
 
-    private static bool AppendLaunchableResults(
-        IEnumerable<ScannedFileInfo> results,
-        ICollection<ScanResultItem> target,
-        ISet<string> dedup,
-        int maxCount)
+    private static bool AppendLaunchableResults(IEnumerable<ScannedFileInfo> results, ICollection<ScanResultItem> target, ISet<string> dedup, int maxCount)
     {
         foreach (var item in results ?? Enumerable.Empty<ScannedFileInfo>())
         {
@@ -543,18 +1534,18 @@ public partial class CommonStartupWindow : Window
                 return;
             }
 
-            if (e.RequireSearchRefresh && _indexReady && !string.IsNullOrWhiteSpace(SearchBox.Text))
+            if (e.RequireSearchRefresh && _indexReady && !string.IsNullOrWhiteSpace(GetSearchKeyword()))
             {
                 _ = StartScanAsync(forceRescan: false);
                 return;
             }
 
-            if (_indexReady && !string.IsNullOrWhiteSpace(SearchBox.Text) && e.IsBackgroundCatchUpInProgress)
+            if (_indexReady && !string.IsNullOrWhiteSpace(GetSearchKeyword()) && e.IsBackgroundCatchUpInProgress)
             {
                 ScheduleLiveRefresh();
             }
 
-            if (string.IsNullOrWhiteSpace(SearchBox.Text) && !string.IsNullOrWhiteSpace(e.Message))
+            if (string.IsNullOrWhiteSpace(GetSearchKeyword()) && !string.IsNullOrWhiteSpace(e.Message))
             {
                 StatusText.Text = e.Message;
             }
@@ -565,7 +1556,7 @@ public partial class CommonStartupWindow : Window
     {
         Dispatcher.BeginInvoke(new Action(() =>
         {
-            if (!_indexReady || string.IsNullOrWhiteSpace(SearchBox.Text))
+            if (!_indexReady || string.IsNullOrWhiteSpace(GetSearchKeyword()))
             {
                 return;
             }
@@ -580,6 +1571,11 @@ public partial class CommonStartupWindow : Window
         _liveRefreshTimer.Start();
     }
 
+    private void SetScanningState(bool scanning)
+    {
+        StopButton.IsEnabled = scanning;
+    }
+
     private static bool IsLaunchableFile(string fullPath)
     {
         if (string.IsNullOrWhiteSpace(fullPath))
@@ -587,119 +1583,312 @@ public partial class CommonStartupWindow : Window
             return false;
         }
 
-        var ext = System.IO.Path.GetExtension(fullPath);
-        return LaunchableExtensions.Contains(ext, StringComparer.OrdinalIgnoreCase);
+        return LaunchableExtensions.Contains(System.IO.Path.GetExtension(fullPath), StringComparer.OrdinalIgnoreCase);
     }
 
-    private void SetScanningState(bool scanning)
+    private void ViewList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        StopButton.IsEnabled = scanning;
+        if (_suppressNavigationSelection || ViewList.SelectedItem is not StartupNavigationItemVm selected)
+        {
+            return;
+        }
+
+        _currentView = ParseView(selected.Key);
+        RefreshWorkbench();
     }
 
-    private void ScanResultList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    private void GroupList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (ScanResultList.SelectedItem is ScanResultItem item)
-            AddItem(item.FullPath);
+        if (_suppressNavigationSelection || GroupList.SelectedItem is not StartupNavigationItemVm selected)
+        {
+            return;
+        }
+
+        _currentGroupName = selected.Key == AllGroupsKey ? string.Empty : selected.Key;
+        RefreshWorkbench();
     }
 
-    private void AddSingleItemButton_Click(object sender, RoutedEventArgs e)
+    private void AllViewButton_Click(object sender, RoutedEventArgs e)
     {
-        if ((sender as System.Windows.Controls.Button)?.Tag is ScanResultItem item)
-            AddItem(item.FullPath);
+        _currentView = StartupViewKind.All;
+        RefreshWorkbench();
     }
 
-    private void AddSelectedButton_Click(object sender, RoutedEventArgs e)
+    private void RecentViewButton_Click(object sender, RoutedEventArgs e)
     {
-        foreach (ScanResultItem item in ScanResultList.SelectedItems)
-            AddItem(item.FullPath);
+        _currentView = StartupViewKind.Recent;
+        RefreshWorkbench();
+    }
+
+    private void FavoriteViewButton_Click(object sender, RoutedEventArgs e)
+    {
+        _currentView = StartupViewKind.Favorites;
+        RefreshWorkbench();
+    }
+
+    private void BrokenViewButton_Click(object sender, RoutedEventArgs e)
+    {
+        _currentView = StartupViewKind.Broken;
+        RefreshWorkbench();
     }
 
     private void ManualAddButton_Click(object sender, RoutedEventArgs e)
     {
-        var dlg = new Microsoft.Win32.OpenFileDialog
+        var dialog = new Microsoft.Win32.OpenFileDialog
         {
             Title = "选择要添加的程序或脚本",
             Filter = "可执行文件|*.exe;*.bat;*.cmd;*.ps1;*.lnk|所有文件|*.*"
         };
-        if (dlg.ShowDialog(this) == true)
-            AddItem(dlg.FileName);
+        if (dialog.ShowDialog(this) == true)
+        {
+            AddItem(dialog.FileName, _currentGroupName, editBeforeSave: true);
+        }
     }
 
-    private void AddItem(string fullPath)
+    private void ShowNewGroupPanelButton_Click(object sender, RoutedEventArgs e) => ShowNewGroupPanel();
+
+    private void CreateGroupButton_Click(object sender, RoutedEventArgs e) => CreateNewGroup();
+
+    private void CancelNewGroupButton_Click(object sender, RoutedEventArgs e) => HideNewGroupPanel();
+
+    private void NewGroupNameBox_KeyDown(object sender, KeyEventArgs e)
     {
-        if (_startupItems.Any(x => x.FullPath.Equals(fullPath, StringComparison.OrdinalIgnoreCase)))
+        if (e.Key == Key.Enter)
         {
-            StatusText.Text = $"已存在：{System.IO.Path.GetFileName(fullPath)}";
+            CreateNewGroup();
+            e.Handled = true;
+        }
+    }
+
+    private void StartupCard_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (e.OriginalSource is DependencyObject source && FindParent<ButtonBase>(source) != null)
+        {
             return;
         }
 
-        var editWin = new StartupItemEditWindow(new StartupItemVm
+        if ((sender as FrameworkElement)?.Tag is StartupItemVm item)
         {
-            Name = System.IO.Path.GetFileNameWithoutExtension(fullPath),
-            FullPath = fullPath
-        }) { Owner = this };
-
-        if (editWin.ShowDialog() == true)
-        {
-            _startupItems.Add(editWin.Result);
-            SaveItems();
-            StatusText.Text = $"已添加：{editWin.Result.Name}";
+            SelectStartupItem(item);
+            RefreshDetailPane();
         }
     }
 
-    private void LaunchItemButton_Click(object sender, RoutedEventArgs e)
+    private void StartupCard_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if ((sender as System.Windows.Controls.Button)?.Tag is StartupItemVm vm)
-            LaunchItem(vm);
-    }
-
-    private void LaunchItem(StartupItemVm vm)
-    {
-        try
+        if (e.ClickCount != 2)
         {
-            var psi = new ProcessStartInfo
-            {
-                FileName = vm.FullPath,
-                Arguments = vm.Arguments ?? string.Empty,
-                UseShellExecute = true
-            };
-            Process.Start(psi);
+            return;
         }
-        catch (Exception ex)
+
+        if (e.OriginalSource is DependencyObject source && FindParent<ButtonBase>(source) != null)
         {
-            MessageBox.Show($"启动失败：{ex.Message}", "常用启动项", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        if ((sender as FrameworkElement)?.Tag is StartupItemVm item)
+        {
+            LaunchItem(item);
+            e.Handled = true;
         }
     }
 
-    private void EditItemButton_Click(object sender, RoutedEventArgs e)
+    private void LaunchItemButton_Click(object sender, RoutedEventArgs e) => LaunchItem(GetButtonTag<StartupItemVm>(sender));
+
+    private void OpenFolderItemButton_Click(object sender, RoutedEventArgs e)
     {
-        if ((sender as System.Windows.Controls.Button)?.Tag is StartupItemVm vm)
+        var item = GetButtonTag<StartupItemVm>(sender);
+        OpenItemFolder(item?.FullPath);
+    }
+
+    private void EditItemButton_Click(object sender, RoutedEventArgs e) => EditItem(GetButtonTag<StartupItemVm>(sender));
+
+    private void RemoveItemButton_Click(object sender, RoutedEventArgs e) => RemoveItem(GetButtonTag<StartupItemVm>(sender));
+
+    private void ToggleFavoriteButton_Click(object sender, RoutedEventArgs e) => ToggleFavorite(GetButtonTag<StartupItemVm>(sender));
+
+    private void DetailLaunchButton_Click(object sender, RoutedEventArgs e) => LaunchItem(_selectedItem);
+
+    private void DetailEditButton_Click(object sender, RoutedEventArgs e) => EditItem(_selectedItem);
+
+    private void DetailOpenFolderButton_Click(object sender, RoutedEventArgs e)
+    {
+        OpenItemFolder(_selectedItem?.FullPath);
+    }
+
+    private void DetailCopyButton_Click(object sender, RoutedEventArgs e)
+    {
+        CopyPath(_selectedItem?.FullPath);
+    }
+
+    private void CandidateList_SelectionChanged(object sender, SelectionChangedEventArgs e) => RefreshCandidatePane();
+
+    private void CandidateList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (CandidateList.SelectedItem is ScanResultItem candidate)
         {
-            var editWin = new StartupItemEditWindow(vm.Clone()) { Owner = this };
-            if (editWin.ShowDialog() == true)
-            {
-                var idx = _startupItems.IndexOf(vm);
-                if (idx >= 0)
-                    _startupItems[idx] = editWin.Result;
-                SaveItems();
-            }
+            AddItem(candidate.FullPath, candidate.SuggestedGroupName, editBeforeSave: false);
         }
     }
 
-    private void RemoveItemButton_Click(object sender, RoutedEventArgs e)
+    private void AddCandidateButton_Click(object sender, RoutedEventArgs e)
     {
-        if ((sender as System.Windows.Controls.Button)?.Tag is StartupItemVm vm)
+        if (CandidateList.SelectedItem is ScanResultItem candidate)
         {
-            if (MessageBox.Show($"确认删除「{vm.Name}」？", "常用启动项",
-                    MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
-            {
-                _startupItems.Remove(vm);
-                SaveItems();
-            }
+            AddItem(candidate.FullPath, candidate.SuggestedGroupName, editBeforeSave: false);
+        }
+    }
+
+    private void OpenCandidateFolderButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (CandidateList.SelectedItem is ScanResultItem candidate)
+        {
+            OpenItemFolder(candidate.FullPath);
+        }
+    }
+
+    private void CopyCandidatePathButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (CandidateList.SelectedItem is ScanResultItem candidate)
+        {
+            CopyPath(candidate.FullPath);
         }
     }
 
     private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();
+
+    private string GetSearchKeyword() => SearchBox.Text?.Trim() ?? string.Empty;
+
+    private bool MatchesCurrentView(StartupItemVm item)
+    {
+        return _currentView switch
+        {
+            StartupViewKind.All => true,
+            StartupViewKind.Recent => IsRecentItem(item),
+            StartupViewKind.Favorites => item.IsFavorite,
+            StartupViewKind.Broken => item.IsBroken,
+            _ => true
+        };
+    }
+
+    private bool MatchesCurrentGroup(StartupItemVm item)
+    {
+        return string.IsNullOrWhiteSpace(_currentGroupName)
+               || string.Equals(item.GroupName, _currentGroupName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool MatchesKeyword(StartupItemVm item, string keyword)
+    {
+        if (string.IsNullOrWhiteSpace(keyword))
+        {
+            return true;
+        }
+
+        return Contains(item.Name, keyword)
+               || Contains(item.FullPath, keyword)
+               || Contains(item.Note, keyword)
+               || Contains(item.Arguments, keyword)
+               || Contains(item.GroupName, keyword);
+    }
+
+    private static bool Contains(string source, string keyword)
+    {
+        return !string.IsNullOrWhiteSpace(source)
+               && source.IndexOf(keyword, StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private static bool IsRecentItem(StartupItemVm item)
+    {
+        return item?.LastLaunchedAt >= DateTime.Now.AddDays(-RecentDays);
+    }
+
+    private void UpdateFilterButtons()
+    {
+        ApplyFilterButtonStyle(AllViewButton, _currentView == StartupViewKind.All);
+        ApplyFilterButtonStyle(RecentViewButton, _currentView == StartupViewKind.Recent);
+        ApplyFilterButtonStyle(FavoriteViewButton, _currentView == StartupViewKind.Favorites);
+        ApplyFilterButtonStyle(BrokenViewButton, _currentView == StartupViewKind.Broken);
+    }
+
+    private void ApplyFilterButtonStyle(Button button, bool isActive)
+    {
+        button.Background = isActive ? CreateBrush(0xDC, 0xEF, 0xE8) : Brushes.White;
+        button.BorderBrush = isActive ? CreateBrush(0xBF, 0xD8, 0xCF) : CreateBrush(0xE4, 0xE8, 0xE4);
+        button.Foreground = isActive ? CreateBrush(0x1A, 0x6A, 0x5F) : CreateBrush(0x1D, 0x26, 0x20);
+    }
+
+    private StartupNavigationItemVm CreateViewNavigationItem(StartupViewKind view, string title, int count)
+    {
+        var (background, foreground) = view switch
+        {
+            StartupViewKind.Favorites => (CreateBrush(0xF5, 0xEB, 0xC8), CreateBrush(0x8B, 0x6A, 0x1B)),
+            StartupViewKind.Broken => (CreateBrush(0xF6, 0xDA, 0xDA), CreateBrush(0xA1, 0x48, 0x48)),
+            StartupViewKind.Recent => (CreateBrush(0xDC, 0xEF, 0xE8), CreateBrush(0x1A, 0x6A, 0x5F)),
+            _ => (CreateBrush(0xED, 0xF1, 0xEE), CreateBrush(0x56, 0x62, 0x5B))
+        };
+
+        return new StartupNavigationItemVm
+        {
+            Key = GetViewKey(view),
+            Title = title,
+            Count = count,
+            CountBackground = background,
+            CountForeground = foreground
+        };
+    }
+
+    private static string GetViewKey(StartupViewKind view) => view.ToString();
+
+    private static StartupViewKind ParseView(string key)
+    {
+        return Enum.TryParse(key, out StartupViewKind view) ? view : StartupViewKind.All;
+    }
+
+    private int GetGroupOrder(string groupName)
+    {
+        return _groupDefinitions.FirstOrDefault(group =>
+            string.Equals(group.Name, groupName, StringComparison.OrdinalIgnoreCase))?.Order ?? int.MaxValue;
+    }
+
+    private static T GetButtonTag<T>(object sender) where T : class
+    {
+        return (sender as Button)?.Tag as T;
+    }
+
+    private static T FindParent<T>(DependencyObject child) where T : DependencyObject
+    {
+        while (child != null)
+        {
+            if (child is T matched)
+            {
+                return matched;
+            }
+
+            child = VisualTreeHelper.GetParent(child);
+        }
+
+        return null;
+    }
+
+    private static void ReplaceCollection<T>(ObservableCollection<T> target, IEnumerable<T> items)
+    {
+        target.Clear();
+        foreach (var item in items)
+        {
+            target.Add(item);
+        }
+    }
+
+    private static SolidColorBrush CreateBrush(byte r, byte g, byte b)
+    {
+        return new SolidColorBrush(Color.FromRgb(r, g, b));
+    }
+
+    private static bool CanUseIntegratedFileSearch()
+    {
+        return Environment.UserName.Equals("AustinYanyh", StringComparison.OrdinalIgnoreCase)
+               || Environment.UserName.Equals("AustinYan", StringComparison.OrdinalIgnoreCase);
+    }
 
     private sealed class StartupSearchResult
     {
@@ -713,6 +1902,7 @@ public class ScanResultItem : INotifyPropertyChanged
 {
     private string _fileName;
     private string _fullPath;
+    private string _suggestedGroupName;
 
     public string FileName
     {
@@ -744,55 +1934,332 @@ public class ScanResultItem : INotifyPropertyChanged
         }
     }
 
+    public string SuggestedGroupName
+    {
+        get => _suggestedGroupName;
+        set
+        {
+            if (string.Equals(_suggestedGroupName, value, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            _suggestedGroupName = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SuggestedGroupName)));
+        }
+    }
+
     public event PropertyChangedEventHandler PropertyChanged;
 }
 
 public class StartupItemVm : INotifyPropertyChanged
 {
+    private const string FallbackGroupName = "项目入口";
+    private static readonly SolidColorBrush DefaultCardBrush = new(Color.FromRgb(0x1A, 0x6A, 0x5F));
+    private static readonly SolidColorBrush StatusNormalBackground = new(Color.FromRgb(0xED, 0xF1, 0xEE));
+    private static readonly SolidColorBrush StatusNormalForeground = new(Color.FromRgb(0x56, 0x62, 0x5B));
+    private static readonly SolidColorBrush StatusFavoriteBackground = new(Color.FromRgb(0xF5, 0xEB, 0xC8));
+    private static readonly SolidColorBrush StatusFavoriteForeground = new(Color.FromRgb(0x8B, 0x6A, 0x1B));
+    private static readonly SolidColorBrush StatusBrokenBackground = new(Color.FromRgb(0xF6, 0xDA, 0xDA));
+    private static readonly SolidColorBrush StatusBrokenForeground = new(Color.FromRgb(0xA1, 0x48, 0x48));
+
     private string _name;
     private string _fullPath;
     private string _arguments;
     private string _note;
+    private string _groupName = FallbackGroupName;
+    private bool _isFavorite;
+    private int _order;
+    private DateTime? _lastLaunchedAt;
+    private int _launchCount;
+    private bool _isBroken;
+    private bool _isSelected;
+    private Brush _accentBrush = DefaultCardBrush;
 
     public string Name
     {
         get => _name;
-        set { _name = value; OnPropertyChanged(nameof(Name)); }
+        set
+        {
+            _name = value;
+            OnPropertyChanged(nameof(Name));
+            OnPropertyChanged(nameof(InitialLetter));
+        }
     }
 
     public string FullPath
     {
         get => _fullPath;
-        set { _fullPath = value; OnPropertyChanged(nameof(FullPath)); }
+        set
+        {
+            _fullPath = value;
+            OnPropertyChanged(nameof(FullPath));
+            OnPropertyChanged(nameof(TypeLabel));
+        }
     }
 
     public string Arguments
     {
         get => _arguments;
-        set { _arguments = value; OnPropertyChanged(nameof(Arguments)); }
+        set
+        {
+            _arguments = value;
+            OnPropertyChanged(nameof(Arguments));
+        }
     }
 
     public string Note
     {
         get => _note;
-        set { _note = value; OnPropertyChanged(nameof(Note)); OnPropertyChanged(nameof(NoteVisibility)); }
+        set
+        {
+            _note = value;
+            OnPropertyChanged(nameof(Note));
+            OnPropertyChanged(nameof(DescriptionText));
+        }
     }
 
-    public Visibility NoteVisibility =>
-        string.IsNullOrWhiteSpace(_note) ? Visibility.Collapsed : Visibility.Visible;
-
-    public StartupItemVm Clone() => new()
+    public string GroupName
     {
-        Name = Name, FullPath = FullPath, Arguments = Arguments, Note = Note
-    };
+        get => _groupName;
+        set
+        {
+            _groupName = string.IsNullOrWhiteSpace(value) ? FallbackGroupName : value.Trim();
+            OnPropertyChanged(nameof(GroupName));
+        }
+    }
 
-    public CommonStartupItem ToModel() => new()
+    public bool IsFavorite
     {
-        Name = Name, FullPath = FullPath, Arguments = Arguments ?? string.Empty, Note = Note ?? string.Empty
-    };
+        get => _isFavorite;
+        set
+        {
+            _isFavorite = value;
+            OnPropertyChanged(nameof(IsFavorite));
+            OnPropertyChanged(nameof(FavoriteVisibility));
+            OnPropertyChanged(nameof(FavoriteButtonText));
+            OnPropertyChanged(nameof(StatusLabel));
+            OnPropertyChanged(nameof(StatusBackground));
+            OnPropertyChanged(nameof(StatusForeground));
+        }
+    }
+
+    public int Order
+    {
+        get => _order;
+        set
+        {
+            _order = value;
+            OnPropertyChanged(nameof(Order));
+        }
+    }
+
+    public DateTime? LastLaunchedAt
+    {
+        get => _lastLaunchedAt;
+        set
+        {
+            _lastLaunchedAt = value;
+            OnPropertyChanged(nameof(LastLaunchedAt));
+            OnPropertyChanged(nameof(LastLaunchDisplay));
+        }
+    }
+
+    public int LaunchCount
+    {
+        get => _launchCount;
+        set
+        {
+            _launchCount = value;
+            OnPropertyChanged(nameof(LaunchCount));
+            OnPropertyChanged(nameof(LaunchCountDisplay));
+        }
+    }
+
+    public bool IsBroken
+    {
+        get => _isBroken;
+        set
+        {
+            _isBroken = value;
+            OnPropertyChanged(nameof(IsBroken));
+            OnPropertyChanged(nameof(BrokenVisibility));
+            OnPropertyChanged(nameof(StatusLabel));
+            OnPropertyChanged(nameof(StatusBackground));
+            OnPropertyChanged(nameof(StatusForeground));
+        }
+    }
+
+    public bool IsSelected
+    {
+        get => _isSelected;
+        set
+        {
+            _isSelected = value;
+            OnPropertyChanged(nameof(IsSelected));
+        }
+    }
+
+    public Brush AccentBrush
+    {
+        get => _accentBrush;
+        set
+        {
+            _accentBrush = value ?? DefaultCardBrush;
+            OnPropertyChanged(nameof(AccentBrush));
+        }
+    }
+
+    public string InitialLetter => string.IsNullOrWhiteSpace(Name) ? "?" : Name.Trim()[0].ToString().ToUpperInvariant();
+
+    public string DescriptionText => string.IsNullOrWhiteSpace(Note) ? "未填写备注，可通过编辑补充该入口的上下文说明。" : Note;
+
+    public string LastLaunchDisplay
+    {
+        get
+        {
+            if (!LastLaunchedAt.HasValue)
+            {
+                return "未启动";
+            }
+
+            var span = DateTime.Now - LastLaunchedAt.Value;
+            if (span.TotalMinutes < 1)
+            {
+                return "刚刚";
+            }
+
+            if (span.TotalHours < 1)
+            {
+                return $"{Math.Max(1, (int)span.TotalMinutes)} 分钟前";
+            }
+
+            if (span.TotalDays < 1)
+            {
+                return $"{Math.Max(1, (int)span.TotalHours)} 小时前";
+            }
+
+            if (span.TotalDays < 7)
+            {
+                return $"{Math.Max(1, (int)span.TotalDays)} 天前";
+            }
+
+            return LastLaunchedAt.Value.ToString("yyyy-MM-dd");
+        }
+    }
+
+    public string LaunchCountDisplay => LaunchCount <= 0 ? "未启动" : $"{LaunchCount} 次";
+
+    public string TypeLabel
+    {
+        get
+        {
+            var extension = System.IO.Path.GetExtension(FullPath) ?? string.Empty;
+            if (extension.Equals(".ps1", StringComparison.OrdinalIgnoreCase)
+                || extension.Equals(".bat", StringComparison.OrdinalIgnoreCase)
+                || extension.Equals(".cmd", StringComparison.OrdinalIgnoreCase))
+            {
+                return "脚本";
+            }
+
+            return extension.Equals(".lnk", StringComparison.OrdinalIgnoreCase) ? "快捷方式" : "程序";
+        }
+    }
+
+    public string FavoriteButtonText => IsFavorite ? "取消收藏" : "收藏";
+
+    public string StatusLabel => IsBroken ? "异常" : IsFavorite ? "收藏" : "正常";
+
+    public Brush StatusBackground => IsBroken ? StatusBrokenBackground : IsFavorite ? StatusFavoriteBackground : StatusNormalBackground;
+
+    public Brush StatusForeground => IsBroken ? StatusBrokenForeground : IsFavorite ? StatusFavoriteForeground : StatusNormalForeground;
+
+    public Visibility FavoriteVisibility => IsFavorite ? Visibility.Visible : Visibility.Collapsed;
+
+    public Visibility BrokenVisibility => IsBroken ? Visibility.Visible : Visibility.Collapsed;
+
+    public StartupItemVm Clone()
+    {
+        return new StartupItemVm
+        {
+            Name = Name,
+            FullPath = FullPath,
+            Arguments = Arguments,
+            Note = Note,
+            GroupName = GroupName,
+            IsFavorite = IsFavorite,
+            Order = Order,
+            LastLaunchedAt = LastLaunchedAt,
+            LaunchCount = LaunchCount,
+            IsBroken = IsBroken,
+            AccentBrush = AccentBrush
+        };
+    }
+
+    public CommonStartupItem ToModel()
+    {
+        return new CommonStartupItem
+        {
+            Name = Name,
+            FullPath = FullPath,
+            Arguments = Arguments ?? string.Empty,
+            Note = Note ?? string.Empty,
+            GroupName = GroupName ?? string.Empty,
+            IsFavorite = IsFavorite,
+            Order = Order,
+            LastLaunchedAt = LastLaunchedAt,
+            LaunchCount = LaunchCount
+        };
+    }
+
+    public static StartupItemVm FromModel(CommonStartupItem item)
+    {
+        return new StartupItemVm
+        {
+            Name = item.Name,
+            FullPath = item.FullPath,
+            Arguments = item.Arguments,
+            Note = item.Note,
+            GroupName = string.IsNullOrWhiteSpace(item.GroupName) ? FallbackGroupName : item.GroupName,
+            IsFavorite = item.IsFavorite,
+            Order = item.Order,
+            LastLaunchedAt = item.LastLaunchedAt,
+            LaunchCount = item.LaunchCount
+        };
+    }
 
     public event PropertyChangedEventHandler PropertyChanged;
-    private void OnPropertyChanged(string name) =>
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+
+    private void OnPropertyChanged(string propertyName)
+    {
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+    }
 }
 
+public class StartupNavigationItemVm
+{
+    public string Key { get; set; }
+
+    public string Title { get; set; }
+
+    public int Count { get; set; }
+
+    public Brush CountBackground { get; set; }
+
+    public Brush CountForeground { get; set; }
+}
+
+public class StartupActivityVm
+{
+    public string TimeText { get; set; }
+
+    public string Summary { get; set; }
+}
+
+public enum StartupViewKind
+{
+    All,
+    Recent,
+    Favorites,
+    Broken
+}

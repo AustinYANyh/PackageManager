@@ -863,6 +863,11 @@ namespace PackageManager.Services
         public List<CommonStartupItem> CommonStartupItems { get; set; } = new List<CommonStartupItem>();
 
         /// <summary>
+        /// 获取或设置常用启动项分组定义。
+        /// </summary>
+        public List<CommonStartupGroup> CommonStartupGroups { get; set; } = new List<CommonStartupGroup>();
+
+        /// <summary>
         /// 获取或设置常用启动项全局热键显示文本。
         /// </summary>
         public string CommonStartupHotkey { get; set; } = "Ctrl+Q";
@@ -884,5 +889,32 @@ namespace PackageManager.Services
 
         /// <summary>备注说明（可选）。</summary>
         public string Note { get; set; } = "";
+
+        /// <summary>所属分组名称。</summary>
+        public string GroupName { get; set; } = "";
+
+        /// <summary>是否收藏。</summary>
+        public bool IsFavorite { get; set; }
+
+        /// <summary>排序值。</summary>
+        public int Order { get; set; }
+
+        /// <summary>最近启动时间。</summary>
+        public DateTime? LastLaunchedAt { get; set; }
+
+        /// <summary>累计启动次数。</summary>
+        public int LaunchCount { get; set; }
+    }
+
+    /// <summary>
+    /// 常用启动项分组定义。
+    /// </summary>
+    public class CommonStartupGroup
+    {
+        /// <summary>分组名称。</summary>
+        public string Name { get; set; } = "";
+
+        /// <summary>排序值。</summary>
+        public int Order { get; set; }
     }
 }

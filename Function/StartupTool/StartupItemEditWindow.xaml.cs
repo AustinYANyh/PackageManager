@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+using System.Linq;
 using System.Windows;
 
 namespace PackageManager.Function.StartupTool;
@@ -6,13 +8,27 @@ public partial class StartupItemEditWindow : Window
 {
     public StartupItemVm Result { get; private set; }
 
-    public StartupItemEditWindow(StartupItemVm vm)
+    public StartupItemEditWindow(StartupItemVm vm, IEnumerable<string> availableGroups = null)
     {
         InitializeComponent();
         NameBox.Text = vm.Name ?? "";
         PathBox.Text = vm.FullPath ?? "";
         ArgsBox.Text = vm.Arguments ?? "";
         NoteBox.Text = vm.Note ?? "";
+        var groupNames = (availableGroups ?? Enumerable.Empty<string>())
+            .Where(group => !string.IsNullOrWhiteSpace(group))
+            .Distinct()
+            .OrderBy(group => group)
+            .ToList();
+
+        if (!string.IsNullOrWhiteSpace(vm.GroupName) && !groupNames.Contains(vm.GroupName))
+        {
+            groupNames.Add(vm.GroupName);
+        }
+
+        GroupBox.ItemsSource = groupNames;
+        GroupBox.Text = vm.GroupName ?? "";
+        FavoriteBox.IsChecked = vm.IsFavorite;
     }
 
     private void BrowseButton_Click(object sender, RoutedEventArgs e)
@@ -50,7 +66,9 @@ public partial class StartupItemEditWindow : Window
             Name = NameBox.Text.Trim(),
             FullPath = PathBox.Text.Trim(),
             Arguments = ArgsBox.Text.Trim(),
-            Note = NoteBox.Text.Trim()
+            Note = NoteBox.Text.Trim(),
+            GroupName = GroupBox.Text.Trim(),
+            IsFavorite = FavoriteBox.IsChecked == true
         };
         DialogResult = true;
     }

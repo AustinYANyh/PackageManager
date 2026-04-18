@@ -63,6 +63,7 @@ public class DataPersistenceService
 public class AppSettings
 {
     public List<CommonStartupItem> CommonStartupItems { get; set; } = new List<CommonStartupItem>();
+    public List<CommonStartupGroup> CommonStartupGroups { get; set; } = new List<CommonStartupGroup>();
 }
 
 public class CommonStartupItem
@@ -71,4 +72,15 @@ public class CommonStartupItem
     public string FullPath { get; set; }
     public string Arguments { get; set; } = string.Empty;
     public string Note { get; set; } = string.Empty;
+    public string GroupName { get; set; } = string.Empty;
+    public bool IsFavorite { get; set; }
+    public int Order { get; set; }
+    public DateTime? LastLaunchedAt { get; set; }
+    public int LaunchCount { get; set; }
+}
+
+public class CommonStartupGroup
+{
+    public string Name { get; set; } = string.Empty;
+    public int Order { get; set; }
 }
