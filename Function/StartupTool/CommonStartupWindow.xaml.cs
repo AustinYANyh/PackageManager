@@ -314,45 +314,51 @@ public partial class CommonStartupWindow : Window
 
     private void RefreshNavigationCollections()
     {
-        ReplaceCollection(_viewItems, new[]
-        {
-            CreateViewNavigationItem(StartupViewKind.All, "全部启动项", _startupItems.Count),
-            CreateViewNavigationItem(StartupViewKind.Recent, "最近启动", _startupItems.Count(IsRecentItem)),
-            CreateViewNavigationItem(StartupViewKind.Favorites, "收藏", _startupItems.Count(item => item.IsFavorite)),
-            CreateViewNavigationItem(StartupViewKind.Broken, "失效项", _startupItems.Count(item => item.IsBroken))
-        });
-
-        var groupItems = new List<StartupNavigationItemVm>
-        {
-            new()
-            {
-                Key = AllGroupsKey,
-                Title = "全部分组",
-                Count = _startupItems.Count,
-                CountBackground = CreateBrush(0xED, 0xF1, 0xEE),
-                CountForeground = CreateBrush(0x56, 0x62, 0x5B)
-            }
-        };
-
-        groupItems.AddRange(_groupDefinitions
-            .OrderBy(group => group.Order)
-            .ThenBy(group => group.Name, StringComparer.OrdinalIgnoreCase)
-            .Select(group => new StartupNavigationItemVm
-            {
-                Key = group.Name,
-                Title = group.Name,
-                Count = _startupItems.Count(item => string.Equals(item.GroupName, group.Name, StringComparison.OrdinalIgnoreCase)),
-                CountBackground = CreateBrush(0xED, 0xF1, 0xEE),
-                CountForeground = CreateBrush(0x56, 0x62, 0x5B)
-            }));
-
-        ReplaceCollection(_groupItems, groupItems);
-
         _suppressNavigationSelection = true;
-        ViewList.SelectedItem = _viewItems.FirstOrDefault(item => item.Key == GetViewKey(_currentView));
-        GroupList.SelectedItem = _groupItems.FirstOrDefault(item =>
-            string.Equals(item.Key, string.IsNullOrWhiteSpace(_currentGroupName) ? AllGroupsKey : _currentGroupName, StringComparison.OrdinalIgnoreCase));
-        _suppressNavigationSelection = false;
+        try
+        {
+            ReplaceCollection(_viewItems, new[]
+            {
+                CreateViewNavigationItem(StartupViewKind.All, "全部启动项", _startupItems.Count),
+                CreateViewNavigationItem(StartupViewKind.Recent, "最近启动", _startupItems.Count(IsRecentItem)),
+                CreateViewNavigationItem(StartupViewKind.Favorites, "收藏", _startupItems.Count(item => item.IsFavorite)),
+                CreateViewNavigationItem(StartupViewKind.Broken, "失效项", _startupItems.Count(item => item.IsBroken))
+            });
+
+            var groupItems = new List<StartupNavigationItemVm>
+            {
+                new()
+                {
+                    Key = AllGroupsKey,
+                    Title = "全部分组",
+                    Count = _startupItems.Count,
+                    CountBackground = CreateBrush(0xED, 0xF1, 0xEE),
+                    CountForeground = CreateBrush(0x56, 0x62, 0x5B)
+                }
+            };
+
+            groupItems.AddRange(_groupDefinitions
+                .OrderBy(group => group.Order)
+                .ThenBy(group => group.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(group => new StartupNavigationItemVm
+                {
+                    Key = group.Name,
+                    Title = group.Name,
+                    Count = _startupItems.Count(item => string.Equals(item.GroupName, group.Name, StringComparison.OrdinalIgnoreCase)),
+                    CountBackground = CreateBrush(0xED, 0xF1, 0xEE),
+                    CountForeground = CreateBrush(0x56, 0x62, 0x5B)
+                }));
+
+            ReplaceCollection(_groupItems, groupItems);
+
+            ViewList.SelectedItem = _viewItems.FirstOrDefault(item => item.Key == GetViewKey(_currentView));
+            GroupList.SelectedItem = _groupItems.FirstOrDefault(item =>
+                string.Equals(item.Key, string.IsNullOrWhiteSpace(_currentGroupName) ? AllGroupsKey : _currentGroupName, StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            _suppressNavigationSelection = false;
+        }
     }
 
     private IEnumerable<StartupItemVm> GetVisibleItems()
@@ -1108,6 +1114,7 @@ public partial class CommonStartupWindow : Window
         {
             _scanResults.Clear();
             RefreshCandidatePane();
+            RefreshQueue();
             if (string.IsNullOrWhiteSpace(keyword))
             {
                 StatusText.Text = "就绪，可筛选当前工作台条目；文件搜索联动仅本人可用。";
@@ -1125,6 +1132,8 @@ public partial class CommonStartupWindow : Window
             CancelActiveSearch();
             _scanResults.Clear();
             RefreshCandidatePane();
+            RefreshQueue();
+            ScrollRightSidebarToTop();
             StatusText.Text = _indexReady
                 ? $"已索引 {_indexService.Index.TotalCount} 个对象，输入关键词可继续查找候选。"
                 : "正在建立 MFT 索引，请稍候。";
@@ -1268,6 +1277,8 @@ public partial class CommonStartupWindow : Window
         {
             _scanResults.Clear();
             RefreshCandidatePane();
+            RefreshQueue();
+            ScrollRightSidebarToTop();
         }
 
         if (!silentRefresh)
@@ -1340,6 +1351,7 @@ public partial class CommonStartupWindow : Window
         RefreshCandidateSuggestions();
         RefreshCandidatePane();
         RefreshQueue();
+        ScrollRightSidebarToTop();
 
         if (results.Count == 0)
         {
@@ -1554,8 +1566,7 @@ public partial class CommonStartupWindow : Window
             return;
         }
 
-        _currentView = ParseView(selected.Key);
-        RefreshWorkbench();
+        ApplyViewSelection(selected);
     }
 
     private void GroupList_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -1565,8 +1576,79 @@ public partial class CommonStartupWindow : Window
             return;
         }
 
-        _currentGroupName = selected.Key == AllGroupsKey ? string.Empty : selected.Key;
+        ApplyGroupSelection(selected);
+    }
+
+    private void ViewList_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (TryGetNavigationItemFromSource(e.OriginalSource, out var selected))
+        {
+            ViewList.SelectedItem = selected;
+            ApplyViewSelection(selected);
+            e.Handled = true;
+        }
+    }
+
+    private void GroupList_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (TryGetNavigationItemFromSource(e.OriginalSource, out var selected))
+        {
+            GroupList.SelectedItem = selected;
+            ApplyGroupSelection(selected);
+            e.Handled = true;
+        }
+    }
+
+    private void ApplyViewSelection(StartupNavigationItemVm selected)
+    {
+        if (selected == null)
+        {
+            return;
+        }
+
+        var nextView = ParseView(selected.Key);
+        if (_currentView == nextView)
+        {
+            return;
+        }
+
+        _currentView = nextView;
         RefreshWorkbench();
+        ScrollWorkbenchToTop();
+    }
+
+    private void ApplyGroupSelection(StartupNavigationItemVm selected)
+    {
+        if (selected == null)
+        {
+            return;
+        }
+
+        var nextGroupName = selected.Key == AllGroupsKey ? string.Empty : selected.Key;
+        if (string.Equals(_currentGroupName, nextGroupName, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _currentGroupName = nextGroupName;
+        RefreshWorkbench();
+        ScrollWorkbenchToTop();
+    }
+
+    private void ScrollWorkbenchToTop()
+    {
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            WorkbenchScrollViewer?.ScrollToVerticalOffset(0);
+        }), DispatcherPriority.Background);
+    }
+
+    private void ScrollRightSidebarToTop()
+    {
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            RightSidebarScrollViewer?.ScrollToVerticalOffset(0);
+        }), DispatcherPriority.Background);
     }
 
     private void AllViewButton_Click(object sender, RoutedEventArgs e)
@@ -1674,7 +1756,17 @@ public partial class CommonStartupWindow : Window
 
     private void CandidateList_SelectionChanged(object sender, SelectionChangedEventArgs e) => RefreshCandidatePane();
 
+    private void LeftSidebarList_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        BubbleMouseWheelToScrollViewer(sender, e, LeftSidebarScrollViewer);
+    }
+
     private void ChildList_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        BubbleMouseWheelToScrollViewer(sender, e, RightSidebarScrollViewer);
+    }
+
+    private void BubbleMouseWheelToScrollViewer(object sender, MouseWheelEventArgs e, ScrollViewer targetScrollViewer)
     {
         if (sender is not DependencyObject dependencyObject)
         {
@@ -1692,13 +1784,18 @@ public partial class CommonStartupWindow : Window
             return;
         }
 
+        if (targetScrollViewer == null)
+        {
+            return;
+        }
+
         var routedEvent = new MouseWheelEventArgs(e.MouseDevice, e.Timestamp, e.Delta)
         {
             RoutedEvent = MouseWheelEvent,
             Source = sender
         };
 
-        WorkbenchScrollViewer.RaiseEvent(routedEvent);
+        targetScrollViewer.RaiseEvent(routedEvent);
         e.Handled = true;
     }
 
@@ -1847,6 +1944,24 @@ public partial class CommonStartupWindow : Window
         }
 
         return null;
+    }
+
+    private static bool TryGetNavigationItemFromSource(object originalSource, out StartupNavigationItemVm item)
+    {
+        item = null;
+        if (originalSource is not DependencyObject source)
+        {
+            return false;
+        }
+
+        var container = FindParent<ListBoxItem>(source);
+        if (container?.DataContext is not StartupNavigationItemVm navigationItem)
+        {
+            return false;
+        }
+
+        item = navigationItem;
+        return true;
     }
 
     private static T FindVisualChild<T>(DependencyObject parent) where T : DependencyObject

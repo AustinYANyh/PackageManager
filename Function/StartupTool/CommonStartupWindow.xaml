@@ -296,20 +296,20 @@
                 </StackPanel>
 
                 <Grid Grid.Row="1" Margin="16">
-                    <ScrollViewer x:Name="WorkbenchScrollViewer"
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="300" />
+                        <ColumnDefinition Width="16" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="16" />
+                        <ColumnDefinition Width="500" />
+                    </Grid.ColumnDefinitions>
+
+                    <ScrollViewer x:Name="LeftSidebarScrollViewer"
+                                  Grid.Column="0"
                                   VerticalScrollBarVisibility="Hidden"
                                   HorizontalScrollBarVisibility="Hidden"
                                   CanContentScroll="False">
-                        <Grid Width="{Binding ElementName=WorkbenchScrollViewer, Path=ViewportWidth}">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="280" />
-                                <ColumnDefinition Width="16" />
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="16" />
-                                <ColumnDefinition Width="500" />
-                            </Grid.ColumnDefinitions>
-
-                            <StackPanel Grid.Column="0">
+                        <StackPanel Width="{Binding ElementName=LeftSidebarScrollViewer, Path=ViewportWidth}">
                             <Border Padding="18"
                                     CornerRadius="22"
                                     Background="#FF1E655C"
@@ -341,7 +341,8 @@
                                 <ListBox x:Name="ViewList"
                                          BorderThickness="0"
                                          Background="Transparent"
-                                         PreviewMouseWheel="ChildList_PreviewMouseWheel"
+                                         PreviewMouseLeftButtonDown="ViewList_PreviewMouseLeftButtonDown"
+                                         PreviewMouseWheel="LeftSidebarList_PreviewMouseWheel"
                                          SelectionChanged="ViewList_SelectionChanged"
                                          ItemContainerStyle="{StaticResource MenuListItemStyle}">
                                     <ListBox.ItemTemplate>
@@ -384,7 +385,8 @@
                                 <ListBox x:Name="GroupList"
                                          BorderThickness="0"
                                          Background="Transparent"
-                                         PreviewMouseWheel="ChildList_PreviewMouseWheel"
+                                         PreviewMouseLeftButtonDown="GroupList_PreviewMouseLeftButtonDown"
+                                         PreviewMouseWheel="LeftSidebarList_PreviewMouseWheel"
                                          SelectionChanged="GroupList_SelectionChanged"
                                          ItemContainerStyle="{StaticResource MenuListItemStyle}">
                                     <ListBox.ItemTemplate>
@@ -478,8 +480,14 @@
                                 </StackPanel>
                             </Border>
                         </StackPanel>
+                    </ScrollViewer>
 
-                        <StackPanel Grid.Column="2">
+                    <ScrollViewer x:Name="WorkbenchScrollViewer"
+                                  Grid.Column="2"
+                                  VerticalScrollBarVisibility="Hidden"
+                                  HorizontalScrollBarVisibility="Hidden"
+                                  CanContentScroll="False">
+                        <StackPanel Width="{Binding ElementName=WorkbenchScrollViewer, Path=ViewportWidth}">
                             <Grid Margin="0,2,0,14">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
@@ -793,8 +801,15 @@
                                 </StackPanel>
                             </Border>
                         </StackPanel>
+                    </ScrollViewer>
 
-                        <Grid Grid.Column="4" x:Name="RightColumnGrid">
+                    <ScrollViewer x:Name="RightSidebarScrollViewer"
+                                  Grid.Column="4"
+                                  VerticalScrollBarVisibility="Hidden"
+                                  HorizontalScrollBarVisibility="Hidden"
+                                  CanContentScroll="False">
+                        <Grid x:Name="RightColumnGrid"
+                              Width="{Binding ElementName=RightSidebarScrollViewer, Path=ViewportWidth}">
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
                                 <RowDefinition Height="Auto" />
@@ -911,7 +926,6 @@
                                 </StackPanel>
                             </Border>
                         </Grid>
-                    </Grid>
                     </ScrollViewer>
                 </Grid>
 
