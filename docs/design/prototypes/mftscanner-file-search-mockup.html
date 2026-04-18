@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>MftScanner 文件搜索原型</title>
+<style>
+:root{--bg1:#f6f1e8;--bg2:#edf4ef;--frame:rgba(255,255,255,.78);--panel:#fff;--line:rgba(35,50,40,.1);--text:#1b2620;--muted:#69756e;--accent:#17685f;--accent2:#124d46;--soft:#dcefe8;--gold:#f6ebc4;--blue:#dde9fb;--green:#dff1e5;--orange:#f4e4cf;--shadow:0 24px 56px rgba(20,30,24,.14);--shadow2:0 12px 24px rgba(20,30,24,.08)}
+*{box-sizing:border-box}body{margin:0;font:14px/1.5 "Segoe UI","Microsoft YaHei UI",sans-serif;color:var(--text);background:radial-gradient(circle at top left,#f2dfc7 0,transparent 30%),radial-gradient(circle at top right,#d9ece3 0,transparent 28%),linear-gradient(180deg,var(--bg1),var(--bg2));padding:26px}.page{max-width:1600px;margin:0 auto;display:grid;gap:22px}.intro{display:flex;justify-content:space-between;gap:16px;align-items:end}.intro h1{margin:0 0 8px;font-size:34px}.intro p{margin:0;color:var(--muted);max-width:860px}.legend,.row,.chips,.status,.actions,.meta,.states{display:flex;gap:10px;flex-wrap:wrap}.pill,.chip,.ghost,.btn,.tag{padding:9px 13px;border-radius:999px;font-size:12px;font-weight:700;border:1px solid transparent;white-space:nowrap}.pill,.ghost{background:rgba(255,255,255,.75);border-color:rgba(35,50,40,.08);color:#55625c}.chip{background:#edf2ee;color:#57645d;border-color:rgba(35,50,40,.08)}.chip.on{background:var(--soft);color:var(--accent);border-color:rgba(23,104,95,.14)}.btn{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;box-shadow:0 8px 18px rgba(18,77,70,.18)}.window{background:var(--frame);backdrop-filter:blur(20px);border:1px solid rgba(255,255,255,.62);border-radius:32px;box-shadow:var(--shadow);overflow:hidden}.title{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:14px 20px;border-bottom:1px solid rgba(35,50,40,.08);background:linear-gradient(180deg,rgba(255,255,255,.84),rgba(255,255,255,.62))}.left{display:flex;gap:14px;align-items:center}.dots{display:flex;gap:8px}.dots span{width:11px;height:11px;border-radius:50%;display:block;border:1px solid rgba(0,0,0,.05);background:#ddd7ca}.dots span:nth-child(1){background:#eab5b5}.dots span:nth-child(2){background:#efd9a6}.dots span:nth-child(3){background:#bedebf}.head strong{display:block;font-size:17px}.head small{color:var(--muted);font-size:12px}.top{padding:18px 20px 14px;border-bottom:1px solid rgba(35,50,40,.08);display:grid;gap:12px;background:rgba(255,255,255,.5)}.search{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center}.searchbox{padding:14px 16px;border:1px solid rgba(35,50,40,.12);border-radius:20px;background:rgba(248,250,247,.96);display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:12px;align-items:center}.icon{width:32px;height:32px;border-radius:12px;display:grid;place-items:center;background:rgba(23,104,95,.08);color:var(--accent);font-weight:800}.query{font-size:24px;font-weight:700}.query small{display:block;font-size:12px;color:var(--muted);font-weight:600;margin-top:4px}.hint{padding:8px 11px;border-radius:14px;background:rgba(23,104,95,.06);color:#52635b;font-size:12px}.toolbar{padding:14px 20px;border-bottom:1px solid rgba(35,50,40,.08);display:grid;gap:12px;background:rgba(255,255,255,.54)}.workspace{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;padding:16px 20px 18px}.panel{background:linear-gradient(180deg,rgba(255,255,255,.97),rgba(255,255,255,.88));border:1px solid var(--line);border-radius:22px;box-shadow:var(--shadow2)}.table{overflow:hidden}.thead,.item{display:grid;grid-template-columns:1.45fr 1.75fr .72fr .95fr .65fr .85fr;gap:12px;align-items:center}.thead{padding:16px 18px 12px;border-bottom:1px solid var(--line);font-size:12px;font-weight:800;color:var(--muted);text-transform:uppercase}.tbody{padding:12px;display:grid;gap:10px;background:linear-gradient(180deg,rgba(250,252,250,.82),rgba(246,248,246,.94))}.item{padding:14px 16px;border:1px solid rgba(35,50,40,.08);border-radius:18px;background:rgba(255,255,255,.78)}.item.sel{background:linear-gradient(135deg,rgba(220,239,232,.95),rgba(248,251,248,.98));border-color:rgba(23,104,95,.22)}.item>*{min-width:0}.main{display:flex;gap:12px;align-items:center;min-width:0}.file{width:42px;height:42px;border-radius:14px;display:grid;place-items:center;color:#fff;font-size:12px;font-weight:900;background:linear-gradient(135deg,#3579d6,#2b4f90)}.file.folder{background:linear-gradient(135deg,#da9a39,#956229)}.file.script{background:linear-gradient(135deg,#2c8a6f,#245248)}.name strong,.cut,.small{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.name strong{font-size:15px}.small{font-size:12px;color:var(--muted);margin-top:4px}.cut mark{background:var(--gold);border-radius:6px;padding:1px 4px}.tag{padding:5px 9px;font-size:11px}.exec{background:var(--green);color:#1f6d45}.foldert{background:var(--gold);color:#8c681c}.log{background:var(--orange);color:#955a19}.config{background:var(--blue);color:#315d95}.side{display:grid;gap:14px;align-content:start}.card{padding:16px}.card h3{margin:0;font-size:17px}.card small.h{color:var(--muted);display:block;margin-top:3px}.hero{padding:14px;border-radius:18px;background:linear-gradient(135deg,#1d635b,#213f3a);color:#fff;margin:12px 0}.hero strong{display:block;font-size:22px;margin-bottom:6px}.info{display:grid;gap:10px}.box{padding:12px 13px;border-radius:14px;background:#f6f8f6;border:1px solid rgba(35,50,40,.06)}.box span{display:block;color:var(--muted);font-size:12px;margin-bottom:4px}.box strong{display:block;font-size:13px;word-break:break-all}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}.mini{padding:12px;border-radius:16px;background:rgba(255,255,255,.92);border:1px solid rgba(35,50,40,.08)}.mini strong{display:block;font-size:13px}.mini small{display:block;font-size:12px;color:var(--muted);margin-top:4px}.list{display:grid;gap:8px;margin-top:12px}.li{padding:11px 12px;border-radius:14px;background:#f7f9f7;border:1px solid rgba(35,50,40,.06);display:flex;justify-content:space-between;gap:12px}.li span{font-size:12px;color:var(--muted)}.status{justify-content:space-between;align-items:center;padding:14px 20px 16px;border-top:1px solid rgba(35,50,40,.08);background:linear-gradient(180deg,rgba(255,255,255,.74),rgba(255,255,255,.9));color:var(--muted);font-size:12px}.states{display:grid;grid-template-columns:1fr 1fr;gap:22px}.state{min-height:430px;display:grid;grid-template-rows:auto auto 1fr auto}.state .body{padding:18px;display:grid;gap:14px;align-content:start;background:linear-gradient(180deg,rgba(249,251,249,.8),rgba(246,248,246,.92))}.empty,.loading{padding:22px;border-radius:20px;background:rgba(255,255,255,.84);border:1px dashed rgba(35,50,40,.16)}.empty strong,.loading strong{display:block;font-size:22px;margin-bottom:8px}.empty p,.loading p{margin:0;color:var(--muted)}.prog{height:8px;border-radius:999px;background:rgba(35,50,40,.08);overflow:hidden;position:relative;min-width:140px}.prog:after{content:"";position:absolute;inset:0;width:62%;background:linear-gradient(90deg,var(--accent),#5fb59b)}@media (max-width:1350px){.workspace,.states{grid-template-columns:1fr}}@media (max-width:1024px){body{padding:18px}.search,.intro{display:grid}.thead,.item{grid-template-columns:1.35fr 1.45fr .8fr .9fr}.hide{display:none}}
+</style>
+</head>
+<body>
+<div class="page">
+  <section class="intro">
+    <div>
+      <h1>MftScanner 文件搜索升级原型</h1>
+      <p>按 Ctrl+E 唤起，围绕“搜到后立刻处理”重做信息结构。主界面强调搜索闭环、过滤器、结果工具条、最近搜索、快捷键和索引状态。</p>
+    </div>
+    <div class="legend">
+      <span class="pill">入口: Ctrl+E</span>
+      <span class="pill">窗口: Esc / Ctrl+L / F5 / Ctrl+R</span>
+      <span class="pill">结果: Enter / Ctrl+Enter / Ctrl+C / Ctrl+D</span>
+    </div>
+  </section>
+
+  <section class="window">
+    <div class="title">
+      <div class="left"><div class="dots"><span></span><span></span><span></span></div><div class="head"><strong>文件搜索</strong><small>MftScanner · 快速检索、定位、处理</small></div></div>
+      <div class="row"><span class="pill">仅本人可用</span><span class="pill">索引已就绪</span><span class="pill">Ctrl+E</span></div>
+    </div>
+    <div class="top">
+      <div class="search">
+        <div class="searchbox"><div class="icon">Q</div><div class="query">yin<small>支持关键词 / 后缀 / 路径片段 / 简单语法提示</small></div><div class="hint">例: ext:exe path:tools recent:7d</div></div>
+        <div class="actions"><span class="ghost">清空</span><span class="ghost">语法提示</span><span class="btn">重建索引</span></div>
+      </div>
+      <div class="row" style="justify-content:space-between">
+        <div class="chips"><span class="chip on">全部</span><span class="chip">可启动文件</span><span class="chip">文件夹</span><span class="chip">脚本</span><span class="chip">日志</span><span class="chip">配置</span></div>
+        <div class="chips"><span class="ghost">最近修改</span><span class="ghost">收藏优先</span><span class="ghost">详细模式</span></div>
+      </div>
+      <div class="row" style="justify-content:space-between;color:var(--muted);font-size:12px">
+        <div class="chips"><span class="chip on">全盘</span><span class="chip">常用目录</span><span class="chip">当前工作区</span><span class="chip">桌面</span><span class="chip">下载</span><span class="chip">自定义范围</span></div>
+        <div class="meta"><span>排序: 修改时间</span><span>共 143 项命中</span><span>最近打开加权已开启</span></div>
+      </div>
+    </div>
+    <div class="toolbar">
+      <div class="row" style="justify-content:space-between">
+        <div class="actions"><span class="btn">打开</span><span class="ghost">打开所在目录</span><span class="ghost">复制路径</span><span class="ghost">加入常用启动项</span><span class="ghost">更多操作</span></div>
+        <div class="chips"><span class="pill">Enter 打开</span><span class="pill">Ctrl+Enter 目录</span><span class="pill">Ctrl+D 加入启动项</span></div>
+      </div>
+    </div>
+    <div class="workspace">
+      <div class="panel table">
+        <div class="thead"><div>名称</div><div>路径</div><div>类型</div><div>修改时间</div><div class="hide">大小</div><div class="hide">标记</div></div>
+        <div class="tbody">
+          <div class="item sel"><div class="main"><div class="file">EXE</div><div class="name"><strong>Yin.exe</strong><span class="small">主程序入口 · 最近 7 天打开 12 次</span></div></div><div><span class="cut">D:\工作区域\PackageManager\bin\Debug\<mark>Yin</mark>.exe</span><span class="small">命中: 文件名 + 路径片段</span></div><div><span class="tag exec">可执行</span></div><div><span class="cut">2026-04-18 10:42</span><span class="small">今天更新</span></div><div class="hide"><span class="cut">18.4 MB</span></div><div class="hide"><span class="tag">常用</span></div></div>
+          <div class="item"><div class="main"><div class="file script">PS1</div><div class="name"><strong>yin-proxy-reset.ps1</strong><span class="small">脚本工具 · 可直接加入启动项</span></div></div><div><span class="cut">D:\Scripts\<mark>yin</mark>\yin-proxy-reset.ps1</span><span class="small">命中: 名称 + 目录</span></div><div><span class="tag exec">脚本</span></div><div><span class="cut">2026-04-17 22:16</span><span class="small">昨天更新</span></div><div class="hide"><span class="cut">9 KB</span></div><div class="hide"><span class="tag">推荐收藏</span></div></div>
+          <div class="item"><div class="main"><div class="file folder">DIR</div><div class="name"><strong>Yin</strong><span class="small">项目目录 · 可打开终端</span></div></div><div><span class="cut">D:\工作区域\<mark>Yin</mark></span><span class="small">命中: 目录名</span></div><div><span class="tag foldert">文件夹</span></div><div><span class="cut">2026-04-18 09:58</span><span class="small">刚刚访问</span></div><div class="hide"><span class="cut">-</span></div><div class="hide"><span class="tag">工作区</span></div></div>
+          <div class="item"><div class="main"><div class="file">LOG</div><div class="name"><strong>yin-run.log</strong><span class="small">日志文件 · 推荐打开目录</span></div></div><div><span class="cut">D:\Logs\<mark>yin</mark>\yin-run.log</span><span class="small">命中: 文件名</span></div><div><span class="tag log">日志</span></div><div><span class="cut">2026-04-18 08:11</span><span class="small">最近修改</span></div><div class="hide"><span class="cut">732 KB</span></div><div class="hide"><span class="tag">可追踪</span></div></div>
+          <div class="item"><div class="main"><div class="file">JSON</div><div class="name"><strong>yin.settings.json</strong><span class="small">配置文件 · 可指定编辑器打开</span></div></div><div><span class="cut">D:\工作区域\PackageManager\config\<mark>yin</mark>.settings.json</span><span class="small">命中: 路径片段</span></div><div><span class="tag config">配置</span></div><div><span class="cut">2026-04-16 21:40</span><span class="small">两天前</span></div><div class="hide"><span class="cut">4 KB</span></div><div class="hide"><span class="tag">已编辑</span></div></div>
+        </div>
+      </div>
+      <aside class="side">
+        <section class="panel card">
+          <h3>当前选中项</h3><small class="h">选中后右侧直接给动作和关键信息</small>
+          <div class="hero"><strong>Yin.exe</strong>避免只选中但看不到下一步。这里承载完整路径、推荐动作和联动入口。</div>
+          <div class="info">
+            <div class="box"><span>完整路径</span><strong>D:\工作区域\PackageManager\bin\Debug\Yin.exe</strong></div>
+            <div class="box"><span>识别信息</span><strong>可执行文件 · 命中方式: 名称 + 路径 · 最近打开次数: 12</strong></div>
+            <div class="box"><span>建议动作</span><strong>打开 / 打开目录 / 复制路径 / 加入常用启动项 / 管理员运行</strong></div>
+          </div>
+          <div class="grid2">
+            <div class="mini"><strong>主动作</strong><small>Enter 直接打开</small></div>
+            <div class="mini"><strong>加入启动项</strong><small>Ctrl+D 一步收藏</small></div>
+            <div class="mini"><strong>打开目录</strong><small>Ctrl+Enter 进入上下文</small></div>
+            <div class="mini"><strong>复制路径</strong><small>Ctrl+C 快速复用</small></div>
+          </div>
+        </section>
+        <section class="panel card">
+          <h3>最近搜索与模板</h3><small class="h">保留高频路径，减少重复输入</small>
+          <div class="list">
+            <div class="li"><strong>ext:exe yin</strong><span>最近 2 分钟</span></div>
+            <div class="li"><strong>path:logs yin</strong><span>今天 08:15</span></div>
+            <div class="li"><strong>workspace:current ext:json</strong><span>昨天</span></div>
+            <div class="li"><strong>only:launchable revit</strong><span>模板</span></div>
+          </div>
+        </section>
+        <section class="panel card">
+          <h3>快捷键</h3><small class="h">主路径优先，低频动作辅助记忆</small>
+          <div class="list">
+            <div class="li"><strong>Enter</strong><span>打开选中项</span></div>
+            <div class="li"><strong>Ctrl+Enter</strong><span>打开所在目录</span></div>
+            <div class="li"><strong>Ctrl+C</strong><span>复制完整路径</span></div>
+            <div class="li"><strong>Ctrl+D</strong><span>加入常用启动项</span></div>
+            <div class="li"><strong>Alt+Enter</strong><span>查看属性</span></div>
+            <div class="li"><strong>Esc</strong><span>隐藏窗口</span></div>
+          </div>
+        </section>
+      </aside>
+    </div>
+    <div class="status"><div class="meta"><span>143 项结果</span><span>过滤: 全部 / 全盘 / 修改时间</span><span>索引状态: 实时更新正常</span></div><div class="meta"><span>Enter 打开</span><span>Ctrl+Enter 目录</span><span>Ctrl+C 复制</span><span>Esc 隐藏</span></div></div>
+  </section>
+
+  <section class="states">
+    <article class="window state">
+      <div class="title"><div class="left"><div class="dots"><span></span><span></span><span></span></div><div class="head"><strong>无结果状态</strong><small>搜索条件过窄时给出下一步建议</small></div></div><div class="row"><span class="pill">当前工作区</span></div></div>
+      <div class="top"><div class="searchbox" style="grid-template-columns:minmax(0,1fr)"><div class="query">revit-clean ext:rvt only:launchable</div></div><div class="chips"><span class="chip on">可启动文件</span><span class="chip">当前工作区</span><span class="chip">最近修改</span></div></div>
+      <div class="body"><div class="empty"><strong>没有找到匹配结果</strong><p>建议优先清理过窄过滤条件，再扩范围，而不是只给“暂无数据”。</p></div><div class="list"><div class="li"><strong>清空“仅显示可启动文件”</strong><span>查看目录或脚本结果</span></div><div class="li"><strong>把范围改为“全盘”</strong><span>或“常用目录”</span></div><div class="li"><strong>缩短关键词</strong><span>只保留 revit-clean</span></div><div class="li"><strong>Ctrl+R 重建索引</strong><span>结果理论存在时使用</span></div></div></div>
+      <div class="status"><div class="meta"><span>0 项结果</span><span>建议优先清空过滤器</span></div><div class="meta"><span>Ctrl+L 重新输入</span><span>Ctrl+R 重建索引</span></div></div>
+    </article>
+
+    <article class="window state">
+      <div class="title"><div class="left"><div class="dots"><span></span><span></span><span></span></div><div class="head"><strong>索引构建状态</strong><small>可见进度，不阻断已有功能</small></div></div><div class="row"><span class="pill">Ctrl+R</span></div></div>
+      <div class="top"><div class="searchbox" style="grid-template-columns:minmax(0,1fr)"><div class="query">yin</div></div><div class="row"><span class="pill">索引初始化中</span><div class="prog"></div></div></div>
+      <div class="body"><div class="loading"><strong>正在重建 MFT 索引</strong><p>窗口保持可用，状态栏、顶部按钮和步骤反馈同时存在，避免重建时像卡死。</p></div><div class="list"><div class="li"><strong>扫描卷信息</strong><span>已完成</span></div><div class="li"><strong>解析 MFT 记录</strong><span>进行中 62%</span></div><div class="li"><strong>写入内存索引</strong><span>等待中</span></div><div class="li"><strong>恢复实时监听</strong><span>等待中</span></div></div></div>
+      <div class="status"><div class="meta"><span>预计剩余: 18 秒</span><span>完成后恢复实时更新</span></div><div class="meta"><span>Esc 可先隐藏窗口</span></div></div>
+    </article>
+  </section>
+</div>
+</body>
+</html>
