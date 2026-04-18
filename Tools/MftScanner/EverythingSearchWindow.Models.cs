@@ -141,6 +141,7 @@ namespace MftScanner
     internal sealed class SearchWindowState
     {
         public string SortKey { get; set; }
+        public string ScopePath { get; set; }
         public string ViewModeKey { get; set; }
         public List<SearchHistoryEntry> RecentSearches { get; set; }
     }

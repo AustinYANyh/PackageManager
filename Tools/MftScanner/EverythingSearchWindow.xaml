@@ -110,7 +110,7 @@
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <TextBox x:Name="SearchBox" BorderThickness="0" Background="Transparent" FontSize="24" FontWeight="SemiBold" VerticalContentAlignment="Center" TextChanged="SearchBox_TextChanged" KeyDown="SearchBox_KeyDown" />
-                            <TextBlock Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Center" Text="例: ext:exe path:tools recent:7d" FontSize="12" Foreground="{StaticResource MutedBrush}" />
+                            <TextBlock Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Center" Text="例: 输入关键词；可在路径限定中下拉选择范围" FontSize="12" Foreground="{StaticResource MutedBrush}" />
                         </Grid>
                     </Border>
                     <StackPanel Grid.Column="1" Orientation="Horizontal">
@@ -132,22 +132,20 @@
                 <Grid Grid.Row="2" Margin="0,14,0,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="220" />
+                        <ColumnDefinition Width="260" />
+                        <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="220" />
-                        <ColumnDefinition Width="Auto" />
-                        <ColumnDefinition Width="160" />
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
-                    <TextBlock VerticalAlignment="Center" Text="范围" FontSize="12" FontWeight="Bold" Foreground="{StaticResource MutedBrush}" Margin="0,0,10,0" />
-                    <ComboBox x:Name="ScopeComboBox" Grid.Column="1" SelectionChanged="ScopeComboBox_SelectionChanged" />
-                    <TextBlock Grid.Column="2" VerticalAlignment="Center" Text="排序" FontSize="12" FontWeight="Bold" Foreground="{StaticResource MutedBrush}" Margin="18,0,10,0" />
-                    <ComboBox x:Name="SortComboBox" Grid.Column="3" SelectionChanged="SortComboBox_SelectionChanged" />
-                    <TextBlock Grid.Column="4" VerticalAlignment="Center" Text="视图" FontSize="12" FontWeight="Bold" Foreground="{StaticResource MutedBrush}" Margin="18,0,10,0" />
-                    <ComboBox x:Name="ViewModeComboBox" Grid.Column="5" SelectionChanged="ViewModeComboBox_SelectionChanged" />
-                    <TextBlock x:Name="QuerySummaryText" Grid.Column="6" VerticalAlignment="Center" Margin="18,0,0,0" Text="等待输入关键词" FontSize="12" Foreground="{StaticResource MutedBrush}" />
-                    <Border Grid.Column="7" Background="#FFF0F3F0" CornerRadius="999" Padding="10,4" Margin="12,0,0,0" VerticalAlignment="Center">
+                    <TextBlock VerticalAlignment="Center" Text="路径限定" FontSize="12" FontWeight="Bold" Foreground="{StaticResource MutedBrush}" Margin="0,0,10,0" />
+                    <ComboBox x:Name="ScopeComboBox" Grid.Column="1" MinHeight="32" SelectionChanged="ScopeComboBox_SelectionChanged" />
+                    <Button x:Name="ClearScopeButton" Grid.Column="2" Content="全盘" Style="{StaticResource GhostButtonStyle}" Click="ClearScopeButton_Click" Margin="8,0,0,0" />
+                    <TextBlock Grid.Column="3" VerticalAlignment="Center" Text="排序" FontSize="12" FontWeight="Bold" Foreground="{StaticResource MutedBrush}" Margin="18,0,10,0" />
+                    <ComboBox x:Name="SortComboBox" Grid.Column="4" SelectionChanged="SortComboBox_SelectionChanged" />
+                    <TextBlock x:Name="QuerySummaryText" Grid.Column="5" VerticalAlignment="Center" Margin="18,0,0,0" Text="等待输入关键词" FontSize="12" Foreground="{StaticResource MutedBrush}" />
+                    <Border Grid.Column="6" Background="#FFF0F3F0" CornerRadius="999" Padding="10,4" Margin="12,0,0,0" VerticalAlignment="Center">
                         <TextBlock x:Name="IndexStateBadgeText" Text="索引已就绪" FontSize="11" FontWeight="Bold" Foreground="{StaticResource MutedBrush}" />
                     </Border>
                 </Grid>

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -29,6 +30,7 @@ namespace MftScanner
         private readonly SearchWindowStateStore _stateStore = new SearchWindowStateStore();
         private readonly Dictionary<string, FileMetadata> _metadataCache = new Dictionary<string, FileMetadata>(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> _displayedPathSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly ObservableCollection<ComboOption> _scopeOptions = new ObservableCollection<ComboOption>();
 
         private CancellationTokenSource _indexCts;
         private CancellationTokenSource _searchCts;
@@ -52,7 +54,6 @@ namespace MftScanner
         private bool _suppressControlEvents;
         private FileSearchTypeFilter _currentTypeFilter = FileSearchTypeFilter.All;
         private string _currentSortKey = "default";
-        private string _currentViewModeKey = "compact";
 
         public EverythingSearchWindow()
         {
@@ -104,30 +105,25 @@ namespace MftScanner
             LogFilterButton.ToolTip = "仅显示 log/txt 结果。";
             ConfigFilterButton.ToolTip = "仅显示 json/xml/ini/config/yaml/yml 结果。";
 
-            ScopeComboBox.ItemsSource = new[] { new ComboOption("all", "全盘（性能保护模式）") };
+            ScopeComboBox.ItemsSource = _scopeOptions;
             ScopeComboBox.DisplayMemberPath = "DisplayName";
             ScopeComboBox.SelectedValuePath = "Key";
-            ScopeComboBox.SelectedIndex = 0;
-            ScopeComboBox.IsEnabled = false;
-            ScopeComboBox.ToolTip = "范围筛选会引入额外搜索成本，本轮升级暂不启用。";
+            ScopeComboBox.ToolTip = "下拉选择搜索范围，不修改索引服务层。";
+            RefreshScopeOptions();
+            ScopeComboBox.SelectedValue = string.Empty;
 
-            SortComboBox.ItemsSource = new[] { new ComboOption("default", "默认（性能保护模式）") };
+            SortComboBox.ItemsSource = new[]
+            {
+                new ComboOption("default", "默认"),
+                new ComboOption("name", "名称"),
+                new ComboOption("path", "路径"),
+                new ComboOption("type", "类型")
+            };
             SortComboBox.DisplayMemberPath = "DisplayName";
             SortComboBox.SelectedValuePath = "Key";
             SortComboBox.SelectedValue = "default";
-            SortComboBox.IsEnabled = false;
-            SortComboBox.ToolTip = "排序会改变当前结果加载模型，本轮升级暂不启用。";
-
-            ViewModeComboBox.ItemsSource = new[]
-            {
-                new ComboOption("compact", "紧凑")
-            };
-            ViewModeComboBox.DisplayMemberPath = "DisplayName";
-            ViewModeComboBox.SelectedValuePath = "Key";
-            ViewModeComboBox.SelectedValue = "compact";
-            ViewModeComboBox.IsEnabled = false;
-            ViewModeComboBox.ToolTip = "结果列表仅保留紧凑视图，大小和修改时间继续按需加载。";
-            QuerySummaryText.Text = "性能保护模式：类型过滤已启用；范围筛选、大小/时间排序暂未启用";
+            SortComboBox.ToolTip = "仅对当前已加载结果做内存重排，不触发索引服务重算。";
+            QuerySummaryText.Text = "性能保护模式：排序仅做内存重排；路径限定复用路径前缀查询";
             _suppressControlEvents = false;
         }
 
@@ -137,11 +133,12 @@ namespace MftScanner
             foreach (var entry in state.RecentSearches.OrderByDescending(item => item.Timestamp))
                 _recentSearches.Add(entry);
 
-            _currentSortKey = "default";
-            SortComboBox.SelectedValue = "default";
-
-            _currentViewModeKey = "compact";
-            ViewModeComboBox.SelectedValue = "compact";
+            _currentSortKey = state.SortKey == "name" || state.SortKey == "path" || state.SortKey == "type"
+                ? state.SortKey
+                : "default";
+            SortComboBox.SelectedValue = _currentSortKey;
+            RefreshScopeOptions();
+            SelectScopeOption(state.ScopePath);
         }
 
         private void SaveWindowState()
@@ -149,6 +146,7 @@ namespace MftScanner
             _stateStore.Save(new SearchWindowState
             {
                 SortKey = _currentSortKey,
+                ScopePath = GetSelectedScopePath(),
                 ViewModeKey = "compact",
                 RecentSearches = _recentSearches.ToList()
             });
@@ -200,9 +198,15 @@ namespace MftScanner
         private void UpdateSummaryStatus()
         {
             var typeFilterText = GetTypeFilterText(_currentTypeFilter);
-            var sortText = _currentSortKey == "name" ? "名称" : (_currentSortKey == "path" ? "路径" : "默认");
-            CurrentFilterSummaryText.Text = "当前过滤：" + typeFilterText + " / 全盘 / " + sortText;
-            StatusFilterText.Text = "过滤：" + typeFilterText + " / 全盘 / " + sortText;
+            var sortText = _currentSortKey == "name"
+                ? "名称"
+                : (_currentSortKey == "path"
+                    ? "路径"
+                    : (_currentSortKey == "type" ? "类型" : "默认"));
+            var scopeText = GetSelectedScopeDisplayText();
+            QuerySummaryText.Text = "当前类型：" + typeFilterText + "；当前排序：" + sortText + "；路径限定：" + scopeText;
+            CurrentFilterSummaryText.Text = "当前过滤：" + typeFilterText + " / " + scopeText + " / " + sortText;
+            StatusFilterText.Text = "过滤：" + typeFilterText + " / " + scopeText + " / " + sortText;
             ResultCountBadgeText.Text = _loadedResultCount + " 项";
             StatusCountText.Text = _currentTypeFilter == FileSearchTypeFilter.All
                 ? (_loadedResultCount + "/" + _totalMatchedCount + " 项结果")
@@ -217,7 +221,7 @@ namespace MftScanner
             }
             else if (_isSearchInProgress && _displayedResults.Count == 0)
             {
-                StatusText.Text = "正在搜索 \"" + _activeKeyword + "\"...";
+                StatusText.Text = "正在搜索 \"" + GetVisibleQueryText() + "\"...";
             }
             else if (string.IsNullOrWhiteSpace(_activeKeyword))
             {
@@ -237,6 +241,102 @@ namespace MftScanner
             {
                 StatusText.Text = string.Format("已显示 {0} 个对象（共 {1} 个）", _loadedResultCount, _totalMatchedCount);
             }
+        }
+
+        private void RefreshScopeOptions()
+        {
+            var selectedPath = GetSelectedScopePath();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            _scopeOptions.Clear();
+            AddScopeOption(string.Empty, "全盘", seen);
+
+            AddScopeOptionIfSupported(Environment.CurrentDirectory, "当前目录", seen);
+            AddScopeOptionIfSupported(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "桌面", seen);
+            AddScopeOptionIfSupported(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "文档", seen);
+            AddScopeOptionIfSupported(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "用户目录", seen);
+
+            var downloadsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+            AddScopeOptionIfSupported(downloadsPath, "下载", seen);
+
+            foreach (var drive in DriveInfo.GetDrives()
+                         .Where(d => d.DriveType == DriveType.Fixed)
+                         .OrderBy(d => d.Name, StringComparer.OrdinalIgnoreCase))
+            {
+                AddScopeOptionIfSupported(drive.RootDirectory.FullName, drive.RootDirectory.FullName.TrimEnd('\\') + " 盘", seen);
+            }
+
+            foreach (var historyPath in _recentSearches
+                         .Select(item => ParseHistoryScopePath(item.Query))
+                         .Where(path => !string.IsNullOrWhiteSpace(path)))
+            {
+                AddScopeOptionIfSupported(historyPath, historyPath, seen);
+            }
+
+            SelectScopeOption(selectedPath);
+        }
+
+        private static string ParseHistoryScopePath(string query)
+        {
+            if (string.IsNullOrWhiteSpace(query))
+                return null;
+
+            var trimmedQuery = query.Trim();
+            var spaceIndex = trimmedQuery.IndexOf(' ');
+            if (spaceIndex <= 0)
+                return null;
+
+            var candidate = trimmedQuery.Substring(0, spaceIndex);
+            return IsSupportedScopePath(candidate) ? candidate : null;
+        }
+
+        private void AddScopeOptionIfSupported(string path, string displayName, HashSet<string> seen)
+        {
+            if (!IsSupportedScopePath(path) || !Directory.Exists(path))
+                return;
+
+            AddScopeOption(path, displayName, seen);
+        }
+
+        private void AddScopeOption(string path, string displayName, HashSet<string> seen)
+        {
+            var normalizedPath = path ?? string.Empty;
+            if (!seen.Add(normalizedPath))
+                return;
+
+            _scopeOptions.Add(new ComboOption(normalizedPath, displayName));
+        }
+
+        private static bool IsSupportedScopePath(string path)
+        {
+            return !string.IsNullOrWhiteSpace(path) && path.IndexOf(' ') < 0;
+        }
+
+        private string GetSelectedScopePath()
+        {
+            var option = ScopeComboBox.SelectedItem as ComboOption;
+            return option == null ? string.Empty : option.Key ?? string.Empty;
+        }
+
+        private string GetSelectedScopeDisplayText()
+        {
+            var option = ScopeComboBox.SelectedItem as ComboOption;
+            return option == null || string.IsNullOrWhiteSpace(option.DisplayName) ? "全盘" : option.DisplayName;
+        }
+
+        private void SelectScopeOption(string path)
+        {
+            var normalizedPath = path ?? string.Empty;
+            if (!string.IsNullOrWhiteSpace(normalizedPath)
+                && IsSupportedScopePath(normalizedPath)
+                && Directory.Exists(normalizedPath)
+                && _scopeOptions.All(item => !string.Equals(item.Key, normalizedPath, StringComparison.OrdinalIgnoreCase)))
+            {
+                _scopeOptions.Add(new ComboOption(normalizedPath, normalizedPath));
+            }
+
+            ScopeComboBox.SelectedValue = normalizedPath;
+            if (ScopeComboBox.SelectedIndex < 0)
+                ScopeComboBox.SelectedIndex = 0;
         }
 
         private void UpdateEmptyState()
@@ -267,7 +367,7 @@ namespace MftScanner
             {
                 EmptyStatePanel.Visibility = Visibility.Visible;
                 EmptyStateTitleText.Text = "输入关键词开始搜索";
-                EmptyStateDescriptionText.Text = "本轮升级优先保证性能，类型过滤已启用；范围筛选、大小/时间排序暂不启用。";
+                EmptyStateDescriptionText.Text = "类型过滤已启用；排序仅对当前已加载结果做内存重排，路径限定会复用路径前缀查询。";
                 return;
             }
 

@@ -149,8 +149,9 @@ namespace MftScanner
         private void OpenTerminalButton_Click(object sender, RoutedEventArgs e) { var item = ResultsGrid.SelectedItem as EverythingSearchResultItem; if (item != null) OpenTerminal(item); }
         private void RenameButton_Click(object sender, RoutedEventArgs e) { var item = ResultsGrid.SelectedItem as EverythingSearchResultItem; if (item != null) RenameItem(item); }
         private void DeleteButton_Click(object sender, RoutedEventArgs e) { var item = ResultsGrid.SelectedItem as EverythingSearchResultItem; if (item != null) DeleteItem(item); }
-        private void ClearSearchButton_Click(object sender, RoutedEventArgs e) { SearchBox.Clear(); SearchBox.Focus(); }
-        private void SyntaxHelpButton_Click(object sender, RoutedEventArgs e) { MessageBox.Show("支持普通包含、^前缀、后缀$、/正则/、* 与 ? 通配符。", "语法提示", MessageBoxButton.OK, MessageBoxImage.Information); }
+        private void ClearSearchButton_Click(object sender, RoutedEventArgs e) { SelectScopeOption(string.Empty); SearchBox.Clear(); SearchBox.Focus(); }
+        private void ClearScopeButton_Click(object sender, RoutedEventArgs e) { SelectScopeOption(string.Empty); SearchBox.Focus(); }
+        private void SyntaxHelpButton_Click(object sender, RoutedEventArgs e) { MessageBox.Show("支持普通包含、^前缀、后缀$、/正则/、* 与 ? 通配符。\n路径限定通过下拉选择范围，不修改索引服务层。", "语法提示", MessageBoxButton.OK, MessageBoxImage.Information); }
         private void OpenMenuItem_Click(object sender, RoutedEventArgs e) { ExecuteForSelected(OpenItem, false); }
         private void OpenContainingFolder_Click(object sender, RoutedEventArgs e) { var item = ResultsGrid.SelectedItem as EverythingSearchResultItem; if (item != null) OpenContainingFolder(item.FullPath); }
         private void CopyPath_Click(object sender, RoutedEventArgs e) { var item = ResultsGrid.SelectedItem as EverythingSearchResultItem; if (item != null) { CopyToClipboard(item.FullPath); StatusText.Text = "路径已复制"; } }
@@ -303,7 +304,7 @@ namespace MftScanner
         {
             var entry = RecentSearchList.SelectedItem as SearchHistoryEntry;
             if (entry == null) return;
-            SearchBox.Text = entry.Query;
+            PopulateQueryInputs(entry.Query);
             FocusSearchBoxAndSelectAll();
         }
 
@@ -311,8 +312,8 @@ namespace MftScanner
         {
             var entry = RecentSearchList.SelectedItem as SearchHistoryEntry;
             if (entry == null) return;
-            SearchBox.Text = entry.Query;
-            _ = ApplyFilterAsync(entry.Query, false);
+            PopulateQueryInputs(entry.Query);
+            _ = ApplyFilterAsync(SearchBox.Text, false);
         }
 
         private static void CancelToken(ref CancellationTokenSource cts)

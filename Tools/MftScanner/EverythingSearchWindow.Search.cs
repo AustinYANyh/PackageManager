@@ -67,6 +67,19 @@ namespace MftScanner
 
         private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
         {
+            RestartSearchDebounce();
+        }
+
+        private void ScopeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_suppressControlEvents)
+                return;
+
+            RestartSearchDebounce();
+        }
+
+        private void RestartSearchDebounce()
+        {
             _debounceTimer.Stop();
             _debounceTimer.Start();
         }
@@ -89,7 +102,7 @@ namespace MftScanner
             _loadedResultCount = 0;
             _loadedRawResultCount = 0;
             _totalMatchedCount = 0;
-            _activeKeyword = (keyword ?? string.Empty).Trim();
+            _activeKeyword = BuildEffectiveKeyword(keyword);
             _isLoadingMore = false;
             _hasMoreSearchResults = false;
             _cachedKeyword = null;
@@ -113,7 +126,7 @@ namespace MftScanner
 
             _isSearchInProgress = true;
             IndexingProgress.Visibility = Visibility.Visible;
-            StatusText.Text = "正在搜索 \"" + _activeKeyword + "\"...";
+            StatusText.Text = "正在搜索 \"" + GetVisibleQueryText() + "\"...";
             CurrentLoadSummaryText.Text = "正在搜索";
             UpdateEmptyState();
 
@@ -174,8 +187,7 @@ namespace MftScanner
             }
 
             _loadedResultCount = _displayedResults.Count;
-            if (ResultsGrid.SelectedItem == null && _displayedResults.Count > 0)
-                ResultsGrid.SelectedItem = _displayedResults[0];
+            ApplyCurrentSort();
             RefreshGridColumns();
             UpdateActionButtons();
         }
@@ -202,7 +214,7 @@ namespace MftScanner
 
             _isLoadingMore = true;
             IndexingProgress.Visibility = Visibility.Visible;
-            StatusText.Text = "正在继续加载 \"" + _activeKeyword + "\"...";
+            StatusText.Text = "正在继续加载 \"" + GetVisibleQueryText() + "\"...";
             try
             {
                 await LoadSearchResultsAsync(SearchBatchSize, false, CancellationToken.None).ConfigureAwait(true);
@@ -285,6 +297,7 @@ namespace MftScanner
                     break;
             }
 
+            ApplyCurrentSort();
             _loadedResultCount = _displayedResults.Count;
             if (!string.IsNullOrWhiteSpace(preferredSelectionPath))
             {
@@ -381,7 +394,7 @@ namespace MftScanner
 
             clickedButton.IsChecked = true;
             _currentTypeFilter = ResolveTypeFilter(clickedButton.Tag as string);
-            QuerySummaryText.Text = "当前类型：" + GetTypeFilterText(_currentTypeFilter) + "；结果列表保持紧凑视图，范围筛选、大小/时间排序仍处于性能保护模式";
+            QuerySummaryText.Text = "当前类型：" + GetTypeFilterText(_currentTypeFilter) + "；排序仅做内存重排，路径限定复用路径前缀查询";
             UpdateSummaryStatus();
             UpdateEmptyState();
 
@@ -461,8 +474,7 @@ namespace MftScanner
             }
 
             _loadedResultCount = _displayedResults.Count;
-            if (ResultsGrid.SelectedItem == null && _displayedResults.Count > 0)
-                ResultsGrid.SelectedItem = _displayedResults[0];
+            ApplyCurrentSort();
             RefreshGridColumns();
             UpdateActionButtons();
             return appendedCount;
@@ -665,26 +677,99 @@ namespace MftScanner
             return false;
         }
 
-        private void ScopeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        private string BuildEffectiveKeyword(string rawKeyword)
         {
-            if (!_suppressControlEvents)
-                StatusText.Text = "为保证搜索性能，范围筛选暂未启用。";
+            var keyword = (rawKeyword ?? string.Empty).Trim();
+            var scopePath = GetSelectedScopePath();
+            if (string.IsNullOrWhiteSpace(scopePath))
+                return keyword;
+
+            if (string.IsNullOrWhiteSpace(keyword))
+                return string.Empty;
+
+            return scopePath + " " + keyword;
+        }
+
+        private string GetVisibleQueryText()
+        {
+            var keyword = (SearchBox.Text ?? string.Empty).Trim();
+            var scopePath = GetSelectedScopePath();
+            if (string.IsNullOrWhiteSpace(scopePath))
+                return keyword;
+
+            if (string.IsNullOrWhiteSpace(keyword))
+                return scopePath;
+
+            return keyword + " @ " + scopePath;
+        }
+
+        private void PopulateQueryInputs(string combinedQuery)
+        {
+            var parsed = ParsePathScope(combinedQuery);
+            SelectScopeOption(parsed.pathPrefix);
+            SearchBox.Text = parsed.searchTerm ?? combinedQuery ?? string.Empty;
+        }
+
+        private void ApplyCurrentSort()
+        {
+            if (_displayedResults.Count <= 1)
+            {
+                if (ResultsGrid.SelectedItem == null && _displayedResults.Count > 0)
+                    ResultsGrid.SelectedItem = _displayedResults[0];
+                return;
+            }
+
+            IEnumerable<EverythingSearchResultItem> orderedItems = _allLoadedResults;
+            switch (_currentSortKey)
+            {
+                case "name":
+                    orderedItems = _allLoadedResults
+                        .OrderBy(item => item.FileName ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+                        .ThenBy(item => item.DirectoryPath ?? string.Empty, StringComparer.OrdinalIgnoreCase);
+                    break;
+                case "path":
+                    orderedItems = _allLoadedResults
+                        .OrderBy(item => item.DirectoryPath ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+                        .ThenBy(item => item.FileName ?? string.Empty, StringComparer.OrdinalIgnoreCase);
+                    break;
+                case "type":
+                    orderedItems = _allLoadedResults
+                        .OrderBy(item => item.TypeText ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+                        .ThenBy(item => item.FileName ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+                        .ThenBy(item => item.DirectoryPath ?? string.Empty, StringComparer.OrdinalIgnoreCase);
+                    break;
+            }
+
+            var selectedPath = (ResultsGrid.SelectedItem as EverythingSearchResultItem)?.FullPath;
+            var orderedList = orderedItems.ToList();
+            _displayedResults.Clear();
+            for (var i = 0; i < orderedList.Count; i++)
+                _displayedResults.Add(orderedList[i]);
+
+            if (!string.IsNullOrWhiteSpace(selectedPath))
+            {
+                var nextSelection = _displayedResults.FirstOrDefault(item => string.Equals(item.FullPath, selectedPath, StringComparison.OrdinalIgnoreCase));
+                if (nextSelection != null)
+                {
+                    ResultsGrid.SelectedItem = nextSelection;
+                    return;
+                }
+            }
+
+            if (ResultsGrid.SelectedItem == null && _displayedResults.Count > 0)
+                ResultsGrid.SelectedItem = _displayedResults[0];
         }
 
         private void SortComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-            if (!_suppressControlEvents)
-                StatusText.Text = "为保证搜索性能，排序暂未启用。";
-        }
-
-        private void ViewModeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
-        {
             if (_suppressControlEvents)
                 return;
 
-            var option = ViewModeComboBox.SelectedItem as ComboOption;
-            _currentViewModeKey = option == null ? "compact" : option.Key;
-            RefreshGridColumns();
+            var option = SortComboBox.SelectedItem as ComboOption;
+            _currentSortKey = option == null ? "default" : option.Key;
+            ApplyCurrentSort();
+            UpdateSummaryStatus();
+            UpdateEmptyState();
             SaveWindowState();
         }
 
