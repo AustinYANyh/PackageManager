@@ -135,7 +135,7 @@ namespace MftScanner
             var fullPath = _enumerator.ResolveFullPath(args.DriveLetter, args.ParentFrn, args.FileName);
             ScheduleSnapshotSave();
             IndexChanged?.Invoke(this, new IndexChangedEventArgs(
-                IndexChangeType.Created, lowerName, fullPath));
+                IndexChangeType.Created, lowerName, fullPath, isDirectory: args.IsDirectory));
         }
 
         /// <summary>文件删除：从索引中移除记录。需求 6.3</summary>
@@ -146,7 +146,7 @@ namespace MftScanner
             _index.Remove(args.Frn, args.LowerName, args.ParentFrn, args.DriveLetter);
             ScheduleSnapshotSave();
             IndexChanged?.Invoke(this, new IndexChangedEventArgs(
-                IndexChangeType.Deleted, args.LowerName, fullPath));
+                IndexChangeType.Deleted, args.LowerName, fullPath, isDirectory: false));
         }
 
         /// <summary>文件重命名：更新 FRN 字典，先移除旧记录再插入新记录。需求 6.4</summary>
@@ -163,7 +163,7 @@ namespace MftScanner
             IndexChanged?.Invoke(this, new IndexChangedEventArgs(
                 IndexChangeType.Renamed, args.OldLowerName, newFullPath,
                 oldFullPath,
-                args.NewRecord.OriginalName, args.NewRecord.LowerName));
+                args.NewRecord.OriginalName, args.NewRecord.LowerName, args.NewRecord.IsDirectory));
         }
 
         /// <summary>
@@ -970,14 +970,16 @@ namespace MftScanner
                         result.Add(new IndexChangedEventArgs(
                             IndexChangeType.Created,
                             change.LowerName,
-                            _enumerator.ResolveFullPath(change.DriveLetter, change.ParentFrn, change.OriginalName)));
+                            _enumerator.ResolveFullPath(change.DriveLetter, change.ParentFrn, change.OriginalName),
+                            isDirectory: change.IsDirectory));
                         break;
 
                     case UsnChangeKind.Delete:
                         result.Add(new IndexChangedEventArgs(
                             IndexChangeType.Deleted,
                             change.LowerName,
-                            _enumerator.ResolveFullPath(change.DriveLetter, change.ParentFrn, change.OriginalName)));
+                            _enumerator.ResolveFullPath(change.DriveLetter, change.ParentFrn, change.OriginalName),
+                            isDirectory: change.IsDirectory));
                         break;
 
                     case UsnChangeKind.Rename:
@@ -987,7 +989,8 @@ namespace MftScanner
                             _enumerator.ResolveFullPath(change.DriveLetter, change.ParentFrn, change.OriginalName),
                             _enumerator.ResolveFullPath(change.DriveLetter, change.OldParentFrn, change.OldLowerName),
                             change.OriginalName,
-                            change.LowerName));
+                            change.LowerName,
+                            change.IsDirectory));
                         break;
                 }
             }
@@ -1224,7 +1227,7 @@ namespace MftScanner
     public sealed class IndexChangedEventArgs : EventArgs
     {
         public IndexChangedEventArgs(IndexChangeType type, string lowerName, string fullPath,
-            string oldFullPath = null, string newOriginalName = null, string newLowerName = null)
+            string oldFullPath = null, string newOriginalName = null, string newLowerName = null, bool isDirectory = false)
         {
             Type            = type;
             LowerName       = lowerName;
@@ -1232,6 +1235,7 @@ namespace MftScanner
             OldFullPath     = oldFullPath;
             NewOriginalName = newOriginalName;
             NewLowerName    = newLowerName;
+            IsDirectory     = isDirectory;
         }
 
         public IndexChangeType Type            { get; }
@@ -1245,6 +1249,8 @@ namespace MftScanner
         public string          NewOriginalName { get; }
         /// <summary>重命名后的文件名小写（仅 Renamed）。</summary>
         public string          NewLowerName    { get; }
+        /// <summary>是否为目录。</summary>
+        public bool            IsDirectory     { get; }
     }
 }
 

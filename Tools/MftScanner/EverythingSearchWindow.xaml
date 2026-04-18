@@ -2,73 +2,285 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:dataGrid="clr-namespace:CustomControlLibrary.CustomControl.Controls.DataGrid;assembly=CustomControlLibrary"
-        Title="文件搜索（管理员）"
-        Height="720" Width="1100"
-        MinHeight="500" MinWidth="800"
+        Title="文件搜索"
+        Height="860"
+        Width="1420"
+        MinHeight="640"
+        MinWidth="1120"
         WindowStartupLocation="CenterScreen"
         Loaded="EverythingSearchWindow_Loaded"
         PreviewKeyDown="EverythingSearchWindow_PreviewKeyDown"
         Closing="EverythingSearchWindow_Closing"
-        Closed="EverythingSearchWindow_Closed">
-    <Grid>
+        Closed="EverythingSearchWindow_Closed"
+        Background="#F5F6F2">
+    <Window.Resources>
+        <SolidColorBrush x:Key="TextBrush" Color="#1F2A25" />
+        <SolidColorBrush x:Key="MutedBrush" Color="#6D7771" />
+        <SolidColorBrush x:Key="AccentBrush" Color="#1A6A5F" />
+        <SolidColorBrush x:Key="AccentSoftBrush" Color="#DDEFE8" />
+        <SolidColorBrush x:Key="BorderBrushSoft" Color="#16000000" />
+        <Style x:Key="CardStyle" TargetType="Border">
+            <Setter Property="Background" Value="White" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrushSoft}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="18" />
+            <Setter Property="Padding" Value="14" />
+        </Style>
+        <Style x:Key="GhostButtonStyle" TargetType="Button">
+            <Setter Property="Padding" Value="12,7" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Background" Value="White" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrushSoft}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Cursor" Value="Hand" />
+        </Style>
+        <Style x:Key="PrimaryButtonStyle" TargetType="Button" BasedOn="{StaticResource GhostButtonStyle}">
+            <Setter Property="Background" Value="{StaticResource AccentBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+            <Setter Property="Foreground" Value="White" />
+        </Style>
+        <Style x:Key="FilterButtonStyle" TargetType="ToggleButton">
+            <Setter Property="Padding" Value="12,7" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Background" Value="#FFF0F3F0" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrushSoft}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Style.Triggers>
+                <Trigger Property="IsChecked" Value="True">
+                    <Setter Property="Background" Value="{StaticResource AccentSoftBrush}" />
+                    <Setter Property="BorderBrush" Value="#331A6A5F" />
+                    <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <Style TargetType="{x:Type DataGridRow}">
+            <Setter Property="MinHeight" Value="42" />
+            <Setter Property="Background" Value="White" />
+            <Setter Property="BorderBrush" Value="#10000000" />
+            <Setter Property="BorderThickness" Value="0,0,0,1" />
+            <Style.Triggers>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="#FFE4F1EC" />
+                    <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <Style TargetType="{x:Type DataGridCell}">
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="10,7" />
+        </Style>
+        <Style x:Key="HistoryItemStyle" TargetType="ListBoxItem">
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Margin" Value="0,0,0,8" />
+        </Style>
+        <Style x:Key="SmallGhostButtonStyle" TargetType="Button" BasedOn="{StaticResource GhostButtonStyle}">
+            <Setter Property="Padding" Value="8,4" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="MinWidth" Value="0" />
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="16">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <!-- 搜索框 -->
-        <Border Grid.Row="0" Padding="8,6" BorderThickness="0,0,0,1" BorderBrush="#1F000000">
+        <Border Grid.Row="0" Style="{StaticResource CardStyle}" Padding="16">
             <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
-                <TextBox x:Name="SearchBox"
-                         Grid.Column="0"
-                         FontSize="16"
-                         Height="34"
-                         Padding="8,4"
-                         VerticalContentAlignment="Center"
-                         BorderThickness="1"
-                         BorderBrush="#CCCCCC"
-                         TextChanged="SearchBox_TextChanged"
-                         KeyDown="SearchBox_KeyDown"/>
-                <Button x:Name="ForceRescanButton"
-                        Grid.Column="1"
-                        Content="重建索引"
-                        Width="90" Height="34"
-                        Margin="8,0,0,0"
-                        Click="ForceRescanButton_Click"/>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <Grid Grid.Row="0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <Border Background="#FFF8FAF8" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" CornerRadius="16" Padding="14,12" Margin="0,0,12,0">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <TextBox x:Name="SearchBox" BorderThickness="0" Background="Transparent" FontSize="24" FontWeight="SemiBold" VerticalContentAlignment="Center" TextChanged="SearchBox_TextChanged" KeyDown="SearchBox_KeyDown" />
+                            <TextBlock Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Center" Text="例: ext:exe path:tools recent:7d" FontSize="12" Foreground="{StaticResource MutedBrush}" />
+                        </Grid>
+                    </Border>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal">
+                        <Button x:Name="ClearSearchButton" Content="清空" Style="{StaticResource GhostButtonStyle}" Click="ClearSearchButton_Click" Margin="0,0,8,0" />
+                        <Button x:Name="SyntaxHelpButton" Content="语法提示" Style="{StaticResource GhostButtonStyle}" Click="SyntaxHelpButton_Click" Margin="0,0,8,0" />
+                        <Button x:Name="ForceRescanButton" Content="重建索引" Style="{StaticResource PrimaryButtonStyle}" Click="ForceRescanButton_Click" />
+                    </StackPanel>
+                </Grid>
+
+                <WrapPanel Grid.Row="1" Margin="0,14,0,0">
+                    <ToggleButton x:Name="AllFilterButton" Content="全部" Tag="All" Style="{StaticResource FilterButtonStyle}" Click="FilterButton_Checked" />
+                    <ToggleButton x:Name="LaunchableFilterButton" Content="可启动文件" Tag="Launchable" Style="{StaticResource FilterButtonStyle}" Click="FilterButton_Checked" Margin="8,0,0,0" />
+                    <ToggleButton x:Name="FolderFilterButton" Content="文件夹" Tag="Folder" Style="{StaticResource FilterButtonStyle}" Click="FilterButton_Checked" Margin="8,0,0,0" />
+                    <ToggleButton x:Name="ScriptFilterButton" Content="脚本" Tag="Script" Style="{StaticResource FilterButtonStyle}" Click="FilterButton_Checked" Margin="8,0,0,0" />
+                    <ToggleButton x:Name="LogFilterButton" Content="日志" Tag="Log" Style="{StaticResource FilterButtonStyle}" Click="FilterButton_Checked" Margin="8,0,0,0" />
+                    <ToggleButton x:Name="ConfigFilterButton" Content="配置" Tag="Config" Style="{StaticResource FilterButtonStyle}" Click="FilterButton_Checked" Margin="8,0,0,0" />
+                </WrapPanel>
+
+                <Grid Grid.Row="2" Margin="0,14,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="220" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="220" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="160" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock VerticalAlignment="Center" Text="范围" FontSize="12" FontWeight="Bold" Foreground="{StaticResource MutedBrush}" Margin="0,0,10,0" />
+                    <ComboBox x:Name="ScopeComboBox" Grid.Column="1" SelectionChanged="ScopeComboBox_SelectionChanged" />
+                    <TextBlock Grid.Column="2" VerticalAlignment="Center" Text="排序" FontSize="12" FontWeight="Bold" Foreground="{StaticResource MutedBrush}" Margin="18,0,10,0" />
+                    <ComboBox x:Name="SortComboBox" Grid.Column="3" SelectionChanged="SortComboBox_SelectionChanged" />
+                    <TextBlock Grid.Column="4" VerticalAlignment="Center" Text="视图" FontSize="12" FontWeight="Bold" Foreground="{StaticResource MutedBrush}" Margin="18,0,10,0" />
+                    <ComboBox x:Name="ViewModeComboBox" Grid.Column="5" SelectionChanged="ViewModeComboBox_SelectionChanged" />
+                    <TextBlock x:Name="QuerySummaryText" Grid.Column="6" VerticalAlignment="Center" Margin="18,0,0,0" Text="等待输入关键词" FontSize="12" Foreground="{StaticResource MutedBrush}" />
+                    <Border Grid.Column="7" Background="#FFF0F3F0" CornerRadius="999" Padding="10,4" Margin="12,0,0,0" VerticalAlignment="Center">
+                        <TextBlock x:Name="IndexStateBadgeText" Text="索引已就绪" FontSize="11" FontWeight="Bold" Foreground="{StaticResource MutedBrush}" />
+                    </Border>
+                </Grid>
             </Grid>
         </Border>
 
-        <!-- 结果列表 -->
-        <dataGrid:CDataGrid x:Name="ResultsGrid"
-                            Grid.Row="1"
-                            TextAlignment="Left"
-                            IsReadOnly="True"
-                            EnableAutoTemplateSelection="True"
-                            MouseDoubleClick="ResultsGrid_MouseDoubleClick"
-                            SelectionChanged="ResultsGrid_SelectionChanged">
-            <dataGrid:CDataGrid.ContextMenu>
-                <ContextMenu>
-                    <MenuItem Header="打开所在位置" Click="OpenContainingFolder_Click"/>
-                    <MenuItem Header="复制路径" Click="CopyPath_Click"/>
-                </ContextMenu>
-            </dataGrid:CDataGrid.ContextMenu>
-        </dataGrid:CDataGrid>
+        <Border Grid.Row="1" Margin="0,12,0,0" Style="{StaticResource CardStyle}" Padding="14,12">
+            <WrapPanel>
+                <Button x:Name="OpenButton" Content="打开" Style="{StaticResource PrimaryButtonStyle}" Click="OpenButton_Click" />
+                <Button x:Name="OpenFolderButton" Content="打开所在目录" Style="{StaticResource GhostButtonStyle}" Click="OpenFolderButton_Click" Margin="8,0,0,0" />
+                <Button x:Name="CopyPathButton" Content="复制路径" Style="{StaticResource GhostButtonStyle}" Click="CopyPathButton_Click" Margin="8,0,0,0" />
+                <Button x:Name="CopyNameButton" Content="复制文件名" Style="{StaticResource GhostButtonStyle}" Click="CopyNameButton_Click" Margin="8,0,0,0" />
+                <Button x:Name="RunAsAdminButton" Content="管理员运行" Style="{StaticResource GhostButtonStyle}" Click="RunAsAdminButton_Click" Margin="8,0,0,0" />
+                <Button x:Name="PropertiesButton" Content="属性" Style="{StaticResource GhostButtonStyle}" Click="PropertiesButton_Click" Margin="8,0,0,0" />
+                <Button x:Name="OpenTerminalButton" Content="打开终端" Style="{StaticResource GhostButtonStyle}" Click="OpenTerminalButton_Click" Margin="8,0,0,0" />
+                <Button x:Name="RenameButton" Content="重命名" Style="{StaticResource GhostButtonStyle}" Click="RenameButton_Click" Margin="8,0,0,0" />
+                <Button x:Name="DeleteButton" Content="删除" Style="{StaticResource GhostButtonStyle}" Click="DeleteButton_Click" Margin="8,0,0,0" />
+            </WrapPanel>
+        </Border>
 
-        <!-- 状态栏 -->
-        <StatusBar Grid.Row="2">
-            <StatusBarItem>
-                <TextBlock x:Name="StatusText" Text="就绪"/>
-            </StatusBarItem>
+        <Grid Grid.Row="2" Margin="0,12,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="360" />
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" Style="{StaticResource CardStyle}" Padding="0">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <DockPanel Grid.Row="0" Margin="16,14,16,10">
+                        <StackPanel>
+                            <TextBlock Text="结果列表" FontSize="17" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}" />
+                            <TextBlock x:Name="ResultsHintText" Margin="0,4,0,0" Text="输入关键词后，结果会在这里实时刷新。" FontSize="12" Foreground="{StaticResource MutedBrush}" />
+                        </StackPanel>
+                        <Border DockPanel.Dock="Right" Background="{StaticResource AccentSoftBrush}" CornerRadius="999" Padding="10,4" VerticalAlignment="Top">
+                            <TextBlock x:Name="ResultCountBadgeText" Text="0 项" FontSize="11" FontWeight="Bold" Foreground="{StaticResource AccentBrush}" />
+                        </Border>
+                    </DockPanel>
+                    <Grid Grid.Row="1" Margin="12,0,12,12">
+                        <dataGrid:CDataGrid x:Name="ResultsGrid" IsReadOnly="True" EnableAutoTemplateSelection="True" AutoGeneratingColumn="ResultsGrid_AutoGeneratingColumn" MouseDoubleClick="ResultsGrid_MouseDoubleClick" SelectionChanged="ResultsGrid_SelectionChanged" PreviewKeyDown="ResultsGrid_PreviewKeyDown" ScrollViewer.VerticalScrollBarVisibility="Auto" ScrollViewer.HorizontalScrollBarVisibility="Auto">
+                            <dataGrid:CDataGrid.ContextMenu>
+                                <ContextMenu>
+                                    <MenuItem Header="打开" Click="OpenMenuItem_Click" />
+                                    <MenuItem Header="打开所在目录" Click="OpenContainingFolder_Click" />
+                                    <MenuItem Header="复制路径" Click="CopyPath_Click" />
+                                    <MenuItem Header="复制文件名" Click="CopyNameMenuItem_Click" />
+                                    <MenuItem Header="复制父目录路径" Click="CopyParentPathMenuItem_Click" />
+                                    <MenuItem Header="管理员运行" Click="RunAsAdminMenuItem_Click" />
+                                    <MenuItem Header="打开终端到当前目录" Click="OpenTerminalMenuItem_Click" />
+                                    <MenuItem Header="重命名" Click="RenameMenuItem_Click" />
+                                    <MenuItem Header="删除" Click="DeleteMenuItem_Click" />
+                                    <MenuItem Header="查看属性" Click="PropertiesMenuItem_Click" />
+                                </ContextMenu>
+                            </dataGrid:CDataGrid.ContextMenu>
+                        </dataGrid:CDataGrid>
+                        <Border x:Name="EmptyStatePanel" Visibility="Collapsed" Background="#CCFFFFFF" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" CornerRadius="18" Margin="8">
+                            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" MaxWidth="720" Margin="24,0">
+                                <TextBlock x:Name="EmptyStateTitleText" Text="输入关键词开始搜索" TextAlignment="Center" FontSize="24" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}" />
+                                <TextBlock x:Name="EmptyStateDescriptionText" Margin="0,8,0,0" Text="支持按名称、路径片段、后缀和范围筛选。" TextWrapping="Wrap" TextAlignment="Center" FontSize="13" Foreground="{StaticResource MutedBrush}" />
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+                    <Border Grid.Row="2" Margin="12,0,12,12" Background="#FFF8FAF8" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" CornerRadius="14" Padding="12,9">
+                        <DockPanel>
+                            <TextBlock x:Name="CurrentFilterSummaryText" Text="当前过滤：全部 / 全盘 / 名称" FontSize="12" Foreground="{StaticResource MutedBrush}" />
+                            <TextBlock x:Name="CurrentLoadSummaryText" DockPanel.Dock="Right" Text="等待搜索" FontSize="12" Foreground="{StaticResource MutedBrush}" />
+                        </DockPanel>
+                    </Border>
+                </Grid>
+            </Border>
+
+            <Grid Grid.Column="1" Margin="16,0,0,0">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="12" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+                <Border Grid.Row="0" Style="{StaticResource CardStyle}">
+                    <StackPanel>
+                        <TextBlock Text="当前选中项" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}" />
+                        <TextBlock x:Name="SelectedItemNameText" Margin="0,12,0,0" Text="未选择结果" FontSize="22" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}" />
+                        <TextBlock x:Name="SelectedItemHintText" Margin="0,4,0,0" Text="选中结果后，这里会展示完整路径、类型、大小和修改时间。" FontSize="12" Foreground="{StaticResource MutedBrush}" />
+                        <Border Margin="0,14,0,0" Background="#FF1E645C" CornerRadius="16" Padding="14">
+                            <TextBlock x:Name="SelectedItemPathText" Text="-" TextWrapping="Wrap" Foreground="White" FontSize="13" />
+                        </Border>
+                        <Border Margin="0,12,0,0" Background="#FFF8FAF8" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" CornerRadius="14" Padding="12">
+                            <TextBlock x:Name="SelectedItemMetaText" Text="-" TextWrapping="Wrap" FontSize="13" Foreground="{StaticResource TextBrush}" />
+                        </Border>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Row="2" Style="{StaticResource CardStyle}">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <DockPanel Grid.Row="0">
+                            <TextBlock Text="最近搜索" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}" />
+                            <Button x:Name="ClearHistoryButton" DockPanel.Dock="Right" Content="清空" ToolTip="清空历史" Style="{StaticResource SmallGhostButtonStyle}" Click="ClearHistoryButton_Click" />
+                        </DockPanel>
+                        <TextBlock x:Name="RecentHistoryHintText" Grid.Row="1" Margin="0,6,0,0" Text="点击历史项可直接回填搜索框。" FontSize="12" Foreground="{StaticResource MutedBrush}" />
+                        <ListBox x:Name="RecentSearchList" Grid.Row="2" Margin="0,12,0,0" BorderThickness="0" Background="Transparent" ItemContainerStyle="{StaticResource HistoryItemStyle}" SelectionChanged="RecentSearchList_SelectionChanged" MouseDoubleClick="RecentSearchList_MouseDoubleClick" ScrollViewer.VerticalScrollBarVisibility="Auto" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Background="#FFF8FAF8" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" CornerRadius="14" Padding="12,10">
+                                        <DockPanel>
+                                            <TextBlock Text="{Binding Query}" FontSize="13" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}" />
+                                            <TextBlock DockPanel.Dock="Right" Margin="12,0,0,0" Text="{Binding TimeText}" FontSize="11" Foreground="{StaticResource MutedBrush}" />
+                                        </DockPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </Grid>
+                </Border>
+            </Grid>
+        </Grid>
+
+        <StatusBar Grid.Row="3" Margin="0,12,0,0" Background="White" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1">
+            <StatusBarItem><TextBlock x:Name="StatusText" Text="就绪" /></StatusBarItem>
+            <StatusBarItem><TextBlock x:Name="StatusFilterText" Text="过滤：全部 / 全盘 / 名称" /></StatusBarItem>
+            <StatusBarItem><TextBlock x:Name="StatusCountText" Text="0 项结果" /></StatusBarItem>
             <StatusBarItem HorizontalAlignment="Right">
-                <ProgressBar x:Name="IndexingProgress"
-                             Width="160" Height="14"
-                             IsIndeterminate="True"
-                             Visibility="Collapsed"/>
+                <DockPanel>
+                    <ProgressBar x:Name="IndexingProgress" Width="160" Height="14" Margin="0,0,10,0" IsIndeterminate="True" Visibility="Collapsed" />
+                    <TextBlock x:Name="StatusShortcutText" Text="Enter 打开 · Ctrl+Enter 打开目录 · Ctrl+C 复制路径 · Esc 隐藏" />
+                </DockPanel>
             </StatusBarItem>
         </StatusBar>
     </Grid>
