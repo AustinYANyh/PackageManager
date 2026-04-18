@@ -248,14 +248,45 @@ namespace MftScanner
 
         private void ApplyIndexChange(IndexChangedEventArgs e)
         {
-            if (!_indexReady || string.IsNullOrWhiteSpace(_activeKeyword) || e == null)
+            if (e == null)
+                return;
+
+            ApplyIndexChangesBatch(new[] { e });
+        }
+
+        private void ApplyIndexChangesBatch(IReadOnlyList<IndexChangedEventArgs> changes)
+        {
+            if (!_indexReady || string.IsNullOrWhiteSpace(_activeKeyword) || changes == null || changes.Count == 0)
                 return;
 
             var allLoadedBeforeChange = !_hasMoreSearchResults;
-            var selectedPath = (ResultsGrid.SelectedItem as EverythingSearchResultItem)?.FullPath;
-            var preferredSelectionPath = selectedPath;
+            var preferredSelectionPath = (ResultsGrid.SelectedItem as EverythingSearchResultItem)?.FullPath;
+            var resultsChanged = false;
+
+            for (var i = 0; i < changes.Count; i++)
+            {
+                if (ApplyIndexChangeCore(changes[i], allLoadedBeforeChange, ref preferredSelectionPath))
+                    resultsChanged = true;
+            }
+
+            if (resultsChanged)
+            {
+                ApplyCurrentSort(preferredSelectionPath, false);
+                _loadedResultCount = _displayedResults.Count;
+            }
+
+            UpdateSummaryStatus();
+            UpdateEmptyState();
+        }
+
+        private bool ApplyIndexChangeCore(IndexChangedEventArgs e, bool allLoadedBeforeChange, ref string preferredSelectionPath)
+        {
+            if (e == null)
+                return false;
+
             var oldMatches = false;
             var newMatches = false;
+            var resultsChanged = false;
 
             switch (e.Type)
             {
@@ -263,7 +294,12 @@ namespace MftScanner
                     oldMatches = MatchesCurrentQueryAndType(e.LowerName, e.FullPath, e.IsDirectory);
                     if (oldMatches && _totalMatchedCount > 0)
                         _totalMatchedCount--;
-                    RemoveDisplayedResult(e.FullPath, e.LowerName);
+                    resultsChanged = RemoveDisplayedResult(e.FullPath, e.LowerName);
+                    if (!string.IsNullOrWhiteSpace(preferredSelectionPath)
+                        && string.Equals(preferredSelectionPath, e.FullPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        preferredSelectionPath = null;
+                    }
                     break;
 
                 case IndexChangeType.Created:
@@ -272,7 +308,7 @@ namespace MftScanner
                     {
                         _totalMatchedCount++;
                         if (allLoadedBeforeChange)
-                            TryAddDisplayedResult(e.FullPath, e.IsDirectory);
+                            resultsChanged = TryAddDisplayedResult(e.FullPath, e.IsDirectory);
                     }
                     break;
 
@@ -283,31 +319,24 @@ namespace MftScanner
                     if (oldMatches && _totalMatchedCount > 0)
                         _totalMatchedCount--;
                     if (oldMatches || !string.IsNullOrWhiteSpace(e.OldFullPath))
-                        RemoveDisplayedResult(e.OldFullPath, e.LowerName);
+                        resultsChanged = RemoveDisplayedResult(e.OldFullPath, e.LowerName) || resultsChanged;
 
                     if (newMatches)
                     {
                         _totalMatchedCount++;
                         if (allLoadedBeforeChange)
-                            TryAddDisplayedResult(e.FullPath, e.IsDirectory);
+                            resultsChanged = TryAddDisplayedResult(e.FullPath, e.IsDirectory) || resultsChanged;
                     }
 
-                    if (!string.IsNullOrWhiteSpace(selectedPath) && string.Equals(selectedPath, e.OldFullPath, StringComparison.OrdinalIgnoreCase))
-                        preferredSelectionPath = e.FullPath;
+                    if (!string.IsNullOrWhiteSpace(preferredSelectionPath)
+                        && string.Equals(preferredSelectionPath, e.OldFullPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        preferredSelectionPath = newMatches ? e.FullPath : null;
+                    }
                     break;
             }
 
-            ApplyCurrentSort();
-            _loadedResultCount = _displayedResults.Count;
-            if (!string.IsNullOrWhiteSpace(preferredSelectionPath))
-            {
-                var nextSelection = _displayedResults.FirstOrDefault(item => string.Equals(item.FullPath, preferredSelectionPath, StringComparison.OrdinalIgnoreCase));
-                if (nextSelection != null)
-                    ResultsGrid.SelectedItem = nextSelection;
-            }
-
-            UpdateSummaryStatus();
-            UpdateEmptyState();
+            return resultsChanged;
         }
 
         private void RequestRefreshCurrentQuery()
@@ -712,10 +741,29 @@ namespace MftScanner
 
         private void ApplyCurrentSort()
         {
-            if (_displayedResults.Count <= 1)
+            ApplyCurrentSort((ResultsGrid.SelectedItem as EverythingSearchResultItem)?.FullPath, false);
+        }
+
+        private void ApplyCurrentSort(bool forceRebind)
+        {
+            ApplyCurrentSort((ResultsGrid.SelectedItem as EverythingSearchResultItem)?.FullPath, forceRebind);
+        }
+
+        private void ApplyCurrentSort(string preferredSelectionPath, bool forceRebind)
+        {
+            if (_displayedResults.Count == 0)
             {
-                if (ResultsGrid.SelectedItem == null && _displayedResults.Count > 0)
-                    ResultsGrid.SelectedItem = _displayedResults[0];
+                if (ResultsGrid.SelectedItem != null)
+                    ResultsGrid.SelectedItem = null;
+                return;
+            }
+
+            if (_currentSortKey == "default")
+            {
+                if (forceRebind)
+                    RebindDisplayedResults(_allLoadedResults);
+
+                RestorePreferredSelection(preferredSelectionPath, forceRebind);
                 return;
             }
 
@@ -740,24 +788,47 @@ namespace MftScanner
                     break;
             }
 
-            var selectedPath = (ResultsGrid.SelectedItem as EverythingSearchResultItem)?.FullPath;
-            var orderedList = orderedItems.ToList();
-            _displayedResults.Clear();
-            for (var i = 0; i < orderedList.Count; i++)
-                _displayedResults.Add(orderedList[i]);
+            RebindDisplayedResults(orderedItems.ToList());
+            RestorePreferredSelection(preferredSelectionPath, true);
+        }
 
-            if (!string.IsNullOrWhiteSpace(selectedPath))
+        private void RestorePreferredSelection(string preferredSelectionPath, bool forceCurrentCell)
+        {
+            if (!string.IsNullOrWhiteSpace(preferredSelectionPath))
             {
-                var nextSelection = _displayedResults.FirstOrDefault(item => string.Equals(item.FullPath, selectedPath, StringComparison.OrdinalIgnoreCase));
+                var nextSelection = _displayedResults.FirstOrDefault(item => string.Equals(item.FullPath, preferredSelectionPath, StringComparison.OrdinalIgnoreCase));
                 if (nextSelection != null)
                 {
-                    ResultsGrid.SelectedItem = nextSelection;
+                    var currentSelection = ResultsGrid.SelectedItem as EverythingSearchResultItem;
+                    if (!ReferenceEquals(currentSelection, nextSelection))
+                        ResultsGrid.SelectedItem = nextSelection;
+                    if (forceCurrentCell)
+                        EnsureCurrentCellSelection(nextSelection);
                     return;
                 }
             }
 
             if (ResultsGrid.SelectedItem == null && _displayedResults.Count > 0)
+            {
                 ResultsGrid.SelectedItem = _displayedResults[0];
+                EnsureCurrentCellSelection(_displayedResults[0]);
+                return;
+            }
+
+            if (forceCurrentCell)
+                EnsureCurrentCellSelection(ResultsGrid.SelectedItem as EverythingSearchResultItem);
+        }
+
+        private void EnsureCurrentCellSelection(EverythingSearchResultItem item)
+        {
+            if (item == null || ResultsGrid.Columns == null || ResultsGrid.Columns.Count == 0)
+                return;
+
+            var firstVisibleColumn = ResultsGrid.Columns.FirstOrDefault(column => column.Visibility == Visibility.Visible);
+            if (firstVisibleColumn == null)
+                return;
+
+            ResultsGrid.CurrentCell = new DataGridCellInfo(item, firstVisibleColumn);
         }
 
         private void SortComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -767,7 +838,7 @@ namespace MftScanner
 
             var option = SortComboBox.SelectedItem as ComboOption;
             _currentSortKey = option == null ? "default" : option.Key;
-            ApplyCurrentSort();
+            ApplyCurrentSort(true);
             UpdateSummaryStatus();
             UpdateEmptyState();
             SaveWindowState();
@@ -811,6 +882,30 @@ namespace MftScanner
             }
         }
 
-        private void RebindDisplayedResults() { }
+        private void RebindDisplayedResults(IList<EverythingSearchResultItem> orderedItems)
+        {
+            if (orderedItems == null)
+                return;
+
+            if (_displayedResults.Count == orderedItems.Count)
+            {
+                var isSameOrder = true;
+                for (var i = 0; i < orderedItems.Count; i++)
+                {
+                    if (ReferenceEquals(_displayedResults[i], orderedItems[i]))
+                        continue;
+
+                    isSameOrder = false;
+                    break;
+                }
+
+                if (isSameOrder)
+                    return;
+            }
+
+            _displayedResults.Clear();
+            for (var i = 0; i < orderedItems.Count; i++)
+                _displayedResults.Add(orderedItems[i]);
+        }
     }
 }

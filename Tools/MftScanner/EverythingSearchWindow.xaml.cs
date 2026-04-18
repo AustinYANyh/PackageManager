@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
@@ -27,10 +28,12 @@ namespace MftScanner
         private readonly ObservableCollection<SearchHistoryEntry> _recentSearches = new ObservableCollection<SearchHistoryEntry>();
         private readonly DispatcherTimer _debounceTimer;
         private readonly DispatcherTimer _liveRefreshTimer;
+        private readonly DispatcherTimer _indexChangeFlushTimer;
         private readonly SearchWindowStateStore _stateStore = new SearchWindowStateStore();
         private readonly Dictionary<string, FileMetadata> _metadataCache = new Dictionary<string, FileMetadata>(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> _displayedPathSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly ObservableCollection<ComboOption> _scopeOptions = new ObservableCollection<ComboOption>();
+        private readonly ConcurrentQueue<IndexChangedEventArgs> _pendingIndexChanges = new ConcurrentQueue<IndexChangedEventArgs>();
 
         private CancellationTokenSource _indexCts;
         private CancellationTokenSource _searchCts;
@@ -52,6 +55,7 @@ namespace MftScanner
         private string _cachedKeyword;
         private Regex _cachedRegex;
         private bool _suppressControlEvents;
+        private bool _isApplyingPendingIndexChanges;
         private FileSearchTypeFilter _currentTypeFilter = FileSearchTypeFilter.All;
         private string _currentSortKey = "default";
 
@@ -65,10 +69,12 @@ namespace MftScanner
             _debounceTimer.Tick += DebounceTimer_Tick;
             _liveRefreshTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
             _liveRefreshTimer.Tick += LiveRefreshTimer_Tick;
+            _indexChangeFlushTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(120) };
+            _indexChangeFlushTimer.Tick += IndexChangeFlushTimer_Tick;
 
             _indexService.IndexChanged += delegate(object sender, IndexChangedEventArgs e)
             {
-                Dispatcher.BeginInvoke(new Action(delegate { ApplyIndexChange(e); }));
+                Dispatcher.BeginInvoke(new Action(delegate { EnqueueIndexChange(e); }), DispatcherPriority.Background);
             };
             _indexService.IndexStatusChanged += delegate(object sender, IndexStatusChangedEventArgs e)
             {
@@ -173,11 +179,50 @@ namespace MftScanner
         {
             _debounceTimer.Stop();
             _liveRefreshTimer.Stop();
+            _indexChangeFlushTimer.Stop();
             if (_resultsScrollViewer != null)
                 _resultsScrollViewer.ScrollChanged -= ResultsScrollViewer_ScrollChanged;
             CancelToken(ref _indexCts);
             CancelToken(ref _searchCts);
             _indexService.Shutdown();
+        }
+
+        private void EnqueueIndexChange(IndexChangedEventArgs e)
+        {
+            if (e == null)
+                return;
+
+            _pendingIndexChanges.Enqueue(e);
+            if (!_indexChangeFlushTimer.IsEnabled)
+                _indexChangeFlushTimer.Start();
+        }
+
+        private void IndexChangeFlushTimer_Tick(object sender, EventArgs e)
+        {
+            _indexChangeFlushTimer.Stop();
+            if (_isApplyingPendingIndexChanges || _pendingIndexChanges.IsEmpty)
+                return;
+
+            _isApplyingPendingIndexChanges = true;
+            try
+            {
+                var pendingChanges = new List<IndexChangedEventArgs>();
+                IndexChangedEventArgs change;
+                while (_pendingIndexChanges.TryDequeue(out change))
+                {
+                    if (change != null)
+                        pendingChanges.Add(change);
+                }
+
+                if (pendingChanges.Count > 0)
+                    ApplyIndexChangesBatch(pendingChanges);
+            }
+            finally
+            {
+                _isApplyingPendingIndexChanges = false;
+                if (!_pendingIndexChanges.IsEmpty)
+                    _indexChangeFlushTimer.Start();
+            }
         }
 
         private void UpdateActionButtons()

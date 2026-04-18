@@ -31,13 +31,13 @@ namespace MftScanner
             ModifiedTime = DateTime.MinValue;
         }
 
-        [DataGridColumn(1, DisplayName = "名称", Width = "240", IsReadOnly = true)]
+        [DataGridColumn(1, DisplayName = "名称", Width = "220", IsReadOnly = true)]
         public string FileName { get; set; }
 
-        [DataGridColumn(2, DisplayName = "路径", Width = "420", IsReadOnly = true)]
+        [DataGridColumn(2, DisplayName = "路径", Width = "560", IsReadOnly = true)]
         public string DirectoryPath { get; set; }
 
-        [DataGridColumn(3, DisplayName = "类型", Width = "110", IsReadOnly = true)]
+        [DataGridColumn(3, DisplayName = "类型", Width = "120", IsReadOnly = true)]
         public string TypeText { get; set; }
 
         [DataGridColumn(4, DisplayName = "大小", Width = "110", IsReadOnly = true)]
