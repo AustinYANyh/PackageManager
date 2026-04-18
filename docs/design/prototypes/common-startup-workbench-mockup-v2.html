@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>常用启动项工作台 UI 原型 V2</title>
+  <style>
+    :root {
+      --bg-1: #f7f3ed;
+      --bg-2: #eef3ef;
+      --frame: rgba(255,255,255,.72);
+      --panel: rgba(255,255,255,.92);
+      --panel-strong: #ffffff;
+      --line: rgba(45, 63, 52, .10);
+      --line-strong: rgba(38, 56, 46, .16);
+      --text: #1d2620;
+      --muted: #69746d;
+      --accent: #1a6a5f;
+      --accent-deep: #154f47;
+      --accent-soft: #dcefe8;
+      --blue-soft: #dce8fb;
+      --gold-soft: #f5ebc8;
+      --red-soft: #f6dada;
+      --orange-soft: #f6e5d0;
+      --green-soft: #dff0e5;
+      --shadow-lg: 0 26px 60px rgba(24, 34, 28, .14);
+      --shadow-md: 0 12px 28px rgba(25, 35, 29, .08);
+      --radius-xl: 28px;
+      --radius-lg: 22px;
+      --radius-md: 18px;
+      --radius-sm: 14px;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "Microsoft YaHei UI", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, #f2e4d6 0, rgba(242,228,214,0) 30%),
+        radial-gradient(circle at top right, #dcece4 0, rgba(220,236,228,0) 28%),
+        linear-gradient(180deg, var(--bg-1) 0%, var(--bg-2) 100%);
+      padding: 22px;
+    }
+    .window {
+      max-width: 1680px;
+      min-height: calc(100vh - 44px);
+      margin: 0 auto;
+      background: var(--frame);
+      backdrop-filter: blur(18px);
+      border: 1px solid rgba(255,255,255,.62);
+      border-radius: 34px;
+      box-shadow: var(--shadow-lg);
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: auto auto 1fr auto;
+    }
+    .titlebar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 18px 12px;
+      border-bottom: 1px solid rgba(42,58,48,.08);
+      background: linear-gradient(180deg, rgba(255,255,255,.82), rgba(255,255,255,.62));
+    }
+    .title-left {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+    .traffic {
+      display: flex;
+      gap: 8px;
+    }
+    .traffic span {
+      width: 11px; height: 11px; border-radius: 50%; display: block;
+      background: #dfd8cc;
+      border: 1px solid rgba(0,0,0,.05);
+    }
+    .traffic span:nth-child(1){ background:#e8b8b8; }
+    .traffic span:nth-child(2){ background:#efd9a7; }
+    .traffic span:nth-child(3){ background:#bddfbf; }
+    .title-meta strong { display:block; font-size: 17px; }
+    .title-meta small { color: var(--muted); font-size: 12px; }
+    .title-right {
+      display:flex; align-items:center; gap:10px;
+      color: var(--muted); font-size: 12px;
+    }
+    .hotkey {
+      padding: 7px 10px;
+      border-radius: 999px;
+      background: rgba(26,106,95,.08);
+      color: var(--accent);
+      font-weight: 700;
+    }
+    .toolbar {
+      padding: 16px 18px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      gap: 12px;
+      align-items: center;
+      border-bottom: 1px solid rgba(42,58,48,.08);
+      background: rgba(255,255,255,.52);
+    }
+    .searchbox {
+      display:flex; align-items:center; gap:12px;
+      padding: 14px 16px;
+      border-radius: 18px;
+      border: 1px solid rgba(47,63,53,.10);
+      background: rgba(248,249,245,.96);
+      color: var(--muted);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.8);
+      font-size: 15px;
+    }
+    .scopebar, .actionbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+    .chip, .btn, .ghost {
+      border-radius: 999px;
+      padding: 10px 13px;
+      font-size: 12px;
+      font-weight: 700;
+      border: 1px solid transparent;
+      white-space: nowrap;
+    }
+    .chip { background: #eef2ef; color:#56625b; }
+    .chip.active { background: var(--accent-soft); color: var(--accent); }
+    .btn {
+      background: linear-gradient(135deg, var(--accent), var(--accent-deep));
+      color: #fff;
+      box-shadow: 0 8px 18px rgba(23,86,78,.18);
+    }
+    .ghost {
+      background: rgba(255,255,255,.82);
+      color: #55635c;
+      border-color: rgba(47,63,53,.10);
+    }
+    .layout {
+      display:grid;
+      grid-template-columns: 278px minmax(0, 1fr) 360px;
+      gap: 16px;
+      padding: 16px;
+    }
+    .panel {
+      background: linear-gradient(180deg, rgba(255,255,255,.96), rgba(255,255,255,.83));
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-md);
+    }
+    .sidebar {
+      padding: 16px;
+      display:flex; flex-direction:column; gap: 14px;
+    }
+    .workspace {
+      padding: 16px;
+      border-radius: 18px;
+      background: linear-gradient(135deg, #1e655c, #22463f);
+      color: #fff;
+    }
+    .workspace strong { display:block; font-size: 22px; margin-bottom: 6px; }
+    .workspace small { opacity:.78; line-height: 1.5; }
+    .section-title {
+      margin: 0 0 10px;
+      color: #53615a;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .menu, .stats, .queue, .detail-card, .candidate, .activity, .preview {
+      background: var(--panel-strong);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+    }
+    .menu { padding: 8px; }
+    .menu-item {
+      display:flex; align-items:center; justify-content:space-between;
+      gap:10px; padding: 12px 14px; border-radius: 14px; font-size: 14px;
+      margin-bottom: 6px;
+    }
+    .menu-item:last-child { margin-bottom: 0; }
+    .menu-item.active { background: #e5f0ea; font-weight: 700; }
+    .count {
+      min-width: 28px; text-align:center; padding: 4px 8px; border-radius: 999px;
+      font-size: 11px; font-weight: 800; background:#eef1ef; color:#5a665f;
+    }
+    .count.red { background: var(--red-soft); color:#a14848; }
+    .count.gold { background: var(--gold-soft); color:#8f6e1d; }
+    .stats { padding: 12px; display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .stat {
+      padding: 12px; border-radius: 14px; background:#f5f7f4; border: 1px solid rgba(47,63,53,.06);
+    }
+    .stat strong { display:block; font-size: 24px; }
+    .stat span { color: var(--muted); font-size: 12px; }
+    .queue { padding: 14px; }
+    .queue-item {
+      padding: 10px 12px; border-radius: 14px; background:#f7f8f6; margin-bottom:8px; font-size:13px;
+    }
+    .queue-item:last-child { margin-bottom:0; }
+    .queue-item strong { display:block; margin-bottom:4px; }
+    .main {
+      display:flex; flex-direction:column; gap: 14px;
+    }
+    .main-top {
+      display:grid; grid-template-columns: 1fr auto; gap:12px; align-items:end;
+      padding: 2px 2px 0;
+    }
+    .main-top h2 { margin: 0; font-size: 26px; }
+    .main-top p { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+    .switcher { display:flex; gap:8px; flex-wrap:wrap; }
+    .summary-row {
+      display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px;
+    }
+    .summary-card {
+      padding: 14px 16px; border-radius: 18px; background: linear-gradient(180deg, rgba(255,255,255,.96), rgba(245,247,244,.92));
+      border: 1px solid var(--line); box-shadow: var(--shadow-md);
+    }
+    .summary-card strong { display:block; font-size: 26px; margin-bottom: 4px; }
+    .summary-card span { color: var(--muted); font-size: 12px; }
+    .board {
+      padding: 16px;
+      display:grid; gap: 16px;
+    }
+    .group-head {
+      display:flex; align-items:center; justify-content:space-between; gap:12px;
+      margin-bottom: 4px;
+    }
+    .group-head h3 { margin:0; font-size: 16px; }
+    .group-head small { color: var(--muted); }
+    .card-grid {
+      display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px;
+    }
+    .launch-card {
+      background: linear-gradient(180deg, rgba(255,255,255,.98), rgba(247,248,245,.95));
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      padding: 16px;
+      box-shadow: 0 8px 18px rgba(31,42,34,.05);
+      position: relative;
+      overflow: hidden;
+    }
+    .launch-card::after {
+      content: ""; position:absolute; inset:auto -40px -40px auto; width:120px; height:120px;
+      border-radius:50%; background: radial-gradient(circle, rgba(26,106,95,.10), rgba(26,106,95,0));
+    }
+    .launch-card.featured { border-color: rgba(26,106,95,.24); }
+    .card-header {
+      display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:12px;
+    }
+    .app-icon {
+      width: 46px; height:46px; border-radius: 15px; display:grid; place-items:center; color:#fff; font-weight:800; font-size:16px;
+      background: linear-gradient(135deg, #387fe0, #27498e);
+      box-shadow: 0 8px 16px rgba(53,95,177,.16);
+    }
+    .app-icon.green { background: linear-gradient(135deg, #1f8d73, #23544b); }
+    .app-icon.orange { background: linear-gradient(135deg, #e1902f, #9d5d21); }
+    .app-icon.gray { background: linear-gradient(135deg, #687872, #39433f); }
+    .card-title strong { display:block; font-size: 17px; }
+    .card-title small { color: var(--muted); display:block; margin-top:4px; line-height:1.4; }
+    .flag-row, .meta-grid, .quick-row { display:flex; gap:8px; flex-wrap:wrap; }
+    .flag {
+      padding: 5px 9px; border-radius: 999px; font-size: 11px; font-weight: 800;
+      background:#edf1ee; color:#58645d;
+    }
+    .flag.green { background: var(--green-soft); color:#226547; }
+    .flag.teal { background: var(--accent-soft); color:var(--accent); }
+    .flag.gold { background: var(--gold-soft); color:#8b6a1b; }
+    .flag.red { background: var(--red-soft); color:#9f4646; }
+    .flag.orange { background: var(--orange-soft); color:#9b5e20; }
+    .launch-card p {
+      margin: 12px 0 14px; color: var(--muted); font-size: 13px; line-height: 1.58; min-height: 42px;
+    }
+    .meta-grid {
+      display:grid; grid-template-columns: 1fr 1fr; gap:8px; margin-bottom:14px;
+    }
+    .meta-box {
+      padding: 10px 12px; border-radius: 14px; background:#f6f7f4; font-size: 12px; color: var(--muted);
+    }
+    .meta-box strong { display:block; color: var(--text); margin-bottom:4px; }
+    .quick-row button, .detail-actions button, .candidate-actions button, .footer-actions button {
+      padding: 10px 12px; border-radius: 14px; font-size: 12px; font-weight: 800; border: none;
+    }
+    .quick-row .primary, .detail-actions .primary, .candidate-actions .primary, .footer-actions .primary {
+      background: linear-gradient(135deg, var(--accent), var(--accent-deep)); color:#fff;
+    }
+    .quick-row .secondary, .detail-actions .secondary, .candidate-actions .secondary, .footer-actions .secondary {
+      background: var(--blue-soft); color:#325990;
+    }
+    .quick-row .ghost, .detail-actions .ghost, .candidate-actions .ghost, .footer-actions .ghost {
+      background:#edf1ee; color:#57645c;
+    }
+    .right {
+      display:flex; flex-direction:column; gap:14px;
+    }
+    .detail-card, .candidate, .activity, .preview { padding: 16px; }
+    .detail-top { display:flex; gap:12px; align-items:flex-start; margin-bottom:12px; }
+    .detail-top strong { display:block; font-size: 18px; }
+    .detail-top small { display:block; color: var(--muted); margin-top:4px; line-height:1.5; }
+    .detail-list, .activity-list { display:grid; gap:10px; margin-top:14px; }
+    .detail-item, .activity-item {
+      padding: 11px 12px; border-radius: 14px; background:#f6f7f4; font-size: 12px; color: var(--muted);
+    }
+    .detail-item strong, .activity-item strong { display:block; color: var(--text); margin-bottom:4px; }
+    .detail-actions, .candidate-actions, .footer-actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:14px; }
+    .candidate.highlight {
+      border-color: rgba(26,106,95,.22);
+      background: linear-gradient(180deg, #fbfffd, #f1faf5);
+    }
+    .candidate-head {
+      display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:10px;
+    }
+    .candidate p, .preview p { margin:0; color: var(--muted); line-height:1.58; font-size:13px; }
+    .preview-box {
+      margin-top:14px; border-radius:16px; overflow:hidden; border: 1px solid rgba(45,63,52,.08);
+      background:#fcfcfa;
+    }
+    .preview-header {
+      padding:10px 12px; background:#eef2ef; color:#536159; font-size:12px; font-weight:800;
+      display:flex; justify-content:space-between;
+    }
+    .preview-lines { padding:12px; font-family: Consolas, monospace; font-size:12px; color:#445148; line-height:1.65; }
+    .footer {
+      display:flex; align-items:center; justify-content:space-between; gap:12px;
+      padding: 14px 18px 18px; border-top: 1px solid rgba(42,58,48,.08); background: rgba(255,255,255,.46);
+    }
+    .footer small { color: var(--muted); line-height:1.55; }
+    @media (max-width: 1460px) {
+      .layout { grid-template-columns: 250px 1fr; }
+      .right { grid-column: 1 / -1; }
+      .summary-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 1080px) {
+      body { padding: 14px; }
+      .window { min-height: auto; }
+      .toolbar, .layout, .summary-row, .card-grid, .hero { grid-template-columns: 1fr; }
+      .scopebar, .actionbar { justify-content:flex-start; }
+    }
+  </style>
+</head>
+<body>
+  <div class="window">
+    <div class="titlebar">
+      <div class="title-left">
+        <div class="traffic"><span></span><span></span><span></span></div>
+        <div class="title-meta">
+          <strong>常用启动项工作台</strong>
+          <small>Launcher Desk · 工作台视图 · 当前分组：运维脚本</small>
+        </div>
+      </div>
+      <div class="title-right">
+        <span class="hotkey">Ctrl+Q 打开</span>
+        <span class="hotkey">Esc 隐藏</span>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <div class="searchbox">🔎 搜索启动项、脚本、目录或备注，例如：yin / clash / jenkins / 日志 / bat / ps1</div>
+      <div class="scopebar">
+        <div class="chip active">工作台视图</div>
+        <div class="chip">管理视图</div>
+        <div class="chip">仅显示收藏</div>
+        <div class="chip">仅显示失效项</div>
+      </div>
+      <div class="actionbar">
+        <button class="ghost">批量管理</button>
+        <button class="btn">+ 手动添加 / 新建分组</button>
+      </div>
+    </div>
+
+    <div class="layout">
+      <aside class="panel sidebar">
+        <div class="workspace">
+          <strong>Launcher Desk</strong>
+          <small>把常用启动项从“维护列表”升级为“工作起点”。最近、收藏、分组、异常修复和文件搜索联动都收进同一个面板。</small>
+        </div>
+
+        <div>
+          <div class="section-title">工作区视图</div>
+          <div class="menu">
+            <div class="menu-item active"><span>全部启动项</span><span class="count">48</span></div>
+            <div class="menu-item"><span>最近启动</span><span class="count">8</span></div>
+            <div class="menu-item"><span>收藏</span><span class="count gold">12</span></div>
+            <div class="menu-item"><span>失效项</span><span class="count red">3</span></div>
+          </div>
+        </div>
+
+        <div>
+          <div class="section-title">分组导航</div>
+          <div class="menu">
+            <div class="menu-item"><span>开发工具</span><span class="count">14</span></div>
+            <div class="menu-item"><span>项目入口</span><span class="count">9</span></div>
+            <div class="menu-item active"><span>运维脚本</span><span class="count">11</span></div>
+            <div class="menu-item"><span>目录快捷方式</span><span class="count">7</span></div>
+            <div class="menu-item"><span>临时工具</span><span class="count">7</span></div>
+          </div>
+        </div>
+
+        <div>
+          <div class="section-title">工作台摘要</div>
+          <div class="stats">
+            <div class="stat"><strong>26</strong><span>本周启动</span></div>
+            <div class="stat"><strong>7</strong><span>今日高频</span></div>
+            <div class="stat"><strong>3</strong><span>路径异常</span></div>
+            <div class="stat"><strong>5</strong><span>待整理临时项</span></div>
+          </div>
+        </div>
+
+        <div>
+          <div class="section-title">待处理队列</div>
+          <div class="queue">
+            <div class="queue-item"><strong>3 个失效项待修复</strong><span style="color:#6a746d;">建议集中进入“失效项”视图处理</span></div>
+            <div class="queue-item"><strong>2 个搜索候选待加入</strong><span style="color:#6a746d;">右侧联动区已给出建议分组</span></div>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <div class="main-top">
+          <div>
+            <h2>运维脚本工作台</h2>
+            <p>主区以“快速启动”为第一目标，管理动作退到卡片次级动作和右侧详情，不再让整个界面看起来像一张长列表。</p>
+          </div>
+          <div class="switcher">
+            <div class="chip active">全部</div>
+            <div class="chip">最近使用</div>
+            <div class="chip">管理员启动</div>
+            <div class="chip">目录动作</div>
+          </div>
+        </div>
+
+        <div class="summary-row">
+          <div class="summary-card"><strong>11</strong><span>当前分组条目</span></div>
+          <div class="summary-card"><strong>4</strong><span>最近 3 天启动过</span></div>
+          <div class="summary-card"><strong>2</strong><span>需要管理员权限</span></div>
+          <div class="summary-card"><strong>1</strong><span>状态异常待修复</span></div>
+        </div>
+
+        <div class="panel board">
+          <section>
+            <div class="group-head">
+              <div>
+                <h3>置顶与收藏</h3>
+                <small>高频入口固定放在最上层，用户打开窗口后不需要滚动列表寻找。</small>
+              </div>
+              <div class="chip-row">
+                <div class="chip active">置顶 4</div>
+                <div class="chip">收藏 12</div>
+              </div>
+            </div>
+            <div class="card-grid">
+              <article class="launch-card featured">
+                <div class="card-header">
+                  <div style="display:flex; gap:12px; align-items:flex-start;">
+                    <div class="app-icon green">Y</div>
+                    <div class="card-title">
+                      <strong>Yin</strong>
+                      <small>C:\Users\AustinYan\Desktop\Yin.exe</small>
+                    </div>
+                  </div>
+                  <span class="flag gold">收藏</span>
+                </div>
+                <div class="flag-row">
+                  <span class="flag teal">可直接启动</span>
+                  <span class="flag">参数已配置</span>
+                  <span class="flag">最近 12 分钟前</span>
+                </div>
+                <p>核心工作入口。卡片上直接给出最近使用、备注和主动作，避免用户每次都先进入编辑状态才能确认上下文。</p>
+                <div class="meta-grid">
+                  <div class="meta-box"><strong>分组</strong>项目入口</div>
+                  <div class="meta-box"><strong>备注</strong>主工作流入口</div>
+                </div>
+                <div class="quick-row">
+                  <button class="primary">启动</button>
+                  <button class="secondary">打开目录</button>
+                  <button class="ghost">更多</button>
+                </div>
+              </article>
+
+              <article class="launch-card featured">
+                <div class="card-header">
+                  <div style="display:flex; gap:12px; align-items:flex-start;">
+                    <div class="app-icon orange">C</div>
+                    <div class="card-title">
+                      <strong>Clash Verge</strong>
+                      <small>C:\Users\AustinYan\Desktop\Clash Verge.lnk</small>
+                    </div>
+                  </div>
+                  <span class="flag gold">置顶</span>
+                </div>
+                <div class="flag-row">
+                  <span class="flag teal">快捷方式</span>
+                  <span class="flag">最近 今天</span>
+                  <span class="flag">网络工具</span>
+                </div>
+                <p>代理和网络切换入口。工作台视图会把这一类高频项稳定前置，而不是和普通条目一起沉到底部列表。</p>
+                <div class="meta-grid">
+                  <div class="meta-box"><strong>分组</strong>开发工具</div>
+                  <div class="meta-box"><strong>标签</strong>网络 / 代理</div>
+                </div>
+                <div class="quick-row">
+                  <button class="primary">启动</button>
+                  <button class="secondary">打开目录</button>
+                  <button class="ghost">更多</button>
+                </div>
+              </article>
+            </div>
+          </section>
+
+          <section>
+            <div class="group-head">
+              <div>
+                <h3>当前分组条目</h3>
+                <small>卡片不是为了更花，而是为了给状态、备注、参数、最近使用留出生长空间。</small>
+              </div>
+              <div class="chip-row">
+                <div class="chip active">运维脚本 11</div>
+                <div class="chip">最近使用 4</div>
+              </div>
+            </div>
+            <div class="card-grid">
+              <article class="launch-card">
+                <div class="card-header">
+                  <div style="display:flex; gap:12px; align-items:flex-start;">
+                    <div class="app-icon gray">J</div>
+                    <div class="card-title">
+                      <strong>Jenkins Build</strong>
+                      <small>D:\Scripts\jenkins-build.ps1</small>
+                    </div>
+                  </div>
+                  <span class="flag orange">脚本</span>
+                </div>
+                <div class="flag-row">
+                  <span class="flag teal">管理员启动</span>
+                  <span class="flag">最近 2 天前</span>
+                </div>
+                <p>支持明确展示脚本类型、管理员要求和最近执行情况，避免用户点开后才发现还需要额外处理。</p>
+                <div class="meta-grid">
+                  <div class="meta-box"><strong>分组</strong>运维脚本</div>
+                  <div class="meta-box"><strong>备注</strong>发布前检查</div>
+                </div>
+                <div class="quick-row">
+                  <button class="primary">启动</button>
+                  <button class="secondary">打开目录</button>
+                  <button class="ghost">更多</button>
+                </div>
+              </article>
+
+              <article class="launch-card">
+                <div class="card-header">
+                  <div style="display:flex; gap:12px; align-items:flex-start;">
+                    <div class="app-icon">L</div>
+                    <div class="card-title">
+                      <strong>日志归档工具</strong>
+                      <small>D:\Ops\Logs\archive.cmd</small>
+                    </div>
+                  </div>
+                  <span class="flag">批处理</span>
+                </div>
+                <div class="flag-row">
+                  <span class="flag">最近 5 天前</span>
+                  <span class="flag">目录动作</span>
+                </div>
+                <p>后续如果你要加“打开终端”“复制目录”“按参数运行”，卡片结构也能继续承载，不会像当前列表那样越加越挤。</p>
+                <div class="meta-grid">
+                  <div class="meta-box"><strong>分组</strong>运维脚本</div>
+                  <div class="meta-box"><strong>标签</strong>日志 / 清理</div>
+                </div>
+                <div class="quick-row">
+                  <button class="primary">启动</button>
+                  <button class="secondary">打开目录</button>
+                  <button class="ghost">更多</button>
+                </div>
+              </article>
+
+              <article class="launch-card">
+                <div class="card-header">
+                  <div style="display:flex; gap:12px; align-items:flex-start;">
+                    <div class="app-icon orange">V</div>
+                    <div class="card-title">
+                      <strong>VCS Mapping</strong>
+                      <small>D:\Tools\vcs-map.exe</small>
+                    </div>
+                  </div>
+                  <span class="flag">工具</span>
+                </div>
+                <div class="flag-row">
+                  <span class="flag teal">直接启动</span>
+                  <span class="flag">最近 昨天</span>
+                </div>
+                <p>这类工具项可以继续扩展环境标签、所属项目、默认参数，而不是把信息都塞到一行路径副标题里。</p>
+                <div class="meta-grid">
+                  <div class="meta-box"><strong>分组</strong>开发工具</div>
+                  <div class="meta-box"><strong>备注</strong>IDE 辅助工具</div>
+                </div>
+                <div class="quick-row">
+                  <button class="primary">启动</button>
+                  <button class="secondary">打开目录</button>
+                  <button class="ghost">更多</button>
+                </div>
+              </article>
+
+              <article class="launch-card">
+                <div class="card-header">
+                  <div style="display:flex; gap:12px; align-items:flex-start;">
+                    <div class="app-icon gray">R</div>
+                    <div class="card-title">
+                      <strong>Revit Cleanup</strong>
+                      <small>D:\Tools\MftScanner.exe --window cleanup</small>
+                    </div>
+                  </div>
+                  <span class="flag red">异常</span>
+                </div>
+                <div class="flag-row">
+                  <span class="flag red">路径待确认</span>
+                  <span class="flag">最近 1 周前</span>
+                </div>
+                <p>异常项在工作台里应该非常显眼，方便你集中修复；它不应该沉在普通列表里，只靠一条灰色路径判断是否失效。</p>
+                <div class="meta-grid">
+                  <div class="meta-box"><strong>分组</strong>临时工具</div>
+                  <div class="meta-box"><strong>建议</strong>重新绑定路径</div>
+                </div>
+                <div class="quick-row">
+                  <button class="primary">修复</button>
+                  <button class="secondary">打开目录</button>
+                  <button class="ghost">更多</button>
+                </div>
+              </article>
+            </div>
+          </section>
+        </div>
+      </main>
+
+      <aside class="right">
+        <section class="panel detail-card">
+          <div class="section-title">当前选中项详情</div>
+          <div class="detail-top">
+            <div class="app-icon green">Y</div>
+            <div>
+              <strong>Yin</strong>
+              <small>C:\Users\AustinYan\Desktop\Yin.exe<br/>主工作流入口，当前被收藏并置顶。</small>
+            </div>
+          </div>
+          <div class="flag-row">
+            <span class="flag teal">项目入口</span>
+            <span class="flag gold">收藏</span>
+            <span class="flag">最近 12 分钟前</span>
+          </div>
+          <div class="detail-list">
+            <div class="detail-item"><strong>启动参数</strong>--safe-mode --profile default</div>
+            <div class="detail-item"><strong>备注</strong>打开后直接进入主环境，适合作为日常第一入口</div>
+            <div class="detail-item"><strong>快捷操作</strong>Enter 启动 · Ctrl+Enter 打开目录 · F2 编辑 · Delete 删除</div>
+            <div class="detail-item"><strong>最近记录</strong>今天已启动 4 次，平均停留时长 2.3 小时</div>
+          </div>
+          <div class="detail-actions">
+            <button class="primary">立即启动</button>
+            <button class="secondary">编辑配置</button>
+            <button class="ghost">复制路径</button>
+          </div>
+        </section>
+
+        <section class="panel candidate highlight">
+          <div class="section-title">从文件搜索加入当前分组</div>
+          <div class="candidate-head">
+            <strong>候选：cc-switch.exe</strong>
+            <span class="flag teal">建议加入开发工具</span>
+          </div>
+          <p>第二版里，这块更接近实际产品：文件搜索不再和工作台等宽并排，而是作为右侧联动区出现。这样既保留“从搜索结果顺手加入”的能力，也不会抢走主工作区的视觉空间。</p>
+          <div class="detail-list">
+            <div class="detail-item"><strong>来源路径</strong>C:\Users\AustinYan\AppData\Local\Programs\CC Switch\cc-switch.exe</div>
+            <div class="detail-item"><strong>默认名称</strong>CC Switch</div>
+            <div class="detail-item"><strong>操作建议</strong>加入当前分组后自动定位到新卡片，并提供一次编辑入口</div>
+          </div>
+          <div class="candidate-actions">
+            <button class="primary">加入当前分组</button>
+            <button class="secondary">打开所在目录</button>
+            <button class="ghost">复制路径</button>
+          </div>
+        </section>
+
+        <section class="panel activity">
+          <div class="section-title">最近活动</div>
+          <div class="activity-list">
+            <div class="activity-item"><strong>18:06</strong>Yin 已启动，使用默认参数模板</div>
+            <div class="activity-item"><strong>17:41</strong>Clash Verge 已启动，来自收藏区</div>
+            <div class="activity-item"><strong>16:58</strong>发现 1 个路径异常项，建议进入失效项视图修复</div>
+          </div>
+        </section>
+
+        <section class="panel preview">
+          <div class="section-title">管理视图预览</div>
+          <p>第二版仍保留“管理视图”入口。工作台视图负责高频使用，管理视图负责排序、批量编辑和字段维护，两者不会互相挤压。</p>
+          <div class="preview-box">
+            <div class="preview-header"><span>管理视图字段</span><span>示意</span></div>
+            <div class="preview-lines">名称 | 分组 | 路径 | 参数 | 最近启动 | 状态 | 收藏 | 排序
+Yin | 项目入口 | C:\Users\AustinYan\Desktop\Yin.exe | --safe-mode | 今天 | 正常 | ★ | 01
+Clash Verge | 开发工具 | Clash Verge.lnk | - | 今天 | 正常 | ★ | 02
+Revit Cleanup | 临时工具 | MftScanner.exe --window cleanup | - | 1 周前 | 异常 | - | 18</div>
+          </div>
+        </section>
+      </aside>
+    </div>
+
+    <div class="footer">
+      <small>V2 相比上一版，已经更偏最终界面而不是概念展示：顶部更像真实工具条，工作台区更接近产品卡片列表，右侧也拆成详情、联动、活动、管理预览四层。下一步如果你认可方向，我可以继续给你做“管理视图独立页面”和“移动/窄窗适配版”。</small>
+      <div class="footer-actions">
+        <button class="ghost">返回第一版</button>
+        <button class="secondary">查看管理视图稿</button>
+        <button class="primary">确认方向继续细化</button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>
