@@ -261,12 +261,10 @@ public partial class CommonStartupWindow : Window
         RefreshSummaryCards(visibleItems);
         RefreshSidebarStats();
         RefreshQueue();
-        RefreshDetailPane();
         RefreshRecentActivities();
         RefreshManagePreview();
         RefreshCandidateSuggestions();
         RefreshCandidatePane();
-        ArrangeRightColumnSections();
         UpdateFilterButtons();
     }
 
@@ -412,9 +410,6 @@ public partial class CommonStartupWindow : Window
         var groupTitle = string.IsNullOrWhiteSpace(_currentGroupName) ? "全部分组" : _currentGroupName;
         var scopeTitle = string.IsNullOrWhiteSpace(_currentGroupName) ? viewTitle : $"{_currentGroupName}工作台";
 
-        WindowSubtitleText.Text = string.IsNullOrWhiteSpace(_currentGroupName)
-            ? $"Launcher Desk · {viewTitle}"
-            : $"Launcher Desk · {viewTitle} · 当前分组：{_currentGroupName}";
         WorkbenchTitleText.Text = scopeTitle;
         WorkbenchSubtitleText.Text = BuildWorkbenchSubtitle(visibleItems.Count, featuredItems.Count, workspaceItems.Count);
         CurrentViewBadgeText.Text = viewTitle;
@@ -509,49 +504,6 @@ public partial class CommonStartupWindow : Window
                 : "当前关键词没有找到可加入的文件候选。";
     }
 
-    private void RefreshDetailPane()
-    {
-        if (_selectedItem == null)
-        {
-            DetailNameText.Text = "未选择启动项";
-            DetailPathText.Text = "点击中间卡片后，这里会展示路径、备注、参数和快捷操作。";
-            DetailTagsText.Text = "暂无上下文";
-            DetailArgumentsText.Text = "未配置启动参数";
-            DetailNoteText.Text = "未填写备注";
-            DetailShortcutText.Text = "Enter 启动 · Ctrl+Enter 打开目录 · F2 编辑 · Delete 删除 · Ctrl+C 复制路径";
-            DetailIconText.Text = "?";
-            DetailIconBorder.Background = CreateBrush(0x1A, 0x6A, 0x5F);
-            SetDetailButtonsEnabled(false);
-            return;
-        }
-
-        DetailNameText.Text = _selectedItem.Name;
-        DetailPathText.Text = _selectedItem.FullPath;
-        DetailTagsText.Text = string.Join(" · ", new[]
-        {
-            _selectedItem.GroupName,
-            _selectedItem.TypeLabel,
-            _selectedItem.IsFavorite ? "已收藏" : "未收藏",
-            _selectedItem.IsBroken ? "路径异常" : "路径正常",
-            $"最近：{_selectedItem.LastLaunchDisplay}",
-            $"累计：{_selectedItem.LaunchCountDisplay}"
-        });
-        DetailArgumentsText.Text = string.IsNullOrWhiteSpace(_selectedItem.Arguments) ? "未配置启动参数" : _selectedItem.Arguments;
-        DetailNoteText.Text = string.IsNullOrWhiteSpace(_selectedItem.Note) ? "未填写备注" : _selectedItem.Note;
-        DetailShortcutText.Text = "Enter 启动 · Ctrl+Enter 打开目录 · F2 编辑 · Delete 删除 · Ctrl+C 复制路径";
-        DetailIconText.Text = _selectedItem.InitialLetter;
-        DetailIconBorder.Background = _selectedItem.AccentBrush;
-        SetDetailButtonsEnabled(true);
-    }
-
-    private void SetDetailButtonsEnabled(bool enabled)
-    {
-        DetailLaunchButton.IsEnabled = enabled;
-        DetailEditButton.IsEnabled = enabled;
-        DetailOpenFolderButton.IsEnabled = enabled;
-        DetailCopyButton.IsEnabled = enabled;
-    }
-
     private void RefreshRecentActivities()
     {
         var activities = _startupItems
@@ -614,7 +566,6 @@ public partial class CommonStartupWindow : Window
             CandidateSuggestionText.Text = string.Empty;
             SetCandidateListInteraction(false);
             SetCandidateButtonsEnabled(false);
-            ArrangeRightColumnSections();
             return;
         }
 
@@ -631,7 +582,6 @@ public partial class CommonStartupWindow : Window
             CandidateList.SelectedItem = null;
             SetCandidateListInteraction(false);
             SetCandidateButtonsEnabled(false);
-            ArrangeRightColumnSections();
             return;
         }
 
@@ -646,14 +596,6 @@ public partial class CommonStartupWindow : Window
         CandidatePathText.Text = selected.FullPath;
         CandidateSuggestionText.Text = $"建议加入：{selected.SuggestedGroupName}";
         SetCandidateButtonsEnabled(true);
-        ArrangeRightColumnSections();
-    }
-
-    private void ArrangeRightColumnSections()
-    {
-        var candidateFirst = _selectedItem == null && _scanResults.Count > 0;
-        Grid.SetRow(candidateFirst ? CandidateSection : DetailSection, 0);
-        Grid.SetRow(candidateFirst ? DetailSection : CandidateSection, 1);
     }
 
     private void SetCandidateButtonsEnabled(bool enabled)
@@ -1689,8 +1631,6 @@ public partial class CommonStartupWindow : Window
         if ((sender as FrameworkElement)?.Tag is StartupItemVm item)
         {
             SelectStartupItem(item);
-            RefreshDetailPane();
-            ArrangeRightColumnSections();
         }
     }
 
@@ -1727,21 +1667,40 @@ public partial class CommonStartupWindow : Window
 
     private void ToggleFavoriteButton_Click(object sender, RoutedEventArgs e) => ToggleFavorite(GetButtonTag<StartupItemVm>(sender));
 
-    private void DetailLaunchButton_Click(object sender, RoutedEventArgs e) => LaunchItem(_selectedItem);
-
-    private void DetailEditButton_Click(object sender, RoutedEventArgs e) => EditItem(_selectedItem);
-
-    private void DetailOpenFolderButton_Click(object sender, RoutedEventArgs e)
+    private void CopyItemPathButton_Click(object sender, RoutedEventArgs e)
     {
-        OpenItemFolder(_selectedItem?.FullPath);
-    }
-
-    private void DetailCopyButton_Click(object sender, RoutedEventArgs e)
-    {
-        CopyPath(_selectedItem?.FullPath);
+        CopyPath(GetButtonTag<StartupItemVm>(sender)?.FullPath);
     }
 
     private void CandidateList_SelectionChanged(object sender, SelectionChangedEventArgs e) => RefreshCandidatePane();
+
+    private void ChildList_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (sender is not DependencyObject dependencyObject)
+        {
+            return;
+        }
+
+        var childScrollViewer = FindVisualChild<ScrollViewer>(dependencyObject);
+        var shouldBubbleToPage = childScrollViewer == null
+                                 || childScrollViewer.ScrollableHeight <= 0
+                                 || (e.Delta > 0 && childScrollViewer.VerticalOffset <= 0)
+                                 || (e.Delta < 0 && childScrollViewer.VerticalOffset >= childScrollViewer.ScrollableHeight);
+
+        if (!shouldBubbleToPage)
+        {
+            return;
+        }
+
+        var routedEvent = new MouseWheelEventArgs(e.MouseDevice, e.Timestamp, e.Delta)
+        {
+            RoutedEvent = MouseWheelEvent,
+            Source = sender
+        };
+
+        WorkbenchScrollViewer.RaiseEvent(routedEvent);
+        e.Handled = true;
+    }
 
     private void CandidateList_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
@@ -1885,6 +1844,32 @@ public partial class CommonStartupWindow : Window
             }
 
             child = VisualTreeHelper.GetParent(child);
+        }
+
+        return null;
+    }
+
+    private static T FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
+    {
+        if (parent == null)
+        {
+            return null;
+        }
+
+        var childCount = VisualTreeHelper.GetChildrenCount(parent);
+        for (var i = 0; i < childCount; i++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, i);
+            if (child is T matched)
+            {
+                return matched;
+            }
+
+            var nested = FindVisualChild<T>(child);
+            if (nested != null)
+            {
+                return nested;
+            }
         }
 
         return null;
@@ -2043,6 +2028,7 @@ public class StartupItemVm : INotifyPropertyChanged
         {
             _arguments = value;
             OnPropertyChanged(nameof(Arguments));
+            OnPropertyChanged(nameof(ArgumentsSummaryText));
         }
     }
 
@@ -2054,6 +2040,7 @@ public class StartupItemVm : INotifyPropertyChanged
             _note = value;
             OnPropertyChanged(nameof(Note));
             OnPropertyChanged(nameof(DescriptionText));
+            OnPropertyChanged(nameof(NoteSummaryText));
         }
     }
 
@@ -2153,6 +2140,8 @@ public class StartupItemVm : INotifyPropertyChanged
     public string InitialLetter => string.IsNullOrWhiteSpace(Name) ? "?" : Name.Trim()[0].ToString().ToUpperInvariant();
 
     public string DescriptionText => string.IsNullOrWhiteSpace(Note) ? "未填写备注，可通过编辑补充该入口的上下文说明。" : Note;
+    public string NoteSummaryText => BuildSummaryText(Note, "未填写备注");
+    public string ArgumentsSummaryText => BuildSummaryText(Arguments, "无启动参数");
 
     public string PathCompactDisplay
     {
@@ -2296,6 +2285,22 @@ public class StartupItemVm : INotifyPropertyChanged
     private void OnPropertyChanged(string propertyName)
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+    }
+
+    private static string BuildSummaryText(string source, string emptyText)
+    {
+        if (string.IsNullOrWhiteSpace(source))
+        {
+            return emptyText;
+        }
+
+        var normalized = source.Replace("\r", " ").Replace("\n", " ").Trim();
+        if (normalized.Length <= 68)
+        {
+            return normalized;
+        }
+
+        return normalized.Substring(0, 65) + "...";
     }
 }
 
