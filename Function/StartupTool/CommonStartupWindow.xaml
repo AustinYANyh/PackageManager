@@ -4,9 +4,10 @@
         xmlns:local="clr-namespace:PackageManager.Function.StartupTool"
         Title="常用启动项工作台"
         Height="860"
-        Width="1600"
+        Width="1860"
         MinHeight="720"
-        MinWidth="1280"
+        MinWidth="1480"
+        ShowInTaskbar="False"
         WindowStartupLocation="CenterOwner"
         Loaded="Window_Loaded"
         PreviewKeyDown="Window_PreviewKeyDown"
@@ -135,6 +136,20 @@
                                 <Setter TargetName="CandidateItemBorder" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
                             </Trigger>
                         </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="ScrollBar">
+            <Setter Property="Opacity" Value="0" />
+            <Setter Property="Width" Value="0" />
+            <Setter Property="Height" Value="0" />
+            <Setter Property="IsHitTestVisible" Value="False" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ScrollBar">
+                        <Grid Width="0" Height="0" />
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
@@ -329,8 +344,8 @@
                 </StackPanel>
 
                 <Grid Grid.Row="2" Margin="16">
-                    <ScrollViewer VerticalScrollBarVisibility="Auto"
-                                  HorizontalScrollBarVisibility="Disabled"
+                    <ScrollViewer VerticalScrollBarVisibility="Hidden"
+                                  HorizontalScrollBarVisibility="Hidden"
                                   CanContentScroll="False">
                         <Grid>
                             <Grid.ColumnDefinitions>
@@ -338,7 +353,7 @@
                                 <ColumnDefinition Width="16" />
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="16" />
-                                <ColumnDefinition Width="390" />
+                                <ColumnDefinition Width="500" />
                             </Grid.ColumnDefinitions>
 
                             <StackPanel Grid.Column="0">
@@ -593,9 +608,9 @@
                                         </ItemsControl.ItemsPanel>
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate DataType="{x:Type local:StartupItemVm}">
-                                                <Border Width="356"
-                                                        Margin="0,0,14,14"
-                                                        Padding="16"
+                                                <Border Width="318"
+                                                        Margin="0,0,12,12"
+                                                        Padding="14"
                                                         CornerRadius="22"
                                                         BorderThickness="1">
                                                     <Border.Style>
@@ -614,7 +629,7 @@
                                                             </Style.Triggers>
                                                         </Style>
                                                     </Border.Style>
-                                                    <Grid Tag="{Binding}" MouseLeftButtonUp="StartupCard_MouseLeftButtonUp" MouseLeftButtonDown="StartupCard_MouseLeftButtonDown">
+                                                    <Grid Tag="{Binding}" Background="Transparent" MouseLeftButtonUp="StartupCard_MouseLeftButtonUp" MouseLeftButtonDown="StartupCard_MouseLeftButtonDown">
                                                         <Grid.RowDefinitions>
                                                             <RowDefinition Height="Auto" />
                                                             <RowDefinition Height="Auto" />
@@ -632,45 +647,35 @@
                                                             </Border>
                                                             <StackPanel Grid.Column="1">
                                                                 <TextBlock Text="{Binding Name}" FontSize="17" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-                                                                <TextBlock Margin="0,4,0,0" Text="{Binding FullPath}" FontSize="12" Foreground="{StaticResource MutedTextBrush}" TextTrimming="CharacterEllipsis" />
+                                                                <TextBlock Margin="0,4,0,0" Text="{Binding PathCompactDisplay}" FontSize="12" Foreground="{StaticResource MutedTextBrush}" TextTrimming="CharacterEllipsis" />
                                                             </StackPanel>
                                                             <Border Grid.Column="2" Style="{StaticResource TagBadgeStyle}" Background="{Binding StatusBackground}" Margin="0">
                                                                 <TextBlock Text="{Binding StatusLabel}" Foreground="{Binding StatusForeground}" FontSize="11" FontWeight="Bold" />
                                                             </Border>
                                                         </Grid>
 
-                                                        <WrapPanel Grid.Row="1" Margin="0,14,0,6">
+                                                        <WrapPanel Grid.Row="1" Margin="0,12,0,8">
                                                             <Border Style="{StaticResource TagBadgeStyle}" Background="#FFE5F0EA"><TextBlock Text="{Binding GroupName}" Foreground="{StaticResource AccentBrush}" FontSize="11" FontWeight="Bold" /></Border>
                                                             <Border Style="{StaticResource TagBadgeStyle}"><TextBlock Text="{Binding TypeLabel}" Foreground="{StaticResource WindowTextBrush}" FontSize="11" FontWeight="Bold" /></Border>
                                                             <Border Style="{StaticResource TagBadgeStyle}" Background="{StaticResource GoldSoftBrush}" Visibility="{Binding FavoriteVisibility}"><TextBlock Text="收藏" Foreground="{StaticResource GoldBrush}" FontSize="11" FontWeight="Bold" /></Border>
                                                             <Border Style="{StaticResource TagBadgeStyle}" Background="{StaticResource DangerSoftBrush}" Visibility="{Binding BrokenVisibility}"><TextBlock Text="路径异常" Foreground="{StaticResource DangerBrush}" FontSize="11" FontWeight="Bold" /></Border>
                                                         </WrapPanel>
 
-                                                        <TextBlock Grid.Row="2" Text="{Binding DescriptionText}" TextWrapping="Wrap" FontSize="13" Foreground="{StaticResource MutedTextBrush}" Margin="0,0,0,14" />
+                                                        <WrapPanel Grid.Row="2" Margin="0,0,0,12">
+                                                            <Border Style="{StaticResource TagBadgeStyle}" Background="{StaticResource SoftPanelBrush}" Padding="10,6">
+                                                                <TextBlock Text="{Binding LastLaunchInlineText}" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource MutedTextBrush}" />
+                                                            </Border>
+                                                            <Border Style="{StaticResource TagBadgeStyle}" Background="{StaticResource SoftPanelBrush}" Padding="10,6">
+                                                                <TextBlock Text="{Binding LaunchCountInlineText}" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource MutedTextBrush}" />
+                                                            </Border>
+                                                        </WrapPanel>
 
-                                                        <StackPanel Grid.Row="3">
-                                                            <UniformGrid Columns="2" Margin="0,0,0,14">
-                                                                <Border Background="{StaticResource SoftPanelBrush}" CornerRadius="14" Padding="10" Margin="0,0,8,0">
-                                                                    <StackPanel>
-                                                                        <TextBlock Text="最近启动" FontSize="11" Foreground="{StaticResource MutedTextBrush}" />
-                                                                        <TextBlock Text="{Binding LastLaunchDisplay}" Margin="0,4,0,0" FontSize="13" FontWeight="SemiBold" />
-                                                                    </StackPanel>
-                                                                </Border>
-                                                                <Border Background="{StaticResource SoftPanelBrush}" CornerRadius="14" Padding="10">
-                                                                    <StackPanel>
-                                                                        <TextBlock Text="累计次数" FontSize="11" Foreground="{StaticResource MutedTextBrush}" />
-                                                                        <TextBlock Text="{Binding LaunchCountDisplay}" Margin="0,4,0,0" FontSize="13" FontWeight="SemiBold" />
-                                                                    </StackPanel>
-                                                                </Border>
-                                                            </UniformGrid>
-                                                            <WrapPanel>
-                                                                <Button Content="启动" Style="{StaticResource ToolbarPrimaryButtonStyle}" Tag="{Binding}" Click="LaunchItemButton_Click" />
-                                                                <Button Content="打开目录" Style="{StaticResource ToolbarGhostButtonStyle}" Tag="{Binding}" Click="OpenFolderItemButton_Click" />
-                                                                <Button Content="编辑" Style="{StaticResource ToolbarGhostButtonStyle}" Tag="{Binding}" Click="EditItemButton_Click" />
-                                                                <Button Content="{Binding FavoriteButtonText}" Style="{StaticResource ToolbarGhostButtonStyle}" Tag="{Binding}" Click="ToggleFavoriteButton_Click" />
-                                                                <Button Content="删除" Style="{StaticResource ToolbarGhostButtonStyle}" Tag="{Binding}" Click="RemoveItemButton_Click" Margin="0" />
-                                                            </WrapPanel>
-                                                        </StackPanel>
+                                                        <WrapPanel Grid.Row="3">
+                                                            <Button Content="启动" Style="{StaticResource ToolbarPrimaryButtonStyle}" Tag="{Binding}" Click="LaunchItemButton_Click" />
+                                                            <Button Content="打开目录" Style="{StaticResource ToolbarGhostButtonStyle}" Tag="{Binding}" Click="OpenFolderItemButton_Click" />
+                                                            <Button Content="编辑" Style="{StaticResource ToolbarGhostButtonStyle}" Tag="{Binding}" Click="EditItemButton_Click" />
+                                                            <Button Content="{Binding FavoriteButtonText}" Style="{StaticResource ToolbarGhostButtonStyle}" Tag="{Binding}" Click="ToggleFavoriteButton_Click" />
+                                                        </WrapPanel>
                                                     </Grid>
                                                 </Border>
                                             </DataTemplate>
@@ -714,9 +719,9 @@
                                         </ItemsControl.ItemsPanel>
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate DataType="{x:Type local:StartupItemVm}">
-                                                <Border Width="356"
-                                                        Margin="0,0,14,14"
-                                                        Padding="16"
+                                                <Border Width="318"
+                                                        Margin="0,0,12,12"
+                                                        Padding="14"
                                                         CornerRadius="22"
                                                         BorderThickness="1">
                                                     <Border.Style>
@@ -735,7 +740,7 @@
                                                             </Style.Triggers>
                                                         </Style>
                                                     </Border.Style>
-                                                    <Grid Tag="{Binding}" MouseLeftButtonUp="StartupCard_MouseLeftButtonUp" MouseLeftButtonDown="StartupCard_MouseLeftButtonDown">
+                                                    <Grid Tag="{Binding}" Background="Transparent" MouseLeftButtonUp="StartupCard_MouseLeftButtonUp" MouseLeftButtonDown="StartupCard_MouseLeftButtonDown">
                                                         <Grid.RowDefinitions>
                                                             <RowDefinition Height="Auto" />
                                                             <RowDefinition Height="Auto" />
@@ -753,45 +758,35 @@
                                                             </Border>
                                                             <StackPanel Grid.Column="1">
                                                                 <TextBlock Text="{Binding Name}" FontSize="17" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-                                                                <TextBlock Margin="0,4,0,0" Text="{Binding FullPath}" FontSize="12" Foreground="{StaticResource MutedTextBrush}" TextTrimming="CharacterEllipsis" />
+                                                                <TextBlock Margin="0,4,0,0" Text="{Binding PathCompactDisplay}" FontSize="12" Foreground="{StaticResource MutedTextBrush}" TextTrimming="CharacterEllipsis" />
                                                             </StackPanel>
                                                             <Border Grid.Column="2" Style="{StaticResource TagBadgeStyle}" Background="{Binding StatusBackground}" Margin="0">
                                                                 <TextBlock Text="{Binding StatusLabel}" Foreground="{Binding StatusForeground}" FontSize="11" FontWeight="Bold" />
                                                             </Border>
                                                         </Grid>
 
-                                                        <WrapPanel Grid.Row="1" Margin="0,14,0,6">
+                                                        <WrapPanel Grid.Row="1" Margin="0,12,0,8">
                                                             <Border Style="{StaticResource TagBadgeStyle}" Background="#FFE5F0EA"><TextBlock Text="{Binding GroupName}" Foreground="{StaticResource AccentBrush}" FontSize="11" FontWeight="Bold" /></Border>
                                                             <Border Style="{StaticResource TagBadgeStyle}"><TextBlock Text="{Binding TypeLabel}" Foreground="{StaticResource WindowTextBrush}" FontSize="11" FontWeight="Bold" /></Border>
                                                             <Border Style="{StaticResource TagBadgeStyle}" Background="{StaticResource GoldSoftBrush}" Visibility="{Binding FavoriteVisibility}"><TextBlock Text="收藏" Foreground="{StaticResource GoldBrush}" FontSize="11" FontWeight="Bold" /></Border>
                                                             <Border Style="{StaticResource TagBadgeStyle}" Background="{StaticResource DangerSoftBrush}" Visibility="{Binding BrokenVisibility}"><TextBlock Text="路径异常" Foreground="{StaticResource DangerBrush}" FontSize="11" FontWeight="Bold" /></Border>
                                                         </WrapPanel>
 
-                                                        <TextBlock Grid.Row="2" Text="{Binding DescriptionText}" TextWrapping="Wrap" FontSize="13" Foreground="{StaticResource MutedTextBrush}" Margin="0,0,0,14" />
+                                                        <WrapPanel Grid.Row="2" Margin="0,0,0,12">
+                                                            <Border Style="{StaticResource TagBadgeStyle}" Background="{StaticResource SoftPanelBrush}" Padding="10,6">
+                                                                <TextBlock Text="{Binding LastLaunchInlineText}" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource MutedTextBrush}" />
+                                                            </Border>
+                                                            <Border Style="{StaticResource TagBadgeStyle}" Background="{StaticResource SoftPanelBrush}" Padding="10,6">
+                                                                <TextBlock Text="{Binding LaunchCountInlineText}" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource MutedTextBrush}" />
+                                                            </Border>
+                                                        </WrapPanel>
 
-                                                        <StackPanel Grid.Row="3">
-                                                            <UniformGrid Columns="2" Margin="0,0,0,14">
-                                                                <Border Background="{StaticResource SoftPanelBrush}" CornerRadius="14" Padding="10" Margin="0,0,8,0">
-                                                                    <StackPanel>
-                                                                        <TextBlock Text="最近启动" FontSize="11" Foreground="{StaticResource MutedTextBrush}" />
-                                                                        <TextBlock Text="{Binding LastLaunchDisplay}" Margin="0,4,0,0" FontSize="13" FontWeight="SemiBold" />
-                                                                    </StackPanel>
-                                                                </Border>
-                                                                <Border Background="{StaticResource SoftPanelBrush}" CornerRadius="14" Padding="10">
-                                                                    <StackPanel>
-                                                                        <TextBlock Text="累计次数" FontSize="11" Foreground="{StaticResource MutedTextBrush}" />
-                                                                        <TextBlock Text="{Binding LaunchCountDisplay}" Margin="0,4,0,0" FontSize="13" FontWeight="SemiBold" />
-                                                                    </StackPanel>
-                                                                </Border>
-                                                            </UniformGrid>
-                                                            <WrapPanel>
-                                                                <Button Content="启动" Style="{StaticResource ToolbarPrimaryButtonStyle}" Tag="{Binding}" Click="LaunchItemButton_Click" />
-                                                                <Button Content="打开目录" Style="{StaticResource ToolbarGhostButtonStyle}" Tag="{Binding}" Click="OpenFolderItemButton_Click" />
-                                                                <Button Content="编辑" Style="{StaticResource ToolbarGhostButtonStyle}" Tag="{Binding}" Click="EditItemButton_Click" />
-                                                                <Button Content="{Binding FavoriteButtonText}" Style="{StaticResource ToolbarGhostButtonStyle}" Tag="{Binding}" Click="ToggleFavoriteButton_Click" />
-                                                                <Button Content="删除" Style="{StaticResource ToolbarGhostButtonStyle}" Tag="{Binding}" Click="RemoveItemButton_Click" Margin="0" />
-                                                            </WrapPanel>
-                                                        </StackPanel>
+                                                        <WrapPanel Grid.Row="3">
+                                                            <Button Content="启动" Style="{StaticResource ToolbarPrimaryButtonStyle}" Tag="{Binding}" Click="LaunchItemButton_Click" />
+                                                            <Button Content="打开目录" Style="{StaticResource ToolbarGhostButtonStyle}" Tag="{Binding}" Click="OpenFolderItemButton_Click" />
+                                                            <Button Content="编辑" Style="{StaticResource ToolbarGhostButtonStyle}" Tag="{Binding}" Click="EditItemButton_Click" />
+                                                            <Button Content="{Binding FavoriteButtonText}" Style="{StaticResource ToolbarGhostButtonStyle}" Tag="{Binding}" Click="ToggleFavoriteButton_Click" />
+                                                        </WrapPanel>
                                                     </Grid>
                                                 </Border>
                                             </DataTemplate>
@@ -860,20 +855,22 @@
                                             <TextBlock x:Name="CandidateCountText" Text="0 个候选" FontSize="11" FontWeight="Bold" Foreground="{StaticResource AccentBrush}" />
                                         </Border>
                                     </Grid>
-                                    <TextBlock x:Name="CandidateHintText" TextWrapping="Wrap" FontSize="13" Foreground="{StaticResource MutedTextBrush}" />
-                                    <Border Background="{StaticResource SoftPanelBrush}" CornerRadius="14" Padding="12" Margin="0,12,0,0">
+                                    <TextBlock x:Name="CandidateHintText" Visibility="Collapsed" />
+                                    <Border Background="{StaticResource SoftPanelBrush}" CornerRadius="14" Padding="10" Margin="0,8,0,0">
                                         <StackPanel>
-                                            <TextBlock x:Name="CandidateNameText" Text="暂无候选" FontSize="15" FontWeight="SemiBold" />
-                                            <TextBlock x:Name="CandidatePathText" Margin="0,6,0,0" TextWrapping="Wrap" FontSize="12" Foreground="{StaticResource MutedTextBrush}" />
-                                            <TextBlock x:Name="CandidateSuggestionText" Margin="0,6,0,0" TextWrapping="Wrap" FontSize="12" Foreground="{StaticResource AccentBrush}" />
+                                            <TextBlock x:Name="CandidateNameText" Text="暂无候选" FontSize="14" FontWeight="SemiBold" />
+                                            <TextBlock x:Name="CandidatePathText" Margin="0,4,0,0" TextWrapping="Wrap" FontSize="12" Foreground="{StaticResource MutedTextBrush}" />
+                                            <TextBlock x:Name="CandidateSuggestionText" Margin="0,4,0,0" TextWrapping="Wrap" FontSize="12" Foreground="{StaticResource AccentBrush}" />
                                         </StackPanel>
                                     </Border>
                                     <ListBox x:Name="CandidateList"
-                                             Margin="0,12,0,0"
-                                             MinHeight="220"
-                                             MaxHeight="360"
+                                             Margin="0,12,0,10"
+                                             MinHeight="300"
+                                             MaxHeight="300"
                                              BorderThickness="0"
                                              Background="Transparent"
+                                             ScrollViewer.HorizontalScrollBarVisibility="Hidden"
+                                             ScrollViewer.VerticalScrollBarVisibility="Hidden"
                                              ItemContainerStyle="{StaticResource CandidateListItemStyle}"
                                              SelectionChanged="CandidateList_SelectionChanged"
                                              MouseDoubleClick="CandidateList_MouseDoubleClick">
@@ -890,7 +887,7 @@
                                                     </Border>
                                                     <StackPanel Grid.Column="1">
                                                         <TextBlock Text="{Binding FileName}" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
-                                                        <TextBlock Margin="0,4,0,0" Text="{Binding FullPath}" FontSize="11" Foreground="{StaticResource MutedTextBrush}" TextTrimming="CharacterEllipsis" />
+                                                        <TextBlock Margin="0,4,0,0" Text="{Binding DirectoryNameDisplay}" FontSize="11" Foreground="{StaticResource MutedTextBrush}" TextTrimming="CharacterEllipsis" />
                                                     </StackPanel>
                                                     <Border Grid.Column="2" Style="{StaticResource TagBadgeStyle}" Background="#FFE5F0EA" Margin="8,0,0,0">
                                                         <TextBlock Text="{Binding SuggestedGroupName}" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource AccentBrush}" />
@@ -899,7 +896,7 @@
                                             </DataTemplate>
                                         </ListBox.ItemTemplate>
                                     </ListBox>
-                                    <WrapPanel Margin="0,14,0,0">
+                                    <WrapPanel Margin="0,0,0,0">
                                         <Button x:Name="AddCandidateButton" Content="加入当前分组" Style="{StaticResource ToolbarPrimaryButtonStyle}" Click="AddCandidateButton_Click" />
                                         <Button x:Name="OpenCandidateFolderButton" Content="打开所在目录" Style="{StaticResource ToolbarGhostButtonStyle}" Click="OpenCandidateFolderButton_Click" />
                                         <Button x:Name="CopyCandidatePathButton" Content="复制路径" Style="{StaticResource ToolbarGhostButtonStyle}" Click="CopyCandidatePathButton_Click" Margin="0" />

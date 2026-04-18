@@ -612,13 +612,13 @@ public partial class CommonStartupWindow : Window
             CandidateNameText.Text = "未启用文件搜索联动";
             CandidatePathText.Text = "只有本人账号会在这里展示来自 MFT 索引的候选。";
             CandidateSuggestionText.Text = string.Empty;
-            CandidateList.IsEnabled = false;
+            SetCandidateListInteraction(false);
             SetCandidateButtonsEnabled(false);
             ArrangeRightColumnSections();
             return;
         }
 
-        CandidateList.IsEnabled = true;
+        SetCandidateListInteraction(true);
 
         if (_scanResults.Count == 0)
         {
@@ -629,6 +629,7 @@ public partial class CommonStartupWindow : Window
             CandidatePathText.Text = "候选会优先建议加入当前分组。";
             CandidateSuggestionText.Text = string.Empty;
             CandidateList.SelectedItem = null;
+            SetCandidateListInteraction(false);
             SetCandidateButtonsEnabled(false);
             ArrangeRightColumnSections();
             return;
@@ -660,6 +661,13 @@ public partial class CommonStartupWindow : Window
         AddCandidateButton.IsEnabled = enabled;
         OpenCandidateFolderButton.IsEnabled = enabled;
         CopyCandidatePathButton.IsEnabled = enabled;
+    }
+
+    private void SetCandidateListInteraction(bool enabled)
+    {
+        CandidateList.IsEnabled = enabled;
+        CandidateList.IsHitTestVisible = enabled;
+        CandidateList.Focusable = enabled;
     }
 
     private void AddItem(string fullPath, string targetGroupName = null, bool editBeforeSave = true)
@@ -1917,6 +1925,7 @@ public class ScanResultItem : INotifyPropertyChanged
     private string _suggestedGroupName;
 
     public string InitialLetter => string.IsNullOrWhiteSpace(FileName) ? "?" : FileName.Trim()[0].ToString().ToUpperInvariant();
+    public string DirectoryNameDisplay => GetDirectoryNameDisplay(FullPath);
 
     public string FileName
     {
@@ -1946,6 +1955,7 @@ public class ScanResultItem : INotifyPropertyChanged
 
             _fullPath = value;
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(FullPath)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DirectoryNameDisplay)));
         }
     }
 
@@ -1965,6 +1975,18 @@ public class ScanResultItem : INotifyPropertyChanged
     }
 
     public event PropertyChangedEventHandler PropertyChanged;
+
+    private static string GetDirectoryNameDisplay(string fullPath)
+    {
+        var directoryPath = System.IO.Path.GetDirectoryName(fullPath);
+        if (string.IsNullOrWhiteSpace(directoryPath))
+        {
+            return "目录信息不可用";
+        }
+
+        var directoryName = System.IO.Path.GetFileName(directoryPath.TrimEnd(System.IO.Path.DirectorySeparatorChar, System.IO.Path.AltDirectorySeparatorChar));
+        return string.IsNullOrWhiteSpace(directoryName) ? directoryPath : directoryName;
+    }
 }
 
 public class StartupItemVm : INotifyPropertyChanged
@@ -2010,6 +2032,7 @@ public class StartupItemVm : INotifyPropertyChanged
             _fullPath = value;
             OnPropertyChanged(nameof(FullPath));
             OnPropertyChanged(nameof(TypeLabel));
+            OnPropertyChanged(nameof(PathCompactDisplay));
         }
     }
 
@@ -2077,6 +2100,7 @@ public class StartupItemVm : INotifyPropertyChanged
             _lastLaunchedAt = value;
             OnPropertyChanged(nameof(LastLaunchedAt));
             OnPropertyChanged(nameof(LastLaunchDisplay));
+            OnPropertyChanged(nameof(LastLaunchInlineText));
         }
     }
 
@@ -2088,6 +2112,7 @@ public class StartupItemVm : INotifyPropertyChanged
             _launchCount = value;
             OnPropertyChanged(nameof(LaunchCount));
             OnPropertyChanged(nameof(LaunchCountDisplay));
+            OnPropertyChanged(nameof(LaunchCountInlineText));
         }
     }
 
@@ -2129,6 +2154,27 @@ public class StartupItemVm : INotifyPropertyChanged
 
     public string DescriptionText => string.IsNullOrWhiteSpace(Note) ? "未填写备注，可通过编辑补充该入口的上下文说明。" : Note;
 
+    public string PathCompactDisplay
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(FullPath))
+            {
+                return "路径不可用";
+            }
+
+            var fileName = System.IO.Path.GetFileName(FullPath);
+            var directoryPath = System.IO.Path.GetDirectoryName(FullPath);
+            var directoryName = string.IsNullOrWhiteSpace(directoryPath)
+                ? string.Empty
+                : System.IO.Path.GetFileName(directoryPath.TrimEnd(System.IO.Path.DirectorySeparatorChar, System.IO.Path.AltDirectorySeparatorChar));
+
+            return string.IsNullOrWhiteSpace(directoryName)
+                ? FullPath
+                : $"{directoryName}\\{fileName}";
+        }
+    }
+
     public string LastLaunchDisplay
     {
         get
@@ -2164,6 +2210,8 @@ public class StartupItemVm : INotifyPropertyChanged
     }
 
     public string LaunchCountDisplay => LaunchCount <= 0 ? "未启动" : $"{LaunchCount} 次";
+    public string LastLaunchInlineText => $"最近：{LastLaunchDisplay}";
+    public string LaunchCountInlineText => $"累计：{LaunchCountDisplay}";
 
     public string TypeLabel
     {
