@@ -4,9 +4,9 @@
         xmlns:local="clr-namespace:PackageManager.Function.StartupTool"
         Title="常用启动项工作台"
         Height="860"
-        Width="1500"
+        Width="1600"
         MinHeight="720"
-        MinWidth="1180"
+        MinWidth="1280"
         WindowStartupLocation="CenterOwner"
         Loaded="Window_Loaded"
         PreviewKeyDown="Window_PreviewKeyDown"
@@ -101,6 +101,38 @@
                             </Trigger>
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="RootBorder" Property="Background" Value="#FFF5F8F5" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="CandidateListItemStyle" TargetType="ListBoxItem">
+            <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+            <Setter Property="Margin" Value="0,0,0,10" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <Border x:Name="CandidateItemBorder"
+                                Background="#FFF8FAF7"
+                                BorderBrush="#FFE4E9E4"
+                                BorderThickness="1"
+                                CornerRadius="16"
+                                Padding="12">
+                            <ContentPresenter />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="CandidateItemBorder" Property="Background" Value="#FFF3F9F6" />
+                                <Setter TargetName="CandidateItemBorder" Property="BorderBrush" Value="#FFBFD8CF" />
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="CandidateItemBorder" Property="Background" Value="#FFF0F8F4" />
+                                <Setter TargetName="CandidateItemBorder" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -297,16 +329,19 @@
                 </StackPanel>
 
                 <Grid Grid.Row="2" Margin="16">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="280" />
-                        <ColumnDefinition Width="16" />
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="16" />
-                        <ColumnDefinition Width="360" />
-                    </Grid.ColumnDefinitions>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled"
+                                  CanContentScroll="False">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="280" />
+                                <ColumnDefinition Width="16" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="16" />
+                                <ColumnDefinition Width="390" />
+                            </Grid.ColumnDefinitions>
 
-                    <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto">
-                        <StackPanel>
+                            <StackPanel Grid.Column="0">
                             <Border Padding="18"
                                     CornerRadius="22"
                                     Background="#FF1E655C"
@@ -473,10 +508,8 @@
                                 </StackPanel>
                             </Border>
                         </StackPanel>
-                    </ScrollViewer>
 
-                    <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto">
-                        <StackPanel>
+                        <StackPanel Grid.Column="2">
                             <Grid Margin="0,2,0,14">
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
@@ -767,11 +800,15 @@
                                 </StackPanel>
                             </Border>
                         </StackPanel>
-                    </ScrollViewer>
 
-                    <ScrollViewer Grid.Column="4" VerticalScrollBarVisibility="Auto">
-                        <StackPanel>
-                            <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="22" Padding="16" Margin="0,0,0,14">
+                        <Grid Grid.Column="4" x:Name="RightColumnGrid">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+                            <Border x:Name="DetailSection" Grid.Row="0" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="22" Padding="16" Margin="0,0,0,14">
                                 <StackPanel>
                                     <TextBlock Text="当前选中项详情" FontSize="12" FontWeight="Bold" Foreground="{StaticResource MutedTextBrush}" />
                                     <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
@@ -811,7 +848,7 @@
                                 </StackPanel>
                             </Border>
 
-                            <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="22" Padding="16" Margin="0,0,0,14">
+                            <Border x:Name="CandidateSection" Grid.Row="1" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="22" Padding="16" Margin="0,0,0,14">
                                 <StackPanel>
                                     <Grid Margin="0,0,0,12">
                                         <Grid.ColumnDefinitions>
@@ -833,15 +870,32 @@
                                     </Border>
                                     <ListBox x:Name="CandidateList"
                                              Margin="0,12,0,0"
-                                             MaxHeight="210"
+                                             MinHeight="220"
+                                             MaxHeight="360"
+                                             BorderThickness="0"
+                                             Background="Transparent"
+                                             ItemContainerStyle="{StaticResource CandidateListItemStyle}"
                                              SelectionChanged="CandidateList_SelectionChanged"
                                              MouseDoubleClick="CandidateList_MouseDoubleClick">
                                         <ListBox.ItemTemplate>
                                             <DataTemplate DataType="{x:Type local:ScanResultItem}">
-                                                <StackPanel Margin="0,4">
-                                                    <TextBlock Text="{Binding FileName}" FontSize="13" FontWeight="SemiBold" />
-                                                    <TextBlock Text="{Binding FullPath}" FontSize="11" Foreground="{StaticResource MutedTextBrush}" TextTrimming="CharacterEllipsis" />
-                                                </StackPanel>
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="Auto" />
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <Border Width="40" Height="40" CornerRadius="12" Background="{StaticResource AccentBrush}" Margin="0,0,12,0">
+                                                        <TextBlock Text="{Binding InitialLetter}" Foreground="White" FontSize="15" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                                    </Border>
+                                                    <StackPanel Grid.Column="1">
+                                                        <TextBlock Text="{Binding FileName}" FontSize="14" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                                        <TextBlock Margin="0,4,0,0" Text="{Binding FullPath}" FontSize="11" Foreground="{StaticResource MutedTextBrush}" TextTrimming="CharacterEllipsis" />
+                                                    </StackPanel>
+                                                    <Border Grid.Column="2" Style="{StaticResource TagBadgeStyle}" Background="#FFE5F0EA" Margin="8,0,0,0">
+                                                        <TextBlock Text="{Binding SuggestedGroupName}" FontSize="11" FontWeight="SemiBold" Foreground="{StaticResource AccentBrush}" />
+                                                    </Border>
+                                                </Grid>
                                             </DataTemplate>
                                         </ListBox.ItemTemplate>
                                     </ListBox>
@@ -853,7 +907,7 @@
                                 </StackPanel>
                             </Border>
 
-                            <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="22" Padding="16" Margin="0,0,0,14">
+                            <Border Grid.Row="2" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="22" Padding="16" Margin="0,0,0,14">
                                 <StackPanel>
                                     <TextBlock Text="最近活动" FontSize="12" FontWeight="Bold" Foreground="{StaticResource MutedTextBrush}" />
                                     <ItemsControl x:Name="ActivityList" Margin="0,12,0,0">
@@ -871,7 +925,7 @@
                                 </StackPanel>
                             </Border>
 
-                            <Border Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="22" Padding="16">
+                            <Border Grid.Row="3" Background="{StaticResource PanelBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="22" Padding="16">
                                 <StackPanel>
                                     <TextBlock Text="管理视图预览" FontSize="12" FontWeight="Bold" Foreground="{StaticResource MutedTextBrush}" />
                                     <TextBlock Margin="0,12,0,0"
@@ -901,7 +955,8 @@
                                     </Border>
                                 </StackPanel>
                             </Border>
-                        </StackPanel>
+                        </Grid>
+                    </Grid>
                     </ScrollViewer>
                 </Grid>
 

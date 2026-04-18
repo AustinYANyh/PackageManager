@@ -266,6 +266,7 @@ public partial class CommonStartupWindow : Window
         RefreshManagePreview();
         RefreshCandidateSuggestions();
         RefreshCandidatePane();
+        ArrangeRightColumnSections();
         UpdateFilterButtons();
     }
 
@@ -613,6 +614,7 @@ public partial class CommonStartupWindow : Window
             CandidateSuggestionText.Text = string.Empty;
             CandidateList.IsEnabled = false;
             SetCandidateButtonsEnabled(false);
+            ArrangeRightColumnSections();
             return;
         }
 
@@ -628,6 +630,7 @@ public partial class CommonStartupWindow : Window
             CandidateSuggestionText.Text = string.Empty;
             CandidateList.SelectedItem = null;
             SetCandidateButtonsEnabled(false);
+            ArrangeRightColumnSections();
             return;
         }
 
@@ -642,6 +645,14 @@ public partial class CommonStartupWindow : Window
         CandidatePathText.Text = selected.FullPath;
         CandidateSuggestionText.Text = $"建议加入：{selected.SuggestedGroupName}";
         SetCandidateButtonsEnabled(true);
+        ArrangeRightColumnSections();
+    }
+
+    private void ArrangeRightColumnSections()
+    {
+        var candidateFirst = _selectedItem == null && _scanResults.Count > 0;
+        Grid.SetRow(candidateFirst ? CandidateSection : DetailSection, 0);
+        Grid.SetRow(candidateFirst ? DetailSection : CandidateSection, 1);
     }
 
     private void SetCandidateButtonsEnabled(bool enabled)
@@ -1671,6 +1682,7 @@ public partial class CommonStartupWindow : Window
         {
             SelectStartupItem(item);
             RefreshDetailPane();
+            ArrangeRightColumnSections();
         }
     }
 
@@ -1904,6 +1916,8 @@ public class ScanResultItem : INotifyPropertyChanged
     private string _fullPath;
     private string _suggestedGroupName;
 
+    public string InitialLetter => string.IsNullOrWhiteSpace(FileName) ? "?" : FileName.Trim()[0].ToString().ToUpperInvariant();
+
     public string FileName
     {
         get => _fileName;
@@ -1916,6 +1930,7 @@ public class ScanResultItem : INotifyPropertyChanged
 
             _fileName = value;
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(FileName)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(InitialLetter)));
         }
     }
 
