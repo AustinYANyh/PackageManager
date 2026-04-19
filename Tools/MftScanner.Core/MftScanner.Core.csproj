@@ -34,6 +34,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="FileRecord.cs" />
+    <Compile Include="SearchTypeFilter.cs" />
     <Compile Include="IndexSnapshotStore.cs" />
     <Compile Include="TrieNode.cs" />
     <Compile Include="MemoryIndex.cs" />

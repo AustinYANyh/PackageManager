@@ -18,6 +18,11 @@ namespace MftScanner
 
         /// <summary>有序数组：按 LowerName 字典序排列。</summary>
         public FileRecord[] SortedArray { get; private set; } = Array.Empty<FileRecord>();
+        public FileRecord[] DirectorySortedArray { get; private set; } = Array.Empty<FileRecord>();
+        public FileRecord[] LaunchableSortedArray { get; private set; } = Array.Empty<FileRecord>();
+        public FileRecord[] ScriptSortedArray { get; private set; } = Array.Empty<FileRecord>();
+        public FileRecord[] LogSortedArray { get; private set; } = Array.Empty<FileRecord>();
+        public FileRecord[] ConfigSortedArray { get; private set; } = Array.Empty<FileRecord>();
 
         public int TotalCount => SortedArray.Length;
 
@@ -27,7 +32,15 @@ namespace MftScanner
         public void LoadSortedRecords(IReadOnlyList<FileRecord> sortedRecords)
         {
             var arr = CopyRecords(sortedRecords);
-            Publish(arr, BuildExactHashMap(arr), BuildExtensionHashMap(arr));
+            Publish(
+                arr,
+                BuildExactHashMap(arr),
+                BuildExtensionHashMap(arr),
+                BuildFilteredArray(arr, SearchTypeFilter.Folder),
+                BuildFilteredArray(arr, SearchTypeFilter.Launchable),
+                BuildFilteredArray(arr, SearchTypeFilter.Script),
+                BuildFilteredArray(arr, SearchTypeFilter.Log),
+                BuildFilteredArray(arr, SearchTypeFilter.Config));
         }
 
         public void Build(IReadOnlyList<FileRecord> records)
@@ -37,13 +50,26 @@ namespace MftScanner
                 Publish(
                     Array.Empty<FileRecord>(),
                     new Dictionary<string, List<FileRecord>>(),
-                    new Dictionary<string, List<FileRecord>>());
+                    new Dictionary<string, List<FileRecord>>(),
+                    Array.Empty<FileRecord>(),
+                    Array.Empty<FileRecord>(),
+                    Array.Empty<FileRecord>(),
+                    Array.Empty<FileRecord>(),
+                    Array.Empty<FileRecord>());
                 return;
             }
 
             var arr = CopyRecords(records);
             Array.Sort(arr, ByLowerName);
-            Publish(arr, BuildExactHashMap(arr), BuildExtensionHashMap(arr));
+            Publish(
+                arr,
+                BuildExactHashMap(arr),
+                BuildExtensionHashMap(arr),
+                BuildFilteredArray(arr, SearchTypeFilter.Folder),
+                BuildFilteredArray(arr, SearchTypeFilter.Launchable),
+                BuildFilteredArray(arr, SearchTypeFilter.Script),
+                BuildFilteredArray(arr, SearchTypeFilter.Log),
+                BuildFilteredArray(arr, SearchTypeFilter.Config));
         }
 
         public void Insert(FileRecord record)
@@ -61,6 +87,8 @@ namespace MftScanner
                         ExtensionHashMap[extension] = extensionBucket = new List<FileRecord>();
                     InsertIntoSortedBucket(extensionBucket, record);
                 }
+
+                InsertIntoFilterBuckets(record);
 
                 var arr = SortedArray;
                 var idx = Array.BinarySearch(arr, record, ByLowerName);
@@ -99,6 +127,8 @@ namespace MftScanner
                     RemoveFromBucket(extensionBucket, frn, lowerName, parentFrn, driveLetter);
                     if (extensionBucket.Count == 0) ExtensionHashMap.Remove(extension);
                 }
+
+                RemoveFromFilterBuckets(frn, lowerName, parentFrn, driveLetter);
 
                 var arr = SortedArray;
                 for (var i = 0; i < arr.Length; i++)
@@ -141,6 +171,8 @@ namespace MftScanner
                     if (oldExtensionBucket.Count == 0) ExtensionHashMap.Remove(oldExtension);
                 }
 
+                RemoveFromFilterBuckets(frn, oldLowerName, oldParentFrn, driveLetter);
+
                 var arr = SortedArray;
                 for (var i = 0; i < arr.Length; i++)
                 {
@@ -169,6 +201,8 @@ namespace MftScanner
                         ExtensionHashMap[newExtension] = newExtensionBucket = new List<FileRecord>();
                     InsertIntoSortedBucket(newExtensionBucket, newRecord);
                 }
+
+                InsertIntoFilterBuckets(newRecord);
 
                 var insertIdx = Array.BinarySearch(arr, newRecord, ByLowerName);
                 if (insertIdx < 0) insertIdx = ~insertIdx;
@@ -225,10 +259,30 @@ namespace MftScanner
             return map;
         }
 
+        private static FileRecord[] BuildFilteredArray(FileRecord[] arr, SearchTypeFilter filter)
+        {
+            if (arr == null || arr.Length == 0)
+                return Array.Empty<FileRecord>();
+
+            var filtered = new List<FileRecord>();
+            for (var i = 0; i < arr.Length; i++)
+            {
+                if (MatchesFilter(arr[i], filter))
+                    filtered.Add(arr[i]);
+            }
+
+            return filtered.Count == 0 ? Array.Empty<FileRecord>() : filtered.ToArray();
+        }
+
         private void Publish(
             FileRecord[] arr,
             Dictionary<string, List<FileRecord>> exactMap,
-            Dictionary<string, List<FileRecord>> extensionMap)
+            Dictionary<string, List<FileRecord>> extensionMap,
+            FileRecord[] directoryArr,
+            FileRecord[] launchableArr,
+            FileRecord[] scriptArr,
+            FileRecord[] logArr,
+            FileRecord[] configArr)
         {
             _lock.EnterWriteLock();
             try
@@ -236,6 +290,11 @@ namespace MftScanner
                 ExactHashMap = exactMap;
                 ExtensionHashMap = extensionMap;
                 SortedArray = arr;
+                DirectorySortedArray = directoryArr;
+                LaunchableSortedArray = launchableArr;
+                ScriptSortedArray = scriptArr;
+                LogSortedArray = logArr;
+                ConfigSortedArray = configArr;
             }
             finally { _lock.ExitWriteLock(); }
         }
@@ -279,8 +338,107 @@ namespace MftScanner
                 ExactHashMap = BuildExactHashMap(arr);
                 ExtensionHashMap = BuildExtensionHashMap(arr);
                 SortedArray = arr;
+                DirectorySortedArray = BuildFilteredArray(arr, SearchTypeFilter.Folder);
+                LaunchableSortedArray = BuildFilteredArray(arr, SearchTypeFilter.Launchable);
+                ScriptSortedArray = BuildFilteredArray(arr, SearchTypeFilter.Script);
+                LogSortedArray = BuildFilteredArray(arr, SearchTypeFilter.Log);
+                ConfigSortedArray = BuildFilteredArray(arr, SearchTypeFilter.Config);
             }
             finally { _lock.ExitWriteLock(); }
+        }
+
+        private void InsertIntoFilterBuckets(FileRecord record)
+        {
+            if (record == null)
+                return;
+
+            if (record.IsDirectory)
+                DirectorySortedArray = InsertIntoSortedArray(DirectorySortedArray, record);
+
+            if (MatchesFilter(record, SearchTypeFilter.Launchable))
+                LaunchableSortedArray = InsertIntoSortedArray(LaunchableSortedArray, record);
+            if (MatchesFilter(record, SearchTypeFilter.Script))
+                ScriptSortedArray = InsertIntoSortedArray(ScriptSortedArray, record);
+            if (MatchesFilter(record, SearchTypeFilter.Log))
+                LogSortedArray = InsertIntoSortedArray(LogSortedArray, record);
+            if (MatchesFilter(record, SearchTypeFilter.Config))
+                ConfigSortedArray = InsertIntoSortedArray(ConfigSortedArray, record);
+        }
+
+        private void RemoveFromFilterBuckets(ulong frn, string lowerName, ulong parentFrn, char driveLetter)
+        {
+            DirectorySortedArray = RemoveFromSortedArray(DirectorySortedArray, frn, lowerName, parentFrn, driveLetter);
+            LaunchableSortedArray = RemoveFromSortedArray(LaunchableSortedArray, frn, lowerName, parentFrn, driveLetter);
+            ScriptSortedArray = RemoveFromSortedArray(ScriptSortedArray, frn, lowerName, parentFrn, driveLetter);
+            LogSortedArray = RemoveFromSortedArray(LogSortedArray, frn, lowerName, parentFrn, driveLetter);
+            ConfigSortedArray = RemoveFromSortedArray(ConfigSortedArray, frn, lowerName, parentFrn, driveLetter);
+        }
+
+        private static FileRecord[] InsertIntoSortedArray(FileRecord[] target, FileRecord record)
+        {
+            var arr = target ?? Array.Empty<FileRecord>();
+            var idx = Array.BinarySearch(arr, record, ByLowerName);
+            if (idx < 0)
+                idx = ~idx;
+
+            var newArr = new FileRecord[arr.Length + 1];
+            Array.Copy(arr, 0, newArr, 0, idx);
+            newArr[idx] = record;
+            Array.Copy(arr, idx, newArr, idx + 1, arr.Length - idx);
+            return newArr;
+        }
+
+        private static FileRecord[] RemoveFromSortedArray(FileRecord[] target, ulong frn, string lowerName, ulong parentFrn, char driveLetter)
+        {
+            var arr = target;
+            if (arr == null || arr.Length == 0)
+                return arr;
+
+            for (var i = 0; i < arr.Length; i++)
+            {
+                var match = frn != 0
+                    ? arr[i].Frn == frn && arr[i].DriveLetter == driveLetter
+                    : arr[i].LowerName == lowerName && arr[i].DriveLetter == driveLetter
+                      && (parentFrn == 0 || arr[i].ParentFrn == parentFrn);
+                if (!match)
+                    continue;
+
+                var newArr = new FileRecord[arr.Length - 1];
+                Array.Copy(arr, 0, newArr, 0, i);
+                Array.Copy(arr, i + 1, newArr, i, arr.Length - i - 1);
+                return newArr;
+            }
+
+            return arr;
+        }
+
+        private static bool MatchesFilter(FileRecord record, SearchTypeFilter filter)
+        {
+            if (record == null)
+                return false;
+
+            if (filter == SearchTypeFilter.All)
+                return true;
+
+            if (filter == SearchTypeFilter.Folder)
+                return record.IsDirectory;
+
+            if (record.IsDirectory || !TryGetIndexedExtension(record.LowerName, out var extension))
+                return false;
+
+            switch (filter)
+            {
+                case SearchTypeFilter.Launchable:
+                    return SearchTypeFilterHelper.IsLaunchableExtension(extension);
+                case SearchTypeFilter.Script:
+                    return SearchTypeFilterHelper.IsScriptExtension(extension);
+                case SearchTypeFilter.Log:
+                    return SearchTypeFilterHelper.IsLogExtension(extension);
+                case SearchTypeFilter.Config:
+                    return SearchTypeFilterHelper.IsConfigExtension(extension);
+                default:
+                    return false;
+            }
         }
 
         private static bool TryGetIndexedExtension(string lowerName, out string extension)

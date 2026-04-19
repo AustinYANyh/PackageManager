@@ -485,7 +485,7 @@ namespace MftScanner
             var page = new List<FileRecord>(Math.Min(maxResults, 64));
             var total = 0;
 
-            if (exactHashMap.TryGetValue(query, out var exactBucket))
+            if (exactHashMap != null && exactHashMap.TryGetValue(query, out var exactBucket))
             {
                 foreach (var r in exactBucket)
                 {
@@ -511,6 +511,25 @@ namespace MftScanner
             return (page, total);
         }
 
+        private static FileRecord[] GetCandidateSource(MemoryIndex index, SearchTypeFilter filter)
+        {
+            switch (filter)
+            {
+                case SearchTypeFilter.Folder:
+                    return index.DirectorySortedArray;
+                case SearchTypeFilter.Launchable:
+                    return index.LaunchableSortedArray;
+                case SearchTypeFilter.Script:
+                    return index.ScriptSortedArray;
+                case SearchTypeFilter.Log:
+                    return index.LogSortedArray;
+                case SearchTypeFilter.Config:
+                    return index.ConfigSortedArray;
+                default:
+                    return index.SortedArray;
+            }
+        }
+
         // ── 搜索入口 ─────────────────────────────────────────────────────────────
 
         /// <summary>
@@ -526,6 +545,17 @@ namespace MftScanner
             string keyword,
             int maxResults,
             int offset,
+            IProgress<string> progress,
+            CancellationToken ct)
+        {
+            return SearchAsync(keyword, maxResults, offset, SearchTypeFilter.All, progress, ct);
+        }
+
+        public Task<SearchQueryResult> SearchAsync(
+            string keyword,
+            int maxResults,
+            int offset,
+            SearchTypeFilter filter,
             IProgress<string> progress,
             CancellationToken ct)
         {
@@ -561,22 +591,34 @@ namespace MftScanner
                 var normalizedMaxResults = Math.Max(maxResults, 0);
                 var fetchLimit = pathPrefix != null ? int.MaxValue : normalizedMaxResults;
                 var fetchOffset = pathPrefix != null ? 0 : normalizedOffset;
+                var candidateSource = GetCandidateSource(idx, filter);
+
+                if (candidateSource == null || candidateSource.Length == 0)
+                {
+                    return new SearchQueryResult
+                    {
+                        TotalIndexedCount = idx.TotalCount,
+                        TotalMatchedCount = 0,
+                        IsTruncated = false,
+                        Results = new List<ScannedFileInfo>()
+                    };
+                }
 
                 List<FileRecord> matched;
                 int totalMatched;
                 switch (mode)
                 {
                     case MatchMode.Prefix:
-                        { var r = PrefixMatch(normalizedQuery, idx.SortedArray, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
+                        { var r = PrefixMatch(normalizedQuery, candidateSource, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
                         break;
                     case MatchMode.Suffix:
-                        { var r = SuffixMatch(normalizedQuery, idx.SortedArray, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
+                        { var r = SuffixMatch(normalizedQuery, candidateSource, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
                         break;
                     case MatchMode.Regex:
-                        { var r = RegexMatch(normalizedQuery, idx.SortedArray, fetchOffset, fetchLimit, progress, ct); matched = r.page; totalMatched = r.total; }
+                        { var r = RegexMatch(normalizedQuery, candidateSource, fetchOffset, fetchLimit, progress, ct); matched = r.page; totalMatched = r.total; }
                         break;
                     case MatchMode.Wildcard:
-                        if (TryGetSimpleExtensionWildcard(normalizedQuery, out var extension))
+                        if (filter == SearchTypeFilter.All && TryGetSimpleExtensionWildcard(normalizedQuery, out var extension))
                         {
                             var r = ExtensionMatch(extension, idx.ExtensionHashMap, fetchOffset, fetchLimit, ct);
                             matched = r.page;
@@ -587,25 +629,25 @@ namespace MftScanner
                             switch (simplifiedMode)
                             {
                                 case MatchMode.Prefix:
-                                    { var r = PrefixMatch(simplifiedQuery, idx.SortedArray, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
+                                    { var r = PrefixMatch(simplifiedQuery, candidateSource, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
                                     break;
                                 case MatchMode.Suffix:
-                                    { var r = SuffixMatch(simplifiedQuery, idx.SortedArray, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
+                                    { var r = SuffixMatch(simplifiedQuery, candidateSource, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
                                     break;
                                 default:
-                                    { var r = ContainsMatch(simplifiedQuery, idx.ExactHashMap, idx.SortedArray, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
+                                    { var r = ContainsMatch(simplifiedQuery, filter == SearchTypeFilter.All ? idx.ExactHashMap : null, candidateSource, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
                                     break;
                             }
                         }
                         else
                         {
-                            var r = RegexMatch(WildcardToRegex(normalizedQuery), idx.SortedArray, fetchOffset, fetchLimit, progress, ct);
+                            var r = RegexMatch(WildcardToRegex(normalizedQuery), candidateSource, fetchOffset, fetchLimit, progress, ct);
                             matched = r.page;
                             totalMatched = r.total;
                         }
                         break;
                     default:
-                        { var r = ContainsMatch(normalizedQuery, idx.ExactHashMap, idx.SortedArray, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
+                        { var r = ContainsMatch(normalizedQuery, filter == SearchTypeFilter.All ? idx.ExactHashMap : null, candidateSource, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
                         break;
                 }
 

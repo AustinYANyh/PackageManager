@@ -26,7 +26,6 @@ public partial class CommonStartupWindow : Window
     private const int SearchPageSize = 500;
     private const int RecentDays = 7;
 
-    private static readonly string[] LaunchableExtensions = { ".exe", ".bat", ".cmd", ".ps1", ".lnk" };
     private static readonly string[] PresetGroupNames = { "项目入口", "开发工具", "运维脚本", "目录快捷方式", "临时工具" };
 
     private readonly DataPersistenceService _persistence;
@@ -1355,19 +1354,9 @@ public partial class CommonStartupWindow : Window
 
         if (results.Count == 0)
         {
-            if ((response?.TotalMatchedCount ?? 0) > 0)
-            {
-                StatusText.Text = _indexService.IsBackgroundCatchUpInProgress
-                    ? "检索到匹配对象，但没有可直接作为启动项的文件，后台仍在追平…"
-                    : "检索到匹配对象，但没有可直接作为启动项的文件。";
-            }
-            else
-            {
-                StatusText.Text = _indexService.IsBackgroundCatchUpInProgress
-                    ? $"未找到匹配项（共 {response?.TotalIndexedCount ?? _indexService.Index.TotalCount} 个对象，后台追平中）"
-                    : $"未找到匹配项（共 {response?.TotalIndexedCount ?? _indexService.Index.TotalCount} 个对象）";
-            }
-
+            StatusText.Text = _indexService.IsBackgroundCatchUpInProgress
+                ? $"未找到启动项候选（共 {response?.TotalIndexedCount ?? _indexService.Index.TotalCount} 个对象，后台追平中）"
+                : $"未找到启动项候选（共 {response?.TotalIndexedCount ?? _indexService.Index.TotalCount} 个对象）";
             return;
         }
 
@@ -1379,52 +1368,41 @@ public partial class CommonStartupWindow : Window
 
         StatusText.Text = response?.IsTruncated == true
             ? $"显示 {results.Count} 个候选（共 {response.TotalMatchedCount} 个对象，输入更多字符可继续缩小）。"
-            : $"{results.Count} 个候选（共 {response?.TotalIndexedCount ?? _indexService.Index.TotalCount} 个对象）";
+            : $"{results.Count} 个候选（共 {response?.TotalMatchedCount ?? results.Count} 个对象）";
     }
 
     private async Task<StartupSearchResult> SearchStartupResultsAsync(string keyword, IProgress<string> progress, CancellationToken ct)
     {
+        var response = await _indexService.SearchAsync(
+            keyword,
+            SearchPageSize,
+            0,
+            SearchTypeFilter.Launchable,
+            progress,
+            ct).ConfigureAwait(true);
+
         var startupResults = new List<ScanResultItem>(MaxDisplayedResults);
         var dedup = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        SearchQueryResult lastResponse = null;
-        var offset = 0;
-        var hasMoreRawMatches = false;
-
-        while (startupResults.Count < MaxDisplayedResults)
+        foreach (var item in response?.Results ?? Enumerable.Empty<ScannedFileInfo>())
         {
-            ct.ThrowIfCancellationRequested();
+            if (item == null || string.IsNullOrWhiteSpace(item.FullPath) || !dedup.Add(item.FullPath))
+                continue;
 
-            if (offset > 0)
+            startupResults.Add(new ScanResultItem
             {
-                progress?.Report($"已筛选 {offset} 个匹配对象，继续查找可作为启动项的结果…");
-            }
-
-            var response = await _indexService.SearchAsync(keyword, SearchPageSize, offset, progress, ct).ConfigureAwait(true);
-            lastResponse = response;
-            var pageResults = response?.Results;
-            if (pageResults == null || pageResults.Count == 0)
-            {
-                hasMoreRawMatches = false;
-                break;
-            }
-
-            var pageFullyConsumed = AppendLaunchableResults(pageResults, startupResults, dedup, MaxDisplayedResults);
-            hasMoreRawMatches = !pageFullyConsumed || response.IsTruncated;
-            if (!hasMoreRawMatches)
-            {
-                break;
-            }
-
-            offset += pageResults.Count;
+                FileName = string.IsNullOrWhiteSpace(item.FileName) ? System.IO.Path.GetFileName(item.FullPath) : item.FileName,
+                FullPath = item.FullPath,
+                SuggestedGroupName = ResolveSuggestedGroup(item.FullPath)
+            });
         }
 
         return new StartupSearchResult
         {
-            Response = new SearchQueryResult
+            Response = response ?? new SearchQueryResult
             {
-                TotalIndexedCount = lastResponse?.TotalIndexedCount ?? _indexService.Index.TotalCount,
-                TotalMatchedCount = lastResponse?.TotalMatchedCount ?? 0,
-                IsTruncated = hasMoreRawMatches,
+                TotalIndexedCount = _indexService.Index.TotalCount,
+                TotalMatchedCount = 0,
+                IsTruncated = false,
                 Results = new List<ScannedFileInfo>()
             },
             Results = startupResults
@@ -1467,35 +1445,6 @@ public partial class CommonStartupWindow : Window
 
             _scanResults.Add(item);
         }
-    }
-
-    private static bool AppendLaunchableResults(IEnumerable<ScannedFileInfo> results, ICollection<ScanResultItem> target, ISet<string> dedup, int maxCount)
-    {
-        foreach (var item in results ?? Enumerable.Empty<ScannedFileInfo>())
-        {
-            if (item == null || item.IsDirectory || !IsLaunchableFile(item.FullPath))
-            {
-                continue;
-            }
-
-            if (!dedup.Add(item.FullPath))
-            {
-                continue;
-            }
-
-            target.Add(new ScanResultItem
-            {
-                FileName = string.IsNullOrWhiteSpace(item.FileName) ? System.IO.Path.GetFileName(item.FullPath) : item.FileName,
-                FullPath = item.FullPath
-            });
-
-            if (target.Count >= maxCount)
-            {
-                return false;
-            }
-        }
-
-        return true;
     }
 
     private void IndexService_IndexStatusChanged(object sender, IndexStatusChangedEventArgs e)
@@ -1547,16 +1496,6 @@ public partial class CommonStartupWindow : Window
     private void SetScanningState(bool scanning)
     {
         StopButton.IsEnabled = scanning;
-    }
-
-    private static bool IsLaunchableFile(string fullPath)
-    {
-        if (string.IsNullOrWhiteSpace(fullPath))
-        {
-            return false;
-        }
-
-        return LaunchableExtensions.Contains(System.IO.Path.GetExtension(fullPath), StringComparer.OrdinalIgnoreCase);
     }
 
     private void ViewList_SelectionChanged(object sender, SelectionChangedEventArgs e)

@@ -454,85 +454,21 @@ namespace MftScanner
                 return true;
             }
 
-            var appendedCount = 0;
-            SearchQueryResult lastResponse = null;
-            while (appendedCount < desiredCount)
-            {
-                var response = isNewSearch && _loadedRawResultCount == 0 && appendedCount == 0
-                    ? await _filter.QueryAsync(_activeKeyword, SearchBatchSize, _loadedRawResultCount, ct).ConfigureAwait(true)
-                    : await _indexService.SearchAsync(_activeKeyword, SearchBatchSize, _loadedRawResultCount, null, ct).ConfigureAwait(true);
-                if (ct.IsCancellationRequested)
-                    return false;
-
-                lastResponse = response;
-                var pageResults = response == null ? null : response.Results;
-                if (pageResults == null || pageResults.Count == 0)
-                {
-                    _hasMoreSearchResults = false;
-                    break;
-                }
-
-                _loadedRawResultCount += pageResults.Count;
-                _totalMatchedCount = response.TotalMatchedCount;
-                appendedCount += AppendTypeFilteredResults(pageResults);
-                _hasMoreSearchResults = response.IsTruncated;
-
-                if (!response.IsTruncated)
-                    break;
-            }
-
-            if (lastResponse == null)
-            {
-                _totalMatchedCount = 0;
-                _hasMoreSearchResults = false;
-            }
-
-            return true;
-        }
-
-        private int AppendTypeFilteredResults(IEnumerable<ScannedFileInfo> results)
-        {
-            var appendedCount = 0;
-            foreach (var item in results ?? Enumerable.Empty<ScannedFileInfo>())
-            {
-                if (!MatchesCurrentTypeFilter(item))
-                    continue;
-
-                if (TryAddDisplayedResult(item.FullPath, item.IsDirectory))
-                    appendedCount++;
-            }
-
-            _loadedResultCount = _displayedResults.Count;
-            ApplyCurrentSort();
-            RefreshGridColumns();
-            UpdateActionButtons();
-            return appendedCount;
-        }
-
-        private bool MatchesCurrentTypeFilter(ScannedFileInfo item)
-        {
-            if (item == null)
+            var filteredResult = await _indexService.SearchAsync(
+                _activeKeyword,
+                Math.Max(desiredCount, SearchBatchSize),
+                _loadedResultCount,
+                MapCurrentTypeFilter(),
+                null,
+                ct).ConfigureAwait(true);
+            if (ct.IsCancellationRequested)
                 return false;
 
-            var fullPath = item.FullPath ?? string.Empty;
-            var extension = item.IsDirectory ? string.Empty : (Path.GetExtension(fullPath) ?? string.Empty).ToLowerInvariant();
-            switch (_currentTypeFilter)
-            {
-                case FileSearchTypeFilter.All:
-                    return true;
-                case FileSearchTypeFilter.Folder:
-                    return item.IsDirectory;
-                case FileSearchTypeFilter.Launchable:
-                    return !item.IsDirectory && EverythingSearchResultItem.IsLaunchableExtension(extension);
-                case FileSearchTypeFilter.Script:
-                    return !item.IsDirectory && EverythingSearchResultItem.IsScriptExtension(extension);
-                case FileSearchTypeFilter.Log:
-                    return !item.IsDirectory && EverythingSearchResultItem.IsLogExtension(extension);
-                case FileSearchTypeFilter.Config:
-                    return !item.IsDirectory && EverythingSearchResultItem.IsConfigExtension(extension);
-                default:
-                    return true;
-            }
+            _totalMatchedCount = filteredResult == null ? 0 : filteredResult.TotalMatchedCount;
+            AppendResults(filteredResult);
+            _loadedRawResultCount = _loadedResultCount;
+            _hasMoreSearchResults = filteredResult != null && filteredResult.IsTruncated;
+            return true;
         }
 
         private bool MatchesCurrentQueryAndType(string lowerName, string fullPath, bool isDirectory)
@@ -569,6 +505,25 @@ namespace MftScanner
                     return !isDirectory && EverythingSearchResultItem.IsConfigExtension(extension);
                 default:
                     return true;
+            }
+        }
+
+        private SearchTypeFilter MapCurrentTypeFilter()
+        {
+            switch (_currentTypeFilter)
+            {
+                case FileSearchTypeFilter.Launchable:
+                    return SearchTypeFilter.Launchable;
+                case FileSearchTypeFilter.Folder:
+                    return SearchTypeFilter.Folder;
+                case FileSearchTypeFilter.Script:
+                    return SearchTypeFilter.Script;
+                case FileSearchTypeFilter.Log:
+                    return SearchTypeFilter.Log;
+                case FileSearchTypeFilter.Config:
+                    return SearchTypeFilter.Config;
+                default:
+                    return SearchTypeFilter.All;
             }
         }
 
