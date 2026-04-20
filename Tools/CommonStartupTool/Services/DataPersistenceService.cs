@@ -2,11 +2,15 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 namespace PackageManager.Services;
 
 public class DataPersistenceService
 {
+    private const string CommonStartupItemsPropertyName = "CommonStartupItems";
+    private const string CommonStartupGroupsPropertyName = "CommonStartupGroups";
+
     private readonly string _settingsFilePath;
     private readonly JsonSerializerSettings _jsonSettings;
 
@@ -28,8 +32,17 @@ public class DataPersistenceService
     {
         try
         {
-            var json = JsonConvert.SerializeObject(settings ?? new AppSettings(), _jsonSettings);
-            File.WriteAllText(_settingsFilePath, json);
+            var serializer = JsonSerializer.Create(_jsonSettings);
+            var document = LoadSettingsDocument();
+            var effectiveSettings = settings ?? new AppSettings();
+
+            document[CommonStartupItemsPropertyName] =
+                JToken.FromObject(effectiveSettings.CommonStartupItems ?? new List<CommonStartupItem>(), serializer);
+            document[CommonStartupGroupsPropertyName] =
+                JToken.FromObject(effectiveSettings.CommonStartupGroups ?? new List<CommonStartupGroup>(), serializer);
+
+            BackupSettingsFileIfNeeded();
+            File.WriteAllText(_settingsFilePath, document.ToString(Formatting.Indented));
             return true;
         }
         catch (Exception ex)
@@ -48,15 +61,63 @@ public class DataPersistenceService
                 return new AppSettings();
             }
 
-            var json = File.ReadAllText(_settingsFilePath);
-            var settings = JsonConvert.DeserializeObject<AppSettings>(json, _jsonSettings);
-            return settings ?? new AppSettings();
+            var serializer = JsonSerializer.Create(_jsonSettings);
+            var document = LoadSettingsDocument();
+            var settings = new AppSettings();
+
+            if (document.TryGetValue(CommonStartupItemsPropertyName, StringComparison.OrdinalIgnoreCase, out var itemsToken))
+            {
+                settings.CommonStartupItems = itemsToken.Type == JTokenType.Null
+                    ? new List<CommonStartupItem>()
+                    : itemsToken.ToObject<List<CommonStartupItem>>(serializer) ?? new List<CommonStartupItem>();
+            }
+
+            if (document.TryGetValue(CommonStartupGroupsPropertyName, StringComparison.OrdinalIgnoreCase, out var groupsToken))
+            {
+                settings.CommonStartupGroups = groupsToken.Type == JTokenType.Null
+                    ? new List<CommonStartupGroup>()
+                    : groupsToken.ToObject<List<CommonStartupGroup>>(serializer) ?? new List<CommonStartupGroup>();
+            }
+
+            return settings;
         }
         catch (Exception ex)
         {
             LoggingService.LogError(ex, "加载启动项设置失败");
             return new AppSettings();
         }
+    }
+
+    private JObject LoadSettingsDocument()
+    {
+        if (!File.Exists(_settingsFilePath))
+        {
+            return new JObject();
+        }
+
+        var json = File.ReadAllText(_settingsFilePath);
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return new JObject();
+        }
+
+        var token = JToken.Parse(json);
+        if (token is JObject document)
+        {
+            return document;
+        }
+
+        throw new JsonException("settings.json root token must be an object.");
+    }
+
+    private void BackupSettingsFileIfNeeded()
+    {
+        if (!File.Exists(_settingsFilePath))
+        {
+            return;
+        }
+
+        File.Copy(_settingsFilePath, _settingsFilePath + ".bak", true);
     }
 }
 

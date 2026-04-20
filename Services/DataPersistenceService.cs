@@ -669,7 +669,12 @@ namespace PackageManager.Services
         {
             try
             {
-                var json = JsonConvert.SerializeObject(settings, _jsonSettings);
+                if (File.Exists(_settingsFilePath))
+                {
+                    File.Copy(_settingsFilePath, _settingsFilePath + ".bak", true);
+                }
+
+                var json = JsonConvert.SerializeObject(settings ?? new AppSettings(), _jsonSettings);
                 File.WriteAllText(_settingsFilePath, json);
                 return true;
             }
@@ -918,3 +923,4 @@ namespace PackageManager.Services
         public int Order { get; set; }
     }
 }
+

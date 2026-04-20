@@ -54,6 +54,7 @@ public partial class App : Application
         }
 
         window.Show();
+        window.FocusSearchBoxAndSelectAll();
         StartOwnerMonitor();
     }
 
@@ -374,3 +375,4 @@ public partial class App : Application
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
 }
+

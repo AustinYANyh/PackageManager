@@ -98,7 +98,7 @@ public partial class CommonStartupWindow : Window
     private void LoadSavedItems()
     {
         var settings = _persistence.LoadSettings();
-        var normalized = NormalizeSettings(settings, out var changed);
+        var normalized = NormalizeSettings(settings, out _);
 
         _groupDefinitions.Clear();
         _groupDefinitions.AddRange(normalized.CommonStartupGroups
@@ -117,10 +117,6 @@ public partial class CommonStartupWindow : Window
             _startupItems.Add(vm);
         }
 
-        if (changed)
-        {
-            SaveItems();
-        }
     }
 
     private AppSettings NormalizeSettings(AppSettings settings, out bool changed)
@@ -583,6 +579,7 @@ public partial class CommonStartupWindow : Window
                 : "当前关键词没有找到可直接加入的文件候选。";
             CandidateNameText.Text = "暂无候选";
             CandidatePathText.Text = "候选会优先建议加入当前分组。";
+            CandidatePathText.ToolTip = CandidatePathText.Text;
             CandidateSuggestionText.Text = string.Empty;
             CandidateList.SelectedItem = null;
             SetCandidateListInteraction(false);
@@ -598,7 +595,8 @@ public partial class CommonStartupWindow : Window
 
         CandidateHintText.Text = "搜索候选不再与工作台等宽并排，而是退到右侧作为联动区。";
         CandidateNameText.Text = selected.FileName;
-        CandidatePathText.Text = selected.FullPath;
+        CandidatePathText.Text = CompactMiddleText(selected.FullPath, 72);
+        CandidatePathText.ToolTip = selected.FullPath;
         CandidateSuggestionText.Text = $"建议加入：{selected.SuggestedGroupName}";
         SetCandidateButtonsEnabled(true);
     }
@@ -947,7 +945,7 @@ public partial class CommonStartupWindow : Window
 
     private void Window_Loaded(object sender, RoutedEventArgs e)
     {
-        SearchBox.Focus();
+        FocusSearchBoxAndSelectAll();
         if (_hasInitialized)
         {
             return;
@@ -1099,6 +1097,23 @@ public partial class CommonStartupWindow : Window
 
         _debounceTimer.Stop();
         _ = StartScanAsync(forceRescan: false);
+        e.Handled = true;
+    }
+
+    private void SearchArea_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.OriginalSource is not DependencyObject source)
+        {
+            return;
+        }
+
+        var clickedTextBox = FindParent<TextBox>(source);
+        if (ReferenceEquals(clickedTextBox, SearchBox) && SearchBox.IsKeyboardFocusWithin && e.ClickCount == 1)
+        {
+            return;
+        }
+
+        FocusSearchBoxAndSelectAll();
         e.Handled = true;
     }
 
@@ -1694,6 +1709,42 @@ public partial class CommonStartupWindow : Window
 
     private void CandidateList_SelectionChanged(object sender, SelectionChangedEventArgs e) => RefreshCandidatePane();
 
+    private void CandidateList_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (TryGetCandidateItemFromSource(e.OriginalSource, out var selected))
+        {
+            CandidateList.SelectedItem = selected;
+            e.Handled = true;
+        }
+    }
+
+    private void CandidateList_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (_scanResults.Count == 0)
+        {
+            BubbleMouseWheelToScrollViewer(sender, e, RightSidebarScrollViewer);
+            return;
+        }
+
+        if (sender is not DependencyObject dependencyObject)
+        {
+            e.Handled = true;
+            return;
+        }
+
+        var childScrollViewer = FindVisualChild<ScrollViewer>(dependencyObject);
+        if (childScrollViewer == null || childScrollViewer.ScrollableHeight <= 0)
+        {
+            e.Handled = true;
+            return;
+        }
+
+        var nextOffset = childScrollViewer.VerticalOffset + (e.Delta > 0 ? -48d : 48d);
+        nextOffset = Math.Max(0, Math.Min(childScrollViewer.ScrollableHeight, nextOffset));
+        childScrollViewer.ScrollToVerticalOffset(nextOffset);
+        e.Handled = true;
+    }
+
     private void LeftSidebarList_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
     {
         BubbleMouseWheelToScrollViewer(sender, e, LeftSidebarScrollViewer);
@@ -1902,6 +1953,24 @@ public partial class CommonStartupWindow : Window
         return true;
     }
 
+    private static bool TryGetCandidateItemFromSource(object originalSource, out ScanResultItem item)
+    {
+        item = null;
+        if (originalSource is not DependencyObject source)
+        {
+            return false;
+        }
+
+        var container = FindParent<ListBoxItem>(source);
+        if (container?.DataContext is not ScanResultItem candidateItem)
+        {
+            return false;
+        }
+
+        item = candidateItem;
+        return true;
+    }
+
     private static T FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
     {
         if (parent == null)
@@ -1946,6 +2015,31 @@ public partial class CommonStartupWindow : Window
     {
         return Environment.UserName.Equals("AustinYanyh", StringComparison.OrdinalIgnoreCase)
                || Environment.UserName.Equals("AustinYan", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string CompactMiddleText(string text, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(text) || maxLength <= 0 || text.Length <= maxLength)
+        {
+            return text ?? string.Empty;
+        }
+
+        if (maxLength <= 3)
+        {
+            return text.Substring(0, maxLength);
+        }
+
+        var keepStart = Math.Max(12, maxLength / 3);
+        var keepEnd = Math.Max(18, maxLength - keepStart - 3);
+        if (keepStart + keepEnd + 3 >= text.Length)
+        {
+            return text;
+        }
+
+        return string.Concat(
+            text.Substring(0, keepStart),
+            "...",
+            text.Substring(text.Length - keepEnd, keepEnd));
     }
 
     private sealed class StartupSearchResult
@@ -2116,6 +2210,7 @@ public class StartupItemVm : INotifyPropertyChanged
             OnPropertyChanged(nameof(IsFavorite));
             OnPropertyChanged(nameof(FavoriteVisibility));
             OnPropertyChanged(nameof(FavoriteButtonText));
+            OnPropertyChanged(nameof(FavoriteButtonCompactText));
             OnPropertyChanged(nameof(StatusLabel));
             OnPropertyChanged(nameof(StatusBackground));
             OnPropertyChanged(nameof(StatusForeground));
@@ -2272,6 +2367,8 @@ public class StartupItemVm : INotifyPropertyChanged
     }
 
     public string FavoriteButtonText => IsFavorite ? "取消收藏" : "收藏";
+
+    public string FavoriteButtonCompactText => IsFavorite ? "取消" : "收藏";
 
     public string StatusLabel => IsBroken ? "异常" : IsFavorite ? "收藏" : "正常";
 
