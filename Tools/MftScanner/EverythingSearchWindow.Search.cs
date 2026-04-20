@@ -153,10 +153,10 @@ namespace MftScanner
                     UpdateEmptyState();
                 }
 
-                if (_pendingRefresh && !string.IsNullOrWhiteSpace(_activeKeyword))
+                if (_pendingRefresh && !string.IsNullOrWhiteSpace(SearchBox.Text))
                 {
                     _pendingRefresh = false;
-                    _ = ApplyFilterAsync(_activeKeyword, false);
+                    _ = ApplyFilterAsync(SearchBox.Text, false);
                 }
             }
         }
@@ -358,10 +358,10 @@ namespace MftScanner
         private void LiveRefreshTimer_Tick(object sender, EventArgs e)
         {
             _liveRefreshTimer.Stop();
-            if (_pendingRefresh && !_isSearchInProgress && !string.IsNullOrWhiteSpace(_activeKeyword) && ShouldAutoRefreshCurrentQuery())
+            if (_pendingRefresh && !_isSearchInProgress && !string.IsNullOrWhiteSpace(SearchBox.Text) && ShouldAutoRefreshCurrentQuery())
             {
                 _pendingRefresh = false;
-                _ = ApplyFilterAsync(_activeKeyword, false);
+                _ = ApplyFilterAsync(SearchBox.Text, false);
             }
         }
 
@@ -427,9 +427,9 @@ namespace MftScanner
             UpdateSummaryStatus();
             UpdateEmptyState();
 
-            if (!string.IsNullOrWhiteSpace(_activeKeyword))
+            if (!string.IsNullOrWhiteSpace(SearchBox.Text))
             {
-                _ = ApplyFilterAsync(_activeKeyword, false);
+                _ = ApplyFilterAsync(SearchBox.Text, false);
             }
             else
             {
@@ -864,3 +864,4 @@ namespace MftScanner
         }
     }
 }
+
