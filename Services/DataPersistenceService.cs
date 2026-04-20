@@ -101,6 +101,7 @@ namespace PackageManager.Services
         private readonly string _finalizePackagesFilePath;
 
         private readonly string _appFolder;
+        private readonly string _settingsBackupFolderPath;
 
         private readonly JsonSerializerSettings _jsonSettings;
 
@@ -127,6 +128,7 @@ namespace PackageManager.Services
             _dataFilePath = Path.Combine(_appFolder, "application_cache.json");
             _mainWindowStateFilePath = Path.Combine(_appFolder, "main_window_state.json");
             _settingsFilePath = Path.Combine(_appFolder, "settings.json");
+            _settingsBackupFolderPath = Path.Combine(_appFolder, "settings_history");
             _packagesFilePath = Path.Combine(_appFolder, "packages.json");
             _finalizePackagesFilePath = Path.Combine(_appFolder, "finalize_packages.json");
 
@@ -672,6 +674,19 @@ namespace PackageManager.Services
                 if (File.Exists(_settingsFilePath))
                 {
                     File.Copy(_settingsFilePath, _settingsFilePath + ".bak", true);
+                    Directory.CreateDirectory(_settingsBackupFolderPath);
+                    var stampedBackupPath = Path.Combine(
+                        _settingsBackupFolderPath,
+                        $"settings_{DateTime.Now:yyyyMMdd_HHmmss_fff}.json");
+                    File.Copy(_settingsFilePath, stampedBackupPath, true);
+
+                    foreach (var staleBackup in new DirectoryInfo(_settingsBackupFolderPath)
+                                 .GetFiles("settings_*.json")
+                                 .OrderByDescending(file => file.LastWriteTimeUtc)
+                                 .Skip(20))
+                    {
+                        staleBackup.Delete();
+                    }
                 }
 
                 var json = JsonConvert.SerializeObject(settings ?? new AppSettings(), _jsonSettings);

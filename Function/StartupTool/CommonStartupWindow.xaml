@@ -911,6 +911,7 @@
                                              MaxHeight="300"
                                              BorderThickness="0"
                                              Background="Transparent"
+                                             ScrollViewer.CanContentScroll="False"
                                              PreviewMouseLeftButtonDown="CandidateList_PreviewMouseLeftButtonDown"
                                              PreviewMouseWheel="CandidateList_PreviewMouseWheel"
                                              ScrollViewer.HorizontalScrollBarVisibility="Hidden"

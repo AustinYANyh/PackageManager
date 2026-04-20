@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
@@ -12,6 +13,7 @@ public class DataPersistenceService
     private const string CommonStartupGroupsPropertyName = "CommonStartupGroups";
 
     private readonly string _settingsFilePath;
+    private readonly string _settingsBackupFolderPath;
     private readonly JsonSerializerSettings _jsonSettings;
 
     public DataPersistenceService()
@@ -21,6 +23,7 @@ public class DataPersistenceService
         Directory.CreateDirectory(appFolder);
 
         _settingsFilePath = Path.Combine(appFolder, "settings.json");
+        _settingsBackupFolderPath = Path.Combine(appFolder, "settings_history");
         _jsonSettings = new JsonSerializerSettings
         {
             Formatting = Formatting.Indented,
@@ -118,6 +121,19 @@ public class DataPersistenceService
         }
 
         File.Copy(_settingsFilePath, _settingsFilePath + ".bak", true);
+        Directory.CreateDirectory(_settingsBackupFolderPath);
+        var stampedBackupPath = Path.Combine(
+            _settingsBackupFolderPath,
+            $"settings_{DateTime.Now:yyyyMMdd_HHmmss_fff}.json");
+        File.Copy(_settingsFilePath, stampedBackupPath, true);
+
+        foreach (var staleBackup in new DirectoryInfo(_settingsBackupFolderPath)
+                     .GetFiles("settings_*.json")
+                     .OrderByDescending(file => file.LastWriteTimeUtc)
+                     .Skip(20))
+        {
+            staleBackup.Delete();
+        }
     }
 }
 

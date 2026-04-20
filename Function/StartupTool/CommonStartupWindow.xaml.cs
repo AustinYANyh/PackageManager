@@ -95,6 +95,20 @@ public partial class CommonStartupWindow : Window
         _hideInsteadOfClose = false;
     }
 
+    public void ReloadFromPersistence()
+    {
+        var selectedPath = _selectedItem?.FullPath;
+        LoadSavedItems();
+
+        if (!string.IsNullOrWhiteSpace(selectedPath))
+        {
+            _selectedItem = _startupItems.FirstOrDefault(item =>
+                string.Equals(item.FullPath, selectedPath, StringComparison.OrdinalIgnoreCase));
+        }
+
+        RefreshWorkbench();
+    }
+
     private void LoadSavedItems()
     {
         var settings = _persistence.LoadSettings();
@@ -215,16 +229,17 @@ public partial class CommonStartupWindow : Window
         return settings;
     }
 
-    private void SaveItems()
+    private bool SaveItems(bool allowStructureChange = false)
     {
         var settings = _persistence.LoadSettings() ?? new AppSettings();
-        settings.CommonStartupItems = _startupItems
+        var normalized = NormalizeSettings(settings, out _);
+        var currentItems = _startupItems
             .OrderBy(item => GetGroupOrder(item.GroupName))
             .ThenBy(item => item.Order)
             .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
             .Select(item => item.ToModel())
             .ToList();
-        settings.CommonStartupGroups = _groupDefinitions
+        var currentGroups = _groupDefinitions
             .OrderBy(group => group.Order)
             .ThenBy(group => group.Name, StringComparer.OrdinalIgnoreCase)
             .Select(group => new CommonStartupGroup
@@ -233,7 +248,35 @@ public partial class CommonStartupWindow : Window
                 Order = group.Order
             })
             .ToList();
-        _persistence.SaveSettings(settings);
+
+        if (!allowStructureChange)
+        {
+            var persistedPathSet = new HashSet<string>(
+                normalized.CommonStartupItems
+                    .Where(item => item != null && !string.IsNullOrWhiteSpace(item.FullPath))
+                    .Select(item => item.FullPath),
+                StringComparer.OrdinalIgnoreCase);
+            var currentPathSet = new HashSet<string>(
+                currentItems
+                    .Where(item => item != null && !string.IsNullOrWhiteSpace(item.FullPath))
+                    .Select(item => item.FullPath),
+                StringComparer.OrdinalIgnoreCase);
+
+            var missingPersistedItems = persistedPathSet.Except(currentPathSet).Any();
+            var groupCountDecreased = currentGroups.Count < normalized.CommonStartupGroups.Count;
+            if (missingPersistedItems || groupCountDecreased)
+            {
+                LoggingService.LogInfo(
+                    $"[StartupItems] 阻止覆盖较新的磁盘数据。DiskItems={persistedPathSet.Count}, MemoryItems={currentPathSet.Count}, DiskGroups={normalized.CommonStartupGroups.Count}, MemoryGroups={currentGroups.Count}");
+                StatusText.Text = "检测到磁盘中的启动项配置比当前窗口更新，已阻止覆盖。请重新打开 Ctrl+Q。";
+                ReloadFromPersistence();
+                return false;
+            }
+        }
+
+        normalized.CommonStartupItems = currentItems;
+        normalized.CommonStartupGroups = currentGroups;
+        return _persistence.SaveSettings(normalized);
     }
 
     private void RefreshWorkbench()
@@ -668,7 +711,7 @@ public partial class CommonStartupWindow : Window
         _startupItems.Add(finalItem);
         _currentGroupName = finalItem.GroupName;
         SelectStartupItem(finalItem);
-        SaveItems();
+        SaveItems(allowStructureChange: true);
         RefreshWorkbench();
         StatusText.Text = $"已添加：{finalItem.Name}";
     }
@@ -701,7 +744,7 @@ public partial class CommonStartupWindow : Window
         }
 
         UpdateItemRuntimeState(item);
-        SaveItems();
+        SaveItems(allowStructureChange: true);
         SelectStartupItem(item);
         RefreshWorkbench();
         StatusText.Text = $"已更新：{item.Name}";
@@ -725,7 +768,7 @@ public partial class CommonStartupWindow : Window
             _selectedItem = null;
         }
 
-        SaveItems();
+        SaveItems(allowStructureChange: true);
         RefreshWorkbench();
         StatusText.Text = $"已删除：{item.Name}";
     }
@@ -875,7 +918,7 @@ public partial class CommonStartupWindow : Window
             Order = _groupDefinitions.Count + 1
         });
         _currentGroupName = groupName;
-        SaveItems();
+        SaveItems(allowStructureChange: true);
         HideNewGroupPanel();
         RefreshWorkbench();
         StatusText.Text = $"已创建分组：{groupName}";
@@ -955,7 +998,7 @@ public partial class CommonStartupWindow : Window
         if (_canUseIntegratedFileSearch)
         {
             StatusText.Text = "正在建立 MFT 索引，首次加载可能稍慢，请稍候。";
-            _ = EnsureIndexAsync(forceRescan: false);
+            _ = WaitForIndexReadyAsync(forceRescan: false);
         }
         else
         {
@@ -1739,7 +1782,7 @@ public partial class CommonStartupWindow : Window
             return;
         }
 
-        var nextOffset = childScrollViewer.VerticalOffset + (e.Delta > 0 ? -48d : 48d);
+        var nextOffset = childScrollViewer.VerticalOffset - e.Delta;
         nextOffset = Math.Max(0, Math.Min(childScrollViewer.ScrollableHeight, nextOffset));
         childScrollViewer.ScrollToVerticalOffset(nextOffset);
         e.Handled = true;
