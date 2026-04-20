@@ -55,6 +55,7 @@ public partial class CommonStartupWindow : Window
     private bool _suppressNavigationSelection;
     private int _searchVersion;
     private string _currentGroupName = string.Empty;
+    private string _groupNameBeforeSearch = string.Empty;
 
     public CommonStartupWindow(DataPersistenceService persistence)
     {
@@ -1163,9 +1164,26 @@ public partial class CommonStartupWindow : Window
     private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
     {
         _debounceTimer.Stop();
-        RefreshWorkbench();
 
         var keyword = GetSearchKeyword();
+
+        // 有搜索词时切到全部分组，清空时恢复
+        if (!string.IsNullOrWhiteSpace(keyword))
+        {
+            if (!string.IsNullOrWhiteSpace(_currentGroupName))
+            {
+                _groupNameBeforeSearch = _currentGroupName;
+                _currentGroupName = string.Empty;
+            }
+        }
+        else if (!string.IsNullOrWhiteSpace(_groupNameBeforeSearch))
+        {
+            _currentGroupName = _groupNameBeforeSearch;
+            _groupNameBeforeSearch = string.Empty;
+        }
+
+        RefreshWorkbench();
+
         if (!_canUseIntegratedFileSearch)
         {
             _scanResults.Clear();
