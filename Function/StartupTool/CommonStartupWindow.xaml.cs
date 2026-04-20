@@ -700,7 +700,6 @@ public partial class CommonStartupWindow : Window
         {
             EnsureGroupExists(item.GroupName);
             item.Order = GetNextItemOrder(item.GroupName, item);
-            _currentGroupName = item.GroupName;
         }
 
         UpdateItemRuntimeState(item);
