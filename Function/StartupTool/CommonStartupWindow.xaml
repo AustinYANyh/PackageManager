@@ -504,6 +504,7 @@
 
                     <ScrollViewer x:Name="WorkbenchScrollViewer"
                                   Grid.Column="2"
+                                  ScrollChanged="WorkbenchScrollViewer_ScrollChanged"
                                   VerticalScrollBarVisibility="Hidden"
                                   HorizontalScrollBarVisibility="Hidden"
                                   CanContentScroll="False">

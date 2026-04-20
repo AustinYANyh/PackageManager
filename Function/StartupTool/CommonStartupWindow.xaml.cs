@@ -55,7 +55,10 @@ public partial class CommonStartupWindow : Window
     private bool _suppressNavigationSelection;
     private int _searchVersion;
     private string _currentGroupName = string.Empty;
-    private string _groupNameBeforeSearch = string.Empty;
+    private bool _wasSearchKeywordActive;
+    private int _searchContextTrackingSuppressionCount;
+    private int _ignoredWorkbenchScrollChangeCount;
+    private WorkbenchSearchContext _searchRestoreContext;
 
     public CommonStartupWindow(DataPersistenceService persistence)
     {
@@ -461,6 +464,7 @@ public partial class CommonStartupWindow : Window
         if (nextIndex == currentIndex && currentIndex >= 0)
             return;
 
+        InvalidateSearchRestoreContext();
         SelectStartupItem(allVisible[nextIndex]);
         ScrollSelectedCardIntoView();
     }
@@ -1249,23 +1253,35 @@ public partial class CommonStartupWindow : Window
         _debounceTimer.Stop();
 
         var keyword = GetSearchKeyword();
+        var hasKeyword = !string.IsNullOrWhiteSpace(keyword);
 
-        // 有搜索词时切到全部分组，清空时恢复
-        if (!string.IsNullOrWhiteSpace(keyword))
+        if (hasKeyword && !_wasSearchKeywordActive)
+        {
+            CaptureSearchRestoreContext();
+        }
+
+        // 有搜索词时切到全部分组，清空时按搜索会话恢复原位
+        if (hasKeyword)
         {
             if (!string.IsNullOrWhiteSpace(_currentGroupName))
-            {
-                _groupNameBeforeSearch = _currentGroupName;
                 _currentGroupName = string.Empty;
-            }
+
+            RefreshWorkbench();
+            ScrollWorkbenchToTop();
         }
-        else if (!string.IsNullOrWhiteSpace(_groupNameBeforeSearch))
+        else if (_wasSearchKeywordActive)
         {
-            _currentGroupName = _groupNameBeforeSearch;
-            _groupNameBeforeSearch = string.Empty;
+            var restored = TryRestoreSearchContext();
+            if (!restored)
+                ClearSearchRestoreContext();
+
+            RefreshWorkbench();
+
+            if (!restored)
+                ScrollWorkbenchToTop();
         }
 
-        RefreshWorkbench();
+        _wasSearchKeywordActive = hasKeyword;
 
         if (!_canUseIntegratedFileSearch)
         {
@@ -1709,6 +1725,7 @@ public partial class CommonStartupWindow : Window
             return;
         }
 
+        InvalidateSearchRestoreContext();
         _currentView = nextView;
         RefreshWorkbench();
         ScrollWorkbenchToTop();
@@ -1727,6 +1744,7 @@ public partial class CommonStartupWindow : Window
             return;
         }
 
+        InvalidateSearchRestoreContext();
         _currentGroupName = nextGroupName;
         RefreshWorkbench();
         ScrollWorkbenchToTop();
@@ -1736,7 +1754,7 @@ public partial class CommonStartupWindow : Window
     {
         Dispatcher.BeginInvoke(new Action(() =>
         {
-            WorkbenchScrollViewer?.ScrollToVerticalOffset(0);
+            ScrollWorkbenchToOffset(0d);
         }), DispatcherPriority.Background);
     }
 
@@ -1750,24 +1768,40 @@ public partial class CommonStartupWindow : Window
 
     private void AllViewButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_currentView == StartupViewKind.All)
+            return;
+
+        InvalidateSearchRestoreContext();
         _currentView = StartupViewKind.All;
         RefreshWorkbench();
     }
 
     private void RecentViewButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_currentView == StartupViewKind.Recent)
+            return;
+
+        InvalidateSearchRestoreContext();
         _currentView = StartupViewKind.Recent;
         RefreshWorkbench();
     }
 
     private void FavoriteViewButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_currentView == StartupViewKind.Favorites)
+            return;
+
+        InvalidateSearchRestoreContext();
         _currentView = StartupViewKind.Favorites;
         RefreshWorkbench();
     }
 
     private void BrokenViewButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_currentView == StartupViewKind.Broken)
+            return;
+
+        InvalidateSearchRestoreContext();
         _currentView = StartupViewKind.Broken;
         RefreshWorkbench();
     }
@@ -1809,6 +1843,8 @@ public partial class CommonStartupWindow : Window
 
         if ((sender as FrameworkElement)?.Tag is StartupItemVm item)
         {
+            if (!ReferenceEquals(_selectedItem, item))
+                InvalidateSearchRestoreContext();
             SelectStartupItem(item);
         }
     }
@@ -1889,6 +1925,20 @@ public partial class CommonStartupWindow : Window
         e.Handled = true;
     }
 
+    private void WorkbenchScrollViewer_ScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        if (e.VerticalChange == 0 || _searchContextTrackingSuppressionCount > 0)
+            return;
+
+        if (_ignoredWorkbenchScrollChangeCount > 0)
+        {
+            _ignoredWorkbenchScrollChangeCount--;
+            return;
+        }
+
+        InvalidateSearchRestoreContext();
+    }
+
     private void LeftSidebarList_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
     {
         BubbleMouseWheelToScrollViewer(sender, e, LeftSidebarScrollViewer);
@@ -1967,6 +2017,91 @@ public partial class CommonStartupWindow : Window
     private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();
 
     private string GetSearchKeyword() => SearchBox.Text?.Trim() ?? string.Empty;
+
+    private void CaptureSearchRestoreContext()
+    {
+        _searchRestoreContext = new WorkbenchSearchContext
+        {
+            View = _currentView,
+            GroupName = _currentGroupName,
+            SelectedItemPath = _selectedItem?.FullPath ?? string.Empty,
+            VerticalOffset = WorkbenchScrollViewer?.VerticalOffset ?? 0d,
+            CanRestore = true
+        };
+    }
+
+    private void ClearSearchRestoreContext()
+    {
+        _searchRestoreContext = null;
+    }
+
+    private void InvalidateSearchRestoreContext()
+    {
+        if (!_wasSearchKeywordActive || _searchContextTrackingSuppressionCount > 0 || _searchRestoreContext == null)
+            return;
+
+        _searchRestoreContext.CanRestore = false;
+    }
+
+    private bool TryRestoreSearchContext()
+    {
+        var context = _searchRestoreContext;
+        if (context == null)
+            return false;
+
+        ClearSearchRestoreContext();
+        if (!context.CanRestore)
+            return false;
+
+        SuppressSearchContextTracking(delegate
+        {
+            _currentView = context.View;
+            _currentGroupName = context.GroupName ?? string.Empty;
+        });
+
+        Dispatcher.BeginInvoke(new Action(delegate
+        {
+            SuppressSearchContextTracking(delegate
+            {
+                var selected = string.IsNullOrWhiteSpace(context.SelectedItemPath)
+                    ? null
+                    : _startupItems.FirstOrDefault(item => string.Equals(item.FullPath, context.SelectedItemPath, StringComparison.OrdinalIgnoreCase));
+                if (selected != null)
+                    SelectStartupItem(selected);
+
+                var targetOffset = Math.Max(0, context.VerticalOffset);
+                if (WorkbenchScrollViewer != null)
+                    ScrollWorkbenchToOffset(Math.Min(targetOffset, WorkbenchScrollViewer.ScrollableHeight));
+            });
+        }), DispatcherPriority.Loaded);
+
+        return true;
+    }
+
+    private void ScrollWorkbenchToOffset(double targetOffset)
+    {
+        if (WorkbenchScrollViewer == null)
+            return;
+
+        var boundedOffset = Math.Max(0d, Math.Min(targetOffset, WorkbenchScrollViewer.ScrollableHeight));
+        if (Math.Abs(WorkbenchScrollViewer.VerticalOffset - boundedOffset) > 0.1d)
+            _ignoredWorkbenchScrollChangeCount++;
+
+        SuppressSearchContextTracking(() => WorkbenchScrollViewer.ScrollToVerticalOffset(boundedOffset));
+    }
+
+    private void SuppressSearchContextTracking(Action action)
+    {
+        _searchContextTrackingSuppressionCount++;
+        try
+        {
+            action?.Invoke();
+        }
+        finally
+        {
+            _searchContextTrackingSuppressionCount--;
+        }
+    }
 
     private bool MatchesCurrentView(StartupItemVm item)
     {
@@ -2191,6 +2326,19 @@ public partial class CommonStartupWindow : Window
         public SearchQueryResult Response { get; set; }
 
         public IReadOnlyList<ScanResultItem> Results { get; set; }
+    }
+
+    private sealed class WorkbenchSearchContext
+    {
+        public StartupViewKind View { get; set; }
+
+        public string GroupName { get; set; }
+
+        public string SelectedItemPath { get; set; }
+
+        public double VerticalOffset { get; set; }
+
+        public bool CanRestore { get; set; }
     }
 }
 
