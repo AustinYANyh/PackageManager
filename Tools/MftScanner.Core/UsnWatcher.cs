@@ -202,6 +202,8 @@ namespace MftScanner
             public ulong  JournalId;
             public CancellationTokenSource Cts;
             public Task   WatchTask;
+            public Dictionary<ulong, (string oldName, ulong oldParentFrn)> PendingRenameOldByFrn
+                = new Dictionary<ulong, (string oldName, ulong oldParentFrn)>();
         }
 
         private readonly Dictionary<char, VolumeWatchState> _volumes
@@ -482,9 +484,6 @@ namespace MftScanner
             ref UsnJournalData journalData, IntPtr buffer, int bufferSize, CancellationToken ct,
             bool raiseOverflowEvent, List<UsnChangeEntry> collectedChanges)
         {
-            string pendingOldName   = null;
-            ulong  pendingOldParent = 0;
-
             var readData = new ReadUsnJournalData
             {
                 StartUsn          = state.NextUsn,
@@ -549,13 +548,13 @@ namespace MftScanner
 
                         if (isOldName)
                         {
-                            pendingOldName   = fileName;
-                            pendingOldParent = parentFrn;
+                            state.PendingRenameOldByFrn[frn] = (fileName, parentFrn);
                         }
-                        else if (isNewName && pendingOldName != null)
+                        else if (isNewName
+                                 && state.PendingRenameOldByFrn.TryGetValue(frn, out var pendingRenameOld))
                         {
                             var lowerName = fileName.ToLowerInvariant();
-                            var oldLowerName = pendingOldName.ToLowerInvariant();
+                            var oldLowerName = pendingRenameOld.oldName.ToLowerInvariant();
                             if (collectedChanges != null)
                             {
                                 AppendCollectedChange(collectedChanges, new UsnChangeEntry(
@@ -567,7 +566,7 @@ namespace MftScanner
                                     driveLetter: state.DriveLetter,
                                     isDirectory: isDir,
                                     oldLowerName: oldLowerName,
-                                    oldParentFrn: pendingOldParent));
+                                    oldParentFrn: pendingRenameOld.oldParentFrn));
                             }
                             else
                             {
@@ -581,17 +580,17 @@ namespace MftScanner
 
                                 FileRenamed?.Invoke(this, new UsnFileRenamedEventArgs(
                                     oldLowerName: oldLowerName,
-                                    oldParentFrn: pendingOldParent,
+                                    oldParentFrn: pendingRenameOld.oldParentFrn,
                                     newFrn: frn,
                                     driveLetter: state.DriveLetter,
                                     newRecord: newRecord));
                             }
 
-                            pendingOldName   = null;
-                            pendingOldParent = 0;
+                            state.PendingRenameOldByFrn.Remove(frn);
                         }
                         else if (isDelete)
                         {
+                            state.PendingRenameOldByFrn.Remove(frn);
                             var lowerName = fileName.ToLowerInvariant();
                             if (collectedChanges != null)
                             {
@@ -668,3 +667,4 @@ namespace MftScanner
         }
     }
 }
+
