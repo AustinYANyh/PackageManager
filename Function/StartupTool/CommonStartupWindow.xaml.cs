@@ -449,6 +449,69 @@ public partial class CommonStartupWindow : Window
         }
     }
 
+    private void NavigateSelection(int delta)
+    {
+        // 当前显示的所有卡片：featured 在前，workspace 在后
+        var allVisible = _featuredItems.Concat(_workspaceItems).ToList();
+        if (allVisible.Count == 0)
+            return;
+
+        var currentIndex = _selectedItem == null ? -1 : allVisible.IndexOf(_selectedItem);
+        var nextIndex = Math.Max(0, Math.Min(allVisible.Count - 1, currentIndex + delta));
+        if (nextIndex == currentIndex && currentIndex >= 0)
+            return;
+
+        SelectStartupItem(allVisible[nextIndex]);
+        ScrollSelectedCardIntoView();
+    }
+
+    private void ScrollSelectedCardIntoView()
+    {
+        if (_selectedItem == null || WorkbenchScrollViewer == null)
+            return;
+
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            // 在 FeaturedItemsControl 和 WorkspaceItemsControl 中找选中卡片的容器
+            var card = FindCardElement(FeaturedItemsControl, _selectedItem)
+                       ?? FindCardElement(WorkspaceItemsControl, _selectedItem);
+            if (card == null)
+                return;
+
+            var transform = card.TransformToAncestor(WorkbenchScrollViewer);
+            var cardTop = transform.Transform(new Point(0, 0)).Y + WorkbenchScrollViewer.VerticalOffset;
+            var cardBottom = cardTop + card.ActualHeight;
+            var viewTop = WorkbenchScrollViewer.VerticalOffset;
+            var viewBottom = viewTop + WorkbenchScrollViewer.ViewportHeight;
+
+            if (cardTop < viewTop)
+                WorkbenchScrollViewer.ScrollToVerticalOffset(cardTop - 16);
+            else if (cardBottom > viewBottom)
+                WorkbenchScrollViewer.ScrollToVerticalOffset(cardBottom - WorkbenchScrollViewer.ViewportHeight + 16);
+        }), DispatcherPriority.Background);
+    }
+
+    private FrameworkElement FindCardElement(ItemsControl itemsControl, StartupItemVm item)
+    {
+        if (itemsControl == null || item == null)
+            return null;
+
+        for (var i = 0; i < itemsControl.Items.Count; i++)
+        {
+            if (!ReferenceEquals(itemsControl.Items[i], item))
+                continue;
+
+            var container = itemsControl.ItemContainerGenerator.ContainerFromIndex(i) as FrameworkElement;
+            if (container == null)
+                return null;
+
+            // ItemsControl 的容器是 ContentPresenter，实际卡片是其第一个子元素 Border
+            return FindVisualChild<Border>(container) ?? container;
+        }
+
+        return null;
+    }
+
     private void RefreshHeader(IReadOnlyCollection<StartupItemVm> visibleItems, IReadOnlyCollection<StartupItemVm> featuredItems, IReadOnlyCollection<StartupItemVm> workspaceItems)
     {
         var viewTitle = GetViewTitle(_currentView);
@@ -1054,6 +1117,26 @@ public partial class CommonStartupWindow : Window
 
         if (SearchBox.IsKeyboardFocusWithin || IsTextEditingControl())
         {
+            // 搜索框有焦点时，Enter 启动选中项，方向键切换选中项
+            if (_selectedItem != null && e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.None)
+            {
+                LaunchItem(_selectedItem);
+                e.Handled = true;
+            }
+            else if (_selectedItem != null && e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Control)
+            {
+                OpenItemFolder(_selectedItem.FullPath);
+                e.Handled = true;
+            }
+            else if (e.Key == Key.Down || e.Key == Key.Up)
+            {
+                NavigateSelection(e.Key == Key.Down ? 1 : -1);
+                e.Handled = true;
+            }
+            else if (!SearchBox.IsKeyboardFocusWithin)
+            {
+                // 其他文本编辑控件，不拦截
+            }
             return;
         }
 

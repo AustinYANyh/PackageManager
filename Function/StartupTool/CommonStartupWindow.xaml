@@ -38,6 +38,7 @@
             <Setter Property="FontSize" Value="12" />
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
@@ -953,9 +954,9 @@
                                             <ColumnDefinition Width="8" />
                                             <ColumnDefinition Width="*" />
                                         </Grid.ColumnDefinitions>
-                                        <button:CButton x:Name="AddCandidateButton" Grid.Column="0" Content="加入分组" Height="34" Click="AddCandidateButton_Click" />
-                                        <button:CButton x:Name="OpenCandidateFolderButton" Grid.Column="2" Content="目录" Height="34" Click="OpenCandidateFolderButton_Click" />
-                                        <button:CButton x:Name="CopyCandidatePathButton" Grid.Column="4" Content="路径" Height="34" Click="CopyCandidatePathButton_Click" />
+                                        <button:CButton x:Name="AddCandidateButton" Grid.Column="0" Content="加入当前分组" Height="34" Click="AddCandidateButton_Click" />
+                                        <button:CButton x:Name="OpenCandidateFolderButton" Grid.Column="2" Content="打开选中项目录" Height="34" Click="OpenCandidateFolderButton_Click" />
+                                        <button:CButton x:Name="CopyCandidatePathButton" Grid.Column="4" Content="复制完整路径" Height="34" Click="CopyCandidatePathButton_Click" />
                                     </Grid>
                                 </StackPanel>
                             </Border>
