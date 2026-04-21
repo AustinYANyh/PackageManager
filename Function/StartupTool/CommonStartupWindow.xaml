@@ -229,7 +229,7 @@
                                                   VerticalContentAlignment="Center"
                                                   TextChanged="SearchBox_TextChanged"
                                                   KeyDown="SearchBox_KeyDown"
-                                                  ToolTip="搜索已有启动项；本人账号还会联动文件搜索候选" />
+                                                  ToolTip="搜索已有启动项；启用后还会联动文件搜索候选" />
                                     </Grid>
                                 </Border>
 

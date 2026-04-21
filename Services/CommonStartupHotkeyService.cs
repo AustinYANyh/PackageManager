@@ -50,10 +50,7 @@ namespace PackageManager.Services
             }
             else
             {
-                var logMessage = UserFeatureAccessService.CanUseAustinOnlyFeatures
-                    ? $"全局热键已启用：{DefaultHotkeyDisplayText} 打开常用启动项，{DefaultFileSearchHotkeyDisplayText} 打开文件搜索"
-                    : $"全局热键已启用：{DefaultHotkeyDisplayText} 打开常用启动项";
-                LoggingService.LogInfo(logMessage);
+                LoggingService.LogInfo($"全局热键已启用：{DefaultHotkeyDisplayText} 打开常用启动项，{DefaultFileSearchHotkeyDisplayText} 打开文件搜索");
             }
         }
 
@@ -83,8 +80,7 @@ namespace PackageManager.Services
 
                 if (message == WmKeyDown || message == WmSysKeyDown)
                 {
-                    var fileSearchHotkeyEnabled = UserFeatureAccessService.CanUseAustinOnlyFeatures;
-                    var isSupportedHotkey = keyInfo.VkCode == VkQ || (fileSearchHotkeyEnabled && keyInfo.VkCode == VkE);
+                    var isSupportedHotkey = keyInfo.VkCode == VkQ || keyInfo.VkCode == VkE;
                     if (isSupportedHotkey && IsOnlyControlPressed() && !_hotkeyConsumed)
                     {
                         _hotkeyConsumed = true;
@@ -113,7 +109,7 @@ namespace PackageManager.Services
                                 LoggingService.LogInfo($"触发常用启动项全局热键：{DefaultHotkeyDisplayText}");
                                 ThreadPool.QueueUserWorkItem(_ => _windowManager.ShowOrActivate());
                             }
-                            else if (hotkeyVkCode == VkE && UserFeatureAccessService.CanUseAustinOnlyFeatures)
+                            else if (hotkeyVkCode == VkE)
                             {
                                 LoggingService.LogInfo($"触发文件搜索全局热键：{DefaultFileSearchHotkeyDisplayText}");
                                 ThreadPool.QueueUserWorkItem(_ => _fileSearchWindowManager.ShowOrActivate());

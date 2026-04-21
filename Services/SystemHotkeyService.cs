@@ -87,18 +87,15 @@ namespace PackageManager.Services
                 LoggingService.LogInfo("系统热键 Ctrl+Q 注册成功");
             }
 
-            if (UserFeatureAccessService.CanUseAustinOnlyFeatures)
+            _ctrlERegistered = RegisterHotKey(_hwndSource.Handle, HotkeyIdCtrlE, ModControl | ModNoRepeat, (uint)VkE);
+            if (!_ctrlERegistered)
             {
-                _ctrlERegistered = RegisterHotKey(_hwndSource.Handle, HotkeyIdCtrlE, ModControl | ModNoRepeat, (uint)VkE);
-                if (!_ctrlERegistered)
-                {
-                    var err = Marshal.GetLastWin32Error();
-                    LoggingService.LogWarning($"RegisterHotKey Ctrl+E 失败，Win32Error={err}（可能被其他程序占用）");
-                }
-                else
-                {
-                    LoggingService.LogInfo("系统热键 Ctrl+E 注册成功");
-                }
+                var err = Marshal.GetLastWin32Error();
+                LoggingService.LogWarning($"RegisterHotKey Ctrl+E 失败，Win32Error={err}（可能被其他程序占用）");
+            }
+            else
+            {
+                LoggingService.LogInfo("系统热键 Ctrl+E 注册成功");
             }
         }
 
@@ -133,7 +130,7 @@ namespace PackageManager.Services
                     ThreadPool.QueueUserWorkItem(_ => _windowManager.ShowOrActivate());
                     handled = true;
                 }
-                else if (id == HotkeyIdCtrlE && UserFeatureAccessService.CanUseAustinOnlyFeatures)
+                else if (id == HotkeyIdCtrlE)
                 {
                     LoggingService.LogInfo("系统热键触发：Ctrl+E");
                     ThreadPool.QueueUserWorkItem(_ => _fileSearchWindowManager.ShowOrActivate());

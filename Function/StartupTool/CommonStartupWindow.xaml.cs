@@ -604,7 +604,7 @@ public partial class CommonStartupWindow : Window
         if (!_canUseIntegratedFileSearch)
         {
             QueueCandidateTitleText.Text = "文件搜索联动未启用";
-            QueueCandidateHintText.Text = "当前用户只能筛选已有工作台条目，不能调用集成文件搜索候选。";
+            QueueCandidateHintText.Text = "当前只能筛选已有工作台条目，不能调用集成文件搜索候选。";
             return;
         }
 
@@ -672,9 +672,9 @@ public partial class CommonStartupWindow : Window
 
         if (!_canUseIntegratedFileSearch)
         {
-            CandidateHintText.Text = "当前用户未启用集成文件搜索。上方搜索仍可筛选已有启动项。";
+            CandidateHintText.Text = "当前未启用集成文件搜索。上方搜索仍可筛选已有启动项。";
             CandidateNameText.Text = "未启用文件搜索联动";
-            CandidatePathText.Text = "只有本人账号会在这里展示来自 MFT 索引的候选。";
+            CandidatePathText.Text = "启用后，这里会展示来自 MFT 索引的候选。";
             CandidateSuggestionText.Text = string.Empty;
             SetCandidateListInteraction(false);
             SetCandidateButtonsEnabled(false);
@@ -1051,7 +1051,7 @@ public partial class CommonStartupWindow : Window
     {
         KeyboardHintText.Text = _canUseIntegratedFileSearch
             ? "Esc 隐藏 · Enter 启动 · Ctrl+Enter 打开目录 · F2 编辑 · Delete 删除 · Ctrl+C 复制路径"
-            : "Esc 隐藏 · Enter 启动 · Ctrl+Enter 打开目录 · F2 编辑 · Delete 删除 · Ctrl+C 复制路径 · 当前用户禁用文件搜索联动";
+            : "Esc 隐藏 · Enter 启动 · Ctrl+Enter 打开目录 · F2 编辑 · Delete 删除 · Ctrl+C 复制路径 · 当前未启用文件搜索联动";
     }
 
     private void Window_Loaded(object sender, RoutedEventArgs e)
@@ -1070,7 +1070,7 @@ public partial class CommonStartupWindow : Window
         }
         else
         {
-            StatusText.Text = "就绪，可筛选当前工作台条目；文件搜索联动仅本人可用。";
+            StatusText.Text = "就绪，可筛选当前工作台条目；文件搜索联动当前未启用。";
         }
     }
 
@@ -1266,7 +1266,7 @@ public partial class CommonStartupWindow : Window
             if (!string.IsNullOrWhiteSpace(_currentGroupName))
                 _currentGroupName = string.Empty;
 
-            RefreshWorkbench();
+            SuppressSearchContextTrackingUntilLayoutSettled(RefreshWorkbench);
             ScrollWorkbenchToTop();
         }
         else if (_wasSearchKeywordActive)
@@ -1275,7 +1275,7 @@ public partial class CommonStartupWindow : Window
             if (!restored)
                 ClearSearchRestoreContext();
 
-            RefreshWorkbench();
+            SuppressSearchContextTrackingUntilLayoutSettled(RefreshWorkbench);
 
             if (!restored)
                 ScrollWorkbenchToTop();
@@ -1290,7 +1290,7 @@ public partial class CommonStartupWindow : Window
             RefreshQueue();
             if (string.IsNullOrWhiteSpace(keyword))
             {
-                StatusText.Text = "就绪，可筛选当前工作台条目；文件搜索联动仅本人可用。";
+                StatusText.Text = "就绪，可筛选当前工作台条目；文件搜索联动当前未启用。";
             }
             else
             {
@@ -1338,7 +1338,7 @@ public partial class CommonStartupWindow : Window
     {
         if (!_canUseIntegratedFileSearch)
         {
-            StatusText.Text = "当前用户未启用文件搜索联动。";
+            StatusText.Text = "当前未启用文件搜索联动。";
             return;
         }
 
@@ -2103,6 +2103,23 @@ public partial class CommonStartupWindow : Window
         }
     }
 
+    private void SuppressSearchContextTrackingUntilLayoutSettled(Action action)
+    {
+        _searchContextTrackingSuppressionCount++;
+        try
+        {
+            action?.Invoke();
+        }
+        finally
+        {
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                if (_searchContextTrackingSuppressionCount > 0)
+                    _searchContextTrackingSuppressionCount--;
+            }), DispatcherPriority.Loaded);
+        }
+    }
+
     private bool MatchesCurrentView(StartupItemVm item)
     {
         return _currentView switch
@@ -2292,8 +2309,9 @@ public partial class CommonStartupWindow : Window
 
     private static bool CanUseIntegratedFileSearch()
     {
-        return Environment.UserName.Equals("AustinYanyh", StringComparison.OrdinalIgnoreCase)
-               || Environment.UserName.Equals("AustinYan", StringComparison.OrdinalIgnoreCase);
+        // return Environment.UserName.Equals("AustinYanyh", StringComparison.OrdinalIgnoreCase)
+        //        || Environment.UserName.Equals("AustinYan", StringComparison.OrdinalIgnoreCase);
+        return true;
     }
 
     private static string CompactMiddleText(string text, int maxLength)

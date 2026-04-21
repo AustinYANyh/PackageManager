@@ -216,11 +216,6 @@ namespace PackageManager
 
         internal void ShowFileSearchWindow()
         {
-            if (!UserFeatureAccessService.CanUseAustinOnlyFeatures)
-            {
-                return;
-            }
-
             _fileSearchWindowManager?.ShowOrActivate();
         }
     }

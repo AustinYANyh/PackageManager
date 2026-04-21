@@ -38,7 +38,6 @@ public partial class PackagesHomePage : Page
         if (!UserFeatureAccessService.CanUseAustinOnlyFeatures)
         {
             KiroProxyButton.IsEnabled = false;
-            FileSearchButton.IsEnabled = false;
         }
     }
 

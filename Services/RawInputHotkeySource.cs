@@ -219,7 +219,7 @@ namespace PackageManager.Services
                         LoggingService.LogInfo($"Raw Input 触发常用启动项热键：Ctrl+Q");
                         ThreadPool.QueueUserWorkItem(_ => _windowManager.ShowOrActivate());
                     }
-                    else if (vkCode == VkE && UserFeatureAccessService.CanUseAustinOnlyFeatures)
+                    else if (vkCode == VkE)
                     {
                         LoggingService.LogInfo($"Raw Input 触发文件搜索热键：Ctrl+E");
                         ThreadPool.QueueUserWorkItem(_ => _fileSearchWindowManager.ShowOrActivate());
@@ -233,8 +233,7 @@ namespace PackageManager.Services
             if (IsModifierKey(vk)) return;
             if (IsOtherModifierPressed()) return;
 
-            var fileSearchEnabled = UserFeatureAccessService.CanUseAustinOnlyFeatures;
-            if (vk == VkQ || (fileSearchEnabled && vk == VkE))
+            if (vk == VkQ || vk == VkE)
             {
                 _hotkeyArmed = true;
                 _armedVkCode = vk;
