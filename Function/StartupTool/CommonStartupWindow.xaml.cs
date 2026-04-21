@@ -884,12 +884,20 @@ public partial class CommonStartupWindow : Window
 
         try
         {
-            Process.Start(new ProcessStartInfo
+            var startInfo = new ProcessStartInfo
             {
                 FileName = item.FullPath,
                 Arguments = item.Arguments ?? string.Empty,
                 UseShellExecute = true
-            });
+            };
+
+            var workingDirectory = GetLaunchWorkingDirectory(item.FullPath);
+            if (!string.IsNullOrWhiteSpace(workingDirectory))
+            {
+                startInfo.WorkingDirectory = workingDirectory;
+            }
+
+            Process.Start(startInfo);
 
             item.LastLaunchedAt = DateTime.Now;
             item.LaunchCount++;
@@ -904,6 +912,25 @@ public partial class CommonStartupWindow : Window
             RefreshWorkbench();
             MessageBox.Show($"启动失败：{ex.Message}", "常用启动项", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    private static string GetLaunchWorkingDirectory(string fullPath)
+    {
+        if (!ShouldLaunchFromItemDirectory(fullPath))
+        {
+            return null;
+        }
+
+        var directory = System.IO.Path.GetDirectoryName(fullPath);
+        return Directory.Exists(directory) ? directory : null;
+    }
+
+    private static bool ShouldLaunchFromItemDirectory(string fullPath)
+    {
+        var extension = System.IO.Path.GetExtension(fullPath) ?? string.Empty;
+        return extension.Equals(".ps1", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".bat", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".cmd", StringComparison.OrdinalIgnoreCase);
     }
 
     private void OpenItemFolder(string fullPath)
