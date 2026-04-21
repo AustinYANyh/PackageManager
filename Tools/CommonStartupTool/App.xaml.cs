@@ -239,10 +239,6 @@ public partial class App : Application
             return;
         }
 
-        window.Topmost = true;
-        window.Activate();
-        window.Topmost = false;
-
         var handle = new WindowInteropHelper(window).Handle;
         if (handle == IntPtr.Zero)
         {
@@ -259,7 +255,14 @@ public partial class App : Application
         }
 
         BringWindowToTop(handle);
-        SetForegroundWindow(handle);
+        if (!SetForegroundWindow(handle))
+        {
+            // SetForegroundWindow 失败时用 Topmost 回退
+            window.Topmost = true;
+            window.Activate();
+            window.Topmost = false;
+            SetForegroundWindow(handle);
+        }
     }
 
     private void StartOwnerMonitor()

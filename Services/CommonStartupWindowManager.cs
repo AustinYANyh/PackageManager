@@ -26,18 +26,6 @@ namespace PackageManager.Services
 
         public void ShowOrActivate()
         {
-            var dispatcher = Application.Current?.Dispatcher;
-            if (dispatcher == null)
-            {
-                return;
-            }
-
-            if (!dispatcher.CheckAccess())
-            {
-                dispatcher.BeginInvoke(new Action(ShowOrActivate));
-                return;
-            }
-
             if (TrySignalShowRequest())
             {
                 return;
@@ -99,7 +87,8 @@ namespace PackageManager.Services
                 var exePath = AdminElevationService.ExtractEmbeddedTool("CommonStartupTool.exe", "CommonStartupTool.exe");
                 if (string.IsNullOrEmpty(exePath))
                 {
-                    MessageBox.Show("未找到 CommonStartupTool.exe 工具，请检查安装。", "常用启动项", MessageBoxButton.OK, MessageBoxImage.Error);
+                    Application.Current?.Dispatcher.BeginInvoke(new Action(() =>
+                        MessageBox.Show("未找到 CommonStartupTool.exe 工具，请检查安装。", "常用启动项", MessageBoxButton.OK, MessageBoxImage.Error)));
                     return;
                 }
 
@@ -121,7 +110,8 @@ namespace PackageManager.Services
             catch (Exception ex)
             {
                 LoggingService.LogError(ex, "打开常用启动项工具失败");
-                MessageBox.Show($"打开常用启动项工具失败：{ex.Message}", "常用启动项", MessageBoxButton.OK, MessageBoxImage.Error);
+                Application.Current?.Dispatcher.BeginInvoke(new Action(() =>
+                    MessageBox.Show($"打开常用启动项工具失败：{ex.Message}", "常用启动项", MessageBoxButton.OK, MessageBoxImage.Error)));
             }
         }
 

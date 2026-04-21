@@ -17,7 +17,7 @@ namespace PackageManager
     {
         private CommonStartupWindowManager _commonStartupWindowManager;
         private FileSearchWindowManager _fileSearchWindowManager;
-        private CommonStartupHotkeyService _commonStartupHotkeyService;
+        private SystemHotkeyService _systemHotkeyService;
 
         internal CommonStartupWindowManager CommonStartupWindowManager => _commonStartupWindowManager;
         internal FileSearchWindowManager FileSearchWindowManager => _fileSearchWindowManager;
@@ -183,7 +183,7 @@ namespace PackageManager
         {
             try
             {
-                _commonStartupHotkeyService?.Dispose();
+                _systemHotkeyService?.Dispose();
                 _commonStartupWindowManager?.Shutdown();
                 _fileSearchWindowManager?.Shutdown();
             }
@@ -200,8 +200,8 @@ namespace PackageManager
             {
                 _commonStartupWindowManager = new CommonStartupWindowManager();
                 _fileSearchWindowManager = new FileSearchWindowManager();
-                _commonStartupHotkeyService = new CommonStartupHotkeyService(_commonStartupWindowManager, _fileSearchWindowManager);
-                _commonStartupHotkeyService.Start();
+                _systemHotkeyService = new SystemHotkeyService(_commonStartupWindowManager, _fileSearchWindowManager);
+                _systemHotkeyService.Start();
             }
             catch (Exception ex)
             {

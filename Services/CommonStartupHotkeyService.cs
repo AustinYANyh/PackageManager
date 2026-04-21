@@ -90,6 +90,9 @@ namespace PackageManager.Services
                         _hotkeyConsumed = true;
                         _hotkeyPendingActivation = true;
                         _pendingHotkeyVkCode = keyInfo.VkCode;
+                        // 注入假的 Ctrl KeyUp，打断 VS 等通过 RegisterHotKey 注册的热键序列。
+                        // RegisterHotKey 优先级高于 WH_KEYBOARD_LL，仅靠返回非零值无法阻止。
+                        InjectCtrlKeyUp();
                         return (IntPtr)1;
                     }
                 }
@@ -129,6 +132,27 @@ namespace PackageManager.Services
             }
 
             return CallNextHookEx(_hookHandle, nCode, wParam, lParam);
+        }
+
+        /// <summary>
+        /// 注入一个合成的 Ctrl KeyUp 事件，用于打断 VS 等通过 RegisterHotKey 注册的热键序列。
+        /// KEYEVENTF_KEYUP | KEYEVENTF_SCANCODE，标记为合成输入（dwExtraInfo=0）。
+        /// </summary>
+        private static void InjectCtrlKeyUp()
+        {
+            var input = new Input
+            {
+                Type = 1, // INPUT_KEYBOARD
+                Ki = new KeyboardInput
+                {
+                    Vk = VkControl,
+                    Scan = 0x1D, // Left Ctrl scan code
+                    Flags = 0x0002, // KEYEVENTF_KEYUP
+                    Time = 0,
+                    ExtraInfo = IntPtr.Zero
+                }
+            };
+            SendInput(1, ref input, Marshal.SizeOf<Input>());
         }
 
         private static bool IsOnlyControlPressed()
@@ -177,5 +201,25 @@ namespace PackageManager.Services
 
         [DllImport("user32.dll")]
         private static extern short GetAsyncKeyState(int vKey);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern uint SendInput(uint nInputs, ref Input pInputs, int cbSize);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct KeyboardInput
+        {
+            public ushort Vk;
+            public ushort Scan;
+            public uint Flags;
+            public uint Time;
+            public IntPtr ExtraInfo;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct Input
+        {
+            public uint Type;
+            public KeyboardInput Ki;
+        }
     }
 }

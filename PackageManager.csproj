@@ -165,6 +165,8 @@
         <Compile Include="Services\CommonStartupHotkeyService.cs" />
         <Compile Include="Services\CommonStartupWindowManager.cs" />
         <Compile Include="Services\FileSearchWindowManager.cs" />
+        <Compile Include="Services\RawInputHotkeySource.cs" />
+        <Compile Include="Services\SystemHotkeyService.cs" />
         <Compile Include="Services\DebugSettingsService.cs" />
         <Compile Include="Services\EmbeddedToolRunnerService.cs" />
         <Compile Include="Services\LoggingService.cs" />
