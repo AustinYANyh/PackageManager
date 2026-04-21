@@ -130,7 +130,7 @@
                                 <ColumnDefinition Width="*" />
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
-                            <TextBox x:Name="SearchBox" BorderThickness="0" Background="Transparent" FontSize="24" FontWeight="SemiBold" VerticalContentAlignment="Center" TextChanged="SearchBox_TextChanged" KeyDown="SearchBox_KeyDown" />
+                            <TextBox x:Name="SearchBox" BorderThickness="0" Background="Transparent" FontSize="24" FontWeight="SemiBold" VerticalContentAlignment="Center" TextChanged="SearchBox_TextChanged" PreviewKeyDown="SearchBox_KeyDown" />
                             <TextBlock Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Center" Text="例: 输入关键词；可在路径限定中下拉选择范围" FontSize="12" Foreground="{StaticResource MutedBrush}" />
                         </Grid>
                     </Border>

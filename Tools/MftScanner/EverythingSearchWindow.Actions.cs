@@ -62,15 +62,30 @@ namespace MftScanner
             else if (e.Key == Key.Down && _displayedResults.Count > 0)
             {
                 e.Handled = true;
-                ResultsGrid.SelectedItem = _displayedResults[0];
-                ResultsGrid.Focus();
+                MoveSearchResultSelection(1);
             }
             else if (e.Key == Key.Up && _displayedResults.Count > 0)
             {
                 e.Handled = true;
-                ResultsGrid.SelectedItem = _displayedResults[_displayedResults.Count - 1];
-                ResultsGrid.Focus();
+                MoveSearchResultSelection(-1);
             }
+        }
+
+        private void MoveSearchResultSelection(int delta)
+        {
+            if (_displayedResults.Count == 0)
+                return;
+
+            var currentItem = ResultsGrid.SelectedItem as EverythingSearchResultItem;
+            var currentIndex = currentItem == null ? -1 : _displayedResults.IndexOf(currentItem);
+            var nextIndex = currentIndex < 0
+                ? (delta >= 0 ? 0 : _displayedResults.Count - 1)
+                : Math.Max(0, Math.Min(_displayedResults.Count - 1, currentIndex + delta));
+            var nextItem = _displayedResults[nextIndex];
+
+            ResultsGrid.SelectedItem = nextItem;
+            EnsureCurrentCellSelection(nextItem);
+            ResultsGrid.ScrollIntoView(nextItem);
         }
 
         private void ResultsGrid_PreviewKeyDown(object sender, KeyEventArgs e)
