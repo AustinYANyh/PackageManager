@@ -1283,6 +1283,7 @@ public partial class CommonStartupWindow : Window
         }
 
         _debounceTimer.Stop();
+        ApplyPendingSearchKeyword(startFileSearch: false);
         _ = StartScanAsync(forceRescan: false);
         e.Handled = true;
     }
@@ -1307,67 +1308,13 @@ public partial class CommonStartupWindow : Window
     private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
     {
         _debounceTimer.Stop();
-
         var keyword = GetSearchKeyword();
-        var hasKeyword = !string.IsNullOrWhiteSpace(keyword);
-
-        if (hasKeyword && !_wasSearchKeywordActive)
+        if (string.IsNullOrWhiteSpace(keyword))
         {
-            CaptureSearchRestoreContext();
-        }
-
-        // 有搜索词时切到全部分组，清空时按搜索会话恢复原位
-        if (hasKeyword)
-        {
-            if (!string.IsNullOrWhiteSpace(_currentGroupName))
-                _currentGroupName = string.Empty;
-
-            SuppressSearchContextTrackingUntilLayoutSettled(() => RefreshWorkbench(refreshExpensivePanels: false));
-            ScrollWorkbenchToTop();
-        }
-        else if (_wasSearchKeywordActive)
-        {
-            var restored = TryRestoreSearchContext();
-            if (!restored)
-                ClearSearchRestoreContext();
-
-            SuppressSearchContextTrackingUntilLayoutSettled(() => RefreshWorkbench(refreshExpensivePanels: false));
-
-            if (!restored)
-                ScrollWorkbenchToTop();
-        }
-
-        _wasSearchKeywordActive = hasKeyword;
-
-        if (!_canUseIntegratedFileSearch)
-        {
-            _scanResults.Clear();
-            RefreshCandidatePane();
-            RefreshQueue();
-            if (string.IsNullOrWhiteSpace(keyword))
+            if (!_canUseIntegratedFileSearch)
             {
                 StatusText.Text = "就绪，可筛选当前工作台条目；文件搜索联动当前未启用。";
             }
-            else
-            {
-                StatusText.Text = $"正在筛选工作台条目：{keyword}";
-            }
-
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(keyword))
-        {
-            CancelActiveSearch();
-            _scanResults.Clear();
-            RefreshCandidatePane();
-            RefreshQueue();
-            ScrollRightSidebarToTop();
-            StatusText.Text = _indexReady
-                ? $"已索引 {_indexService.Index.TotalCount} 个对象，输入关键词可继续查找候选。"
-                : "正在建立 MFT 索引，请稍候。";
-            SetScanningState(false);
-            return;
         }
 
         _debounceTimer.Start();
@@ -1376,7 +1323,7 @@ public partial class CommonStartupWindow : Window
     private void DebounceTimer_Tick(object sender, EventArgs e)
     {
         _debounceTimer.Stop();
-        _ = StartScanAsync(forceRescan: false);
+        ApplyPendingSearchKeyword(startFileSearch: _canUseIntegratedFileSearch);
     }
 
     private void LiveRefreshTimer_Tick(object sender, EventArgs e)
@@ -2107,6 +2054,66 @@ public partial class CommonStartupWindow : Window
     private void CloseButton_Click(object sender, RoutedEventArgs e) => Close();
 
     private string GetSearchKeyword() => SearchBox.Text?.Trim() ?? string.Empty;
+
+    private void ApplyPendingSearchKeyword(bool startFileSearch)
+    {
+        var keyword = GetSearchKeyword();
+        var hasKeyword = !string.IsNullOrWhiteSpace(keyword);
+
+        if (hasKeyword && !_wasSearchKeywordActive)
+        {
+            CaptureSearchRestoreContext();
+        }
+
+        if (hasKeyword)
+        {
+            if (!string.IsNullOrWhiteSpace(_currentGroupName))
+                _currentGroupName = string.Empty;
+
+            SuppressSearchContextTrackingUntilLayoutSettled(() => RefreshWorkbench(refreshExpensivePanels: false));
+            ScrollWorkbenchToTop();
+        }
+        else if (_wasSearchKeywordActive)
+        {
+            var restored = TryRestoreSearchContext();
+            if (!restored)
+                ClearSearchRestoreContext();
+
+            SuppressSearchContextTrackingUntilLayoutSettled(() => RefreshWorkbench(refreshExpensivePanels: false));
+
+            if (!restored)
+                ScrollWorkbenchToTop();
+        }
+
+        _wasSearchKeywordActive = hasKeyword;
+
+        if (!_canUseIntegratedFileSearch)
+        {
+            StatusText.Text = string.IsNullOrWhiteSpace(keyword)
+                ? "就绪，可筛选当前工作台条目；文件搜索联动当前未启用。"
+                : $"已筛选工作台条目：{keyword}";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(keyword))
+        {
+            CancelActiveSearch();
+            _scanResults.Clear();
+            RefreshCandidatePane();
+            RefreshQueue();
+            ScrollRightSidebarToTop();
+            StatusText.Text = _indexReady
+                ? $"已索引 {_indexService.Index.TotalCount} 个对象，输入关键词可继续查找候选。"
+                : "正在建立 MFT 索引，请稍候。";
+            SetScanningState(false);
+            return;
+        }
+
+        if (startFileSearch)
+        {
+            _ = StartScanAsync(forceRescan: false);
+        }
+    }
 
     private void CaptureSearchRestoreContext()
     {
