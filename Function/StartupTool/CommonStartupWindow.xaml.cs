@@ -1025,11 +1025,13 @@ public partial class CommonStartupWindow : Window
         NewGroupNameBox.Text = string.Empty;
     }
 
-    private string ResolveSuggestedGroup(string fullPath)
+    private string ResolveSuggestedGroup(string fullPath) => ResolveSuggestedGroup(fullPath, _currentGroupName);
+
+    private string ResolveSuggestedGroup(string fullPath, string currentGroupName)
     {
-        if (!string.IsNullOrWhiteSpace(_currentGroupName))
+        if (!string.IsNullOrWhiteSpace(currentGroupName))
         {
-            return _currentGroupName;
+            return currentGroupName;
         }
 
         var fileName = System.IO.Path.GetFileName(fullPath) ?? string.Empty;
@@ -1512,6 +1514,12 @@ public partial class CommonStartupWindow : Window
                 return;
             }
 
+            await Dispatcher.Yield(DispatcherPriority.Background);
+            if (ct.IsCancellationRequested || currentVersion != _searchVersion)
+            {
+                return;
+            }
+
             ApplySearchResult(searchResult.Response, searchResult.Results);
         }
         catch (OperationCanceledException)
@@ -1573,22 +1581,32 @@ public partial class CommonStartupWindow : Window
             0,
             SearchTypeFilter.Launchable,
             progress,
-            ct).ConfigureAwait(true);
+            ct).ConfigureAwait(false);
 
-        var startupResults = new List<ScanResultItem>(MaxDisplayedResults);
-        var dedup = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var item in response?.Results ?? Enumerable.Empty<ScannedFileInfo>())
+        var currentGroupName = _currentGroupName;
+        var startupResults = await Task.Run<IReadOnlyList<ScanResultItem>>(() =>
         {
-            if (item == null || string.IsNullOrWhiteSpace(item.FullPath) || !dedup.Add(item.FullPath))
-                continue;
-
-            startupResults.Add(new ScanResultItem
+            var results = new List<ScanResultItem>(MaxDisplayedResults);
+            var dedup = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var item in response?.Results ?? Enumerable.Empty<ScannedFileInfo>())
             {
-                FileName = string.IsNullOrWhiteSpace(item.FileName) ? System.IO.Path.GetFileName(item.FullPath) : item.FileName,
-                FullPath = item.FullPath,
-                SuggestedGroupName = ResolveSuggestedGroup(item.FullPath)
-            });
-        }
+                ct.ThrowIfCancellationRequested();
+                if (item == null || string.IsNullOrWhiteSpace(item.FullPath) || !dedup.Add(item.FullPath))
+                    continue;
+
+                results.Add(new ScanResultItem
+                {
+                    FileName = string.IsNullOrWhiteSpace(item.FileName) ? System.IO.Path.GetFileName(item.FullPath) : item.FileName,
+                    FullPath = item.FullPath,
+                    SuggestedGroupName = ResolveSuggestedGroup(item.FullPath, currentGroupName)
+                });
+
+                if (results.Count >= MaxDisplayedResults)
+                    break;
+            }
+
+            return results;
+        }, ct).ConfigureAwait(false);
 
         return new StartupSearchResult
         {
