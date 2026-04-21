@@ -504,6 +504,9 @@
 
                     <ScrollViewer x:Name="WorkbenchScrollViewer"
                                   Grid.Column="2"
+                                  Focusable="False"
+                                  FocusVisualStyle="{x:Null}"
+                                  PreviewMouseWheel="WorkbenchScrollViewer_PreviewMouseWheel"
                                   ScrollChanged="WorkbenchScrollViewer_ScrollChanged"
                                   VerticalScrollBarVisibility="Hidden"
                                   HorizontalScrollBarVisibility="Hidden"

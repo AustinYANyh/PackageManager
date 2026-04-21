@@ -285,8 +285,20 @@ public partial class CommonStartupWindow : Window
 
     private void RefreshWorkbench()
     {
-        RefreshRuntimeState();
-        RefreshNavigationCollections();
+        RefreshWorkbench(refreshExpensivePanels: true);
+    }
+
+    private void RefreshWorkbench(bool refreshExpensivePanels)
+    {
+        if (refreshExpensivePanels)
+        {
+            RefreshRuntimeState();
+            RefreshNavigationCollections();
+        }
+        else
+        {
+            SyncNavigationSelection();
+        }
 
         var visibleItems = GetVisibleItems().ToList();
         var featuredItems = GetFeaturedItems(visibleItems).ToList();
@@ -301,10 +313,13 @@ public partial class CommonStartupWindow : Window
         EnsureSelectedItem(featuredItems, workspaceItems);
         RefreshHeader(visibleItems, featuredItems, workspaceItems);
         RefreshSummaryCards(visibleItems);
-        RefreshSidebarStats();
         RefreshQueue();
-        RefreshRecentActivities();
-        RefreshManagePreview();
+        if (refreshExpensivePanels)
+        {
+            RefreshSidebarStats();
+            RefreshRecentActivities();
+            RefreshManagePreview();
+        }
         RefreshCandidateSuggestions();
         RefreshCandidatePane();
         UpdateFilterButtons();
@@ -356,43 +371,47 @@ public partial class CommonStartupWindow : Window
 
     private void RefreshNavigationCollections()
     {
+        ReplaceCollection(_viewItems, new[]
+        {
+            CreateViewNavigationItem(StartupViewKind.All, "全部启动项", _startupItems.Count),
+            CreateViewNavigationItem(StartupViewKind.Recent, "最近启动", _startupItems.Count(IsRecentItem)),
+            CreateViewNavigationItem(StartupViewKind.Favorites, "收藏", _startupItems.Count(item => item.IsFavorite)),
+            CreateViewNavigationItem(StartupViewKind.Broken, "失效项", _startupItems.Count(item => item.IsBroken))
+        });
+
+        var groupItems = new List<StartupNavigationItemVm>
+        {
+            new()
+            {
+                Key = AllGroupsKey,
+                Title = "全部分组",
+                Count = _startupItems.Count,
+                CountBackground = CreateBrush(0xED, 0xF1, 0xEE),
+                CountForeground = CreateBrush(0x56, 0x62, 0x5B)
+            }
+        };
+
+        groupItems.AddRange(_groupDefinitions
+            .OrderBy(group => group.Order)
+            .ThenBy(group => group.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(group => new StartupNavigationItemVm
+            {
+                Key = group.Name,
+                Title = group.Name,
+                Count = _startupItems.Count(item => string.Equals(item.GroupName, group.Name, StringComparison.OrdinalIgnoreCase)),
+                CountBackground = CreateBrush(0xED, 0xF1, 0xEE),
+                CountForeground = CreateBrush(0x56, 0x62, 0x5B)
+            }));
+
+        ReplaceCollection(_groupItems, groupItems);
+        SyncNavigationSelection();
+    }
+
+    private void SyncNavigationSelection()
+    {
         _suppressNavigationSelection = true;
         try
         {
-            ReplaceCollection(_viewItems, new[]
-            {
-                CreateViewNavigationItem(StartupViewKind.All, "全部启动项", _startupItems.Count),
-                CreateViewNavigationItem(StartupViewKind.Recent, "最近启动", _startupItems.Count(IsRecentItem)),
-                CreateViewNavigationItem(StartupViewKind.Favorites, "收藏", _startupItems.Count(item => item.IsFavorite)),
-                CreateViewNavigationItem(StartupViewKind.Broken, "失效项", _startupItems.Count(item => item.IsBroken))
-            });
-
-            var groupItems = new List<StartupNavigationItemVm>
-            {
-                new()
-                {
-                    Key = AllGroupsKey,
-                    Title = "全部分组",
-                    Count = _startupItems.Count,
-                    CountBackground = CreateBrush(0xED, 0xF1, 0xEE),
-                    CountForeground = CreateBrush(0x56, 0x62, 0x5B)
-                }
-            };
-
-            groupItems.AddRange(_groupDefinitions
-                .OrderBy(group => group.Order)
-                .ThenBy(group => group.Name, StringComparer.OrdinalIgnoreCase)
-                .Select(group => new StartupNavigationItemVm
-                {
-                    Key = group.Name,
-                    Title = group.Name,
-                    Count = _startupItems.Count(item => string.Equals(item.GroupName, group.Name, StringComparison.OrdinalIgnoreCase)),
-                    CountBackground = CreateBrush(0xED, 0xF1, 0xEE),
-                    CountForeground = CreateBrush(0x56, 0x62, 0x5B)
-                }));
-
-            ReplaceCollection(_groupItems, groupItems);
-
             ViewList.SelectedItem = _viewItems.FirstOrDefault(item => item.Key == GetViewKey(_currentView));
             GroupList.SelectedItem = _groupItems.FirstOrDefault(item =>
                 string.Equals(item.Key, string.IsNullOrWhiteSpace(_currentGroupName) ? AllGroupsKey : _currentGroupName, StringComparison.OrdinalIgnoreCase));
@@ -406,13 +425,14 @@ public partial class CommonStartupWindow : Window
     private IEnumerable<StartupItemVm> GetVisibleItems()
     {
         var keyword = GetSearchKeyword();
+        var groupOrderLookup = _groupDefinitions.ToDictionary(group => group.Name, group => group.Order, StringComparer.OrdinalIgnoreCase);
         return _startupItems
             .Where(MatchesCurrentView)
             .Where(MatchesCurrentGroup)
             .Where(item => MatchesKeyword(item, keyword))
             .OrderByDescending(item => item.IsFavorite)
             .ThenByDescending(item => item.LastLaunchedAt ?? DateTime.MinValue)
-            .ThenBy(item => GetGroupOrder(item.GroupName))
+            .ThenBy(item => groupOrderLookup.TryGetValue(item.GroupName, out var order) ? order : int.MaxValue)
             .ThenBy(item => item.Order)
             .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase);
     }
@@ -1266,7 +1286,7 @@ public partial class CommonStartupWindow : Window
             if (!string.IsNullOrWhiteSpace(_currentGroupName))
                 _currentGroupName = string.Empty;
 
-            SuppressSearchContextTrackingUntilLayoutSettled(RefreshWorkbench);
+            SuppressSearchContextTrackingUntilLayoutSettled(() => RefreshWorkbench(refreshExpensivePanels: false));
             ScrollWorkbenchToTop();
         }
         else if (_wasSearchKeywordActive)
@@ -1275,7 +1295,7 @@ public partial class CommonStartupWindow : Window
             if (!restored)
                 ClearSearchRestoreContext();
 
-            SuppressSearchContextTrackingUntilLayoutSettled(RefreshWorkbench);
+            SuppressSearchContextTrackingUntilLayoutSettled(() => RefreshWorkbench(refreshExpensivePanels: false));
 
             if (!restored)
                 ScrollWorkbenchToTop();
@@ -1937,6 +1957,24 @@ public partial class CommonStartupWindow : Window
         }
 
         InvalidateSearchRestoreContext();
+    }
+
+    private void WorkbenchScrollViewer_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (WorkbenchScrollViewer == null)
+        {
+            return;
+        }
+
+        var nextOffset = WorkbenchScrollViewer.VerticalOffset - e.Delta;
+        nextOffset = Math.Max(0, Math.Min(WorkbenchScrollViewer.ScrollableHeight, nextOffset));
+
+        if (Math.Abs(nextOffset - WorkbenchScrollViewer.VerticalOffset) > 0.1d)
+        {
+            WorkbenchScrollViewer.ScrollToVerticalOffset(nextOffset);
+        }
+
+        e.Handled = true;
     }
 
     private void LeftSidebarList_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
