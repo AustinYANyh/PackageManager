@@ -42,6 +42,7 @@ public partial class CommonStartupWindow : Window
     private readonly List<CommonStartupGroup> _groupDefinitions = new();
     private readonly IndexService _indexService = new();
     private readonly bool _canUseIntegratedFileSearch;
+    private readonly PinyinMatcher _pinyinMatcher = new PinyinMatcher();
 
     private CancellationTokenSource _scanCts;
     private CancellationTokenSource _indexCts;
@@ -135,6 +136,9 @@ public partial class CommonStartupWindow : Window
             _startupItems.Add(vm);
         }
 
+        // 在后台线程构建拼音索引，避免阻塞 UI 线程
+        var itemsSnapshot = _startupItems.ToList();
+        Task.Run(() => _pinyinMatcher.BuildIndex(itemsSnapshot));
     }
 
     private AppSettings NormalizeSettings(AppSettings settings, out bool changed)
@@ -429,7 +433,7 @@ public partial class CommonStartupWindow : Window
         return _startupItems
             .Where(MatchesCurrentView)
             .Where(MatchesCurrentGroup)
-            .Where(item => MatchesKeyword(item, keyword))
+            .Where(item => MatchesKeyword(item, keyword, _pinyinMatcher))
             .OrderByDescending(item => item.IsFavorite)
             .ThenByDescending(item => item.LastLaunchedAt ?? DateTime.MinValue)
             .ThenBy(item => groupOrderLookup.TryGetValue(item.GroupName, out var order) ? order : int.MaxValue)
@@ -797,6 +801,7 @@ public partial class CommonStartupWindow : Window
         EnsureGroupExists(finalItem.GroupName);
         UpdateItemRuntimeState(finalItem);
         _startupItems.Add(finalItem);
+        _pinyinMatcher.UpdateEntry(finalItem);
         _currentGroupName = finalItem.GroupName;
         SelectStartupItem(finalItem);
         SaveItems(allowStructureChange: true);
@@ -832,6 +837,7 @@ public partial class CommonStartupWindow : Window
         }
 
         UpdateItemRuntimeState(item);
+        _pinyinMatcher.UpdateEntry(item);
         SaveItems(allowStructureChange: true);
         SelectStartupItem(item);
         RefreshWorkbench();
@@ -851,6 +857,7 @@ public partial class CommonStartupWindow : Window
         }
 
         _startupItems.Remove(item);
+        _pinyinMatcher.RemoveEntry(item.Name);
         if (ReferenceEquals(_selectedItem, item))
         {
             _selectedItem = null;
@@ -2221,18 +2228,31 @@ public partial class CommonStartupWindow : Window
                || string.Equals(item.GroupName, _currentGroupName, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool MatchesKeyword(StartupItemVm item, string keyword)
+    private static bool MatchesKeyword(StartupItemVm item, string keyword, PinyinMatcher pinyinMatcher)
     {
         if (string.IsNullOrWhiteSpace(keyword))
         {
             return true;
         }
 
-        return Contains(item.Name, keyword)
+        if (Contains(item.Name, keyword)
                || Contains(item.FullPath, keyword)
                || Contains(item.Note, keyword)
                || Contains(item.Arguments, keyword)
-               || Contains(item.GroupName, keyword);
+               || Contains(item.GroupName, keyword))
+            return true;
+
+        if (!ContainsChinese(keyword))
+            return pinyinMatcher.IsMatch(item, keyword);
+
+        return false;
+    }
+
+    private static bool ContainsChinese(string s)
+    {
+        foreach (char c in s)
+            if (c >= '\u4E00' && c <= '\u9FFF') return true;
+        return false;
     }
 
     private static bool Contains(string source, string keyword)

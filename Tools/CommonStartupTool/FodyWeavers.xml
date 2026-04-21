@@ -5,6 +5,7 @@
       Newtonsoft.Json
       CustomControlLibrary
       MftScanner.Core
+      ChnCharInfo
     </IncludeAssemblies>
   </Costura>
 </Weavers>
