@@ -96,12 +96,14 @@ namespace PackageManager.Services
         private readonly string _mainWindowStateFilePath;
 
         private readonly string _settingsFilePath;
+        private readonly string _commonStartupSettingsFilePath;
 
         private readonly string _packagesFilePath;
         private readonly string _finalizePackagesFilePath;
 
         private readonly string _appFolder;
         private readonly string _settingsBackupFolderPath;
+        private readonly string _commonStartupSettingsBackupFolderPath;
 
         private readonly JsonSerializerSettings _jsonSettings;
 
@@ -128,7 +130,9 @@ namespace PackageManager.Services
             _dataFilePath = Path.Combine(_appFolder, "application_cache.json");
             _mainWindowStateFilePath = Path.Combine(_appFolder, "main_window_state.json");
             _settingsFilePath = Path.Combine(_appFolder, "settings.json");
+            _commonStartupSettingsFilePath = Path.Combine(_appFolder, "common_startup_settings.json");
             _settingsBackupFolderPath = Path.Combine(_appFolder, "settings_history");
+            _commonStartupSettingsBackupFolderPath = Path.Combine(_appFolder, "common_startup_settings_history");
             _packagesFilePath = Path.Combine(_appFolder, "packages.json");
             _finalizePackagesFilePath = Path.Combine(_appFolder, "finalize_packages.json");
 
@@ -667,10 +671,41 @@ namespace PackageManager.Services
         /// </summary>
         /// <param name="settings">设置对象</param>
         /// <returns>是否保存成功</returns>
-        public bool SaveSettings(AppSettings settings)
+        public bool SaveSettings(AppSettings settings, bool preserveExistingCommonStartupData = true)
         {
             try
             {
+                var effectiveSettings = settings ?? new AppSettings();
+
+                if (preserveExistingCommonStartupData)
+                {
+                    var currentSettings = LoadSettings();
+                    var hasIncomingStartupItems = effectiveSettings.CommonStartupItems != null && effectiveSettings.CommonStartupItems.Count > 0;
+                    var hasIncomingStartupGroups = effectiveSettings.CommonStartupGroups != null && effectiveSettings.CommonStartupGroups.Count > 0;
+                    var hasExistingStartupItems = currentSettings?.CommonStartupItems != null && currentSettings.CommonStartupItems.Count > 0;
+                    var hasExistingStartupGroups = currentSettings?.CommonStartupGroups != null && currentSettings.CommonStartupGroups.Count > 0;
+
+                    if (!hasIncomingStartupItems && hasExistingStartupItems)
+                    {
+                        effectiveSettings.CommonStartupItems = currentSettings.CommonStartupItems
+                            .Select(CloneCommonStartupItem)
+                            .ToList();
+                    }
+
+                    if (!hasIncomingStartupGroups && hasExistingStartupGroups)
+                    {
+                        effectiveSettings.CommonStartupGroups = currentSettings.CommonStartupGroups
+                            .Select(CloneCommonStartupGroup)
+                            .ToList();
+                    }
+                }
+
+                SaveCommonStartupSettingsInternal(new CommonStartupSettings
+                {
+                    CommonStartupItems = effectiveSettings.CommonStartupItems ?? new List<CommonStartupItem>(),
+                    CommonStartupGroups = effectiveSettings.CommonStartupGroups ?? new List<CommonStartupGroup>()
+                });
+
                 if (File.Exists(_settingsFilePath))
                 {
                     File.Copy(_settingsFilePath, _settingsFilePath + ".bak", true);
@@ -689,8 +724,11 @@ namespace PackageManager.Services
                     }
                 }
 
-                var json = JsonConvert.SerializeObject(settings ?? new AppSettings(), _jsonSettings);
-                File.WriteAllText(_settingsFilePath, json);
+                var json = JsonConvert.SerializeObject(effectiveSettings, _jsonSettings);
+                var document = Newtonsoft.Json.Linq.JObject.Parse(json);
+                document.Remove(nameof(AppSettings.CommonStartupItems));
+                document.Remove(nameof(AppSettings.CommonStartupGroups));
+                File.WriteAllText(_settingsFilePath, document.ToString());
                 return true;
             }
             catch (Exception ex)
@@ -715,12 +753,21 @@ namespace PackageManager.Services
 
                 var json = File.ReadAllText(_settingsFilePath);
                 var settings = JsonConvert.DeserializeObject<AppSettings>(json, _jsonSettings);
-                return settings ?? new AppSettings();
+                settings ??= new AppSettings();
+
+                var startupSettings = LoadCommonStartupSettingsInternal();
+                settings.CommonStartupItems = startupSettings.CommonStartupItems ?? new List<CommonStartupItem>();
+                settings.CommonStartupGroups = startupSettings.CommonStartupGroups ?? new List<CommonStartupGroup>();
+                return settings;
             }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"加载设置失败: {ex.Message}");
-                return new AppSettings();
+                var settings = new AppSettings();
+                var startupSettings = LoadCommonStartupSettingsInternal();
+                settings.CommonStartupItems = startupSettings.CommonStartupItems ?? new List<CommonStartupItem>();
+                settings.CommonStartupGroups = startupSettings.CommonStartupGroups ?? new List<CommonStartupGroup>();
+                return settings;
             }
         }
 
@@ -790,6 +837,102 @@ namespace PackageManager.Services
         public Dictionary<string, bool> GetProductVisibility()
         {
             return _productVisibility ?? new Dictionary<string, bool>();
+        }
+
+        private static CommonStartupItem CloneCommonStartupItem(CommonStartupItem item)
+        {
+            if (item == null)
+            {
+                return null;
+            }
+
+            return new CommonStartupItem
+            {
+                Name = item.Name,
+                FullPath = item.FullPath,
+                Arguments = item.Arguments,
+                Note = item.Note,
+                GroupName = item.GroupName,
+                IsFavorite = item.IsFavorite,
+                Order = item.Order,
+                LastLaunchedAt = item.LastLaunchedAt,
+                LaunchCount = item.LaunchCount
+            };
+        }
+
+        private static CommonStartupGroup CloneCommonStartupGroup(CommonStartupGroup group)
+        {
+            if (group == null)
+            {
+                return null;
+            }
+
+            return new CommonStartupGroup
+            {
+                Name = group.Name,
+                Order = group.Order
+            };
+        }
+
+        private CommonStartupSettings LoadCommonStartupSettingsInternal()
+        {
+            try
+            {
+                if (File.Exists(_commonStartupSettingsFilePath))
+                {
+                    var json = File.ReadAllText(_commonStartupSettingsFilePath);
+                    var settings = JsonConvert.DeserializeObject<CommonStartupSettings>(json, _jsonSettings) ?? new CommonStartupSettings();
+                    settings.CommonStartupItems ??= new List<CommonStartupItem>();
+                    settings.CommonStartupGroups ??= new List<CommonStartupGroup>();
+                    return settings;
+                }
+
+                if (!File.Exists(_settingsFilePath))
+                {
+                    return new CommonStartupSettings();
+                }
+
+                var legacyJson = File.ReadAllText(_settingsFilePath);
+                var legacySettings = JsonConvert.DeserializeObject<AppSettings>(legacyJson, _jsonSettings) ?? new AppSettings();
+                return new CommonStartupSettings
+                {
+                    CommonStartupItems = legacySettings.CommonStartupItems ?? new List<CommonStartupItem>(),
+                    CommonStartupGroups = legacySettings.CommonStartupGroups ?? new List<CommonStartupGroup>()
+                };
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"加载启动项设置失败: {ex.Message}");
+                return new CommonStartupSettings();
+            }
+        }
+
+        private void SaveCommonStartupSettingsInternal(CommonStartupSettings settings)
+        {
+            var effectiveSettings = settings ?? new CommonStartupSettings();
+            effectiveSettings.CommonStartupItems ??= new List<CommonStartupItem>();
+            effectiveSettings.CommonStartupGroups ??= new List<CommonStartupGroup>();
+
+            if (File.Exists(_commonStartupSettingsFilePath))
+            {
+                File.Copy(_commonStartupSettingsFilePath, _commonStartupSettingsFilePath + ".bak", true);
+                Directory.CreateDirectory(_commonStartupSettingsBackupFolderPath);
+                var stampedBackupPath = Path.Combine(
+                    _commonStartupSettingsBackupFolderPath,
+                    $"common_startup_settings_{DateTime.Now:yyyyMMdd_HHmmss_fff}.json");
+                File.Copy(_commonStartupSettingsFilePath, stampedBackupPath, true);
+
+                foreach (var staleBackup in new DirectoryInfo(_commonStartupSettingsBackupFolderPath)
+                             .GetFiles("common_startup_settings_*.json")
+                             .OrderByDescending(file => file.LastWriteTimeUtc)
+                             .Skip(20))
+                {
+                    staleBackup.Delete();
+                }
+            }
+
+            var json = JsonConvert.SerializeObject(effectiveSettings, _jsonSettings);
+            File.WriteAllText(_commonStartupSettingsFilePath, json);
         }
     }
 
@@ -941,6 +1084,12 @@ namespace PackageManager.Services
 
         /// <summary>排序值。</summary>
         public int Order { get; set; }
+    }
+
+    internal sealed class CommonStartupSettings
+    {
+        public List<CommonStartupItem> CommonStartupItems { get; set; } = new List<CommonStartupItem>();
+        public List<CommonStartupGroup> CommonStartupGroups { get; set; } = new List<CommonStartupGroup>();
     }
 }
 

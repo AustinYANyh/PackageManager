@@ -13,7 +13,9 @@ public class DataPersistenceService
     private const string CommonStartupGroupsPropertyName = "CommonStartupGroups";
 
     private readonly string _settingsFilePath;
+    private readonly string _commonStartupSettingsFilePath;
     private readonly string _settingsBackupFolderPath;
+    private readonly string _commonStartupSettingsBackupFolderPath;
     private readonly JsonSerializerSettings _jsonSettings;
 
     public DataPersistenceService()
@@ -23,7 +25,9 @@ public class DataPersistenceService
         Directory.CreateDirectory(appFolder);
 
         _settingsFilePath = Path.Combine(appFolder, "settings.json");
+        _commonStartupSettingsFilePath = Path.Combine(appFolder, "common_startup_settings.json");
         _settingsBackupFolderPath = Path.Combine(appFolder, "settings_history");
+        _commonStartupSettingsBackupFolderPath = Path.Combine(appFolder, "common_startup_settings_history");
         _jsonSettings = new JsonSerializerSettings
         {
             Formatting = Formatting.Indented,
@@ -31,21 +35,35 @@ public class DataPersistenceService
         };
     }
 
-    public bool SaveSettings(AppSettings settings)
+    public bool SaveSettings(AppSettings settings, bool preserveExistingCommonStartupData = true)
     {
         try
         {
-            var serializer = JsonSerializer.Create(_jsonSettings);
-            var document = LoadSettingsDocument();
             var effectiveSettings = settings ?? new AppSettings();
 
-            document[CommonStartupItemsPropertyName] =
-                JToken.FromObject(effectiveSettings.CommonStartupItems ?? new List<CommonStartupItem>(), serializer);
-            document[CommonStartupGroupsPropertyName] =
-                JToken.FromObject(effectiveSettings.CommonStartupGroups ?? new List<CommonStartupGroup>(), serializer);
+            if (preserveExistingCommonStartupData)
+            {
+                var currentSettings = LoadSettings();
+                if ((effectiveSettings.CommonStartupItems == null || effectiveSettings.CommonStartupItems.Count == 0) &&
+                    currentSettings.CommonStartupItems.Count > 0)
+                {
+                    effectiveSettings.CommonStartupItems = currentSettings.CommonStartupItems
+                        .Select(CloneCommonStartupItem)
+                        .ToList();
+                }
+
+                if ((effectiveSettings.CommonStartupGroups == null || effectiveSettings.CommonStartupGroups.Count == 0) &&
+                    currentSettings.CommonStartupGroups.Count > 0)
+                {
+                    effectiveSettings.CommonStartupGroups = currentSettings.CommonStartupGroups
+                        .Select(CloneCommonStartupGroup)
+                        .ToList();
+                }
+            }
 
             BackupSettingsFileIfNeeded();
-            File.WriteAllText(_settingsFilePath, document.ToString(Formatting.Indented));
+            var json = JsonConvert.SerializeObject(effectiveSettings, _jsonSettings);
+            File.WriteAllText(_commonStartupSettingsFilePath, json);
             return true;
         }
         catch (Exception ex)
@@ -61,28 +79,40 @@ public class DataPersistenceService
         {
             if (!File.Exists(_settingsFilePath))
             {
-                return new AppSettings();
+                if (!File.Exists(_commonStartupSettingsFilePath))
+                {
+                    return new AppSettings();
+                }
+            }
+
+            if (File.Exists(_commonStartupSettingsFilePath))
+            {
+                var json = File.ReadAllText(_commonStartupSettingsFilePath);
+                var settings = JsonConvert.DeserializeObject<AppSettings>(json, _jsonSettings) ?? new AppSettings();
+                settings.CommonStartupItems ??= new List<CommonStartupItem>();
+                settings.CommonStartupGroups ??= new List<CommonStartupGroup>();
+                return settings;
             }
 
             var serializer = JsonSerializer.Create(_jsonSettings);
             var document = LoadSettingsDocument();
-            var settings = new AppSettings();
+            var legacySettings = new AppSettings();
 
             if (document.TryGetValue(CommonStartupItemsPropertyName, StringComparison.OrdinalIgnoreCase, out var itemsToken))
             {
-                settings.CommonStartupItems = itemsToken.Type == JTokenType.Null
+                legacySettings.CommonStartupItems = itemsToken.Type == JTokenType.Null
                     ? new List<CommonStartupItem>()
                     : itemsToken.ToObject<List<CommonStartupItem>>(serializer) ?? new List<CommonStartupItem>();
             }
 
             if (document.TryGetValue(CommonStartupGroupsPropertyName, StringComparison.OrdinalIgnoreCase, out var groupsToken))
             {
-                settings.CommonStartupGroups = groupsToken.Type == JTokenType.Null
+                legacySettings.CommonStartupGroups = groupsToken.Type == JTokenType.Null
                     ? new List<CommonStartupGroup>()
                     : groupsToken.ToObject<List<CommonStartupGroup>>(serializer) ?? new List<CommonStartupGroup>();
             }
 
-            return settings;
+            return legacySettings;
         }
         catch (Exception ex)
         {
@@ -115,25 +145,60 @@ public class DataPersistenceService
 
     private void BackupSettingsFileIfNeeded()
     {
-        if (!File.Exists(_settingsFilePath))
+        if (!File.Exists(_commonStartupSettingsFilePath))
         {
             return;
         }
 
-        File.Copy(_settingsFilePath, _settingsFilePath + ".bak", true);
-        Directory.CreateDirectory(_settingsBackupFolderPath);
+        File.Copy(_commonStartupSettingsFilePath, _commonStartupSettingsFilePath + ".bak", true);
+        Directory.CreateDirectory(_commonStartupSettingsBackupFolderPath);
         var stampedBackupPath = Path.Combine(
-            _settingsBackupFolderPath,
-            $"settings_{DateTime.Now:yyyyMMdd_HHmmss_fff}.json");
-        File.Copy(_settingsFilePath, stampedBackupPath, true);
+            _commonStartupSettingsBackupFolderPath,
+            $"common_startup_settings_{DateTime.Now:yyyyMMdd_HHmmss_fff}.json");
+        File.Copy(_commonStartupSettingsFilePath, stampedBackupPath, true);
 
-        foreach (var staleBackup in new DirectoryInfo(_settingsBackupFolderPath)
-                     .GetFiles("settings_*.json")
+        foreach (var staleBackup in new DirectoryInfo(_commonStartupSettingsBackupFolderPath)
+                     .GetFiles("common_startup_settings_*.json")
                      .OrderByDescending(file => file.LastWriteTimeUtc)
                      .Skip(20))
         {
             staleBackup.Delete();
         }
+    }
+
+    private static CommonStartupItem CloneCommonStartupItem(CommonStartupItem item)
+    {
+        if (item == null)
+        {
+            return null;
+        }
+
+        return new CommonStartupItem
+        {
+            Name = item.Name,
+            FullPath = item.FullPath,
+            Arguments = item.Arguments,
+            Note = item.Note,
+            GroupName = item.GroupName,
+            IsFavorite = item.IsFavorite,
+            Order = item.Order,
+            LastLaunchedAt = item.LastLaunchedAt,
+            LaunchCount = item.LaunchCount
+        };
+    }
+
+    private static CommonStartupGroup CloneCommonStartupGroup(CommonStartupGroup group)
+    {
+        if (group == null)
+        {
+            return null;
+        }
+
+        return new CommonStartupGroup
+        {
+            Name = group.Name,
+            Order = group.Order
+        };
     }
 }
 

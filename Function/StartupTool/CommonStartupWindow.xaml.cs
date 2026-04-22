@@ -284,7 +284,7 @@ public partial class CommonStartupWindow : Window
 
         normalized.CommonStartupItems = currentItems;
         normalized.CommonStartupGroups = currentGroups;
-        return _persistence.SaveSettings(normalized);
+        return _persistence.SaveSettings(normalized, preserveExistingCommonStartupData: false);
     }
 
     private void RefreshWorkbench()

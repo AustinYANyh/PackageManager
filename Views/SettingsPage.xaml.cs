@@ -403,20 +403,18 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
                 return;
             }
 
-            var settings = new AppSettings
-            {
-                AddinPath = AddinPath.Trim(),
-                ProgramEntryWithG = ProgramEntryWithG,
-                UpdateServerUrl = string.IsNullOrWhiteSpace(UpdateServerUrl) ? null : UpdateServerUrl.Trim(),
-                FilterLogDirectories = FilterLogDirectories,
-                LogTxtReader = LogTxtReader,
-                ProductLogLevel = ProductLogLevel,
-                JenkinsBaseUrl = string.IsNullOrWhiteSpace(JenkinsBaseUrl) ? null : JenkinsBaseUrl.Trim(),
-                JenkinsViewName = string.IsNullOrWhiteSpace(JenkinsViewName) ? null : JenkinsViewName.Trim(),
-                JenkinsUsername = string.IsNullOrWhiteSpace(JenkinsUsername) ? null : JenkinsUsername.Trim(),
-                JenkinsPasswordProtected = CredentialProtectionService.Protect(JenkinsPasswordBox.Password),
-                EnableIndexServicePerformanceAnalysis = EnableIndexServicePerformanceAnalysis,
-            };
+            var settings = dataPersistenceService.LoadSettings() ?? new AppSettings();
+            settings.AddinPath = AddinPath.Trim();
+            settings.ProgramEntryWithG = ProgramEntryWithG;
+            settings.UpdateServerUrl = string.IsNullOrWhiteSpace(UpdateServerUrl) ? null : UpdateServerUrl.Trim();
+            settings.FilterLogDirectories = FilterLogDirectories;
+            settings.LogTxtReader = LogTxtReader;
+            settings.ProductLogLevel = ProductLogLevel;
+            settings.JenkinsBaseUrl = string.IsNullOrWhiteSpace(JenkinsBaseUrl) ? null : JenkinsBaseUrl.Trim();
+            settings.JenkinsViewName = string.IsNullOrWhiteSpace(JenkinsViewName) ? null : JenkinsViewName.Trim();
+            settings.JenkinsUsername = string.IsNullOrWhiteSpace(JenkinsUsername) ? null : JenkinsUsername.Trim();
+            settings.JenkinsPasswordProtected = CredentialProtectionService.Protect(JenkinsPasswordBox.Password);
+            settings.EnableIndexServicePerformanceAnalysis = EnableIndexServicePerformanceAnalysis;
 
             dataPersistenceService.SaveSettings(settings);
 

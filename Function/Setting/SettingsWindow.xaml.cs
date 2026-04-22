@@ -253,13 +253,11 @@ namespace PackageManager.Function.Setting
                 }
 
                 // 保存设置
-                var settings = new PackageManager.Services.AppSettings
-                {
-                    AddinPath = AddinPath.Trim(),
-                    ProgramEntryWithG = ProgramEntryWithG,
-                    UpdateServerUrl = string.IsNullOrWhiteSpace(UpdateServerUrl) ? null : UpdateServerUrl.Trim(),
-                    FilterLogDirectories = FilterLogDirectories,
-                };
+                var settings = _dataPersistenceService.LoadSettings() ?? new PackageManager.Services.AppSettings();
+                settings.AddinPath = AddinPath.Trim();
+                settings.ProgramEntryWithG = ProgramEntryWithG;
+                settings.UpdateServerUrl = string.IsNullOrWhiteSpace(UpdateServerUrl) ? null : UpdateServerUrl.Trim();
+                settings.FilterLogDirectories = FilterLogDirectories;
 
                 _dataPersistenceService.SaveSettings(settings);
                 
