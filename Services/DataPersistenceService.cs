@@ -891,6 +891,11 @@ namespace PackageManager.Services
         /// 获取或设置常用启动项全局热键显示文本。
         /// </summary>
         public string CommonStartupHotkey { get; set; } = "Ctrl+Q";
+
+        /// <summary>
+        /// 获取或设置是否启用索引服务性能分析日志。
+        /// </summary>
+        public bool EnableIndexServicePerformanceAnalysis { get; set; } = false;
     }
 
     /// <summary>

@@ -206,6 +206,7 @@
         <Compile Include="Services\RevitProcessService.cs" />
         <Compile Include="Services\ToastService.cs" />
         <Compile Include="Services\AppUpdateService.cs" />
+        <Compile Include="Tools\MftScanner.Core\IndexPerfLog.cs" />
         <Compile Include="Views\CommonLinksPage.xaml.cs" />
         <Compile Include="Views\CommonLinksWindow.xaml.cs" />
         <Compile Include="Views\ICentralPage.cs" />
@@ -416,8 +417,8 @@
       <Content Include="scripts\SignPackageManager.ps1" />
       <Content Include="UpdateSummary.txt" />
       <EmbeddedResource Include="Assets\Tools\LogViewPro.exe" />
-      <EmbeddedResource Include="Tools\MftScanner\bin\$(Configuration)\MftScanner.exe" />
-      <EmbeddedResource Include="Tools\MftScanner.Core\bin\$(Configuration)\MftScanner.Core.dll" />
+      <EmbeddedResource Include="Assets\Tools\MftScanner.exe" />
+      <EmbeddedResource Include="Assets\Tools\MftScanner.Core.dll" />
       <EmbeddedResource Include="Tools\CommonStartupTool\bin\$(Configuration)\CommonStartupTool.exe" />
       <EmbeddedResource Include="Assets\Tools\UnlockProcessAdmin.exe" />
       <Content Include="Assets\Icons\README.txt" />
@@ -427,5 +428,20 @@
       <Content Include="FodyWeavers.xsd" />
       <Content Include="Folder.DotSettings.user" />
     </ItemGroup>
+    <Target Name="EnsureEmbeddedMftScannerArtifacts" BeforeTargets="BeforeBuild">
+      <MSBuild Projects="Tools\MftScanner.Core\MftScanner.Core.csproj"
+               Targets="Build"
+               Properties="Configuration=$(Configuration);Platform=AnyCPU" />
+      <MSBuild Projects="Tools\MftScanner\MftScanner.csproj"
+               Targets="Build"
+               Properties="Configuration=$(Configuration);Platform=AnyCPU" />
+      <MakeDir Directories="Assets\Tools" />
+      <Copy SourceFiles="Tools\MftScanner\bin\$(Configuration)\MftScanner.exe"
+            DestinationFiles="Assets\Tools\MftScanner.exe"
+            SkipUnchangedFiles="false" />
+      <Copy SourceFiles="Tools\MftScanner.Core\bin\$(Configuration)\MftScanner.Core.dll"
+            DestinationFiles="Assets\Tools\MftScanner.Core.dll"
+            SkipUnchangedFiles="false" />
+    </Target>
     <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets"/>
 </Project>

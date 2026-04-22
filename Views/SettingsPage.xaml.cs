@@ -37,6 +37,7 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
     private string jenkinsViewName;
 
     private string jenkinsUsername;
+    private bool enableIndexServicePerformanceAnalysis;
 
     /// <summary>
     /// 初始化 <see cref="SettingsPage"/> 的新实例。
@@ -133,6 +134,16 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
     }
 
     /// <summary>
+    /// 获取或设置是否启用索引服务性能分析日志。
+    /// </summary>
+    public bool EnableIndexServicePerformanceAnalysis
+    {
+        get => enableIndexServicePerformanceAnalysis;
+
+        set => SetProperty(ref enableIndexServicePerformanceAnalysis, value);
+    }
+
+    /// <summary>
     /// 获取或设置是否过滤日志目录的标志。
     /// </summary>
     public bool FilterLogDirectories
@@ -171,6 +182,16 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
     /// 获取或设置当前选中的日志文本阅读器名称。
     /// </summary>
     public string LogTxtReader { get; set; }
+
+    /// <summary>
+    /// 获取索引服务性能分析日志目录的显示文本。
+    /// </summary>
+    public string IndexServicePerformanceLogDirectory =>
+        System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "PackageManager",
+            "logs",
+            "index-service-diagnostics");
 
     /// <summary>
     /// 触发 <see cref="PropertyChanged"/> 事件。
@@ -227,6 +248,7 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
             JenkinsBaseUrl = settings?.JenkinsBaseUrl ?? "http://192.168.0.245:8080";
             JenkinsViewName = settings?.JenkinsViewName ?? "机电项目组";
             JenkinsUsername = settings?.JenkinsUsername ?? string.Empty;
+            EnableIndexServicePerformanceAnalysis = settings?.EnableIndexServicePerformanceAnalysis ?? false;
             JenkinsPasswordBox.Password = CredentialProtectionService.Unprotect(settings?.JenkinsPasswordProtected);
 
             LogTxtReader = settings?.LogTxtReader ?? "LogViewPro";
@@ -361,6 +383,7 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
                 JenkinsBaseUrl = "http://192.168.0.245:8080";
                 JenkinsViewName = "机电项目组";
                 JenkinsUsername = string.Empty;
+                EnableIndexServicePerformanceAnalysis = false;
                 JenkinsPasswordBox.Password = string.Empty;
             }
         }
@@ -392,6 +415,7 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
                 JenkinsViewName = string.IsNullOrWhiteSpace(JenkinsViewName) ? null : JenkinsViewName.Trim(),
                 JenkinsUsername = string.IsNullOrWhiteSpace(JenkinsUsername) ? null : JenkinsUsername.Trim(),
                 JenkinsPasswordProtected = CredentialProtectionService.Protect(JenkinsPasswordBox.Password),
+                EnableIndexServicePerformanceAnalysis = EnableIndexServicePerformanceAnalysis,
             };
 
             dataPersistenceService.SaveSettings(settings);

@@ -56,11 +56,27 @@
 
                 <!-- 日志设置 -->
                 <GroupBox Header="日志设置" Margin="0,0,0,20">
-                    <StackPanel Margin="10" Orientation="Horizontal">
-                        <controls:CTextBlock Text="日志查看工具:" VerticalAlignment="Center"/>
-                        <controls:CComboBox ItemsSource="{Binding LogTxtReaders}"
-                                            SelectedValue="{Binding LogTxtReader}"
-                                            Width="280"/>
+                    <StackPanel Margin="10">
+                        <StackPanel Orientation="Horizontal">
+                            <controls:CTextBlock Text="日志查看工具:" VerticalAlignment="Center"/>
+                            <controls:CComboBox ItemsSource="{Binding LogTxtReaders}"
+                                                SelectedValue="{Binding LogTxtReader}"
+                                                Width="280"/>
+                        </StackPanel>
+
+                        <CheckBox Content="启用索引服务性能分析日志"
+                                  IsChecked="{Binding EnableIndexServicePerformanceAnalysis, UpdateSourceTrigger=PropertyChanged}"
+                                  Margin="0,12,0,0"/>
+                        <TextBlock Text="默认关闭。开启后会记录索引加载、快照恢复、查询、USN 追平、快照保存等耗时。"
+                                   Foreground="Gray"
+                                   FontSize="11"
+                                   Margin="0,5,0,0"
+                                   TextWrapping="Wrap"/>
+                        <TextBlock Text="{Binding IndexServicePerformanceLogDirectory}"
+                                   Foreground="Gray"
+                                   FontSize="11"
+                                   Margin="0,3,0,0"
+                                   TextWrapping="Wrap"/>
                     </StackPanel>
                 </GroupBox>
 

@@ -60,7 +60,30 @@ namespace MftScanner
             _progress = progress;
             SetupUsnWatcher();
             StartPeriodicSnapshotSaveLoop();
-            return Task.Run(() => BuildIndex(progress, ct), ct);
+            return Task.Run(() =>
+            {
+                var stopwatch = Stopwatch.StartNew();
+                UsnDiagLog.Write("[BUILD INDEX ASYNC] start");
+                try
+                {
+                    var result = BuildIndex(progress, ct);
+                    stopwatch.Stop();
+                    UsnDiagLog.Write($"[BUILD INDEX ASYNC] success elapsedMs={stopwatch.ElapsedMilliseconds} indexedCount={result}");
+                    return result;
+                }
+                catch (OperationCanceledException)
+                {
+                    stopwatch.Stop();
+                    UsnDiagLog.Write($"[BUILD INDEX ASYNC] canceled elapsedMs={stopwatch.ElapsedMilliseconds}");
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    stopwatch.Stop();
+                    UsnDiagLog.Write($"[BUILD INDEX ASYNC] fail elapsedMs={stopwatch.ElapsedMilliseconds} error={ex.GetType().Name}:{IndexPerfLog.FormatValue(ex.Message)}");
+                    throw;
+                }
+            }, ct);
         }
 
         /// <summary>
@@ -75,12 +98,31 @@ namespace MftScanner
             StartPeriodicSnapshotSaveLoop();
             return Task.Run(() =>
             {
-                CancelPendingSnapshotSave();
-                CancelBackgroundCatchUp();
-                _usnWatcher.StopWatching();
-                _index.Build(Array.Empty<FileRecord>());
-                var result = BuildIndexFromMft(_progress, ct);
-                return result;
+                var stopwatch = Stopwatch.StartNew();
+                UsnDiagLog.Write("[REBUILD INDEX ASYNC] start");
+                try
+                {
+                    CancelPendingSnapshotSave();
+                    CancelBackgroundCatchUp();
+                    _usnWatcher.StopWatching();
+                    _index.Build(Array.Empty<FileRecord>());
+                    var result = BuildIndexFromMft(_progress, ct);
+                    stopwatch.Stop();
+                    UsnDiagLog.Write($"[REBUILD INDEX ASYNC] success elapsedMs={stopwatch.ElapsedMilliseconds} indexedCount={result}");
+                    return result;
+                }
+                catch (OperationCanceledException)
+                {
+                    stopwatch.Stop();
+                    UsnDiagLog.Write($"[REBUILD INDEX ASYNC] canceled elapsedMs={stopwatch.ElapsedMilliseconds}");
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    stopwatch.Stop();
+                    UsnDiagLog.Write($"[REBUILD INDEX ASYNC] fail elapsedMs={stopwatch.ElapsedMilliseconds} error={ex.GetType().Name}:{IndexPerfLog.FormatValue(ex.Message)}");
+                    throw;
+                }
             }, ct);
         }
 
@@ -561,165 +603,265 @@ namespace MftScanner
         {
             return Task.Run(() =>
             {
-                if (string.IsNullOrWhiteSpace(keyword))
-                    return new SearchQueryResult
-                    {
-                        TotalIndexedCount = _index.TotalCount,
-                        TotalMatchedCount = 0,
-                        IsTruncated = false,
-                        Results = new List<ScannedFileInfo>()
-                    };
-
                 var idx = _index;
+                var totalStopwatch = Stopwatch.StartNew();
+                long matchElapsedMilliseconds = 0;
+                long resolveElapsedMilliseconds = 0;
+                string pathPrefix = null;
+                string searchTerm = null;
+                string normalizedQuery = null;
+                var mode = MatchMode.Contains;
+                var candidateCount = 0;
 
-                // 需求 10.1：路径范围解析，在 DetectMatchMode 之前执行
-                var (pathPrefix, searchTerm) = ParsePathScope(keyword);
-
-                // 若 searchTerm 为空（用户只输入了路径前缀），直接返回空结果
-                if (string.IsNullOrWhiteSpace(searchTerm))
-                    return new SearchQueryResult
-                    {
-                        TotalIndexedCount = idx.TotalCount,
-                        TotalMatchedCount = 0,
-                        IsTruncated = false,
-                        Results = new List<ScannedFileInfo>()
-                    };
-
-                var (mode, normalizedQuery) = DetectMatchMode(searchTerm);
-
-                var normalizedOffset = Math.Max(offset, 0);
-                var normalizedMaxResults = Math.Max(maxResults, 0);
-                var fetchLimit = pathPrefix != null ? int.MaxValue : normalizedMaxResults;
-                var fetchOffset = pathPrefix != null ? 0 : normalizedOffset;
-                var candidateSource = GetCandidateSource(idx, filter);
-
-                if (candidateSource == null || candidateSource.Length == 0)
+                try
                 {
-                    return new SearchQueryResult
+                    if (string.IsNullOrWhiteSpace(keyword))
                     {
-                        TotalIndexedCount = idx.TotalCount,
-                        TotalMatchedCount = 0,
-                        IsTruncated = false,
-                        Results = new List<ScannedFileInfo>()
-                    };
-                }
+                        return FinalizeSearchResult(
+                            totalStopwatch,
+                            "empty-keyword",
+                            keyword,
+                            pathPrefix,
+                            searchTerm,
+                            normalizedQuery,
+                            mode,
+                            filter,
+                            offset,
+                            maxResults,
+                            candidateCount,
+                            matchElapsedMilliseconds,
+                            resolveElapsedMilliseconds,
+                            CreateEmptySearchResult(idx.TotalCount));
+                    }
 
-                List<FileRecord> matched;
-                int totalMatched;
-                switch (mode)
-                {
-                    case MatchMode.Prefix:
-                        { var r = PrefixMatch(normalizedQuery, candidateSource, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
-                        break;
-                    case MatchMode.Suffix:
-                        { var r = SuffixMatch(normalizedQuery, candidateSource, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
-                        break;
-                    case MatchMode.Regex:
-                        { var r = RegexMatch(normalizedQuery, candidateSource, fetchOffset, fetchLimit, progress, ct); matched = r.page; totalMatched = r.total; }
-                        break;
-                    case MatchMode.Wildcard:
-                        if (filter == SearchTypeFilter.All && TryGetSimpleExtensionWildcard(normalizedQuery, out var extension))
-                        {
-                            var r = ExtensionMatch(extension, idx.ExtensionHashMap, fetchOffset, fetchLimit, ct);
-                            matched = r.page;
-                            totalMatched = r.total;
-                        }
-                        else if (TrySimplifyWildcard(normalizedQuery, out var simplifiedMode, out var simplifiedQuery))
-                        {
-                            switch (simplifiedMode)
+                    // 需求 10.1：路径范围解析，在 DetectMatchMode 之前执行
+                    (pathPrefix, searchTerm) = ParsePathScope(keyword);
+
+                    // 若 searchTerm 为空（用户只输入了路径前缀），直接返回空结果
+                    if (string.IsNullOrWhiteSpace(searchTerm))
+                    {
+                        return FinalizeSearchResult(
+                            totalStopwatch,
+                            "path-only",
+                            keyword,
+                            pathPrefix,
+                            searchTerm,
+                            normalizedQuery,
+                            mode,
+                            filter,
+                            offset,
+                            maxResults,
+                            candidateCount,
+                            matchElapsedMilliseconds,
+                            resolveElapsedMilliseconds,
+                            CreateEmptySearchResult(idx.TotalCount));
+                    }
+
+                    (mode, normalizedQuery) = DetectMatchMode(searchTerm);
+
+                    var normalizedOffset = Math.Max(offset, 0);
+                    var normalizedMaxResults = Math.Max(maxResults, 0);
+                    var fetchLimit = pathPrefix != null ? int.MaxValue : normalizedMaxResults;
+                    var fetchOffset = pathPrefix != null ? 0 : normalizedOffset;
+                    var candidateSource = GetCandidateSource(idx, filter);
+                    candidateCount = candidateSource?.Length ?? 0;
+
+                    if (candidateSource == null || candidateSource.Length == 0)
+                    {
+                        return FinalizeSearchResult(
+                            totalStopwatch,
+                            "no-candidates",
+                            keyword,
+                            pathPrefix,
+                            searchTerm,
+                            normalizedQuery,
+                            mode,
+                            filter,
+                            offset,
+                            maxResults,
+                            candidateCount,
+                            matchElapsedMilliseconds,
+                            resolveElapsedMilliseconds,
+                            CreateEmptySearchResult(idx.TotalCount));
+                    }
+
+                    List<FileRecord> matched;
+                    int totalMatched;
+                    var matchStopwatch = Stopwatch.StartNew();
+                    switch (mode)
+                    {
+                        case MatchMode.Prefix:
+                            { var r = PrefixMatch(normalizedQuery, candidateSource, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
+                            break;
+                        case MatchMode.Suffix:
+                            { var r = SuffixMatch(normalizedQuery, candidateSource, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
+                            break;
+                        case MatchMode.Regex:
+                            { var r = RegexMatch(normalizedQuery, candidateSource, fetchOffset, fetchLimit, progress, ct); matched = r.page; totalMatched = r.total; }
+                            break;
+                        case MatchMode.Wildcard:
+                            if (filter == SearchTypeFilter.All && TryGetSimpleExtensionWildcard(normalizedQuery, out var extension))
                             {
-                                case MatchMode.Prefix:
-                                    { var r = PrefixMatch(simplifiedQuery, candidateSource, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
-                                    break;
-                                case MatchMode.Suffix:
-                                    { var r = SuffixMatch(simplifiedQuery, candidateSource, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
-                                    break;
-                                default:
-                                    { var r = ContainsMatch(simplifiedQuery, filter == SearchTypeFilter.All ? idx.ExactHashMap : null, candidateSource, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
-                                    break;
+                                var r = ExtensionMatch(extension, idx.ExtensionHashMap, fetchOffset, fetchLimit, ct);
+                                matched = r.page;
+                                totalMatched = r.total;
                             }
-                        }
-                        else
-                        {
-                            var r = RegexMatch(WildcardToRegex(normalizedQuery), candidateSource, fetchOffset, fetchLimit, progress, ct);
-                            matched = r.page;
-                            totalMatched = r.total;
-                        }
-                        break;
-                    default:
-                        { var r = ContainsMatch(normalizedQuery, filter == SearchTypeFilter.All ? idx.ExactHashMap : null, candidateSource, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
-                        break;
-                }
-
-                ct.ThrowIfCancellationRequested();
-
-                // 按需解析完整路径：用 _enumerator 的 FRN 字典（每卷独立缓存）
-                var results = new List<ScannedFileInfo>(Math.Min(matched.Count, normalizedMaxResults));
-
-                // 需求 10.2、10.3：路径前缀后置过滤（大小写不敏感）
-                // 确保路径前缀以 \ 结尾，避免误匹配同名前缀目录（如 C:\Users\Desktop2）
-                if (pathPrefix != null)
-                {
-                    var normalizedPrefix = pathPrefix.EndsWith("\\")
-                        ? pathPrefix
-                        : pathPrefix + "\\";
-                    var filteredTotal = 0;
-                    foreach (var record in matched)
-                    {
-                        ct.ThrowIfCancellationRequested();
-                        var fullPath = _enumerator.ResolveFullPath(record.DriveLetter, record.ParentFrn, record.OriginalName)
-                                       ?? (record.DriveLetter + ":\\" + record.OriginalName);
-                        if (!fullPath.StartsWith(normalizedPrefix, StringComparison.OrdinalIgnoreCase))
-                            continue;
-
-                        filteredTotal++;
-                        if (filteredTotal <= normalizedOffset || results.Count >= normalizedMaxResults)
-                            continue;
-
-                        results.Add(new ScannedFileInfo
-                        {
-                            FullPath = fullPath,
-                            FileName = record.OriginalName,
-                            SizeBytes = 0,
-                            ModifiedTimeUtc = DateTime.MinValue,
-                            RootPath = string.Empty,
-                            RootDisplayName = string.Empty,
-                            IsDirectory = record.IsDirectory
-                        });
+                            else if (TrySimplifyWildcard(normalizedQuery, out var simplifiedMode, out var simplifiedQuery))
+                            {
+                                switch (simplifiedMode)
+                                {
+                                    case MatchMode.Prefix:
+                                        { var r = PrefixMatch(simplifiedQuery, candidateSource, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
+                                        break;
+                                    case MatchMode.Suffix:
+                                        { var r = SuffixMatch(simplifiedQuery, candidateSource, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
+                                        break;
+                                    default:
+                                        { var r = ContainsMatch(simplifiedQuery, filter == SearchTypeFilter.All ? idx.ExactHashMap : null, candidateSource, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
+                                        break;
+                                }
+                            }
+                            else
+                            {
+                                var r = RegexMatch(WildcardToRegex(normalizedQuery), candidateSource, fetchOffset, fetchLimit, progress, ct);
+                                matched = r.page;
+                                totalMatched = r.total;
+                            }
+                            break;
+                        default:
+                            { var r = ContainsMatch(normalizedQuery, filter == SearchTypeFilter.All ? idx.ExactHashMap : null, candidateSource, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
+                            break;
                     }
-                    totalMatched = filteredTotal;
+                    matchStopwatch.Stop();
+                    matchElapsedMilliseconds = matchStopwatch.ElapsedMilliseconds;
 
-                    // 需求 10.7：路径范围内无匹配时上报提示
-                    if (totalMatched == 0)
-                        progress?.Report("指定路径下无匹配结果");
-                }
-                else
-                {
-                    foreach (var record in matched)
+                    ct.ThrowIfCancellationRequested();
+
+                    var resolveStopwatch = Stopwatch.StartNew();
+
+                    // 按需解析完整路径：用 _enumerator 的 FRN 字典（每卷独立缓存）
+                    var results = new List<ScannedFileInfo>(Math.Min(matched.Count, normalizedMaxResults));
+
+                    // 需求 10.2、10.3：路径前缀后置过滤（大小写不敏感）
+                    // 确保路径前缀以 \ 结尾，避免误匹配同名前缀目录（如 C:\Users\Desktop2）
+                    if (pathPrefix != null)
                     {
-                        ct.ThrowIfCancellationRequested();
-                        var fullPath = _enumerator.ResolveFullPath(record.DriveLetter, record.ParentFrn, record.OriginalName)
-                                       ?? (record.DriveLetter + ":\\" + record.OriginalName);
-                        results.Add(new ScannedFileInfo
+                        var normalizedPrefix = pathPrefix.EndsWith("\\")
+                            ? pathPrefix
+                            : pathPrefix + "\\";
+                        var filteredTotal = 0;
+                        foreach (var record in matched)
                         {
-                            FullPath = fullPath,
-                            FileName = record.OriginalName,
-                            SizeBytes = 0,
-                            ModifiedTimeUtc = DateTime.MinValue,
-                            RootPath = string.Empty,
-                            RootDisplayName = string.Empty,
-                            IsDirectory = record.IsDirectory
-                        });
-                    }
-                }
+                            ct.ThrowIfCancellationRequested();
+                            var fullPath = _enumerator.ResolveFullPath(record.DriveLetter, record.ParentFrn, record.OriginalName)
+                                           ?? (record.DriveLetter + ":\\" + record.OriginalName);
+                            if (!fullPath.StartsWith(normalizedPrefix, StringComparison.OrdinalIgnoreCase))
+                                continue;
 
-                return new SearchQueryResult
+                            filteredTotal++;
+                            if (filteredTotal <= normalizedOffset || results.Count >= normalizedMaxResults)
+                                continue;
+
+                            results.Add(new ScannedFileInfo
+                            {
+                                FullPath = fullPath,
+                                FileName = record.OriginalName,
+                                SizeBytes = 0,
+                                ModifiedTimeUtc = DateTime.MinValue,
+                                RootPath = string.Empty,
+                                RootDisplayName = string.Empty,
+                                IsDirectory = record.IsDirectory
+                            });
+                        }
+                        totalMatched = filteredTotal;
+
+                        // 需求 10.7：路径范围内无匹配时上报提示
+                        if (totalMatched == 0)
+                            progress?.Report("指定路径下无匹配结果");
+                    }
+                    else
+                    {
+                        foreach (var record in matched)
+                        {
+                            ct.ThrowIfCancellationRequested();
+                            var fullPath = _enumerator.ResolveFullPath(record.DriveLetter, record.ParentFrn, record.OriginalName)
+                                           ?? (record.DriveLetter + ":\\" + record.OriginalName);
+                            results.Add(new ScannedFileInfo
+                            {
+                                FullPath = fullPath,
+                                FileName = record.OriginalName,
+                                SizeBytes = 0,
+                                ModifiedTimeUtc = DateTime.MinValue,
+                                RootPath = string.Empty,
+                                RootDisplayName = string.Empty,
+                                IsDirectory = record.IsDirectory
+                            });
+                        }
+                    }
+
+                    resolveStopwatch.Stop();
+                    resolveElapsedMilliseconds = resolveStopwatch.ElapsedMilliseconds;
+
+                    return FinalizeSearchResult(
+                        totalStopwatch,
+                        "success",
+                        keyword,
+                        pathPrefix,
+                        searchTerm,
+                        normalizedQuery,
+                        mode,
+                        filter,
+                        offset,
+                        maxResults,
+                        candidateCount,
+                        matchElapsedMilliseconds,
+                        resolveElapsedMilliseconds,
+                        new SearchQueryResult
+                        {
+                            TotalIndexedCount = idx.TotalCount,
+                            TotalMatchedCount = totalMatched,
+                            IsTruncated = totalMatched > normalizedOffset + results.Count,
+                            Results = results
+                        });
+                }
+                catch (OperationCanceledException)
                 {
-                    TotalIndexedCount = idx.TotalCount,
-                    TotalMatchedCount = totalMatched,
-                    IsTruncated       = totalMatched > normalizedOffset + results.Count,
-                    Results           = results
-                };
+                    LogSearchFailure(
+                        totalStopwatch,
+                        "canceled",
+                        keyword,
+                        pathPrefix,
+                        searchTerm,
+                        normalizedQuery,
+                        mode,
+                        filter,
+                        offset,
+                        maxResults,
+                        candidateCount,
+                        matchElapsedMilliseconds,
+                        resolveElapsedMilliseconds,
+                        null);
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    LogSearchFailure(
+                        totalStopwatch,
+                        "failed",
+                        keyword,
+                        pathPrefix,
+                        searchTerm,
+                        normalizedQuery,
+                        mode,
+                        filter,
+                        offset,
+                        maxResults,
+                        candidateCount,
+                        matchElapsedMilliseconds,
+                        resolveElapsedMilliseconds,
+                        ex);
+                    throw;
+                }
             }, ct);
         }
 
@@ -735,6 +877,72 @@ namespace MftScanner
                 return restoredCount;
 
             return BuildIndexFromMft(progress, ct);
+        }
+
+        private static SearchQueryResult CreateEmptySearchResult(int totalIndexedCount)
+        {
+            return new SearchQueryResult
+            {
+                TotalIndexedCount = totalIndexedCount,
+                TotalMatchedCount = 0,
+                IsTruncated = false,
+                Results = new List<ScannedFileInfo>()
+            };
+        }
+
+        private SearchQueryResult FinalizeSearchResult(
+            Stopwatch totalStopwatch,
+            string outcome,
+            string keyword,
+            string pathPrefix,
+            string searchTerm,
+            string normalizedQuery,
+            MatchMode mode,
+            SearchTypeFilter filter,
+            int offset,
+            int maxResults,
+            int candidateCount,
+            long matchElapsedMilliseconds,
+            long resolveElapsedMilliseconds,
+            SearchQueryResult result)
+        {
+            totalStopwatch.Stop();
+            UsnDiagLog.Write(
+                $"[SEARCH] outcome={outcome} totalMs={totalStopwatch.ElapsedMilliseconds} matchMs={matchElapsedMilliseconds} " +
+                $"resolveMs={resolveElapsedMilliseconds} filter={filter} mode={mode} offset={offset} maxResults={maxResults} " +
+                $"candidateCount={candidateCount} matched={result.TotalMatchedCount} returned={result.Results?.Count ?? 0} " +
+                $"truncated={result.IsTruncated} indexed={result.TotalIndexedCount} pathScoped={pathPrefix != null} " +
+                $"keyword={IndexPerfLog.FormatValue(keyword)} searchTerm={IndexPerfLog.FormatValue(searchTerm)} " +
+                $"normalized={IndexPerfLog.FormatValue(normalizedQuery)} pathPrefix={IndexPerfLog.FormatValue(pathPrefix)}");
+            return result;
+        }
+
+        private void LogSearchFailure(
+            Stopwatch totalStopwatch,
+            string outcome,
+            string keyword,
+            string pathPrefix,
+            string searchTerm,
+            string normalizedQuery,
+            MatchMode mode,
+            SearchTypeFilter filter,
+            int offset,
+            int maxResults,
+            int candidateCount,
+            long matchElapsedMilliseconds,
+            long resolveElapsedMilliseconds,
+            Exception ex)
+        {
+            totalStopwatch.Stop();
+            var error = ex == null
+                ? string.Empty
+                : $" error={ex.GetType().Name}:{IndexPerfLog.FormatValue(ex.Message)}";
+            UsnDiagLog.Write(
+                $"[SEARCH] outcome={outcome} totalMs={totalStopwatch.ElapsedMilliseconds} matchMs={matchElapsedMilliseconds} " +
+                $"resolveMs={resolveElapsedMilliseconds} filter={filter} mode={mode} offset={offset} maxResults={maxResults} " +
+                $"candidateCount={candidateCount} pathScoped={pathPrefix != null} keyword={IndexPerfLog.FormatValue(keyword)} " +
+                $"searchTerm={IndexPerfLog.FormatValue(searchTerm)} normalized={IndexPerfLog.FormatValue(normalizedQuery)} " +
+                $"pathPrefix={IndexPerfLog.FormatValue(pathPrefix)}{error}");
         }
 
         private bool TryRestoreFromSnapshot(IProgress<string> progress, CancellationToken ct, out int restoredCount)
@@ -780,67 +988,123 @@ namespace MftScanner
 
         private int BuildIndexFromMft(IProgress<string> progress, CancellationToken ct)
         {
-            var fixedDrives = DriveInfo.GetDrives()
-                .Where(d => d.DriveType == DriveType.Fixed)
-                .Select(d => d.Name[0])
-                .ToArray();
-
-            if (fixedDrives.Length == 0) return 0;
-
-            // 多卷并行枚举
-            var perVolume = new (List<FileRecord> records, long nextUsn, ulong journalId, char letter)[fixedDrives.Length];
-            var exceptions = new System.Collections.Concurrent.ConcurrentBag<(char, Exception)>();
-
-            System.Threading.Tasks.Parallel.For(0, fixedDrives.Length, new ParallelOptions
+            var totalStopwatch = Stopwatch.StartNew();
+            try
             {
-                MaxDegreeOfParallelism = Math.Min(fixedDrives.Length, Environment.ProcessorCount),
-                CancellationToken = ct
-            }, i =>
-            {
-                var dl = fixedDrives[i];
-                var buf = new List<FileRecord>(300_000);
-                try
+                var fixedDrives = DriveInfo.GetDrives()
+                    .Where(d => d.DriveType == DriveType.Fixed)
+                    .Select(d => d.Name[0])
+                    .ToArray();
+
+                if (fixedDrives.Length == 0)
                 {
-                    var enumerator = new MftEnumerator(); // 每线程独立实例
-                    var (count, nextUsn, journalId) = enumerator.EnumerateVolumeIntoRecords(dl, buf, ct);
-                    // 把 frnMap 合并到主 enumerator
-                    _enumerator.MergeFrnMap(dl, enumerator);
-                    perVolume[i] = (buf, nextUsn, journalId, dl);
+                    totalStopwatch.Stop();
+                    UsnDiagLog.Write("[MFT BUILD] outcome=no-fixed-drive totalMs=0 indexedCount=0");
+                    return 0;
                 }
-                catch (OperationCanceledException) { throw; }
-                catch (Exception ex) { exceptions.Add((dl, ex)); }
-            });
 
-            foreach (var (dl, ex) in exceptions)
-                progress?.Report($"跳过卷 {dl}:：{ex.Message}");
+                UsnDiagLog.Write($"[MFT BUILD] start drives={string.Join(",", fixedDrives)}");
 
-            ct.ThrowIfCancellationRequested();
+                // 多卷并行枚举
+                var enumerateStopwatch = Stopwatch.StartNew();
+                var perVolume = new (List<FileRecord> records, long nextUsn, ulong journalId, char letter)[fixedDrives.Length];
+                var exceptions = new System.Collections.Concurrent.ConcurrentBag<(char, Exception)>();
 
-            // 合并所有卷的记录
-            var total = perVolume.Where(v => v.records != null).Sum(v => v.records.Count);
-            var allRecords = new FileRecord[total];
-            var offset = 0;
-            var successfulDrives = new List<(char letter, long nextUsn, ulong journalId)>();
-            foreach (var v in perVolume)
-            {
-                if (v.records == null) continue;
-                v.records.CopyTo(allRecords, offset);
-                offset += v.records.Count;
-                successfulDrives.Add((v.letter, v.nextUsn, v.journalId));
+                System.Threading.Tasks.Parallel.For(0, fixedDrives.Length, new ParallelOptions
+                {
+                    MaxDegreeOfParallelism = Math.Min(fixedDrives.Length, Environment.ProcessorCount),
+                    CancellationToken = ct
+                }, i =>
+                {
+                    var dl = fixedDrives[i];
+                    var buf = new List<FileRecord>(300_000);
+                    var volumeStopwatch = Stopwatch.StartNew();
+                    try
+                    {
+                        var enumerator = new MftEnumerator(); // 每线程独立实例
+                        var (count, nextUsn, journalId) = enumerator.EnumerateVolumeIntoRecords(dl, buf, ct);
+                        // 把 frnMap 合并到主 enumerator
+                        _enumerator.MergeFrnMap(dl, enumerator);
+                        perVolume[i] = (buf, nextUsn, journalId, dl);
+                        volumeStopwatch.Stop();
+                        UsnDiagLog.Write(
+                            $"[MFT ENUM] drive={dl} success elapsedMs={volumeStopwatch.ElapsedMilliseconds} records={count} nextUsn={nextUsn} journalId={journalId}");
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        volumeStopwatch.Stop();
+                        UsnDiagLog.Write($"[MFT ENUM] drive={dl} canceled elapsedMs={volumeStopwatch.ElapsedMilliseconds}");
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        volumeStopwatch.Stop();
+                        UsnDiagLog.Write(
+                            $"[MFT ENUM] drive={dl} fail elapsedMs={volumeStopwatch.ElapsedMilliseconds} error={ex.GetType().Name}:{IndexPerfLog.FormatValue(ex.Message)}");
+                        exceptions.Add((dl, ex));
+                    }
+                });
+                enumerateStopwatch.Stop();
+
+                foreach (var (dl, ex) in exceptions)
+                    progress?.Report($"跳过卷 {dl}:：{ex.Message}");
+
+                ct.ThrowIfCancellationRequested();
+
+                var mergeStopwatch = Stopwatch.StartNew();
+
+                // 合并所有卷的记录
+                var total = perVolume.Where(v => v.records != null).Sum(v => v.records.Count);
+                var allRecords = new FileRecord[total];
+                var offset = 0;
+                var successfulDrives = new List<(char letter, long nextUsn, ulong journalId)>();
+                foreach (var v in perVolume)
+                {
+                    if (v.records == null) continue;
+                    v.records.CopyTo(allRecords, offset);
+                    offset += v.records.Count;
+                    successfulDrives.Add((v.letter, v.nextUsn, v.journalId));
+                }
+
+                mergeStopwatch.Stop();
+
+                var buildStopwatch = Stopwatch.StartNew();
+                _index.Build(allRecords);
+                buildStopwatch.Stop();
+                progress?.Report($"已索引 {_index.TotalCount} 个对象");
+
+                var watcherStartStopwatch = Stopwatch.StartNew();
+                var volumeSnapshots = _enumerator.CreateVolumeSnapshots(successfulDrives.ToArray());
+
+                foreach (var (letter, nextUsn, journalId) in successfulDrives)
+                    _usnWatcher.StartWatching(letter, nextUsn, journalId, ct);
+
+                watcherStartStopwatch.Stop();
+
+                QueueSnapshotSave(allRecords, volumeSnapshots);
+                PublishIndexStatus($"已索引 {_index.TotalCount} 个对象", false, requireSearchRefresh: true);
+
+                totalStopwatch.Stop();
+                UsnDiagLog.Write(
+                    $"[MFT BUILD] success totalMs={totalStopwatch.ElapsedMilliseconds} enumerateMs={enumerateStopwatch.ElapsedMilliseconds} " +
+                    $"mergeMs={mergeStopwatch.ElapsedMilliseconds} buildMs={buildStopwatch.ElapsedMilliseconds} " +
+                    $"watcherStartMs={watcherStartStopwatch.ElapsedMilliseconds} indexedCount={_index.TotalCount} " +
+                    $"successfulDrives={successfulDrives.Count} failedDrives={exceptions.Count}");
+
+                return _index.TotalCount;
             }
-
-            _index.Build(allRecords);
-            progress?.Report($"已索引 {_index.TotalCount} 个对象");
-
-            var volumeSnapshots = _enumerator.CreateVolumeSnapshots(successfulDrives.ToArray());
-
-            foreach (var (letter, nextUsn, journalId) in successfulDrives)
-                _usnWatcher.StartWatching(letter, nextUsn, journalId, ct);
-
-            QueueSnapshotSave(allRecords, volumeSnapshots);
-            PublishIndexStatus($"已索引 {_index.TotalCount} 个对象", false, requireSearchRefresh: true);
-
-            return _index.TotalCount;
+            catch (OperationCanceledException)
+            {
+                totalStopwatch.Stop();
+                UsnDiagLog.Write($"[MFT BUILD] canceled totalMs={totalStopwatch.ElapsedMilliseconds}");
+                throw;
+            }
+            catch (Exception ex)
+            {
+                totalStopwatch.Stop();
+                UsnDiagLog.Write($"[MFT BUILD] fail totalMs={totalStopwatch.ElapsedMilliseconds} error={ex.GetType().Name}:{IndexPerfLog.FormatValue(ex.Message)}");
+                throw;
+            }
         }
 
         private void StartBackgroundCatchUp(IReadOnlyList<VolumeSnapshot> volumes, IProgress<string> progress, CancellationToken ct)
@@ -1296,22 +1560,11 @@ namespace MftScanner
     }
 }
 
-    /// <summary>轻量诊断日志，写到桌面 usn_diag.log，用完后删除。</summary>
+    /// <summary>索引服务性能诊断日志包装器。</summary>
     internal static class UsnDiagLog
     {
-        private static readonly string _path = System.IO.Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "usn_diag.log");
-        private static readonly object _lock = new object();
-
         public static void Write(string msg)
         {
-            try
-            {
-                lock (_lock)
-                    System.IO.File.AppendAllText(_path,
-                        $"{DateTime.Now:HH:mm:ss.fff} {msg}{Environment.NewLine}");
-            }
-            catch { }
+            MftScanner.IndexPerfLog.Write("INDEX", msg);
         }
     }
-
