@@ -526,9 +526,11 @@ namespace MftScanner
         {
             var page = new List<FileRecord>(Math.Min(maxResults, 64));
             var total = 0;
+            var hasExactBucket = false;
 
             if (exactHashMap != null && exactHashMap.TryGetValue(query, out var exactBucket))
             {
+                hasExactBucket = true;
                 foreach (var r in exactBucket)
                 {
                     total++;
@@ -541,7 +543,7 @@ namespace MftScanner
             foreach (var record in sortedArray)
             {
                 if ((++i & 0xFFF) == 0) ct.ThrowIfCancellationRequested();
-                if (record.LowerName == query) continue;
+                if (hasExactBucket && record.LowerName == query) continue;
                 if (record.LowerName.Contains(query))
                 {
                     total++;
