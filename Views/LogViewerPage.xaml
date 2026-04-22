@@ -17,8 +17,9 @@
         <StackPanel Grid.Row="0" Margin="0,0,0,12">
             <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
             <TextBlock Text="日志类型:" VerticalAlignment="Center" Margin="0,0,6,0"/>
-            <controls:CComboBox x:Name="LogTypeCombo" Width="120" SelectedIndex="1" Margin="0,0,12,0">
+            <controls:CComboBox x:Name="LogTypeCombo" Width="120" SelectedIndex="0" Margin="0,0,12,0">
                 <ComboBoxItem Content="常规日志"/>
+                <ComboBoxItem Content="调试日志"/>
                 <ComboBoxItem Content="错误日志"/>
             </controls:CComboBox>
 
@@ -28,6 +29,7 @@
             <TextBlock Text="级别:" VerticalAlignment="Center" Margin="0,0,6,0"/>
             <controls:CComboBox x:Name="LevelCombo" Width="110" SelectedIndex="0" Margin="0,0,12,0">
                 <ComboBoxItem Content="全部"/>
+                <ComboBoxItem Content="DEBUG"/>
                 <ComboBoxItem Content="INFO"/>
                 <ComboBoxItem Content="WARN"/>
                 <ComboBoxItem Content="ERROR"/>

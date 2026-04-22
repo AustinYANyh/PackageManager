@@ -90,8 +90,26 @@ public partial class CommonStartupWindow : Window
 
     public void FocusSearchBoxAndSelectAll()
     {
+        TryFocusSearchBoxAndSelectAll();
+    }
+
+    public bool TryFocusSearchBoxAndSelectAll()
+    {
+        if (SearchBox == null)
+        {
+            return false;
+        }
+
+        FocusManager.SetFocusedElement(this, SearchBox);
         SearchBox.Focus();
+        Keyboard.Focus(SearchBox);
         SearchBox.SelectAll();
+        return IsSearchBoxKeyboardFocused();
+    }
+
+    public bool IsSearchBoxKeyboardFocused()
+    {
+        return ReferenceEquals(Keyboard.FocusedElement, SearchBox);
     }
 
     public void PrepareForProcessExit()

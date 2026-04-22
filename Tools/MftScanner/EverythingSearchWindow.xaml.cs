@@ -10,6 +10,7 @@ using System.Threading;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 
@@ -91,8 +92,26 @@ namespace MftScanner
 
         public void FocusSearchBoxAndSelectAll()
         {
+            TryFocusSearchBoxAndSelectAll();
+        }
+
+        public bool TryFocusSearchBoxAndSelectAll()
+        {
+            if (SearchBox == null)
+            {
+                return false;
+            }
+
+            FocusManager.SetFocusedElement(this, SearchBox);
             SearchBox.Focus();
+            Keyboard.Focus(SearchBox);
             SearchBox.SelectAll();
+            return IsSearchBoxKeyboardFocused();
+        }
+
+        public bool IsSearchBoxKeyboardFocused()
+        {
+            return ReferenceEquals(Keyboard.FocusedElement, SearchBox);
         }
 
         public void PrepareForProcessExit()

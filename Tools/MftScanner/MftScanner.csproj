@@ -78,6 +78,7 @@
     <Compile Include="RevitFileCleanupWindow.xaml.cs">
       <DependentUpon>RevitFileCleanupWindow.xaml</DependentUpon>
     </Compile>
+    <Compile Include="Services\LoggingService.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="app.manifest" />
