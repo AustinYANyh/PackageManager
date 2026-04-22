@@ -448,8 +448,9 @@ namespace MftScanner
                     return false;
 
                 _totalMatchedCount = result == null ? 0 : result.TotalMatchedCount;
+                var rawReturnedCount = result?.Results == null ? 0 : result.Results.Count;
                 AppendResults(result);
-                _loadedRawResultCount = _loadedResultCount;
+                _loadedRawResultCount = isNewSearch ? rawReturnedCount : (_loadedRawResultCount + rawReturnedCount);
                 _hasMoreSearchResults = _loadedResultCount < _totalMatchedCount;
                 return true;
             }
@@ -457,7 +458,7 @@ namespace MftScanner
             var filteredResult = await _indexService.SearchAsync(
                 _activeKeyword,
                 Math.Max(desiredCount, SearchBatchSize),
-                _loadedResultCount,
+                _loadedRawResultCount,
                 MapCurrentTypeFilter(),
                 null,
                 ct).ConfigureAwait(true);
@@ -465,8 +466,9 @@ namespace MftScanner
                 return false;
 
             _totalMatchedCount = filteredResult == null ? 0 : filteredResult.TotalMatchedCount;
+            var filteredRawReturnedCount = filteredResult?.Results == null ? 0 : filteredResult.Results.Count;
             AppendResults(filteredResult);
-            _loadedRawResultCount = _loadedResultCount;
+            _loadedRawResultCount = isNewSearch ? filteredRawReturnedCount : (_loadedRawResultCount + filteredRawReturnedCount);
             _hasMoreSearchResults = filteredResult != null && filteredResult.IsTruncated;
             return true;
         }

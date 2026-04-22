@@ -45,6 +45,11 @@ namespace MftScanner
 
         private void SearchBox_KeyDown(object sender, KeyEventArgs e)
         {
+            if (TryHandleResultShortcutKey(e, allowFirstResultFallback: true))
+            {
+                return;
+            }
+
             if (e.Key == Key.Enter)
             {
                 e.Handled = true;
@@ -69,6 +74,26 @@ namespace MftScanner
                 e.Handled = true;
                 MoveSearchResultSelection(-1);
             }
+            else if (e.Key == Key.PageDown && _displayedResults.Count > 0)
+            {
+                e.Handled = true;
+                ExecuteResultsGridNavigationKeyFromSearchBox(e);
+            }
+            else if (e.Key == Key.PageUp && _displayedResults.Count > 0)
+            {
+                e.Handled = true;
+                ExecuteResultsGridNavigationKeyFromSearchBox(e);
+            }
+            else if (e.Key == Key.Home && _displayedResults.Count > 0)
+            {
+                e.Handled = true;
+                ExecuteResultsGridNavigationKeyFromSearchBox(e);
+            }
+            else if (e.Key == Key.End && _displayedResults.Count > 0)
+            {
+                e.Handled = true;
+                ExecuteResultsGridNavigationKeyFromSearchBox(e);
+            }
         }
 
         private void MoveSearchResultSelection(int delta)
@@ -88,21 +113,147 @@ namespace MftScanner
             ResultsGrid.ScrollIntoView(nextItem);
         }
 
-        private void ResultsGrid_PreviewKeyDown(object sender, KeyEventArgs e)
+        private void ExecuteResultsGridNavigationKeyFromSearchBox(KeyEventArgs originalArgs)
         {
-            var item = ResultsGrid.SelectedItem as EverythingSearchResultItem;
-            if (item == null)
+            if (_displayedResults.Count == 0)
                 return;
 
-            if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.None) { e.Handled = true; OpenItem(item, false); }
-            else if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Control) { e.Handled = true; OpenContainingFolder(item.FullPath); }
-            else if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Shift) { e.Handled = true; OpenItem(item, true); }
-            else if (e.Key == Key.C && Keyboard.Modifiers == ModifierKeys.Control) { e.Handled = true; CopyToClipboard(item.FullPath); StatusText.Text = "路径已复制"; }
-            else if (e.Key == Key.C && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift)) { e.Handled = true; CopyToClipboard(item.FileName); StatusText.Text = "文件名已复制"; }
-            else if (e.Key == Key.T && Keyboard.Modifiers == ModifierKeys.Control) { e.Handled = true; OpenTerminal(item); }
-            else if (e.Key == Key.F2) { e.Handled = true; RenameItem(item); }
-            else if (e.Key == Key.Delete) { e.Handled = true; DeleteItem(item); }
-            else if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Alt) { e.Handled = true; ShowProperties(item); }
+            var selectedItem = ResultsGrid.SelectedItem as EverythingSearchResultItem;
+            if (selectedItem == null)
+            {
+                selectedItem = _displayedResults[0];
+                ResultsGrid.SelectedItem = selectedItem;
+                EnsureCurrentCellSelection(selectedItem);
+            }
+
+            var selectionStart = SearchBox.SelectionStart;
+            var selectionLength = SearchBox.SelectionLength;
+            var caretIndex = SearchBox.CaretIndex;
+
+            ResultsGrid.Focus();
+            EnsureCurrentCellSelection(ResultsGrid.SelectedItem as EverythingSearchResultItem);
+
+            var presentationSource = PresentationSource.FromVisual(ResultsGrid) ?? PresentationSource.FromVisual(this);
+            if (presentationSource != null)
+            {
+                var previewArgs = new KeyEventArgs(Keyboard.PrimaryDevice, presentationSource, Environment.TickCount, originalArgs.Key)
+                {
+                    RoutedEvent = Keyboard.PreviewKeyDownEvent
+                };
+                ResultsGrid.RaiseEvent(previewArgs);
+
+                if (!previewArgs.Handled)
+                {
+                    var keyArgs = new KeyEventArgs(Keyboard.PrimaryDevice, presentationSource, Environment.TickCount, originalArgs.Key)
+                    {
+                        RoutedEvent = Keyboard.KeyDownEvent
+                    };
+                    ResultsGrid.RaiseEvent(keyArgs);
+                }
+            }
+
+            Dispatcher.BeginInvoke(new Action(delegate
+            {
+                SearchBox.Focus();
+                SearchBox.Select(selectionStart, selectionLength);
+                if (selectionLength == 0)
+                    SearchBox.CaretIndex = caretIndex;
+            }), System.Windows.Threading.DispatcherPriority.Input);
+        }
+
+        private void ResultsGrid_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            TryHandleResultShortcutKey(e, allowFirstResultFallback: false);
+        }
+
+        private bool TryHandleResultShortcutKey(KeyEventArgs e, bool allowFirstResultFallback)
+        {
+            var item = ResolveShortcutTarget(allowFirstResultFallback);
+            if (item == null)
+                return false;
+
+            if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.None)
+            {
+                e.Handled = true;
+                OpenItem(item, false);
+                return true;
+            }
+
+            if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Control)
+            {
+                e.Handled = true;
+                OpenContainingFolder(item.FullPath);
+                return true;
+            }
+
+            if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Shift)
+            {
+                e.Handled = true;
+                OpenItem(item, true);
+                return true;
+            }
+
+            if (e.Key == Key.C && Keyboard.Modifiers == ModifierKeys.Control)
+            {
+                e.Handled = true;
+                CopyToClipboard(item.FullPath);
+                StatusText.Text = "路径已复制";
+                return true;
+            }
+
+            if (e.Key == Key.C && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift))
+            {
+                e.Handled = true;
+                CopyToClipboard(item.FileName);
+                StatusText.Text = "文件名已复制";
+                return true;
+            }
+
+            if (e.Key == Key.T && Keyboard.Modifiers == ModifierKeys.Control)
+            {
+                e.Handled = true;
+                OpenTerminal(item);
+                return true;
+            }
+
+            if (e.Key == Key.F2)
+            {
+                e.Handled = true;
+                RenameItem(item);
+                return true;
+            }
+
+            if (e.Key == Key.Delete)
+            {
+                e.Handled = true;
+                DeleteItem(item);
+                return true;
+            }
+
+            if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Alt)
+            {
+                e.Handled = true;
+                ShowProperties(item);
+                return true;
+            }
+
+            return false;
+        }
+
+        private EverythingSearchResultItem ResolveShortcutTarget(bool allowFirstResultFallback)
+        {
+            var item = ResultsGrid.SelectedItem as EverythingSearchResultItem;
+            if (item != null)
+                return item;
+
+            if (!allowFirstResultFallback || _displayedResults.Count == 0)
+                return null;
+
+            var firstItem = _displayedResults[0];
+            ResultsGrid.SelectedItem = firstItem;
+            EnsureCurrentCellSelection(firstItem);
+            ResultsGrid.ScrollIntoView(firstItem);
+            return firstItem;
         }
 
         private void ResultsGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
