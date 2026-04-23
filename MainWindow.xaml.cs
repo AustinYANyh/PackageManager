@@ -64,6 +64,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private readonly DataPersistenceService _dataPersistenceService;
 
+    private readonly LanTransferService _lanTransferService;
+
     private ObservableCollection<PackageInfo> _packages;
 
     private PackageInfo _latestActivePackage;
@@ -91,6 +93,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _ftpService = new FtpService();
         _applicationFinderService = new ApplicationFinderService();
         _dataPersistenceService = new DataPersistenceService();
+        _lanTransferService = new LanTransferService(_dataPersistenceService);
 
         // 设置PackageInfo的静态DataPersistenceService引用
         PackageInfo.DataPersistenceService = _dataPersistenceService;
@@ -118,6 +121,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         OpenChangelogPageCommand = new RelayCommand(() => { OpenChangelogPageButton_Click(this, new RoutedEventArgs()); });
         OpenKanbanStatsPageCommand = new RelayCommand(() => { OpenKanbanStatsPageButton_Click(this, new RoutedEventArgs()); });
         OpenPluginManagerPageCommand = new RelayCommand(() => { OpenPluginManagerPageButton_Click(this, new RoutedEventArgs()); });
+        OpenLanTransferPageCommand = new RelayCommand(() => { OpenLanTransferPageButton_Click(this, new RoutedEventArgs()); });
     }
 
     /// <summary>
@@ -215,6 +219,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     /// 获取打开插件管理页面的命令。
     /// </summary>
     public ICommand OpenPluginManagerPageCommand { get; }
+
+    /// <summary>
+    /// 获取打开局域网传文件页面的命令。
+    /// </summary>
+    public ICommand OpenLanTransferPageCommand { get; }
 
     /// <summary>
     /// 获取或设置产品包列表。
@@ -513,6 +522,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
                        : (page is SettingsPage) ? "软件设置"
                        : (page is KanbanStatsPage) ? "看板统计"
                        : (page is PluginManagementPage) ? "插件管理"
+                       : (page is LanTransferPage) ? "局域网传文件"
                        : null;
             if (!string.IsNullOrEmpty(name))
             {
@@ -761,6 +771,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             // 保存主界面状态
             SaveCurrentState();
+            _lanTransferService?.Dispose();
             Debug.WriteLine("应用程序正在关闭，数据已保存");
         }
         catch (Exception ex)
@@ -1369,7 +1380,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         try
         {
-            var page = new SettingsPage(_dataPersistenceService);
+            var page = new SettingsPage(_dataPersistenceService, _lanTransferService);
             if (page is ICentralPage icp)
             {
                 icp.RequestExit += () => NavigateHome();
@@ -1620,6 +1631,25 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             LoggingService.LogError(ex, "打开插件管理页面失败");
             MessageBox.Show($"打开插件管理页面失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void OpenLanTransferPageButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var page = new LanTransferPage(_lanTransferService);
+            if (page is ICentralPage icp)
+            {
+                icp.RequestExit += () => NavigateHome();
+            }
+
+            NavigateTo(page);
+        }
+        catch (Exception ex)
+        {
+            LoggingService.LogError(ex, "打开局域网传文件页面失败");
+            MessageBox.Show($"打开局域网传文件页面失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 

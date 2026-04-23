@@ -296,6 +296,11 @@
         <Compile Include="Services\FtpService.cs" />
         <Compile Include="Services\GitProxyService.cs" />
         <Compile Include="Services\JenkinsBuildService.cs" />
+        <Compile Include="Services\LanDiscoveryService.cs" />
+        <Compile Include="Services\LanTransferHostService.cs" />
+        <Compile Include="Services\LanTransferLogger.cs" />
+        <Compile Include="Services\LanTransferModels.cs" />
+        <Compile Include="Services\LanTransferService.cs" />
         <Compile Include="Services\PackageUpdateService.cs" />
         <Compile Include="Services\UserFeatureAccessService.cs" />
         <Compile Include="Converters\StatusConverters.cs" />
@@ -314,11 +319,21 @@
           <Generator>MSBuild:Compile</Generator>
           <SubType>Designer</SubType>
         </Page>
+        <Page Include="Views\LanTransferConfirmWindow.xaml" />
+        <Page Include="Views\LanTransferPage.xaml" />
         <Page Include="Views\PackageConfigPage.xaml" />
         <Page Include="Views\PluginManagementPage.xaml" />
         <Page Include="Views\ProductLogsPage.xaml" />
         <Page Include="Views\SettingsPage.xaml" />
         <Page Include="Views\Controls\WorkItemCard.xaml" />
+        <Compile Include="Views\LanTransferConfirmWindow.xaml.cs">
+          <DependentUpon>LanTransferConfirmWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Compile Include="Views\LanTransferPage.xaml.cs">
+          <DependentUpon>LanTransferPage.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
     </ItemGroup>
     <ItemGroup>
         <EmbeddedResource Include="Assets\kiro-rs\a.cmd" />

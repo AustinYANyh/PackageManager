@@ -1039,6 +1039,26 @@ namespace PackageManager.Services
         /// 获取或设置是否启用索引服务性能分析日志。
         /// </summary>
         public bool EnableIndexServicePerformanceAnalysis { get; set; } = false;
+
+        /// <summary>
+        /// 获取或设置是否启用局域网传文件功能。
+        /// </summary>
+        public bool EnableLanTransfer { get; set; } = true;
+
+        /// <summary>
+        /// 获取或设置局域网传输显示名称。
+        /// </summary>
+        public string LanTransferDisplayName { get; set; } = null;
+
+        /// <summary>
+        /// 获取或设置局域网传输设备标识。
+        /// </summary>
+        public string LanTransferDeviceId { get; set; } = null;
+
+        /// <summary>
+        /// 获取或设置局域网传输收件箱目录。
+        /// </summary>
+        public string LanTransferInboxPath { get; set; } = null;
     }
 
     /// <summary>

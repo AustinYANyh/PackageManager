@@ -1,0 +1,310 @@
+<Page x:Class="PackageManager.Views.LanTransferPage"
+      xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+      xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+      mc:Ignorable="d"
+      Background="#F5F6F2">
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <Grid Margin="20">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <Border Grid.Row="0"
+                    Background="White"
+                    BorderBrush="#18000000"
+                    BorderThickness="1"
+                    CornerRadius="18"
+                    Padding="18"
+                    Margin="0,0,0,16">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <StackPanel>
+                        <TextBlock Text="局域网传文件" FontSize="24" FontWeight="Bold" Foreground="#1F2A25"/>
+                        <TextBlock Margin="0,8,0,0" Text="{Binding Service.StatusText}" Foreground="#55615A" TextWrapping="Wrap"/>
+                        <TextBlock Margin="0,8,0,0" Text="{Binding LocalSummaryText}" Foreground="#1A6A5F" TextWrapping="Wrap"/>
+                        <TextBlock Margin="0,6,0,0" Text="{Binding InboxSummaryText}" Foreground="#55615A" TextWrapping="Wrap"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top">
+                        <Button Content="返回主页" Width="96" Height="34" Margin="0,0,8,0" Click="BackButton_Click"/>
+                        <Button Content="打开收件箱" Width="96" Height="34" Margin="0,0,8,0" Click="OpenInboxButton_Click"/>
+                        <Button Content="打开日志" Width="96" Height="34" Click="OpenLogsButton_Click"/>
+                    </StackPanel>
+                </Grid>
+            </Border>
+
+            <Grid Grid.Row="1">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="1.1*"/>
+                    <ColumnDefinition Width="16"/>
+                    <ColumnDefinition Width="0.9*"/>
+                </Grid.ColumnDefinitions>
+
+                <Border Grid.Column="0"
+                        Background="White"
+                        BorderBrush="#18000000"
+                        BorderThickness="1"
+                        CornerRadius="18"
+                        Padding="16">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        <StackPanel>
+                            <TextBlock Text="在线用户" FontSize="18" FontWeight="Bold"/>
+                            <TextBlock Margin="0,6,0,0" Text="自动发现同网段内运行中的 PackageManager，也支持手动输入 IP/主机名连接。" Foreground="#55615A" TextWrapping="Wrap"/>
+                        </StackPanel>
+
+                        <Grid Grid.Row="1" Margin="0,14,0,12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="10"/>
+                                <ColumnDefinition Width="120"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBox Grid.Column="0"
+                                     Text="{Binding ManualAddress, UpdateSourceTrigger=PropertyChanged}"
+                                     Height="34"
+                                     VerticalContentAlignment="Center"/>
+                            <Button Grid.Column="2"
+                                    Content="手动连接"
+                                    Height="34"
+                                    Click="ManualConnectButton_Click"/>
+                        </Grid>
+
+                        <ListBox Grid.Row="2"
+                                 ItemsSource="{Binding Service.Peers}"
+                                 SelectedItem="{Binding SelectedPeer, Mode=TwoWay}"
+                                 BorderThickness="0"
+                                 Background="Transparent">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Margin="0,0,0,10"
+                                            Padding="12"
+                                            Background="#FFF8FAF8"
+                                            CornerRadius="14"
+                                            BorderBrush="#18000000"
+                                            BorderThickness="1">
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding DisplayLabel}" FontSize="15" FontWeight="SemiBold"/>
+                                            <TextBlock Margin="0,5,0,0" Text="{Binding EndpointDisplay}" Foreground="#55615A"/>
+                                            <TextBlock Margin="0,4,0,0" Text="{Binding StatusText}" Foreground="#1A6A5F"/>
+                                            <TextBlock Margin="0,4,0,0" Text="{Binding LastSeenText}" Foreground="#55615A"/>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </Grid>
+                </Border>
+
+                <Border Grid.Column="2"
+                        Background="White"
+                        BorderBrush="#18000000"
+                        BorderThickness="1"
+                        CornerRadius="18"
+                        Padding="16">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <StackPanel>
+                            <TextBlock Text="发送区" FontSize="18" FontWeight="Bold"/>
+                            <TextBlock Margin="0,6,0,0" Text="支持多文件和文件夹。可拖拽到下方区域，文件夹会按原目录结构发送。" Foreground="#55615A" TextWrapping="Wrap"/>
+                        </StackPanel>
+
+                        <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,14,0,12">
+                            <Button Content="添加文件" Width="90" Height="34" Margin="0,0,8,0" Click="AddFilesButton_Click"/>
+                            <Button Content="添加文件夹" Width="90" Height="34" Margin="0,0,8,0" Click="AddFolderButton_Click"/>
+                            <Button Content="移除选中" Width="90" Height="34" Margin="0,0,8,0" Click="RemoveQueuedButton_Click"/>
+                            <Button Content="清空" Width="80" Height="34" Click="ClearQueuedButton_Click"/>
+                        </StackPanel>
+
+                        <Border Grid.Row="2"
+                                Background="#FFF8FAF8"
+                                BorderBrush="#18000000"
+                                BorderThickness="1"
+                                CornerRadius="14"
+                                AllowDrop="True"
+                                DragOver="DropZone_DragOver"
+                                Drop="DropZone_Drop">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+                                <TextBlock Margin="12,10,12,6" Text="{Binding QueueSummaryText}" Foreground="#55615A"/>
+                                <ListBox Grid.Row="1"
+                                         ItemsSource="{Binding QueuedItems}"
+                                         SelectedItem="{Binding SelectedQueuedItem, Mode=TwoWay}"
+                                         BorderThickness="0"
+                                         Background="Transparent"
+                                         Margin="8">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Margin="0,0,0,8"
+                                                    Padding="10"
+                                                    Background="White"
+                                                    BorderBrush="#18000000"
+                                                    BorderThickness="1"
+                                                    CornerRadius="12">
+                                                <StackPanel>
+                                                    <TextBlock Text="{Binding DisplayName}" FontWeight="SemiBold"/>
+                                                    <TextBlock Margin="0,4,0,0" Text="{Binding FullPath}" Foreground="#55615A" TextWrapping="Wrap"/>
+                                                    <TextBlock Margin="0,4,0,0" Text="{Binding SummaryText}" Foreground="#1A6A5F"/>
+                                                </StackPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </Grid>
+                        </Border>
+
+                        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
+                            <Button Content="发送到选中用户" Width="140" Height="36" Click="SendButton_Click"/>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+            </Grid>
+
+            <Grid Grid.Row="2" Margin="0,16,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="16"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <Border Grid.Column="0"
+                        Background="White"
+                        BorderBrush="#18000000"
+                        BorderThickness="1"
+                        CornerRadius="18"
+                        Padding="16">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <TextBlock Text="待确认 / 进行中" FontSize="18" FontWeight="Bold"/>
+                        <TextBlock Grid.Row="1" Margin="0,6,0,12" Text="收到请求会自动弹确认窗，这里会同步显示待确认和进行中的传输。" Foreground="#55615A" TextWrapping="Wrap"/>
+
+                        <Grid Grid.Row="2">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Text="待确认请求" FontWeight="Bold" Foreground="#55615A"/>
+                            <ListBox Grid.Row="1"
+                                     ItemsSource="{Binding Service.PendingRequests}"
+                                     BorderThickness="0"
+                                     Background="Transparent"
+                                     Margin="0,8,0,12">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Margin="0,0,0,8"
+                                                Padding="10"
+                                                Background="#FFF8FAF8"
+                                                BorderBrush="#18000000"
+                                                BorderThickness="1"
+                                                CornerRadius="12">
+                                            <StackPanel>
+                                                <TextBlock Text="{Binding SenderLabel}" FontWeight="SemiBold"/>
+                                                <TextBlock Margin="0,4,0,0" Text="{Binding TopLevelSummary}" Foreground="#55615A" TextWrapping="Wrap"/>
+                                                <TextBlock Margin="0,4,0,0" Text="{Binding StatusText}" Foreground="#1A6A5F"/>
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+
+                            <TextBlock Grid.Row="2" Text="进行中的传输" FontWeight="Bold" Foreground="#55615A"/>
+                            <ListBox Grid.Row="3"
+                                     ItemsSource="{Binding Service.ActiveTransfers}"
+                                     SelectedItem="{Binding SelectedActiveTransfer, Mode=TwoWay}"
+                                     BorderThickness="0"
+                                     Background="Transparent"
+                                     Margin="0,8,0,0">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Margin="0,0,0,8"
+                                                Padding="10"
+                                                Background="#FFF8FAF8"
+                                                BorderBrush="#18000000"
+                                                BorderThickness="1"
+                                                CornerRadius="12">
+                                            <StackPanel>
+                                                <TextBlock Text="{Binding DirectionText}" FontWeight="SemiBold"/>
+                                                <TextBlock Margin="0,4,0,0" Text="{Binding PeerDisplayName}" Foreground="#55615A"/>
+                                                <TextBlock Margin="0,4,0,0" Text="{Binding Summary}" Foreground="#55615A" TextWrapping="Wrap"/>
+                                                <TextBlock Margin="0,4,0,0" Text="{Binding ProgressText}" Foreground="#1A6A5F"/>
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </Grid>
+
+                        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
+                            <Button Content="取消选中传输" Width="120" Height="34" Click="CancelTransferButton_Click"/>
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <Border Grid.Column="2"
+                        Background="White"
+                        BorderBrush="#18000000"
+                        BorderThickness="1"
+                        CornerRadius="18"
+                        Padding="16">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+                        <TextBlock Text="最近传输记录" FontSize="18" FontWeight="Bold"/>
+                        <ListBox Grid.Row="1"
+                                 ItemsSource="{Binding Service.TransferHistory}"
+                                 BorderThickness="0"
+                                 Background="Transparent"
+                                 Margin="0,12,0,0">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Margin="0,0,0,8"
+                                            Padding="10"
+                                            Background="#FFF8FAF8"
+                                            BorderBrush="#18000000"
+                                            BorderThickness="1"
+                                            CornerRadius="12">
+                                        <StackPanel>
+                                            <TextBlock Text="{Binding DirectionText}" FontWeight="SemiBold"/>
+                                            <TextBlock Margin="0,4,0,0" Text="{Binding PeerDisplayName}" Foreground="#55615A"/>
+                                            <TextBlock Margin="0,4,0,0" Text="{Binding Summary}" Foreground="#55615A" TextWrapping="Wrap"/>
+                                            <TextBlock Margin="0,4,0,0" Text="{Binding StatusText}" Foreground="#1A6A5F"/>
+                                            <TextBlock Margin="0,4,0,0" Text="{Binding CompletedAtText}" Foreground="#55615A"/>
+                                            <TextBlock Margin="0,4,0,0" Text="{Binding TargetPath}" Foreground="#55615A" TextWrapping="Wrap"/>
+                                        </StackPanel>
+                                    </Border>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
+                    </Grid>
+                </Border>
+            </Grid>
+        </Grid>
+    </ScrollViewer>
+</Page>

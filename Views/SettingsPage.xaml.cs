@@ -2,6 +2,7 @@ using System;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.IO;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -17,6 +18,7 @@ namespace PackageManager.Views;
 public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
 {
     private readonly DataPersistenceService dataPersistenceService;
+    private readonly LanTransferService lanTransferService;
 
     private string addinPath;
 
@@ -38,16 +40,20 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
 
     private string jenkinsUsername;
     private bool enableIndexServicePerformanceAnalysis;
+    private bool enableLanTransfer;
+    private string lanTransferDisplayName;
+    private string lanTransferInboxPath;
 
     /// <summary>
     /// 初始化 <see cref="SettingsPage"/> 的新实例。
     /// </summary>
     /// <param name="dataPersistenceService">数据持久化服务实例。</param>
     /// <exception cref="ArgumentNullException"><paramref name="dataPersistenceService"/> 为 null。</exception>
-    public SettingsPage(DataPersistenceService dataPersistenceService)
+    public SettingsPage(DataPersistenceService dataPersistenceService, LanTransferService lanTransferService)
     {
         InitializeComponent();
         this.dataPersistenceService = dataPersistenceService ?? throw new ArgumentNullException(nameof(dataPersistenceService));
+        this.lanTransferService = lanTransferService ?? throw new ArgumentNullException(nameof(lanTransferService));
         DataContext = this;
         LoadSettings();
 
@@ -141,6 +147,36 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
         get => enableIndexServicePerformanceAnalysis;
 
         set => SetProperty(ref enableIndexServicePerformanceAnalysis, value);
+    }
+
+    /// <summary>
+    /// 获取或设置是否启用局域网传文件功能。
+    /// </summary>
+    public bool EnableLanTransfer
+    {
+        get => enableLanTransfer;
+
+        set => SetProperty(ref enableLanTransfer, value);
+    }
+
+    /// <summary>
+    /// 获取或设置局域网传输显示名称。
+    /// </summary>
+    public string LanTransferDisplayName
+    {
+        get => lanTransferDisplayName;
+
+        set => SetProperty(ref lanTransferDisplayName, value);
+    }
+
+    /// <summary>
+    /// 获取或设置局域网传输收件箱路径。
+    /// </summary>
+    public string LanTransferInboxPath
+    {
+        get => lanTransferInboxPath;
+
+        set => SetProperty(ref lanTransferInboxPath, value);
     }
 
     /// <summary>
@@ -249,6 +285,13 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
             JenkinsViewName = settings?.JenkinsViewName ?? "机电项目组";
             JenkinsUsername = settings?.JenkinsUsername ?? string.Empty;
             EnableIndexServicePerformanceAnalysis = settings?.EnableIndexServicePerformanceAnalysis ?? false;
+            EnableLanTransfer = settings?.EnableLanTransfer ?? true;
+            LanTransferDisplayName = string.IsNullOrWhiteSpace(settings?.LanTransferDisplayName)
+                ? $"{Environment.UserName}@{Environment.MachineName}"
+                : settings.LanTransferDisplayName;
+            LanTransferInboxPath = string.IsNullOrWhiteSpace(settings?.LanTransferInboxPath)
+                ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "PackageManager 收件箱")
+                : settings.LanTransferInboxPath;
             JenkinsPasswordBox.Password = CredentialProtectionService.Unprotect(settings?.JenkinsPasswordProtected);
 
             LogTxtReader = settings?.LogTxtReader ?? "LogViewPro";
@@ -384,6 +427,9 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
                 JenkinsViewName = "机电项目组";
                 JenkinsUsername = string.Empty;
                 EnableIndexServicePerformanceAnalysis = false;
+                EnableLanTransfer = true;
+                LanTransferDisplayName = $"{Environment.UserName}@{Environment.MachineName}";
+                LanTransferInboxPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "PackageManager 收件箱");
                 JenkinsPasswordBox.Password = string.Empty;
             }
         }
@@ -415,8 +461,12 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
             settings.JenkinsUsername = string.IsNullOrWhiteSpace(JenkinsUsername) ? null : JenkinsUsername.Trim();
             settings.JenkinsPasswordProtected = CredentialProtectionService.Protect(JenkinsPasswordBox.Password);
             settings.EnableIndexServicePerformanceAnalysis = EnableIndexServicePerformanceAnalysis;
+            settings.EnableLanTransfer = EnableLanTransfer;
+            settings.LanTransferDisplayName = string.IsNullOrWhiteSpace(LanTransferDisplayName) ? $"{Environment.UserName}@{Environment.MachineName}" : LanTransferDisplayName.Trim();
+            settings.LanTransferInboxPath = string.IsNullOrWhiteSpace(LanTransferInboxPath) ? null : LanTransferInboxPath.Trim();
 
             dataPersistenceService.SaveSettings(settings);
+            lanTransferService.ApplySettings(settings);
 
             MessageBox.Show("设置已保存", "完成", MessageBoxButton.OK, MessageBoxImage.Information);
         }
@@ -442,6 +492,45 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
     private void CancelButton_Click(object sender, RoutedEventArgs e)
     {
         RequestExit?.Invoke();
+    }
+
+    private void BrowseLanTransferInboxButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var selected = FolderPickerService.PickFolder("选择局域网收件箱目录", LanTransferInboxPath);
+            if (!string.IsNullOrWhiteSpace(selected))
+            {
+                LanTransferInboxPath = selected;
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"选择收件箱目录失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void OpenLanTransferInboxButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(LanTransferInboxPath))
+            {
+                MessageBox.Show("请先设置收件箱目录", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            Directory.CreateDirectory(LanTransferInboxPath);
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = LanTransferInboxPath,
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"打开收件箱目录失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private async void UpgradeToLatestButton_Click(object sender, RoutedEventArgs e)

@@ -80,6 +80,52 @@
                     </StackPanel>
                 </GroupBox>
 
+                <GroupBox Header="局域网传文件" Margin="0,0,0,20">
+                    <StackPanel Margin="10">
+                        <CheckBox Content="启用局域网传文件"
+                                  IsChecked="{Binding EnableLanTransfer, UpdateSourceTrigger=PropertyChanged}"/>
+                        <TextBlock Text="默认开启。启用后会自动发现同一局域网内其他正在运行 PackageManager 的用户，并监听传输请求。"
+                                   Foreground="Gray"
+                                   FontSize="11"
+                                   Margin="0,5,0,12"
+                                   TextWrapping="Wrap"/>
+
+                        <Grid Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="120"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="显示名称" VerticalAlignment="Center"/>
+                            <TextBox Grid.Column="1"
+                                     Text="{Binding LanTransferDisplayName, UpdateSourceTrigger=PropertyChanged}"
+                                     Padding="5"/>
+                        </Grid>
+
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="120"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Text="收件箱目录" VerticalAlignment="Center"/>
+                            <TextBox Grid.Column="1"
+                                     Text="{Binding LanTransferInboxPath, UpdateSourceTrigger=PropertyChanged}"
+                                     Padding="5"
+                                     Margin="0,0,8,0"/>
+                            <button:CButton Grid.Column="2"
+                                            Content="浏览..."
+                                            Padding="10,5"
+                                            Margin="0,0,8,0"
+                                            Click="BrowseLanTransferInboxButton_Click"/>
+                            <button:CButton Grid.Column="3"
+                                            Content="打开目录"
+                                            Padding="10,5"
+                                            Click="OpenLanTransferInboxButton_Click"/>
+                        </Grid>
+                    </StackPanel>
+                </GroupBox>
+
                 <!-- 更新服务器地址设置 -->
                 <GroupBox Header="更新服务器地址" Margin="0,0,0,20">
                     <StackPanel Margin="10">
