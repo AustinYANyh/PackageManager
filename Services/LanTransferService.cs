@@ -447,7 +447,7 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         DeviceId = settings.LanTransferDeviceId;
         InboxPath = settings.LanTransferInboxPath;
         AppVersion = GetCurrentVersionText();
-        StatusText = "局域网传输服务未启动";
+        StatusText = "文件传输服务未启动";
 
         if (changed)
         {
@@ -460,13 +460,13 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         if (!IsEnabled)
         {
             StopServices();
-            StatusText = "局域网传输已关闭";
+            StatusText = "文件传输已关闭";
             return;
         }
 
         if ((_hostService != null) && (_discoveryService != null))
         {
-            StatusText = $"局域网传输已启动，监听端口 {ListenPort}";
+            StatusText = $"文件传输已启动，监听端口 {ListenPort}";
             OnPropertyChanged(nameof(ListenPort));
             return;
         }
@@ -488,7 +488,7 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         _discoveryService.Start();
 
         _peerCleanupTimer.Change(TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
-        StatusText = $"局域网传输已启动，监听端口 {ListenPort}";
+        StatusText = $"文件传输已启动，监听端口 {ListenPort}";
         OnPropertyChanged(nameof(ListenPort));
     }
 

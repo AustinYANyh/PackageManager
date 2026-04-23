@@ -80,9 +80,9 @@
                     </StackPanel>
                 </GroupBox>
 
-                <GroupBox Header="局域网传文件" Margin="0,0,0,20">
+                <GroupBox Header="文件传输" Margin="0,0,0,20">
                     <StackPanel Margin="10">
-                        <CheckBox Content="启用局域网传文件"
+                        <CheckBox Content="启用文件传输"
                                   IsChecked="{Binding EnableLanTransfer, UpdateSourceTrigger=PropertyChanged}"/>
                         <TextBlock Text="默认开启。启用后会自动发现同一局域网内其他正在运行 PackageManager 的用户，并监听传输请求。"
                                    Foreground="Gray"

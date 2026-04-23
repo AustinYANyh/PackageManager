@@ -1041,22 +1041,22 @@ namespace PackageManager.Services
         public bool EnableIndexServicePerformanceAnalysis { get; set; } = false;
 
         /// <summary>
-        /// 获取或设置是否启用局域网传文件功能。
+        /// 获取或设置是否启用文件传输功能。
         /// </summary>
         public bool EnableLanTransfer { get; set; } = true;
 
         /// <summary>
-        /// 获取或设置局域网传输显示名称。
+        /// 获取或设置文件传输显示名称。
         /// </summary>
         public string LanTransferDisplayName { get; set; } = null;
 
         /// <summary>
-        /// 获取或设置局域网传输设备标识。
+        /// 获取或设置文件传输设备标识。
         /// </summary>
         public string LanTransferDeviceId { get; set; } = null;
 
         /// <summary>
-        /// 获取或设置局域网传输收件箱目录。
+        /// 获取或设置文件传输收件箱目录。
         /// </summary>
         public string LanTransferInboxPath { get; set; } = null;
     }

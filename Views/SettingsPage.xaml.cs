@@ -150,7 +150,7 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
     }
 
     /// <summary>
-    /// 获取或设置是否启用局域网传文件功能。
+    /// 获取或设置是否启用文件传输功能。
     /// </summary>
     public bool EnableLanTransfer
     {
@@ -160,7 +160,7 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
     }
 
     /// <summary>
-    /// 获取或设置局域网传输显示名称。
+    /// 获取或设置文件传输显示名称。
     /// </summary>
     public string LanTransferDisplayName
     {
@@ -170,7 +170,7 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
     }
 
     /// <summary>
-    /// 获取或设置局域网传输收件箱路径。
+    /// 获取或设置文件传输收件箱路径。
     /// </summary>
     public string LanTransferInboxPath
     {
@@ -498,7 +498,7 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
     {
         try
         {
-            var selected = FolderPickerService.PickFolder("选择局域网收件箱目录", LanTransferInboxPath);
+            var selected = FolderPickerService.PickFolder("选择文件传输收件箱目录", LanTransferInboxPath);
             if (!string.IsNullOrWhiteSpace(selected))
             {
                 LanTransferInboxPath = selected;

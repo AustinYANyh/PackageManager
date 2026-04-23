@@ -59,7 +59,7 @@ internal sealed class LanTransferHostService : IDisposable
                 _listener = listener;
                 ListenPort = port;
                 _acceptLoopTask = Task.Run(() => AcceptLoopAsync(_cts.Token));
-                LanTransferLogger.LogInfo($"局域网传输监听已启动，端口 {ListenPort}");
+                LanTransferLogger.LogInfo($"文件传输监听已启动，端口 {ListenPort}");
                 return;
             }
             catch (Exception ex)
@@ -68,7 +68,7 @@ internal sealed class LanTransferHostService : IDisposable
             }
         }
 
-        throw new InvalidOperationException("局域网传输监听启动失败", lastError);
+        throw new InvalidOperationException("文件传输监听启动失败", lastError);
     }
 
     public void CancelIncomingTransfer(string transferId)

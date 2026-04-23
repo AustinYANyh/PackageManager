@@ -118,6 +118,7 @@ public sealed class LanPeerInfo : LanTransferBindableBase
             {
                 OnPropertyChanged(nameof(CanSend));
                 OnPropertyChanged(nameof(OnlineText));
+                OnPropertyChanged(nameof(StatusSummaryText));
             }
         }
     }
@@ -136,6 +137,7 @@ public sealed class LanPeerInfo : LanTransferBindableBase
             if (SetProperty(ref lastSeenUtc, value))
             {
                 OnPropertyChanged(nameof(LastSeenText));
+                OnPropertyChanged(nameof(StatusSummaryText));
             }
         }
     }
@@ -143,7 +145,13 @@ public sealed class LanPeerInfo : LanTransferBindableBase
     public string StatusText
     {
         get => statusText;
-        set => SetProperty(ref statusText, value);
+        set
+        {
+            if (SetProperty(ref statusText, value))
+            {
+                OnPropertyChanged(nameof(StatusSummaryText));
+            }
+        }
     }
 
     public string DisplayLabel => string.IsNullOrWhiteSpace(MachineName)
@@ -155,6 +163,18 @@ public sealed class LanPeerInfo : LanTransferBindableBase
     public string OnlineText => IsOnline ? "在线" : "离线";
 
     public string CompatibilityText => IsCompatible ? "兼容" : "版本不兼容";
+
+    public string StatusSummaryText
+    {
+        get
+        {
+            var status = string.IsNullOrWhiteSpace(StatusText) ? OnlineText : StatusText;
+            var seen = LastSeenText;
+            return string.IsNullOrWhiteSpace(seen) || (seen == "-")
+                ? status
+                : $"{status} · {seen}";
+        }
+    }
 
     public string LastSeenText
     {
@@ -280,6 +300,16 @@ public sealed class LanTransferRecord
     public string StatusText => string.IsNullOrWhiteSpace(Status) ? "未知" : Status;
 
     public string CompletedAtText => (CompletedAtUtc ?? StartedAtUtc).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss");
+
+    public string DirectionSummaryText => string.IsNullOrWhiteSpace(Summary)
+        ? DirectionText
+        : $"{DirectionText} · {Summary}";
+
+    public string PeerSummaryText => string.IsNullOrWhiteSpace(PeerAddress)
+        ? (PeerDisplayName ?? "-")
+        : $"{PeerDisplayName} · {PeerAddress}";
+
+    public string StatusTimeText => $"{StatusText} · {CompletedAtText}";
 }
 
 public sealed class LanTransferSession : LanTransferBindableBase

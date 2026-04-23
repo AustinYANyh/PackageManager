@@ -62,7 +62,7 @@ public partial class NavigationPanel : UserControl
         ActionItems.Add(new NavigationActionItem { Name = "产品日志", Glyph = "\uE7BA", Command = mw.OpenProductLogsCommand });
         ActionItems.Add(new NavigationActionItem { Name = "看板统计", Glyph = "\uE9D9", Command = mw.OpenKanbanStatsPageCommand });
         ActionItems.Add(new NavigationActionItem { Name = "插件管理", Glyph = "\uE943", Command = mw.OpenPluginManagerPageCommand });
-        ActionItems.Add(new NavigationActionItem { Name = "局域网传文件", Glyph = "\uE701", Command = mw.OpenLanTransferPageCommand });
+        ActionItems.Add(new NavigationActionItem { Name = "文件传输", Glyph = "\uE701", Command = mw.OpenLanTransferPageCommand });
         ActionItems.Add(new NavigationActionItem { Name = "路径设置", Glyph = "\uE8B7", Command = mw.LocalPathSettingsCommand });
         ActionItems.Add(new NavigationActionItem { Name = "产品管理", Glyph = "\uE8F1", Command = mw.OpenPackageConfigCommand });
         ActionItems.Add(new NavigationActionItem { Name = "软件日志", Glyph = "\uE7BA", Command = mw.OpenLogViewerCommand });
