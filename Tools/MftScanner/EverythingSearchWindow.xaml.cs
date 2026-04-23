@@ -18,6 +18,10 @@ namespace MftScanner
 {
     public partial class EverythingSearchWindow : Window
     {
+        private static readonly SolidColorBrush TypeFilterKeyboardHighlightBackground = new SolidColorBrush(Color.FromRgb(0xF5, 0xEB, 0xC8));
+        private static readonly SolidColorBrush TypeFilterKeyboardHighlightBorderBrush = new SolidColorBrush(Color.FromRgb(0xD4, 0xBC, 0x71));
+        private static readonly SolidColorBrush TypeFilterKeyboardHighlightForeground = new SolidColorBrush(Color.FromRgb(0x8B, 0x6A, 0x1B));
+
         private const int SearchBatchSize = 500;
         private const int DisplayBatchSize = 200;
         private const double LoadMoreThreshold = 24d;
@@ -66,6 +70,9 @@ namespace MftScanner
         private int _scopeSearchSelectionStart;
         private int _scopeSearchSelectionLength;
         private int _scopeSearchCaretIndex;
+        private bool _isTypeFilterKeyboardMode;
+        private int _typeFilterKeyboardIndex;
+        private FileSearchTypeFilter _typeFilterKeyboardOriginalType = FileSearchTypeFilter.All;
 
         public EverythingSearchWindow()
         {
@@ -101,6 +108,146 @@ namespace MftScanner
         {
             SearchBox.Focus();
             SearchBox.SelectAll();
+        }
+
+        private void BeginTypeFilterKeyboardMode()
+        {
+            if (_isTypeFilterKeyboardMode)
+                return;
+
+            CaptureSearchBoxInputState();
+            _typeFilterKeyboardOriginalType = _currentTypeFilter;
+            _typeFilterKeyboardIndex = GetTypeFilterIndex(_currentTypeFilter);
+            _isTypeFilterKeyboardMode = true;
+            UpdateTypeFilterKeyboardVisuals();
+            StatusText.Text = "类型筛选模式：左右选择，Enter确认，Esc取消";
+        }
+
+        private void CommitTypeFilterKeyboardMode()
+        {
+            if (!_isTypeFilterKeyboardMode)
+                return;
+
+            var filter = GetTypeFilterByIndex(_typeFilterKeyboardIndex);
+            _isTypeFilterKeyboardMode = false;
+            UpdateTypeFilterKeyboardVisuals();
+            ApplyTypeFilter(filter, restoreSearchInput: true);
+        }
+
+        private void CancelTypeFilterKeyboardMode(bool restoreSearchInput)
+        {
+            if (!_isTypeFilterKeyboardMode)
+                return;
+
+            _isTypeFilterKeyboardMode = false;
+            _typeFilterKeyboardIndex = GetTypeFilterIndex(_typeFilterKeyboardOriginalType);
+            UpdateTypeFilterKeyboardVisuals();
+
+            if (restoreSearchInput)
+                RestoreSearchBoxInputState(preserveSelection: true);
+        }
+
+        private void MoveTypeFilterKeyboardSelection(int delta)
+        {
+            if (!_isTypeFilterKeyboardMode)
+                return;
+
+            _typeFilterKeyboardIndex = Math.Max(0, Math.Min(GetTypeFilterButtons().Length - 1, _typeFilterKeyboardIndex + delta));
+            UpdateTypeFilterKeyboardVisuals();
+        }
+
+        private void JumpTypeFilterKeyboardSelection(bool toEnd)
+        {
+            if (!_isTypeFilterKeyboardMode)
+                return;
+
+            _typeFilterKeyboardIndex = toEnd ? GetTypeFilterButtons().Length - 1 : 0;
+            UpdateTypeFilterKeyboardVisuals();
+        }
+
+        private ToggleButton[] GetTypeFilterButtons()
+        {
+            return new[]
+            {
+                AllFilterButton,
+                LaunchableFilterButton,
+                FolderFilterButton,
+                ScriptFilterButton,
+                LogFilterButton,
+                ConfigFilterButton
+            };
+        }
+
+        private FileSearchTypeFilter GetTypeFilterByIndex(int index)
+        {
+            switch (index)
+            {
+                case 1:
+                    return FileSearchTypeFilter.Launchable;
+                case 2:
+                    return FileSearchTypeFilter.Folder;
+                case 3:
+                    return FileSearchTypeFilter.Script;
+                case 4:
+                    return FileSearchTypeFilter.Log;
+                case 5:
+                    return FileSearchTypeFilter.Config;
+                default:
+                    return FileSearchTypeFilter.All;
+            }
+        }
+
+        private int GetTypeFilterIndex(FileSearchTypeFilter filter)
+        {
+            switch (filter)
+            {
+                case FileSearchTypeFilter.Launchable:
+                    return 1;
+                case FileSearchTypeFilter.Folder:
+                    return 2;
+                case FileSearchTypeFilter.Script:
+                    return 3;
+                case FileSearchTypeFilter.Log:
+                    return 4;
+                case FileSearchTypeFilter.Config:
+                    return 5;
+                default:
+                    return 0;
+            }
+        }
+
+        private void UpdateTypeFilterButtonStates()
+        {
+            _suppressControlEvents = true;
+            AllFilterButton.IsChecked = _currentTypeFilter == FileSearchTypeFilter.All;
+            LaunchableFilterButton.IsChecked = _currentTypeFilter == FileSearchTypeFilter.Launchable;
+            FolderFilterButton.IsChecked = _currentTypeFilter == FileSearchTypeFilter.Folder;
+            ScriptFilterButton.IsChecked = _currentTypeFilter == FileSearchTypeFilter.Script;
+            LogFilterButton.IsChecked = _currentTypeFilter == FileSearchTypeFilter.Log;
+            ConfigFilterButton.IsChecked = _currentTypeFilter == FileSearchTypeFilter.Config;
+            _suppressControlEvents = false;
+        }
+
+        private void UpdateTypeFilterKeyboardVisuals()
+        {
+            var buttons = GetTypeFilterButtons();
+            for (var i = 0; i < buttons.Length; i++)
+            {
+                var button = buttons[i];
+                if (button == null)
+                    continue;
+
+                button.ClearValue(Control.BackgroundProperty);
+                button.ClearValue(Control.BorderBrushProperty);
+                button.ClearValue(Control.ForegroundProperty);
+
+                if (!_isTypeFilterKeyboardMode || i != _typeFilterKeyboardIndex)
+                    continue;
+
+                button.Background = TypeFilterKeyboardHighlightBackground;
+                button.BorderBrush = TypeFilterKeyboardHighlightBorderBrush;
+                button.Foreground = TypeFilterKeyboardHighlightForeground;
+            }
         }
 
         private void BeginKeyboardScopeSelection()
@@ -262,6 +409,7 @@ namespace MftScanner
             ScriptFilterButton.ToolTip = "仅显示 bat/cmd/ps1 脚本。";
             LogFilterButton.ToolTip = "仅显示 log/txt 结果。";
             ConfigFilterButton.ToolTip = "仅显示 json/xml/ini/config/yaml/yml 结果。";
+            UpdateTypeFilterKeyboardVisuals();
 
             ScopeComboBox.ItemsSource = _scopeOptions;
             ScopeComboBox.DisplayMemberPath = "DisplayName";

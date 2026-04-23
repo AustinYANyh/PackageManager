@@ -26,6 +26,73 @@ namespace MftScanner
             }
 
             var key = GetEffectiveKey(e);
+            if (_isTypeFilterKeyboardMode)
+            {
+                if (Keyboard.Modifiers == ModifierKeys.None && key == Key.Left)
+                {
+                    e.Handled = true;
+                    MoveTypeFilterKeyboardSelection(-1);
+                    return;
+                }
+
+                if (Keyboard.Modifiers == ModifierKeys.None && key == Key.Right)
+                {
+                    e.Handled = true;
+                    MoveTypeFilterKeyboardSelection(1);
+                    return;
+                }
+
+                if (Keyboard.Modifiers == ModifierKeys.None && key == Key.Home)
+                {
+                    e.Handled = true;
+                    JumpTypeFilterKeyboardSelection(false);
+                    return;
+                }
+
+                if (Keyboard.Modifiers == ModifierKeys.None && key == Key.End)
+                {
+                    e.Handled = true;
+                    JumpTypeFilterKeyboardSelection(true);
+                    return;
+                }
+
+                if (Keyboard.Modifiers == ModifierKeys.None && (key == Key.Enter || key == Key.Space))
+                {
+                    e.Handled = true;
+                    CommitTypeFilterKeyboardMode();
+                    return;
+                }
+
+                if (Keyboard.Modifiers == ModifierKeys.None && key == Key.Escape)
+                {
+                    e.Handled = true;
+                    CancelTypeFilterKeyboardMode(restoreSearchInput: true);
+                    return;
+                }
+
+                if (Keyboard.Modifiers == ModifierKeys.None)
+                {
+                    CancelTypeFilterKeyboardMode(restoreSearchInput: false);
+                }
+            }
+
+            FileSearchTypeFilter hotkeyFilter;
+            if (Keyboard.Modifiers == ModifierKeys.Alt && TryMapTypeFilterHotkey(key, out hotkeyFilter))
+            {
+                e.Handled = true;
+                CaptureSearchBoxInputState();
+                CancelTypeFilterKeyboardMode(restoreSearchInput: false);
+                ApplyTypeFilter(hotkeyFilter, restoreSearchInput: true);
+                return;
+            }
+
+            if (Keyboard.Modifiers == ModifierKeys.Alt && key == Key.F)
+            {
+                e.Handled = true;
+                BeginTypeFilterKeyboardMode();
+                return;
+            }
+
             if (key == Key.Escape)
             {
                 e.Handled = true;
@@ -51,6 +118,40 @@ namespace MftScanner
             {
                 e.Handled = true;
                 _ = ApplyFilterAsync(SearchBox.Text, false);
+            }
+        }
+
+        private static bool TryMapTypeFilterHotkey(Key key, out FileSearchTypeFilter filter)
+        {
+            switch (key)
+            {
+                case Key.D1:
+                case Key.NumPad1:
+                    filter = FileSearchTypeFilter.All;
+                    return true;
+                case Key.D2:
+                case Key.NumPad2:
+                    filter = FileSearchTypeFilter.Launchable;
+                    return true;
+                case Key.D3:
+                case Key.NumPad3:
+                    filter = FileSearchTypeFilter.Folder;
+                    return true;
+                case Key.D4:
+                case Key.NumPad4:
+                    filter = FileSearchTypeFilter.Script;
+                    return true;
+                case Key.D5:
+                case Key.NumPad5:
+                    filter = FileSearchTypeFilter.Log;
+                    return true;
+                case Key.D6:
+                case Key.NumPad6:
+                    filter = FileSearchTypeFilter.Config;
+                    return true;
+                default:
+                    filter = FileSearchTypeFilter.All;
+                    return false;
             }
         }
 
@@ -337,7 +438,7 @@ namespace MftScanner
         private void DeleteButton_Click(object sender, RoutedEventArgs e) { var item = ResultsGrid.SelectedItem as EverythingSearchResultItem; if (item != null) DeleteItem(item); }
         private void ClearSearchButton_Click(object sender, RoutedEventArgs e) { SelectScopeOption(string.Empty); SearchBox.Clear(); SearchBox.Focus(); }
         private void ClearScopeButton_Click(object sender, RoutedEventArgs e) { SelectScopeOption(string.Empty); SearchBox.Focus(); }
-        private void SyntaxHelpButton_Click(object sender, RoutedEventArgs e) { MessageBox.Show("支持普通包含、^前缀、后缀$、/正则/、* 与 ? 通配符。\n路径限定通过下拉选择范围，不修改索引服务层；输入框可按 Alt+Down 打开。", "语法提示", MessageBoxButton.OK, MessageBoxImage.Information); }
+        private void SyntaxHelpButton_Click(object sender, RoutedEventArgs e) { MessageBox.Show("支持普通包含、^前缀、后缀$、/正则/、* 与 ? 通配符。\n路径限定通过下拉选择范围，不修改索引服务层；输入框可按 Alt+Down 打开。\n类型限定可用 Alt+1..6 直接切换，或 Alt+F 进入筛选模式。", "语法提示", MessageBoxButton.OK, MessageBoxImage.Information); }
         private void OpenMenuItem_Click(object sender, RoutedEventArgs e) { ExecuteForSelected(OpenItem, false); }
         private void OpenContainingFolder_Click(object sender, RoutedEventArgs e) { var item = ResultsGrid.SelectedItem as EverythingSearchResultItem; if (item != null) OpenContainingFolder(item.FullPath); }
         private void CopyPath_Click(object sender, RoutedEventArgs e) { var item = ResultsGrid.SelectedItem as EverythingSearchResultItem; if (item != null) { CopyToClipboard(item.FullPath); StatusText.Text = "路径已复制"; } }

@@ -412,29 +412,31 @@ namespace MftScanner
             if (clickedButton == null)
                 return;
 
-            _suppressControlEvents = true;
-            AllFilterButton.IsChecked = ReferenceEquals(clickedButton, AllFilterButton);
-            LaunchableFilterButton.IsChecked = ReferenceEquals(clickedButton, LaunchableFilterButton);
-            FolderFilterButton.IsChecked = ReferenceEquals(clickedButton, FolderFilterButton);
-            ScriptFilterButton.IsChecked = ReferenceEquals(clickedButton, ScriptFilterButton);
-            LogFilterButton.IsChecked = ReferenceEquals(clickedButton, LogFilterButton);
-            ConfigFilterButton.IsChecked = ReferenceEquals(clickedButton, ConfigFilterButton);
-            _suppressControlEvents = false;
+            ApplyTypeFilter(ResolveTypeFilter(clickedButton.Tag as string), restoreSearchInput: false);
+        }
 
-            clickedButton.IsChecked = true;
-            _currentTypeFilter = ResolveTypeFilter(clickedButton.Tag as string);
+        private void ApplyTypeFilter(FileSearchTypeFilter filter, bool restoreSearchInput)
+        {
+            var changed = _currentTypeFilter != filter;
+
+            _currentTypeFilter = filter;
+            UpdateTypeFilterButtonStates();
+            UpdateTypeFilterKeyboardVisuals();
             QuerySummaryText.Text = "当前类型：" + GetTypeFilterText(_currentTypeFilter) + "；排序仅做内存重排，路径限定复用路径前缀查询";
             UpdateSummaryStatus();
             UpdateEmptyState();
 
-            if (!string.IsNullOrWhiteSpace(SearchBox.Text))
+            if (changed && !string.IsNullOrWhiteSpace(SearchBox.Text))
             {
                 _ = ApplyFilterAsync(SearchBox.Text, false);
             }
-            else
+            else if (changed || string.IsNullOrWhiteSpace(SearchBox.Text))
             {
                 StatusText.Text = "已切换类型过滤：" + GetTypeFilterText(_currentTypeFilter);
             }
+
+            if (restoreSearchInput)
+                RestoreSearchBoxInputState(preserveSelection: true);
         }
 
         private async Task<bool> LoadSearchResultsAsync(int desiredCount, bool isNewSearch, CancellationToken ct)

@@ -131,7 +131,7 @@
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <TextBox x:Name="SearchBox" BorderThickness="0" Background="Transparent" FontSize="24" FontWeight="SemiBold" VerticalContentAlignment="Center" TextChanged="SearchBox_TextChanged" PreviewKeyDown="SearchBox_KeyDown" />
-                            <TextBlock Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Center" Text="例: 输入关键词；Alt+Down 可选择路径限定" FontSize="12" Foreground="{StaticResource MutedBrush}" />
+                            <TextBlock Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Center" Text="例: 输入关键词；Alt+Down 选路径限定；Alt+1..6 切类型" FontSize="12" Foreground="{StaticResource MutedBrush}" />
                         </Grid>
                     </Border>
                     <StackPanel Grid.Column="1" Orientation="Horizontal">
@@ -142,12 +142,12 @@
                 </Grid>
 
                 <WrapPanel Grid.Row="1" Margin="0,14,0,0">
-                    <ToggleButton x:Name="AllFilterButton" Content="全部" Tag="All" Style="{StaticResource FilterButtonStyle}" Click="FilterButton_Checked" />
-                    <ToggleButton x:Name="LaunchableFilterButton" Content="可启动文件" Tag="Launchable" Style="{StaticResource FilterButtonStyle}" Click="FilterButton_Checked" Margin="8,0,0,0" />
-                    <ToggleButton x:Name="FolderFilterButton" Content="文件夹" Tag="Folder" Style="{StaticResource FilterButtonStyle}" Click="FilterButton_Checked" Margin="8,0,0,0" />
-                    <ToggleButton x:Name="ScriptFilterButton" Content="脚本" Tag="Script" Style="{StaticResource FilterButtonStyle}" Click="FilterButton_Checked" Margin="8,0,0,0" />
-                    <ToggleButton x:Name="LogFilterButton" Content="日志" Tag="Log" Style="{StaticResource FilterButtonStyle}" Click="FilterButton_Checked" Margin="8,0,0,0" />
-                    <ToggleButton x:Name="ConfigFilterButton" Content="配置" Tag="Config" Style="{StaticResource FilterButtonStyle}" Click="FilterButton_Checked" Margin="8,0,0,0" />
+                    <ToggleButton x:Name="AllFilterButton" Content="全部" Tag="All" Style="{StaticResource FilterButtonStyle}" Click="FilterButton_Checked" IsTabStop="False" />
+                    <ToggleButton x:Name="LaunchableFilterButton" Content="可启动文件" Tag="Launchable" Style="{StaticResource FilterButtonStyle}" Click="FilterButton_Checked" Margin="8,0,0,0" IsTabStop="False" />
+                    <ToggleButton x:Name="FolderFilterButton" Content="文件夹" Tag="Folder" Style="{StaticResource FilterButtonStyle}" Click="FilterButton_Checked" Margin="8,0,0,0" IsTabStop="False" />
+                    <ToggleButton x:Name="ScriptFilterButton" Content="脚本" Tag="Script" Style="{StaticResource FilterButtonStyle}" Click="FilterButton_Checked" Margin="8,0,0,0" IsTabStop="False" />
+                    <ToggleButton x:Name="LogFilterButton" Content="日志" Tag="Log" Style="{StaticResource FilterButtonStyle}" Click="FilterButton_Checked" Margin="8,0,0,0" IsTabStop="False" />
+                    <ToggleButton x:Name="ConfigFilterButton" Content="配置" Tag="Config" Style="{StaticResource FilterButtonStyle}" Click="FilterButton_Checked" Margin="8,0,0,0" IsTabStop="False" />
                 </WrapPanel>
 
                 <Grid Grid.Row="2" Margin="0,14,0,0">
@@ -298,7 +298,7 @@
             <StatusBarItem HorizontalAlignment="Right">
                 <DockPanel>
                     <ProgressBar x:Name="IndexingProgress" Width="160" Height="14" Margin="0,0,10,0" IsIndeterminate="True" Visibility="Collapsed" />
-                    <TextBlock x:Name="StatusShortcutText" Text="Alt+Down 路径限定 · Enter 打开 · Ctrl+Enter 打开目录 · Ctrl+C 复制路径 · Esc 隐藏" />
+                    <TextBlock x:Name="StatusShortcutText" Text="Alt+1..6 类型 · Alt+F 类型模式 · Alt+Down 路径限定 · Enter 打开 · Ctrl+Enter 打开目录 · Ctrl+C 复制路径 · Esc 隐藏" />
                 </DockPanel>
             </StatusBarItem>
         </StatusBar>
