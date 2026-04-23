@@ -54,7 +54,7 @@
         <Grid Margin="20">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
-                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="750"/>
                 <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
@@ -112,7 +112,7 @@
 
                 <Border Grid.Column="0"
                         Style="{StaticResource PanelBorderStyle}"
-                        MinHeight="560"
+                        Height="750"
                         Padding="18">
                     <Grid>
                         <Grid.RowDefinitions>
@@ -239,7 +239,7 @@
 
                 <Border Grid.Column="2"
                         Style="{StaticResource PanelBorderStyle}"
-                        MinHeight="560"
+                        Height="750"
                         Padding="18">
                     <Grid>
                         <Grid.RowDefinitions>
@@ -256,31 +256,34 @@
                                        Style="{StaticResource MutedTextStyle}"/>
                         </StackPanel>
 
-                        <WrapPanel Grid.Row="1"
-                                   Margin="0,16,0,14"
-                                   ItemHeight="34"
-                                   ItemWidth="92">
-                            <button:CButton Content="添加文件"
-                                            Width="88"
-                                            Height="34"
-                                            Margin="0,0,8,8"
+                        <UniformGrid Grid.Row="1"
+                                     Margin="0,16,0,14"
+                                     Columns="4">
+                            <button:CButton
+                                            Content="添加文件"
+                                            Height="32"
+                                            Padding="8,4"
+                                            Margin="0,0,8,0"
                                             Click="AddFilesButton_Click"/>
-                            <button:CButton Content="添加文件夹"
-                                            Width="92"
-                                            Height="34"
-                                            Margin="0,0,8,8"
+                            <button:CButton
+                                            Content="添加文件夹"
+                                            Height="32"
+                                            Padding="8,4"
+                                            Margin="0,0,8,0"
                                             Click="AddFolderButton_Click"/>
-                            <button:CButton Content="移除选中"
-                                            Width="92"
-                                            Height="34"
-                                            Margin="0,0,8,8"
+                            <button:CButton
+                                            Content="移除选中"
+                                            Height="32"
+                                            Padding="8,4"
+                                            Margin="0,0,8,0"
                                             Click="RemoveQueuedButton_Click"/>
-                            <button:CButton Content="清空"
-                                            Width="78"
-                                            Height="34"
-                                            Margin="0,0,0,8"
+                            <button:CButton
+                                            Content="清空"
+                                            Height="32"
+                                            Padding="8,4"
+                                            Margin="0,0,0,0"
                                             Click="ClearQueuedButton_Click"/>
-                        </WrapPanel>
+                        </UniformGrid>
 
                         <Border Grid.Row="2"
                                 Background="#F8FAF8"
@@ -324,20 +327,28 @@
                                                     BorderThickness="1"
                                                     CornerRadius="12"
                                                     HorizontalAlignment="Stretch"
-                                                    MinHeight="74">
-                                                <StackPanel>
+                                                    Height="82">
+                                                <Grid>
+                                                    <Grid.RowDefinitions>
+                                                        <RowDefinition Height="Auto"/>
+                                                        <RowDefinition Height="Auto"/>
+                                                        <RowDefinition Height="Auto"/>
+                                                    </Grid.RowDefinitions>
                                                     <TextBlock Text="{Binding DisplayName}"
                                                                FontWeight="SemiBold"
+                                                               TextWrapping="NoWrap"
                                                                TextTrimming="CharacterEllipsis"/>
-                                                    <TextBlock Margin="0,4,0,0"
+                                                    <TextBlock Grid.Row="1"
+                                                               Margin="0,4,0,0"
                                                                Text="{Binding FullPath}"
                                                                Foreground="#5E6A63"
                                                                TextWrapping="NoWrap"
                                                                TextTrimming="CharacterEllipsis"/>
-                                                    <TextBlock Margin="0,4,0,0"
+                                                    <TextBlock Grid.Row="2"
+                                                               Margin="0,4,0,0"
                                                                Text="{Binding SummaryText}"
                                                                Foreground="#1A6A5F"/>
-                                                </StackPanel>
+                                                </Grid>
                                             </Border>
                                         </DataTemplate>
                                     </ListBox.ItemTemplate>
@@ -382,7 +393,7 @@
 
                 <Border Grid.Column="4"
                         Style="{StaticResource PanelBorderStyle}"
-                        MinHeight="560"
+                        Height="750"
                         Padding="18">
                     <Grid>
                         <Grid.RowDefinitions>
@@ -547,7 +558,8 @@
                         <TextBlock Text="最近传输记录"
                                    FontSize="18"
                                    FontWeight="Bold"
-                                   Foreground="#1F2A25"/>
+                                   Foreground="#1F2A25"
+                                   Margin="0,16,0,0"/>
                         <TextBlock Margin="0,4,0,0"
                                    Text="{Binding HistorySummaryText}"
                                    Foreground="#5E6A63"
