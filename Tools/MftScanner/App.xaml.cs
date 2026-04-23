@@ -27,8 +27,6 @@ namespace MftScanner
         private const int MmfStatusError = 2;
         private const int SwShow = 5;
         private const int SwRestore = 9;
-        private const int ActivationRetryDelayMilliseconds = 80;
-        private const int ActivationFinalRetryDelayMilliseconds = 180;
 
         private DispatcherTimer _ownerMonitorTimer;
         private EventWaitHandle _showRequestEvent;
@@ -295,32 +293,6 @@ namespace MftScanner
                 return;
             }
 
-            LoggingService.LogDebug("[CtrlE] 文件搜索工具收到显示请求。");
-            EnsureWindowVisible(window);
-            TryActivateAndFocus(window, "初次激活");
-            Dispatcher.BeginInvoke(new Action(() => { TryActivateAndFocus(window, "输入阶段复验"); }), DispatcherPriority.Input);
-            ScheduleActivationRetry(window, "80毫秒重试", ActivationRetryDelayMilliseconds);
-            ScheduleActivationRetry(window, "180毫秒重试", ActivationFinalRetryDelayMilliseconds);
-        }
-
-        private void ScheduleActivationRetry(EverythingSearchWindow window, string stage, int delayMilliseconds)
-        {
-            var delayedBringTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(delayMilliseconds) };
-            delayedBringTimer.Tick += (sender, args) =>
-            {
-                delayedBringTimer.Stop();
-                TryActivateAndFocus(window, stage);
-            };
-            delayedBringTimer.Start();
-        }
-
-        private static void EnsureWindowVisible(Window window)
-        {
-            if (window == null)
-            {
-                return;
-            }
-
             if (!window.IsVisible)
             {
                 window.Show();
@@ -330,21 +302,38 @@ namespace MftScanner
             {
                 window.WindowState = WindowState.Normal;
             }
+
+            window.Show();
+            window.Activate();
+            window.Focus();
+            window.FocusSearchBoxAndSelectAll();
+            BringWindowToFront(window);
+
+            var delayedBringTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(80) };
+            delayedBringTimer.Tick += (sender, args) =>
+            {
+                delayedBringTimer.Stop();
+                BringWindowToFront(window);
+                window.FocusSearchBoxAndSelectAll();
+            };
+            delayedBringTimer.Start();
         }
 
-        private static bool TryActivateAndFocus(EverythingSearchWindow window, string stage)
+        private static void BringWindowToFront(Window window)
         {
             if (window == null)
             {
-                return false;
+                return;
             }
 
-            EnsureWindowVisible(window);
+            window.Topmost = true;
+            window.Activate();
+            window.Topmost = false;
+
             var handle = new WindowInteropHelper(window).Handle;
             if (handle == IntPtr.Zero)
             {
-                LoggingService.LogDebug($"[CtrlE] 跳过激活，窗口句柄不可用。阶段={stage}");
-                return false;
+                return;
             }
 
             if (IsIconic(handle))
@@ -357,47 +346,7 @@ namespace MftScanner
             }
 
             BringWindowToTop(handle);
-            var foregroundRequested = SetForegroundWindow(handle);
-            var activated = window.Activate();
-            if (!IsForegroundWindow(handle))
-            {
-                window.Topmost = true;
-                window.Topmost = false;
-                BringWindowToTop(handle);
-                foregroundRequested = SetForegroundWindow(handle) || foregroundRequested;
-                activated = window.Activate() || activated;
-            }
-
-            var isForeground = IsForegroundWindow(handle);
-            var searchFocused = false;
-            if (isForeground)
-            {
-                searchFocused = FocusSearchBox(window);
-                if (!searchFocused)
-                {
-                    window.Dispatcher.BeginInvoke(new Action(() => { FocusSearchBox(window); }), DispatcherPriority.Input);
-                    searchFocused = window.IsSearchBoxKeyboardFocused();
-                }
-            }
-
-            LoggingService.LogDebug($"[CtrlE] 激活结果。阶段={stage}，句柄={handle}，已请求前台={foregroundRequested}，Activate结果={activated}，当前是否前台={isForeground}，搜索框是否可输入={searchFocused}");
-            return isForeground && searchFocused;
-        }
-
-        private static bool FocusSearchBox(EverythingSearchWindow window)
-        {
-            if (window == null)
-            {
-                return false;
-            }
-
-            window.Focus();
-            return window.TryFocusSearchBoxAndSelectAll();
-        }
-
-        private static bool IsForegroundWindow(IntPtr handle)
-        {
-            return handle != IntPtr.Zero && GetForegroundWindow() == handle;
+            SetForegroundWindow(handle);
         }
 
         private void StartOwnerMonitor()
@@ -515,9 +464,6 @@ namespace MftScanner
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool SetForegroundWindow(IntPtr hWnd);
-
-        [DllImport("user32.dll")]
-        private static extern IntPtr GetForegroundWindow();
 
         private static void RunHeadlessScan(string mmfName, string[] args)
         {

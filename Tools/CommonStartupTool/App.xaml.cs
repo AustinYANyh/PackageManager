@@ -17,8 +17,6 @@ public partial class App : Application
 {
     private const int SwShow = 5;
     private const int SwRestore = 9;
-    private const int ActivationRetryDelayMilliseconds = 80;
-    private const int ActivationFinalRetryDelayMilliseconds = 180;
 
     private DispatcherTimer _ownerMonitorTimer;
     private EventWaitHandle _showRequestEvent;
@@ -206,33 +204,7 @@ public partial class App : Application
             return;
         }
 
-        LoggingService.LogDebug("[CtrlQ] 常用启动项工具收到显示请求。");
         window.ReloadFromPersistence();
-        EnsureWindowVisible(window);
-        TryActivateAndFocus(window, "初次激活");
-        Dispatcher.BeginInvoke(new Action(() => { TryActivateAndFocus(window, "输入阶段复验"); }), DispatcherPriority.Input);
-        ScheduleActivationRetry(window, "80毫秒重试", ActivationRetryDelayMilliseconds);
-        ScheduleActivationRetry(window, "180毫秒重试", ActivationFinalRetryDelayMilliseconds);
-    }
-
-    private void ScheduleActivationRetry(CommonStartupWindow window, string stage, int delayMilliseconds)
-    {
-        var delayedBringTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(delayMilliseconds) };
-        delayedBringTimer.Tick += (sender, args) =>
-        {
-            delayedBringTimer.Stop();
-            TryActivateAndFocus(window, stage);
-        };
-        delayedBringTimer.Start();
-    }
-
-    private static void EnsureWindowVisible(Window window)
-    {
-        if (window == null)
-        {
-            return;
-        }
-
         if (!window.IsVisible)
         {
             window.Show();
@@ -242,21 +214,34 @@ public partial class App : Application
         {
             window.WindowState = WindowState.Normal;
         }
+
+        window.Show();
+        window.Activate();
+        window.Focus();
+        window.FocusSearchBoxAndSelectAll();
+        BringWindowToFront(window);
+
+        var delayedBringTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(80) };
+        delayedBringTimer.Tick += (sender, args) =>
+        {
+            delayedBringTimer.Stop();
+            BringWindowToFront(window);
+            window.FocusSearchBoxAndSelectAll();
+        };
+        delayedBringTimer.Start();
     }
 
-    private static bool TryActivateAndFocus(CommonStartupWindow window, string stage)
+    private static void BringWindowToFront(Window window)
     {
         if (window == null)
         {
-            return false;
+            return;
         }
 
-        EnsureWindowVisible(window);
         var handle = new WindowInteropHelper(window).Handle;
         if (handle == IntPtr.Zero)
         {
-            LoggingService.LogDebug($"[CtrlQ] 跳过激活，窗口句柄不可用。阶段={stage}");
-            return false;
+            return;
         }
 
         if (IsIconic(handle))
@@ -269,47 +254,13 @@ public partial class App : Application
         }
 
         BringWindowToTop(handle);
-        var foregroundRequested = SetForegroundWindow(handle);
-        var activated = window.Activate();
-        if (!IsForegroundWindow(handle))
+        if (!SetForegroundWindow(handle))
         {
             window.Topmost = true;
+            window.Activate();
             window.Topmost = false;
-            BringWindowToTop(handle);
-            foregroundRequested = SetForegroundWindow(handle) || foregroundRequested;
-            activated = window.Activate() || activated;
+            SetForegroundWindow(handle);
         }
-
-        var isForeground = IsForegroundWindow(handle);
-        var searchFocused = false;
-        if (isForeground)
-        {
-            searchFocused = FocusSearchBox(window);
-            if (!searchFocused)
-            {
-                window.Dispatcher.BeginInvoke(new Action(() => { FocusSearchBox(window); }), DispatcherPriority.Input);
-                searchFocused = window.IsSearchBoxKeyboardFocused();
-            }
-        }
-
-        LoggingService.LogDebug($"[CtrlQ] 激活结果。阶段={stage}，句柄={handle}，已请求前台={foregroundRequested}，Activate结果={activated}，当前是否前台={isForeground}，搜索框是否可输入={searchFocused}");
-        return isForeground && searchFocused;
-    }
-
-    private static bool FocusSearchBox(CommonStartupWindow window)
-    {
-        if (window == null)
-        {
-            return false;
-        }
-
-        window.Focus();
-        return window.TryFocusSearchBoxAndSelectAll();
-    }
-
-    private static bool IsForegroundWindow(IntPtr handle)
-    {
-        return handle != IntPtr.Zero && GetForegroundWindow() == handle;
     }
 
     private void StartOwnerMonitor()
@@ -427,9 +378,6 @@ public partial class App : Application
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr GetForegroundWindow();
 }
 
 
