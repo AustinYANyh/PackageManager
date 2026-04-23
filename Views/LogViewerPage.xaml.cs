@@ -19,6 +19,7 @@ namespace PackageManager.Views
     public partial class LogViewerPage : Page, ICentralPage
     {
         private string infoDir;
+        private string debugDir;
         private string errorDir;
 
         /// <summary>
@@ -41,10 +42,12 @@ namespace PackageManager.Views
         private void InitializeDirs()
         {
             infoDir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PackageManager", "logs");
+            debugDir = System.IO.Path.Combine(infoDir, "debug");
             errorDir = System.IO.Path.Combine(infoDir, "errors");
             try
             {
                 Directory.CreateDirectory(infoDir);
+                Directory.CreateDirectory(debugDir);
                 Directory.CreateDirectory(errorDir);
             }
             catch
@@ -71,6 +74,9 @@ namespace PackageManager.Views
                                    : Array.Empty<string>());
                 files.AddRange(Directory.Exists(errorDir)
                                    ? Directory.GetFiles(errorDir, "*.log", SearchOption.TopDirectoryOnly)
+                                   : Array.Empty<string>());
+                files.AddRange(Directory.Exists(debugDir)
+                                   ? Directory.GetFiles(debugDir, "*.log", SearchOption.TopDirectoryOnly)
                                    : Array.Empty<string>());
                 var dates = files
                             .Select(f => System.IO.Path.GetFileNameWithoutExtension(f))
@@ -112,7 +118,11 @@ namespace PackageManager.Views
 
                 var dateFile = DateTime.ParseExact(dateStr, "yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture).ToString("yyyyMMdd") +
                                ".log";
-                var dir = type == "错误日志" ? errorDir : infoDir;
+                var dir = type == "错误日志"
+                    ? errorDir
+                    : type == "调试日志"
+                        ? debugDir
+                        : infoDir;
                 var path = System.IO.Path.Combine(dir, dateFile);
 
                 var entries = ReadEntries(path);
@@ -186,7 +196,7 @@ namespace PackageManager.Views
             }
 
             var headerRegex = new Regex(
-                "^(?<ts>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3}) \\[(?<level>INFO|WARN|ERROR)\\] (?<msg>.*)$");
+                "^(?<ts>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3}) \\[(?<level>DEBUG|INFO|WARN|ERROR)\\] (?<msg>.*)$");
 
             LogEntry current = null;
             var detailsSb = new StringBuilder();
@@ -244,7 +254,11 @@ namespace PackageManager.Views
             try
             {
                 var type = ((ComboBoxItem)LogTypeCombo.SelectedItem)?.Content?.ToString() ?? "常规日志";
-                var dir = type == "错误日志" ? errorDir : infoDir;
+                var dir = type == "错误日志"
+                    ? errorDir
+                    : type == "调试日志"
+                        ? debugDir
+                        : infoDir;
 
                 try
                 {

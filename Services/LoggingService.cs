@@ -9,6 +9,7 @@ namespace PackageManager.Services
         private static readonly object Sync = new object();
         private static string baseDir;
         private static string infoDir;
+        private static string debugDir;
         private static string errorDir;
 
         /// <summary>
@@ -25,19 +26,23 @@ namespace PackageManager.Services
                     : customBaseDir;
 
                 infoDir = baseDir;
+                debugDir = Path.Combine(baseDir, "debug");
                 errorDir = Path.Combine(baseDir, "errors");
 
                 Directory.CreateDirectory(infoDir);
+                Directory.CreateDirectory(debugDir);
                 Directory.CreateDirectory(errorDir);
             }
             catch
             {
                 baseDir = Path.Combine(Path.GetTempPath(), "PackageManager", "logs");
                 infoDir = baseDir;
+                debugDir = Path.Combine(baseDir, "debug");
                 errorDir = Path.Combine(baseDir, "errors");
                 try
                 {
                     Directory.CreateDirectory(infoDir);
+                    Directory.CreateDirectory(debugDir);
                     Directory.CreateDirectory(errorDir);
                 }
                 catch { }
@@ -49,6 +54,12 @@ namespace PackageManager.Services
         /// </summary>
         /// <param name="message">日志消息内容。</param>
         public static void LogInfo(string message) => Append(infoDir, "INFO", message, null);
+
+        /// <summary>
+        /// 记录调试级别日志。
+        /// </summary>
+        /// <param name="message">调试消息内容。</param>
+        public static void LogDebug(string message) => Append(debugDir, "DEBUG", message, null);
 
         /// <summary>
         /// 记录警告级别日志。

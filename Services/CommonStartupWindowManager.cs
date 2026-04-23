@@ -26,23 +26,20 @@ namespace PackageManager.Services
 
         public void ShowOrActivate()
         {
-            if (TrySignalShowRequest())
-            {
-                return;
-            }
-
             if (TryGetCurrentToolProcess(out var existingProcess))
             {
                 try
                 {
-                    LoggingService.LogInfo($"当前会话启动项进程已存在，SessionId={_sessionId}，PID={existingProcess.Id}。");
+                    LoggingService.LogDebug($"[CtrlQ] 复用当前会话的常用启动项进程。会话={_sessionId}，PID={existingProcess.Id}");
+                    AuthorizeForegroundForProcess(existingProcess.Id, "复用实例");
                     if (TrySignalShowRequest(ShowRequestRetryCount, ShowRequestRetryDelayMilliseconds))
                     {
+                        EnsureForeground(existingProcess, "发送显示事件后");
                         return;
                     }
 
                     LoggingService.LogWarning($"当前会话启动项唤醒事件未就绪，尝试窗口置前。SessionId={_sessionId}，PID={existingProcess.Id}");
-                    BringToFront(existingProcess);
+                    BringToFront(existingProcess, "显示事件未就绪");
                 }
                 finally
                 {
@@ -100,6 +97,10 @@ namespace PackageManager.Services
                 }))
                 {
                     _currentToolProcessId = process?.Id;
+                    if (process != null)
+                    {
+                        AuthorizeForegroundForProcess(process.Id, "启动新实例");
+                    }
                 }
 
                 LoggingService.LogInfo($"已启动当前会话常用启动项工具：SessionId={_sessionId}，PID={_currentToolProcessId}");
@@ -197,44 +198,63 @@ namespace PackageManager.Services
             return string.IsNullOrWhiteSpace(sessionId) ? "default" : sessionId.Trim();
         }
 
-        private static void BringToFront(Process process)
+        private void AuthorizeForegroundForProcess(int processId, string source)
+        {
+            if (processId <= 0)
+            {
+                return;
+            }
+
+            try
+            {
+                var allowed = AllowSetForegroundWindow(processId);
+                LoggingService.LogDebug($"[CtrlQ] 已调用前台授权。来源={source}，PID={processId}，结果={allowed}");
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogDebug($"[CtrlQ] 前台授权调用失败。来源={source}，PID={processId}，原因={ex.Message}");
+            }
+        }
+
+        private static void EnsureForeground(Process process, string source)
+        {
+            var handle = TryGetMainWindowHandle(process, 6, 50);
+            if (handle == IntPtr.Zero)
+            {
+                LoggingService.LogDebug($"[CtrlQ] 跳过前台校验，未获取到窗口句柄。来源={source}");
+                return;
+            }
+
+            Thread.Sleep(80);
+            if (IsForegroundWindow(handle))
+            {
+                LoggingService.LogDebug($"[CtrlQ] 显示事件后窗口已在前台。来源={source}，句柄={handle}");
+                return;
+            }
+
+            LoggingService.LogDebug($"[CtrlQ] 显示事件后窗口仍不在前台，执行原生置前兜底。来源={source}，句柄={handle}");
+            BringToFront(handle);
+            Thread.Sleep(40);
+            LoggingService.LogDebug($"[CtrlQ] 原生置前兜底完成。来源={source}，句柄={handle}，当前是否前台={IsForegroundWindow(handle)}");
+        }
+
+        private static void BringToFront(Process process, string source)
         {
             if (process == null)
             {
                 return;
             }
 
-            IntPtr handle = IntPtr.Zero;
-            try
-            {
-                for (var i = 0; i < 10; i++)
-                {
-                    process.Refresh();
-                    if (process.HasExited)
-                    {
-                        return;
-                    }
-
-                    handle = process.MainWindowHandle;
-                    if (handle != IntPtr.Zero)
-                    {
-                        break;
-                    }
-
-                    Thread.Sleep(100);
-                }
-            }
-            catch
-            {
-                return;
-            }
+            var handle = TryGetMainWindowHandle(process, 10, 100);
 
             if (handle == IntPtr.Zero)
             {
+                LoggingService.LogDebug($"[CtrlQ] 跳过窗口置前，未获取到窗口句柄。来源={source}");
                 return;
             }
 
             BringToFront(handle);
+            LoggingService.LogDebug($"[CtrlQ] 已执行窗口置前。来源={source}，句柄={handle}，当前是否前台={IsForegroundWindow(handle)}");
         }
 
         private static void BringToFront(IntPtr handle)
@@ -257,6 +277,47 @@ namespace PackageManager.Services
             SetForegroundWindow(handle);
         }
 
+        private static IntPtr TryGetMainWindowHandle(Process process, int retryCount, int retryDelayMilliseconds)
+        {
+            if (process == null)
+            {
+                return IntPtr.Zero;
+            }
+
+            try
+            {
+                for (var i = 0; i < retryCount; i++)
+                {
+                    process.Refresh();
+                    if (process.HasExited)
+                    {
+                        return IntPtr.Zero;
+                    }
+
+                    var handle = process.MainWindowHandle;
+                    if (handle != IntPtr.Zero)
+                    {
+                        return handle;
+                    }
+
+                    if (retryDelayMilliseconds > 0)
+                    {
+                        Thread.Sleep(retryDelayMilliseconds);
+                    }
+                }
+            }
+            catch
+            {
+            }
+
+            return IntPtr.Zero;
+        }
+
+        private static bool IsForegroundWindow(IntPtr handle)
+        {
+            return handle != IntPtr.Zero && GetForegroundWindow() == handle;
+        }
+
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
@@ -272,6 +333,13 @@ namespace PackageManager.Services
         [DllImport("user32.dll")]
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool AllowSetForegroundWindow(int dwProcessId);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetForegroundWindow();
 
         [DllImport("user32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
