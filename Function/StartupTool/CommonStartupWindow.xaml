@@ -8,6 +8,7 @@
         Width="1860"
         MinHeight="720"
         MinWidth="1480"
+        Icon="/Assets/Icons/App.ico"
         ShowInTaskbar="False"
         WindowStartupLocation="CenterOwner"
         Loaded="Window_Loaded"
