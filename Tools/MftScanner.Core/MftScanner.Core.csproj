@@ -34,6 +34,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="FileRecord.cs" />
+    <Compile Include="ISharedIndexService.cs" />
     <Compile Include="SearchTypeFilter.cs" />
     <Compile Include="IndexPerfLog.cs" />
     <Compile Include="IndexSnapshotStore.cs" />
@@ -44,6 +45,9 @@
     <Compile Include="IncrementalFilter.cs" />
     <Compile Include="UsnWatcher.cs" />
     <Compile Include="MftScanService.cs" />
+    <Compile Include="SharedIndexConstants.cs" />
+    <Compile Include="SharedIndexMessages.cs" />
+    <Compile Include="SharedIndexServiceClient.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

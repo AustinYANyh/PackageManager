@@ -33,6 +33,8 @@ namespace MftScanner
         private CancellationTokenSource _showRequestCts;
         private Task _showRequestListenerTask;
         private Mutex _singleInstanceMutex;
+        private Mutex _indexHostMutex;
+        private IndexHostAgent _indexHostAgent;
         private int? _ownerProcessId;
         private string _sessionId;
         private string _showRequestEventName;
@@ -83,11 +85,29 @@ namespace MftScanner
                 return;
             }
 
+            var indexAgentIndex = Array.IndexOf(args, "--index-agent");
+            if (indexAgentIndex >= 0)
+            {
+                if (!TryAcquireIndexHostMutex())
+                {
+                    Shutdown(0);
+                    return;
+                }
+
+                ShutdownMode = ShutdownMode.OnExplicitShutdown;
+                _indexHostAgent = new IndexHostAgent(IndexHostAgent.ShowSearchUiFromHost);
+                _indexHostAgent.Start();
+                return;
+            }
+
             var windowMode = GetInteractiveWindowMode(args);
 
-            if (string.Equals(windowMode, "search", StringComparison.OrdinalIgnoreCase))
+            if (IsSearchWindowMode(windowMode))
             {
-                _sessionId = ParseSessionId(args) ?? Guid.NewGuid().ToString("N");
+                _sessionId = ParseSessionId(args)
+                    ?? (string.Equals(windowMode, "search-ui", StringComparison.OrdinalIgnoreCase)
+                        ? SharedIndexConstants.SearchUiSessionId
+                        : Guid.NewGuid().ToString("N"));
                 _showRequestEventName = BuildShowRequestEventName(_sessionId);
                 _singleInstanceMutexName = BuildSingleInstanceMutexName(_sessionId);
 
@@ -106,14 +126,16 @@ namespace MftScanner
             {
                 var window = CreateInteractiveWindow(windowMode);
                 MainWindow = window;
-                if (window is EverythingSearchWindow searchWindow && !_ownerProcessId.HasValue)
+                if (window is EverythingSearchWindow searchWindow
+                    && !string.Equals(windowMode, "search-ui", StringComparison.OrdinalIgnoreCase)
+                    && !_ownerProcessId.HasValue)
                 {
                     searchWindow.PrepareForProcessExit();
                 }
 
                 window.Show();
 
-                if (string.Equals(windowMode, "search", StringComparison.OrdinalIgnoreCase))
+                if (IsSearchWindowMode(windowMode))
                 {
                     StartOwnerMonitor();
                 }
@@ -150,6 +172,23 @@ namespace MftScanner
                     _singleInstanceMutex.Dispose();
                     _singleInstanceMutex = null;
                 }
+
+                if (_indexHostMutex != null)
+                {
+                    try
+                    {
+                        _indexHostMutex.ReleaseMutex();
+                    }
+                    catch
+                    {
+                    }
+
+                    _indexHostMutex.Dispose();
+                    _indexHostMutex = null;
+                }
+
+                _indexHostAgent?.Dispose();
+                _indexHostAgent = null;
             }
             catch
             {
@@ -172,12 +211,40 @@ namespace MftScanner
             {
                 case "cleanup":
                     return new RevitFileCleanupWindow();
+                case "search-ui":
                 case "":
                 case "search":
                     return new EverythingSearchWindow();
                 default:
                     throw new InvalidOperationException($"不支持的窗口模式：{windowMode}");
             }
+        }
+
+        private static bool IsSearchWindowMode(string windowMode)
+        {
+            return string.Equals(windowMode, "search", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(windowMode, "search-ui", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool TryAcquireIndexHostMutex()
+        {
+            bool createdNew;
+            _indexHostMutex = new Mutex(true, SharedIndexConstants.IndexHostMutexName, out createdNew);
+            if (createdNew)
+            {
+                return true;
+            }
+
+            try
+            {
+                _indexHostMutex.Dispose();
+                _indexHostMutex = null;
+            }
+            catch
+            {
+            }
+
+            return false;
         }
 
         private bool TryAcquireSingleInstance()

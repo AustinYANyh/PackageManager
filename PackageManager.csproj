@@ -295,6 +295,7 @@
         <Compile Include="Services\FolderPickerService.cs" />
         <Compile Include="Services\FtpService.cs" />
         <Compile Include="Services\GitProxyService.cs" />
+        <Compile Include="Services\IndexHostTaskService.cs" />
         <Compile Include="Services\JenkinsBuildService.cs" />
         <Compile Include="Services\LanDiscoveryService.cs" />
         <Compile Include="Services\LanTransferHostService.cs" />

@@ -14,7 +14,7 @@ namespace MftScanner
     /// 替代 <see cref="MftScanService"/> 的索引构建层。
     /// 需求：1.1、1.4、1.5
     /// </summary>
-    public sealed class IndexService
+    public sealed class IndexService : ISharedIndexService
     {
         private readonly MftEnumerator _enumerator = new MftEnumerator();
         private readonly IndexSnapshotStore _snapshotStore = new IndexSnapshotStore();
@@ -25,6 +25,7 @@ namespace MftScanner
         private readonly object _backgroundCatchUpLock = new object();
         private bool _watcherInitialized;
         private CancellationTokenSource _snapshotSaveCts;
+        private DateTime _pendingSnapshotSaveStartedUtc = DateTime.MinValue;
         private CancellationTokenSource _backgroundCatchUpCts;
         private Task _backgroundCatchUpTask;
         private volatile bool _isBackgroundCatchUpInProgress;
@@ -35,12 +36,14 @@ namespace MftScanner
 
         private const int SnapshotSaveDebounceMilliseconds = 5000;
         private const int SnapshotPeriodicSaveMilliseconds = 120000;
+        private const int SnapshotSaveMaxDeferredMilliseconds = 30000;
 
         // 保存 progress 引用，供 OnJournalOverflow 使用（需求 6.5）
         private IProgress<string> _progress;
 
         /// <summary>当前内存索引实例（供 SearchAsync 使用）。</summary>
         public MemoryIndex Index => _index;
+        public int IndexedCount => _index.TotalCount;
         public bool IsBackgroundCatchUpInProgress => _isBackgroundCatchUpInProgress;
         public string CurrentStatusMessage => _currentStatusMessage;
 
@@ -1356,9 +1359,21 @@ namespace MftScanner
         private void ScheduleSnapshotSave()
         {
             CancellationTokenSource cts;
+            var delayMilliseconds = SnapshotSaveDebounceMilliseconds;
             lock (_snapshotSaveLock)
             {
                 var old = _snapshotSaveCts;
+                var now = DateTime.UtcNow;
+                if (_pendingSnapshotSaveStartedUtc == DateTime.MinValue)
+                {
+                    _pendingSnapshotSaveStartedUtc = now;
+                }
+                else if ((now - _pendingSnapshotSaveStartedUtc).TotalMilliseconds >= SnapshotSaveMaxDeferredMilliseconds)
+                {
+                    delayMilliseconds = 0;
+                    _pendingSnapshotSaveStartedUtc = now;
+                }
+
                 if (old != null)
                 {
                     old.Cancel();
@@ -1373,11 +1388,22 @@ namespace MftScanner
             {
                 try
                 {
-                    await Task.Delay(SnapshotSaveDebounceMilliseconds, cts.Token).ConfigureAwait(false);
+                    await Task.Delay(delayMilliseconds, cts.Token).ConfigureAwait(false);
                     SaveCurrentSnapshot("debounce");
                 }
                 catch (OperationCanceledException)
                 {
+                }
+                finally
+                {
+                    lock (_snapshotSaveLock)
+                    {
+                        if (ReferenceEquals(_snapshotSaveCts, cts))
+                        {
+                            _snapshotSaveCts = null;
+                            _pendingSnapshotSaveStartedUtc = DateTime.MinValue;
+                        }
+                    }
                 }
             });
         }
@@ -1465,6 +1491,7 @@ namespace MftScanner
             {
                 var cts = _snapshotSaveCts;
                 _snapshotSaveCts = null;
+                _pendingSnapshotSaveStartedUtc = DateTime.MinValue;
                 if (cts == null)
                     return;
 

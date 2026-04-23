@@ -27,7 +27,7 @@ namespace MftScanner
         private const double LoadMoreThreshold = 24d;
         private const int MaxRecentSearches = 12;
 
-        private readonly IndexService _indexService = new IndexService();
+        private readonly ISharedIndexService _indexService;
         private readonly IncrementalFilter _filter;
         private readonly ObservableCollection<EverythingSearchResultItem> _displayedResults = new ObservableCollection<EverythingSearchResultItem>();
         private readonly ObservableCollection<SearchHistoryEntry> _recentSearches = new ObservableCollection<SearchHistoryEntry>();
@@ -75,7 +75,13 @@ namespace MftScanner
         private FileSearchTypeFilter _typeFilterKeyboardOriginalType = FileSearchTypeFilter.All;
 
         public EverythingSearchWindow()
+            : this(SharedIndexServiceFactory.Create("CtrlE.SearchUi"))
         {
+        }
+
+        public EverythingSearchWindow(ISharedIndexService indexService)
+        {
+            _indexService = indexService ?? throw new ArgumentNullException(nameof(indexService));
             InitializeComponent();
             ResultsGrid.ItemsSource = _displayedResults;
             RecentSearchList.ItemsSource = _recentSearches;

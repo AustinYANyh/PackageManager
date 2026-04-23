@@ -150,6 +150,13 @@ namespace PackageManager
                     Environment.Exit(ok ? 0 : 1);
                     return true;
                 }
+
+                if (args != null && args.Length >= 2 && string.Equals(args[0], "--pm-admin-register-index-host-task", StringComparison.OrdinalIgnoreCase))
+                {
+                    var exitCode = IndexHostTaskService.RunAdminRegister(args[1]);
+                    Environment.Exit(exitCode);
+                    return true;
+                }
             }
             catch (Exception ex)
             {
@@ -198,6 +205,7 @@ namespace PackageManager
         {
             try
             {
+                IndexHostTaskService.EnsureRegisteredAndRunningOnStartup();
                 _commonStartupWindowManager = new CommonStartupWindowManager();
                 _fileSearchWindowManager = new FileSearchWindowManager();
                 _systemHotkeyService = new SystemHotkeyService(_commonStartupWindowManager, _fileSearchWindowManager);

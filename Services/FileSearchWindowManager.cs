@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows;
+using MftScanner;
 
 namespace PackageManager.Services
 {
@@ -11,13 +12,8 @@ namespace PackageManager.Services
     {
         private const int ShowRequestRetryCount = 15;
         private const int ShowRequestRetryDelayMilliseconds = 100;
-        private const int SwShow = 5;
-        private const int SwRestore = 9;
-        private const int WmClose = 0x0010;
-
-        private readonly string _sessionId = Guid.NewGuid().ToString("N");
+        private readonly string _sessionId = SharedIndexConstants.SearchUiSessionId;
         private readonly string _showRequestEventName;
-        private int? _currentToolProcessId;
 
         public FileSearchWindowManager()
         {
@@ -38,29 +34,25 @@ namespace PackageManager.Services
                 return;
             }
 
-            if (TrySignalShowRequest())
+            if (SharedIndexServiceClient.TryShowSearchUi())
             {
                 return;
             }
 
-            if (TryGetCurrentToolProcess(out var existingProcess))
+            if (IndexHostTaskService.TryRunRegisteredTaskSilently())
             {
-                try
+                for (var i = 0; i < 20; i++)
                 {
-                    LoggingService.LogInfo($"当前会话文件搜索进程已存在，SessionId={_sessionId}，PID={existingProcess.Id}。");
-                    if (TrySignalShowRequest(ShowRequestRetryCount, ShowRequestRetryDelayMilliseconds))
+                    Thread.Sleep(150);
+                    if (SharedIndexServiceClient.TryShowSearchUi())
                     {
                         return;
                     }
-
-                    LoggingService.LogWarning($"当前会话文件搜索唤醒事件未就绪，尝试窗口置前。SessionId={_sessionId}，PID={existingProcess.Id}");
-                    BringToFront(existingProcess);
                 }
-                finally
-                {
-                    existingProcess.Dispose();
-                }
+            }
 
+            if (TrySignalShowRequest())
+            {
                 return;
             }
 
@@ -69,27 +61,6 @@ namespace PackageManager.Services
 
         public void Shutdown()
         {
-            if (!TryGetCurrentToolProcess(out var process))
-            {
-                return;
-            }
-
-            try
-            {
-                process.Refresh();
-                var handle = process.MainWindowHandle;
-                if (handle != IntPtr.Zero)
-                {
-                    PostMessage(handle, WmClose, IntPtr.Zero, IntPtr.Zero);
-                }
-            }
-            catch
-            {
-            }
-            finally
-            {
-                process.Dispose();
-            }
         }
 
         private void StartNewToolProcess()
@@ -106,14 +77,12 @@ namespace PackageManager.Services
                 using (var process = Process.Start(new ProcessStartInfo
                 {
                     FileName = exePath,
-                    Arguments = $"--window search --session-id {_sessionId} --owner-pid {Process.GetCurrentProcess().Id}",
+                    Arguments = $"--window search-ui --session-id {_sessionId}",
                     UseShellExecute = true
                 }))
                 {
-                    _currentToolProcessId = process?.Id;
+                    LoggingService.LogInfo($"已启动文件搜索 UI：SessionId={_sessionId}，PID={process?.Id}");
                 }
-
-                LoggingService.LogInfo($"已启动当前会话文件搜索工具：SessionId={_sessionId}，PID={_currentToolProcessId}");
             }
             catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
             {
@@ -122,36 +91,6 @@ namespace PackageManager.Services
             {
                 LoggingService.LogError(ex, "打开文件搜索工具失败");
                 MessageBox.Show($"打开文件搜索工具失败：{ex.Message}", "文件搜索", MessageBoxButton.OK, MessageBoxImage.Error);
-            }
-        }
-
-        private bool TryGetCurrentToolProcess(out Process process)
-        {
-            process = null;
-            if (!_currentToolProcessId.HasValue)
-            {
-                return false;
-            }
-
-            try
-            {
-                process = Process.GetProcessById(_currentToolProcessId.Value);
-                if (process.HasExited)
-                {
-                    process.Dispose();
-                    process = null;
-                    _currentToolProcessId = null;
-                    return false;
-                }
-
-                return true;
-            }
-            catch
-            {
-                process?.Dispose();
-                process = null;
-                _currentToolProcessId = null;
-                return false;
             }
         }
 
@@ -179,12 +118,12 @@ namespace PackageManager.Services
                 }
                 catch (UnauthorizedAccessException ex)
                 {
-                    LoggingService.LogWarning($"当前会话文件搜索唤醒事件访问被拒绝：SessionId={_sessionId}，{ex.Message}");
+                    LoggingService.LogWarning($"文件搜索 UI 唤醒事件访问被拒绝：SessionId={_sessionId}，{ex.Message}");
                     return false;
                 }
                 catch (Exception ex)
                 {
-                    LoggingService.LogWarning($"当前会话文件搜索唤醒事件发送失败：SessionId={_sessionId}，{ex.Message}");
+                    LoggingService.LogWarning($"文件搜索 UI 唤醒事件发送失败：SessionId={_sessionId}，{ex.Message}");
                     return false;
                 }
 
@@ -206,85 +145,5 @@ namespace PackageManager.Services
         {
             return string.IsNullOrWhiteSpace(sessionId) ? "default" : sessionId.Trim();
         }
-
-        private static void BringToFront(Process process)
-        {
-            if (process == null)
-            {
-                return;
-            }
-
-            IntPtr handle = IntPtr.Zero;
-            try
-            {
-                for (var i = 0; i < 10; i++)
-                {
-                    process.Refresh();
-                    if (process.HasExited)
-                    {
-                        return;
-                    }
-
-                    handle = process.MainWindowHandle;
-                    if (handle != IntPtr.Zero)
-                    {
-                        break;
-                    }
-
-                    Thread.Sleep(100);
-                }
-            }
-            catch
-            {
-                return;
-            }
-
-            if (handle == IntPtr.Zero)
-            {
-                return;
-            }
-
-            BringToFront(handle);
-        }
-
-        private static void BringToFront(IntPtr handle)
-        {
-            if (handle == IntPtr.Zero)
-            {
-                return;
-            }
-
-            if (IsIconic(handle))
-            {
-                ShowWindow(handle, SwRestore);
-            }
-            else
-            {
-                ShowWindow(handle, SwShow);
-            }
-
-            BringWindowToTop(handle);
-            SetForegroundWindow(handle);
-        }
-
-        [DllImport("user32.dll")]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
-
-        [DllImport("user32.dll")]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        private static extern bool IsIconic(IntPtr hWnd);
-
-        [DllImport("user32.dll")]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        private static extern bool BringWindowToTop(IntPtr hWnd);
-
-        [DllImport("user32.dll")]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        private static extern bool SetForegroundWindow(IntPtr hWnd);
-
-        [DllImport("user32.dll", SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        private static extern bool PostMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
     }
 }

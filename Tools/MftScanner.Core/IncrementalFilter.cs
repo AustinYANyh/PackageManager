@@ -13,11 +13,11 @@ namespace MftScanner
     /// </summary>
     public sealed class IncrementalFilter
     {
-        private readonly IndexService _indexService;
+        private readonly ISharedIndexService _indexService;
         private CancellationTokenSource _currentCts;
         private readonly object _lock = new object();
 
-        public IncrementalFilter(IndexService indexService)
+        public IncrementalFilter(ISharedIndexService indexService)
         {
             _indexService = indexService;
         }
@@ -63,7 +63,7 @@ namespace MftScanner
                 // 内部取消（被下一次查询抢占），返回空结果（需求 4.3）
                 return new SearchQueryResult
                 {
-                    TotalIndexedCount = _indexService.Index.TotalCount,
+                    TotalIndexedCount = _indexService.IndexedCount,
                     TotalMatchedCount = 0,
                     IsTruncated = false,
                     Results = new List<ScannedFileInfo>()
@@ -74,7 +74,7 @@ namespace MftScanner
                 // 同上，兼容 OperationCanceledException
                 return new SearchQueryResult
                 {
-                    TotalIndexedCount = _indexService.Index.TotalCount,
+                    TotalIndexedCount = _indexService.IndexedCount,
                     TotalMatchedCount = 0,
                     IsTruncated = false,
                     Results = new List<ScannedFileInfo>()

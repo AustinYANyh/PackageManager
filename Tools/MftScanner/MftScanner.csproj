@@ -78,6 +78,7 @@
     <Compile Include="EverythingSearchWindow.Actions.cs" />
     <Compile Include="EverythingSearchWindow.Models.cs" />
     <Compile Include="EverythingSearchWindow.Search.cs" />
+    <Compile Include="IndexHostAgent.cs" />
     <Compile Include="App.xaml.cs">
       <DependentUpon>App.xaml</DependentUpon>
     </Compile>

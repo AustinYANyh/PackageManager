@@ -40,7 +40,7 @@ public partial class CommonStartupWindow : Window
     private readonly ObservableCollection<StartupActivityVm> _recentActivities = new();
     private readonly ObservableCollection<ScanResultItem> _scanResults = new();
     private readonly List<CommonStartupGroup> _groupDefinitions = new();
-    private readonly IndexService _indexService = new();
+    private readonly ISharedIndexService _indexService = SharedIndexServiceFactory.Create("CtrlQ.CommonStartup");
     private readonly bool _canUseIntegratedFileSearch;
     private readonly PinyinMatcher _pinyinMatcher = new PinyinMatcher();
 
@@ -1477,7 +1477,7 @@ public partial class CommonStartupWindow : Window
 
             if (string.IsNullOrWhiteSpace(keyword))
             {
-                StatusText.Text = $"已索引 {_indexService.Index.TotalCount} 个对象，输入关键词可继续查找候选。";
+                StatusText.Text = $"已索引 {_indexService.IndexedCount} 个对象，输入关键词可继续查找候选。";
                 return;
             }
 
@@ -1538,8 +1538,8 @@ public partial class CommonStartupWindow : Window
         if (results.Count == 0)
         {
             StatusText.Text = _indexService.IsBackgroundCatchUpInProgress
-                ? $"未找到启动项候选（共 {response?.TotalIndexedCount ?? _indexService.Index.TotalCount} 个对象，后台追平中）"
-                : $"未找到启动项候选（共 {response?.TotalIndexedCount ?? _indexService.Index.TotalCount} 个对象）";
+                ? $"未找到启动项候选（共 {response?.TotalIndexedCount ?? _indexService.IndexedCount} 个对象，后台追平中）"
+                : $"未找到启动项候选（共 {response?.TotalIndexedCount ?? _indexService.IndexedCount} 个对象）";
             return;
         }
 
@@ -1593,7 +1593,7 @@ public partial class CommonStartupWindow : Window
         {
             Response = response ?? new SearchQueryResult
             {
-                TotalIndexedCount = _indexService.Index.TotalCount,
+                    TotalIndexedCount = _indexService.IndexedCount,
                 TotalMatchedCount = 0,
                 IsTruncated = false,
                 Results = new List<ScannedFileInfo>()
@@ -2103,7 +2103,7 @@ public partial class CommonStartupWindow : Window
             RefreshQueue();
             ScrollRightSidebarToTop();
             StatusText.Text = _indexReady
-                ? $"已索引 {_indexService.Index.TotalCount} 个对象，输入关键词可继续查找候选。"
+                ? $"已索引 {_indexService.IndexedCount} 个对象，输入关键词可继续查找候选。"
                 : "正在建立 MFT 索引，请稍候。";
             SetScanningState(false);
             return;
