@@ -13,30 +13,41 @@ namespace MftScanner
 {
     public partial class EverythingSearchWindow
     {
+        private static Key GetEffectiveKey(KeyEventArgs e)
+        {
+            return e.Key == Key.System ? e.SystemKey : e.Key;
+        }
+
         private void EverythingSearchWindow_PreviewKeyDown(object sender, KeyEventArgs e)
         {
-            if (e.Key == Key.Escape)
+            if (_isKeyboardScopeSelectionActive || (ScopeComboBox != null && ScopeComboBox.IsDropDownOpen))
+            {
+                return;
+            }
+
+            var key = GetEffectiveKey(e);
+            if (key == Key.Escape)
             {
                 e.Handled = true;
                 Close();
                 return;
             }
 
-            if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.L)
+            if (Keyboard.Modifiers == ModifierKeys.Control && key == Key.L)
             {
                 e.Handled = true;
                 FocusSearchBoxAndSelectAll();
                 return;
             }
 
-            if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.R)
+            if (Keyboard.Modifiers == ModifierKeys.Control && key == Key.R)
             {
                 e.Handled = true;
                 _ = StartIndexingAsync(true);
                 return;
             }
 
-            if (e.Key == Key.F5)
+            if (key == Key.F5)
             {
                 e.Handled = true;
                 _ = ApplyFilterAsync(SearchBox.Text, false);
@@ -45,12 +56,20 @@ namespace MftScanner
 
         private void SearchBox_KeyDown(object sender, KeyEventArgs e)
         {
+            var key = GetEffectiveKey(e);
+            if (Keyboard.Modifiers == ModifierKeys.Alt && key == Key.Down)
+            {
+                e.Handled = true;
+                BeginKeyboardScopeSelection();
+                return;
+            }
+
             if (TryHandleResultShortcutKey(e, allowFirstResultFallback: true))
             {
                 return;
             }
 
-            if (e.Key == Key.Enter)
+            if (key == Key.Enter)
             {
                 e.Handled = true;
                 var selected = ResultsGrid.SelectedItem as EverythingSearchResultItem;
@@ -64,32 +83,32 @@ namespace MftScanner
                     OpenItem(_displayedResults[0], false);
                 }
             }
-            else if (e.Key == Key.Down && _displayedResults.Count > 0)
+            else if (key == Key.Down && _displayedResults.Count > 0)
             {
                 e.Handled = true;
                 MoveSearchResultSelection(1);
             }
-            else if (e.Key == Key.Up && _displayedResults.Count > 0)
+            else if (key == Key.Up && _displayedResults.Count > 0)
             {
                 e.Handled = true;
                 MoveSearchResultSelection(-1);
             }
-            else if (e.Key == Key.PageDown && _displayedResults.Count > 0)
+            else if (key == Key.PageDown && _displayedResults.Count > 0)
             {
                 e.Handled = true;
                 ExecuteResultsGridNavigationKeyFromSearchBox(e);
             }
-            else if (e.Key == Key.PageUp && _displayedResults.Count > 0)
+            else if (key == Key.PageUp && _displayedResults.Count > 0)
             {
                 e.Handled = true;
                 ExecuteResultsGridNavigationKeyFromSearchBox(e);
             }
-            else if (e.Key == Key.Home && _displayedResults.Count > 0)
+            else if (key == Key.Home && _displayedResults.Count > 0)
             {
                 e.Handled = true;
                 ExecuteResultsGridNavigationKeyFromSearchBox(e);
             }
-            else if (e.Key == Key.End && _displayedResults.Count > 0)
+            else if (key == Key.End && _displayedResults.Count > 0)
             {
                 e.Handled = true;
                 ExecuteResultsGridNavigationKeyFromSearchBox(e);
@@ -172,28 +191,29 @@ namespace MftScanner
             if (item == null)
                 return false;
 
-            if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.None)
+            var key = GetEffectiveKey(e);
+            if (key == Key.Enter && Keyboard.Modifiers == ModifierKeys.None)
             {
                 e.Handled = true;
                 OpenItem(item, false);
                 return true;
             }
 
-            if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Control)
+            if (key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Control)
             {
                 e.Handled = true;
                 OpenContainingFolder(item.FullPath);
                 return true;
             }
 
-            if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Shift)
+            if (key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Shift)
             {
                 e.Handled = true;
                 OpenItem(item, true);
                 return true;
             }
 
-            if (e.Key == Key.C && Keyboard.Modifiers == ModifierKeys.Control)
+            if (key == Key.C && Keyboard.Modifiers == ModifierKeys.Control)
             {
                 e.Handled = true;
                 CopyToClipboard(item.FullPath);
@@ -201,7 +221,7 @@ namespace MftScanner
                 return true;
             }
 
-            if (e.Key == Key.C && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift))
+            if (key == Key.C && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift))
             {
                 e.Handled = true;
                 CopyToClipboard(item.FileName);
@@ -209,28 +229,28 @@ namespace MftScanner
                 return true;
             }
 
-            if (e.Key == Key.T && Keyboard.Modifiers == ModifierKeys.Control)
+            if (key == Key.T && Keyboard.Modifiers == ModifierKeys.Control)
             {
                 e.Handled = true;
                 OpenTerminal(item);
                 return true;
             }
 
-            if (e.Key == Key.F2)
+            if (key == Key.F2)
             {
                 e.Handled = true;
                 RenameItem(item);
                 return true;
             }
 
-            if (e.Key == Key.Delete)
+            if (key == Key.Delete)
             {
                 e.Handled = true;
                 DeleteItem(item);
                 return true;
             }
 
-            if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Alt)
+            if (key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Alt)
             {
                 e.Handled = true;
                 ShowProperties(item);
@@ -317,7 +337,7 @@ namespace MftScanner
         private void DeleteButton_Click(object sender, RoutedEventArgs e) { var item = ResultsGrid.SelectedItem as EverythingSearchResultItem; if (item != null) DeleteItem(item); }
         private void ClearSearchButton_Click(object sender, RoutedEventArgs e) { SelectScopeOption(string.Empty); SearchBox.Clear(); SearchBox.Focus(); }
         private void ClearScopeButton_Click(object sender, RoutedEventArgs e) { SelectScopeOption(string.Empty); SearchBox.Focus(); }
-        private void SyntaxHelpButton_Click(object sender, RoutedEventArgs e) { MessageBox.Show("支持普通包含、^前缀、后缀$、/正则/、* 与 ? 通配符。\n路径限定通过下拉选择范围，不修改索引服务层。", "语法提示", MessageBoxButton.OK, MessageBoxImage.Information); }
+        private void SyntaxHelpButton_Click(object sender, RoutedEventArgs e) { MessageBox.Show("支持普通包含、^前缀、后缀$、/正则/、* 与 ? 通配符。\n路径限定通过下拉选择范围，不修改索引服务层；输入框可按 Alt+Down 打开。", "语法提示", MessageBoxButton.OK, MessageBoxImage.Information); }
         private void OpenMenuItem_Click(object sender, RoutedEventArgs e) { ExecuteForSelected(OpenItem, false); }
         private void OpenContainingFolder_Click(object sender, RoutedEventArgs e) { var item = ResultsGrid.SelectedItem as EverythingSearchResultItem; if (item != null) OpenContainingFolder(item.FullPath); }
         private void CopyPath_Click(object sender, RoutedEventArgs e) { var item = ResultsGrid.SelectedItem as EverythingSearchResultItem; if (item != null) { CopyToClipboard(item.FullPath); StatusText.Text = "路径已复制"; } }

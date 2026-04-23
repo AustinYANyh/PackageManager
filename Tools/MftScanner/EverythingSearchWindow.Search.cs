@@ -72,7 +72,7 @@ namespace MftScanner
 
         private void ScopeComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-            if (_suppressControlEvents)
+            if (_suppressControlEvents || _isKeyboardScopeSelectionActive || _suppressScopeSelectionSearch)
                 return;
 
             RestartSearchDebounce();

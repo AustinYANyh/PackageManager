@@ -59,6 +59,13 @@ namespace MftScanner
         private bool _isApplyingPendingIndexChanges;
         private FileSearchTypeFilter _currentTypeFilter = FileSearchTypeFilter.All;
         private string _currentSortKey = "default";
+        private bool _isKeyboardScopeSelectionActive;
+        private bool _suppressScopeSelectionSearch;
+        private bool _skipScopeDropDownClosedRestore;
+        private string _scopeSelectionOriginalValue = string.Empty;
+        private int _scopeSearchSelectionStart;
+        private int _scopeSearchSelectionLength;
+        private int _scopeSearchCaretIndex;
 
         public EverythingSearchWindow()
         {
@@ -96,6 +103,150 @@ namespace MftScanner
             SearchBox.SelectAll();
         }
 
+        private void BeginKeyboardScopeSelection()
+        {
+            if (ScopeComboBox == null)
+                return;
+
+            CaptureSearchBoxInputState();
+            _scopeSelectionOriginalValue = GetSelectedScopePath();
+            _isKeyboardScopeSelectionActive = true;
+            ScopeComboBox.Focus();
+            ScopeComboBox.IsDropDownOpen = true;
+        }
+
+        private void CommitKeyboardScopeSelection()
+        {
+            var scopeChanged = !string.Equals(GetSelectedScopePath(), _scopeSelectionOriginalValue, StringComparison.OrdinalIgnoreCase);
+            _isKeyboardScopeSelectionActive = false;
+            _skipScopeDropDownClosedRestore = true;
+            ScopeComboBox.IsDropDownOpen = false;
+            RestoreSearchBoxInputState(preserveSelection: true);
+
+            if (scopeChanged)
+                RestartSearchDebounce();
+        }
+
+        private void ApplyHighlightedScopeSelection()
+        {
+            if (ScopeComboBox == null)
+                return;
+
+            for (var i = 0; i < ScopeComboBox.Items.Count; i++)
+            {
+                var container = ScopeComboBox.ItemContainerGenerator.ContainerFromIndex(i) as ComboBoxItem;
+                if (container == null || !container.IsHighlighted)
+                    continue;
+
+                if (container.DataContext is ComboOption option)
+                {
+                    SetScopeSelectionWithoutSearch(option.Key);
+                    return;
+                }
+
+                if (container.Content is ComboOption contentOption)
+                {
+                    SetScopeSelectionWithoutSearch(contentOption.Key);
+                    return;
+                }
+            }
+        }
+
+        private void CancelKeyboardScopeSelection()
+        {
+            _isKeyboardScopeSelectionActive = false;
+            SetScopeSelectionWithoutSearch(_scopeSelectionOriginalValue);
+            _skipScopeDropDownClosedRestore = true;
+            ScopeComboBox.IsDropDownOpen = false;
+            RestoreSearchBoxInputState(preserveSelection: true);
+        }
+
+        private void SetScopeSelectionWithoutSearch(string path)
+        {
+            var previous = _suppressScopeSelectionSearch;
+            _suppressScopeSelectionSearch = true;
+            try
+            {
+                SelectScopeOption(path);
+            }
+            finally
+            {
+                _suppressScopeSelectionSearch = previous;
+            }
+        }
+
+        private void CaptureSearchBoxInputState()
+        {
+            if (SearchBox == null)
+                return;
+
+            _scopeSearchSelectionStart = SearchBox.SelectionStart;
+            _scopeSearchSelectionLength = SearchBox.SelectionLength;
+            _scopeSearchCaretIndex = SearchBox.CaretIndex;
+        }
+
+        private void RestoreSearchBoxInputState(bool preserveSelection)
+        {
+            if (SearchBox == null)
+                return;
+
+            Dispatcher.BeginInvoke(new Action(delegate
+            {
+                SearchBox.Focus();
+
+                if (!preserveSelection)
+                {
+                    SearchBox.CaretIndex = SearchBox.Text == null ? 0 : SearchBox.Text.Length;
+                    return;
+                }
+
+                var textLength = SearchBox.Text == null ? 0 : SearchBox.Text.Length;
+                var selectionStart = Math.Max(0, Math.Min(_scopeSearchSelectionStart, textLength));
+                var selectionLength = Math.Max(0, Math.Min(_scopeSearchSelectionLength, textLength - selectionStart));
+                SearchBox.Select(selectionStart, selectionLength);
+                if (selectionLength == 0)
+                    SearchBox.CaretIndex = Math.Max(0, Math.Min(_scopeSearchCaretIndex, textLength));
+            }), DispatcherPriority.Input);
+        }
+
+        private void ScopeComboBox_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            if (!_isKeyboardScopeSelectionActive)
+                return;
+
+            var key = GetEffectiveKey(e);
+            if (key == Key.Enter || key == Key.Tab)
+            {
+                e.Handled = true;
+                ApplyHighlightedScopeSelection();
+                CommitKeyboardScopeSelection();
+                return;
+            }
+
+            if (key == Key.Escape || (Keyboard.Modifiers == ModifierKeys.Alt && key == Key.Up))
+            {
+                e.Handled = true;
+                CancelKeyboardScopeSelection();
+            }
+        }
+
+        private void ScopeComboBox_DropDownClosed(object sender, EventArgs e)
+        {
+            if (_skipScopeDropDownClosedRestore)
+            {
+                _skipScopeDropDownClosedRestore = false;
+                return;
+            }
+
+            if (_isKeyboardScopeSelectionActive)
+            {
+                CommitKeyboardScopeSelection();
+                return;
+            }
+
+            RestoreSearchBoxInputState(preserveSelection: false);
+        }
+
         public void PrepareForProcessExit()
         {
             _allowProcessExit = true;
@@ -115,7 +266,7 @@ namespace MftScanner
             ScopeComboBox.ItemsSource = _scopeOptions;
             ScopeComboBox.DisplayMemberPath = "DisplayName";
             ScopeComboBox.SelectedValuePath = "Key";
-            ScopeComboBox.ToolTip = "下拉选择搜索范围，不修改索引服务层。";
+            ScopeComboBox.ToolTip = "下拉选择搜索范围，不修改索引服务层；输入框可用 Alt+Down 打开。";
             RefreshScopeOptions();
             ScopeComboBox.SelectedValue = string.Empty;
 
