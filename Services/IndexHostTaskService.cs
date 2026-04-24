@@ -4,52 +4,43 @@ using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Threading.Tasks;
-using System.Windows;
 using MftScanner;
 
 namespace PackageManager.Services
 {
     internal static class IndexHostTaskService
     {
-        public static void EnsureRegisteredAndRunningOnStartup()
+        public static bool EnsureRegisteredAndRunningOnStartup()
         {
             try
             {
                 var toolPath = AdminElevationService.ExtractEmbeddedTool("MftScanner.exe", "MftScanner.exe");
                 if (string.IsNullOrWhiteSpace(toolPath))
                 {
-                    return;
+                    LoggingService.LogWarning("提取 MftScanner.exe 失败，无法启动后台索引宿主。");
+                    return false;
                 }
 
                 if (!TaskExists())
                 {
-                    var result = MessageBox.Show(
-                        "文件搜索后台索引宿主尚未注册。\n\n是否现在授权创建“登录后自动启动、最高权限运行”的后台索引任务？\n\n创建后，Ctrl+E 和 Ctrl+Q 可优先复用后台索引，减少首次等待。",
-                        "启用后台索引宿主",
-                        MessageBoxButton.YesNo,
-                        MessageBoxImage.Question);
-                    if (result != MessageBoxResult.Yes)
-                    {
-                        return;
-                    }
-
                     if (!RunElevatedRegister(toolPath))
                     {
-                        return;
+                        return false;
                     }
                 }
 
-                TryRunRegisteredTaskSilently();
+                return TryRunRegisteredTaskSilently();
             }
             catch (Exception ex)
             {
                 LoggingService.LogError(ex, "确保后台索引宿主计划任务失败");
+                return false;
             }
         }
 
         private static bool TaskExists()
         {
-            return RunSchtasks($"/Query /TN \"{SharedIndexConstants.IndexHostTaskName}\"", false).ExitCode == 0;
+            return RunSchtasks($"/Query /TN \"{SharedIndexConstants.IndexHostTaskName}\"", true).ExitCode == 0;
         }
 
         internal static bool TryRunRegisteredTaskSilently()
@@ -61,7 +52,7 @@ namespace PackageManager.Services
                     return false;
                 }
 
-                return RunSchtasks($"/Run /TN \"{SharedIndexConstants.IndexHostTaskName}\"", false).ExitCode == 0;
+                return RunSchtasks($"/Run /TN \"{SharedIndexConstants.IndexHostTaskName}\"", true).ExitCode == 0;
             }
             catch (Exception ex)
             {
@@ -94,6 +85,7 @@ namespace PackageManager.Services
             }
             catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
             {
+                LoggingService.LogWarning("用户取消了后台索引宿主计划任务的管理员授权。");
                 return false;
             }
         }

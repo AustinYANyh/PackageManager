@@ -205,7 +205,13 @@ namespace PackageManager
         {
             try
             {
-                IndexHostTaskService.EnsureRegisteredAndRunningOnStartup();
+                if (!IndexHostTaskService.EnsureRegisteredAndRunningOnStartup())
+                {
+                    LoggingService.LogWarning("后台索引宿主未能就绪，程序将退出。");
+                    Shutdown(-1);
+                    return;
+                }
+
                 _commonStartupWindowManager = new CommonStartupWindowManager();
                 _fileSearchWindowManager = new FileSearchWindowManager();
                 _systemHotkeyService = new SystemHotkeyService(_commonStartupWindowManager, _fileSearchWindowManager);
