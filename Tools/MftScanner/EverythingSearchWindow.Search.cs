@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -14,6 +15,17 @@ namespace MftScanner
 {
     public partial class EverythingSearchWindow
     {
+        private sealed class SearchLoadOutcome
+        {
+            public List<EverythingSearchResultItem> DisplayItems { get; set; } = new List<EverythingSearchResultItem>();
+            public int TotalMatchedCount { get; set; }
+            public int LoadedRawResultCount { get; set; }
+            public bool HasMoreSearchResults { get; set; }
+            public long HostSearchMs { get; set; }
+            public long ProjectionMs { get; set; }
+            public long SortMs { get; set; }
+        }
+
         private async Task StartIndexingAsync(bool forceRescan)
         {
             CancelToken(ref _indexCts);
@@ -97,12 +109,6 @@ namespace MftScanner
             _searchCts = currentSearchCts;
             var ct = currentSearchCts.Token;
 
-            _displayedResults.Clear();
-            _displayedPathSet.Clear();
-            _allLoadedResults.Clear();
-            _loadedResultCount = 0;
-            _loadedRawResultCount = 0;
-            _totalMatchedCount = 0;
             _activeKeyword = BuildEffectiveKeyword(keyword);
             _isLoadingMore = false;
             _hasMoreSearchResults = false;
@@ -119,6 +125,7 @@ namespace MftScanner
             if (string.IsNullOrWhiteSpace(_activeKeyword))
             {
                 _isSearchInProgress = false;
+                ClearDisplayedResults();
                 UpdateSelectedItemDetails(null);
                 UpdateSummaryStatus();
                 UpdateEmptyState();
@@ -133,9 +140,21 @@ namespace MftScanner
 
             try
             {
-                var didLoad = await LoadSearchResultsAsync(SearchBatchSize, true, ct).ConfigureAwait(true);
-                if (ct.IsCancellationRequested || !didLoad)
+                var uiTotalStopwatch = Stopwatch.StartNew();
+                var loadOutcome = await LoadInitialSearchResultsAsync(SearchBatchSize, ct).ConfigureAwait(true);
+                if (ct.IsCancellationRequested || loadOutcome == null)
                     return;
+
+                _totalMatchedCount = loadOutcome.TotalMatchedCount;
+                _loadedRawResultCount = loadOutcome.LoadedRawResultCount;
+                _hasMoreSearchResults = loadOutcome.HasMoreSearchResults;
+                var bindStopwatch = Stopwatch.StartNew();
+                PublishLoadedResults(loadOutcome.DisplayItems, preserveSelectionPath: null);
+                bindStopwatch.Stop();
+
+                uiTotalStopwatch.Stop();
+                LogUiSearchBreakdown(loadOutcome, bindStopwatch.ElapsedMilliseconds, uiTotalStopwatch.ElapsedMilliseconds);
+
                 if (updateHistory)
                     PushRecentSearch(_activeKeyword);
                 UpdateSummaryStatus();
@@ -175,22 +194,6 @@ namespace MftScanner
             while (_recentSearches.Count > MaxRecentSearches)
                 _recentSearches.RemoveAt(_recentSearches.Count - 1);
             SaveWindowState();
-        }
-
-        private void AppendResults(SearchQueryResult result)
-        {
-            if (result == null || result.Results == null)
-                return;
-
-            foreach (var item in result.Results)
-            {
-                TryAddDisplayedResult(item.FullPath, item.IsDirectory);
-            }
-
-            _loadedResultCount = _displayedResults.Count;
-            ApplyCurrentSort();
-            RefreshGridColumns();
-            UpdateActionButtons();
         }
 
         private async void ResultsScrollViewer_ScrollChanged(object sender, ScrollChangedEventArgs e)
@@ -440,40 +443,236 @@ namespace MftScanner
                 RestoreSearchBoxInputState(preserveSelection: true);
         }
 
-        private async Task<bool> LoadSearchResultsAsync(int desiredCount, bool isNewSearch, CancellationToken ct)
+        private async Task<SearchLoadOutcome> LoadInitialSearchResultsAsync(int desiredCount, CancellationToken ct)
         {
+            var queryStopwatch = Stopwatch.StartNew();
+            SearchQueryResult result;
             if (_currentTypeFilter == FileSearchTypeFilter.All)
             {
-                var result = isNewSearch
-                    ? await _filter.QueryAsync(_activeKeyword, SearchBatchSize, 0, ct).ConfigureAwait(true)
-                    : await _indexService.SearchAsync(_activeKeyword, SearchBatchSize, _loadedRawResultCount, null, ct).ConfigureAwait(true);
-                if (ct.IsCancellationRequested)
-                    return false;
+                result = await _filter.QueryAsync(_activeKeyword, Math.Max(desiredCount, SearchBatchSize), 0, ct).ConfigureAwait(true);
+            }
+            else
+            {
+                result = await _indexService.SearchAsync(
+                    _activeKeyword,
+                    Math.Max(desiredCount, SearchBatchSize),
+                    0,
+                    MapCurrentTypeFilter(),
+                    null,
+                    ct).ConfigureAwait(true);
+            }
 
-                _totalMatchedCount = result == null ? 0 : result.TotalMatchedCount;
-                var rawReturnedCount = result?.Results == null ? 0 : result.Results.Count;
-                AppendResults(result);
-                _loadedRawResultCount = isNewSearch ? rawReturnedCount : (_loadedRawResultCount + rawReturnedCount);
-                _hasMoreSearchResults = _loadedResultCount < _totalMatchedCount;
+            queryStopwatch.Stop();
+            if (ct.IsCancellationRequested)
+            {
+                return null;
+            }
+
+            return BuildSearchLoadOutcome(result, 0, queryStopwatch.ElapsedMilliseconds, null);
+        }
+
+        private async Task<bool> LoadSearchResultsAsync(int desiredCount, bool isNewSearch, CancellationToken ct)
+        {
+            if (isNewSearch)
+            {
+                var uiTotalStopwatch = Stopwatch.StartNew();
+                var initialLoadOutcome = await LoadInitialSearchResultsAsync(desiredCount, ct).ConfigureAwait(true);
+                if (ct.IsCancellationRequested || initialLoadOutcome == null)
+                {
+                    return false;
+                }
+
+                var bindStopwatch = Stopwatch.StartNew();
+                PublishLoadedResults(initialLoadOutcome.DisplayItems, preserveSelectionPath: null);
+                bindStopwatch.Stop();
+                uiTotalStopwatch.Stop();
+                LogUiSearchBreakdown(initialLoadOutcome, bindStopwatch.ElapsedMilliseconds, uiTotalStopwatch.ElapsedMilliseconds);
                 return true;
             }
 
-            var filteredResult = await _indexService.SearchAsync(
-                _activeKeyword,
-                Math.Max(desiredCount, SearchBatchSize),
-                _loadedRawResultCount,
-                MapCurrentTypeFilter(),
-                null,
-                ct).ConfigureAwait(true);
+            var queryStopwatch = Stopwatch.StartNew();
+            var result = _currentTypeFilter == FileSearchTypeFilter.All
+                ? await _indexService.SearchAsync(_activeKeyword, SearchBatchSize, _loadedRawResultCount, null, ct).ConfigureAwait(true)
+                : await _indexService.SearchAsync(
+                    _activeKeyword,
+                    Math.Max(desiredCount, SearchBatchSize),
+                    _loadedRawResultCount,
+                    MapCurrentTypeFilter(),
+                    null,
+                    ct).ConfigureAwait(true);
+            queryStopwatch.Stop();
             if (ct.IsCancellationRequested)
+            {
                 return false;
+            }
 
-            _totalMatchedCount = filteredResult == null ? 0 : filteredResult.TotalMatchedCount;
-            var filteredRawReturnedCount = filteredResult?.Results == null ? 0 : filteredResult.Results.Count;
-            AppendResults(filteredResult);
-            _loadedRawResultCount = isNewSearch ? filteredRawReturnedCount : (_loadedRawResultCount + filteredRawReturnedCount);
-            _hasMoreSearchResults = filteredResult != null && filteredResult.IsTruncated;
+            var existingPaths = new HashSet<string>(_displayedPathSet, StringComparer.OrdinalIgnoreCase);
+            var loadOutcome = BuildSearchLoadOutcome(result, _loadedRawResultCount, queryStopwatch.ElapsedMilliseconds, existingPaths);
+            _totalMatchedCount = loadOutcome.TotalMatchedCount;
+            _loadedRawResultCount = loadOutcome.LoadedRawResultCount;
+            _hasMoreSearchResults = loadOutcome.HasMoreSearchResults;
+
+            if (loadOutcome.DisplayItems.Count == 0)
+            {
+                return true;
+            }
+
+            var combinedItems = new List<EverythingSearchResultItem>(_allLoadedResults.Count + loadOutcome.DisplayItems.Count);
+            combinedItems.AddRange(_allLoadedResults);
+            combinedItems.AddRange(loadOutcome.DisplayItems);
+            SortResultsInPlace(combinedItems);
+            PublishLoadedResults(combinedItems, (ResultsGrid.SelectedItem as EverythingSearchResultItem)?.FullPath);
             return true;
+        }
+
+        private SearchLoadOutcome BuildSearchLoadOutcome(SearchQueryResult result, int currentRawOffset, long queryElapsedMs, HashSet<string> existingPaths)
+        {
+            var outcome = new SearchLoadOutcome
+            {
+                TotalMatchedCount = result == null ? 0 : result.TotalMatchedCount,
+                HostSearchMs = result == null ? queryElapsedMs : Math.Max(result.HostSearchMs, 0),
+                LoadedRawResultCount = currentRawOffset + (result?.Results == null ? 0 : result.Results.Count)
+            };
+
+            var projectionStopwatch = Stopwatch.StartNew();
+            var pathSet = existingPaths ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (result != null && result.Results != null)
+            {
+                for (var i = 0; i < result.Results.Count; i++)
+                {
+                    var source = result.Results[i];
+                    if (source == null || string.IsNullOrWhiteSpace(source.FullPath) || !pathSet.Add(source.FullPath))
+                    {
+                        continue;
+                    }
+
+                    outcome.DisplayItems.Add(new EverythingSearchResultItem(source));
+                }
+            }
+
+            projectionStopwatch.Stop();
+            outcome.ProjectionMs = projectionStopwatch.ElapsedMilliseconds;
+
+            var sortStopwatch = Stopwatch.StartNew();
+            SortResultsInPlace(outcome.DisplayItems);
+            sortStopwatch.Stop();
+            outcome.SortMs = sortStopwatch.ElapsedMilliseconds;
+
+            if (_currentTypeFilter == FileSearchTypeFilter.All)
+            {
+                outcome.HasMoreSearchResults = outcome.LoadedRawResultCount < outcome.TotalMatchedCount;
+            }
+            else
+            {
+                outcome.HasMoreSearchResults = result != null && result.IsTruncated;
+            }
+
+            return outcome;
+        }
+
+        private void PublishLoadedResults(IList<EverythingSearchResultItem> items, string preserveSelectionPath)
+        {
+            var preferredSelectionPath = preserveSelectionPath;
+            _allLoadedResults = items == null ? new List<EverythingSearchResultItem>() : new List<EverythingSearchResultItem>(items);
+            _displayedPathSet.Clear();
+            for (var i = 0; i < _allLoadedResults.Count; i++)
+            {
+                _displayedPathSet.Add(_allLoadedResults[i].FullPath ?? string.Empty);
+            }
+
+            _displayedResults.ReplaceAll(_allLoadedResults);
+            _loadedResultCount = _allLoadedResults.Count;
+            RefreshGridColumns();
+            RestorePreferredSelection(preferredSelectionPath, forceCurrentCell: true);
+            UpdateActionButtons();
+        }
+
+        private void ClearDisplayedResults()
+        {
+            _displayedPathSet.Clear();
+            _allLoadedResults.Clear();
+            _displayedResults.ReplaceAll(Array.Empty<EverythingSearchResultItem>());
+            _loadedResultCount = 0;
+            _loadedRawResultCount = 0;
+            _totalMatchedCount = 0;
+            _hasMoreSearchResults = false;
+        }
+
+        private void SortResultsInPlace(List<EverythingSearchResultItem> items)
+        {
+            if (items == null || items.Count <= 1)
+            {
+                return;
+            }
+
+            Comparison<EverythingSearchResultItem> comparison = null;
+            switch (_currentSortKey)
+            {
+                case "name":
+                    comparison = delegate(EverythingSearchResultItem left, EverythingSearchResultItem right)
+                    {
+                        var result = StringComparer.OrdinalIgnoreCase.Compare(left == null ? string.Empty : left.FileName ?? string.Empty, right == null ? string.Empty : right.FileName ?? string.Empty);
+                        if (result != 0)
+                        {
+                            return result;
+                        }
+
+                        return StringComparer.OrdinalIgnoreCase.Compare(left == null ? string.Empty : left.DirectoryPath ?? string.Empty, right == null ? string.Empty : right.DirectoryPath ?? string.Empty);
+                    };
+                    break;
+                case "path":
+                    comparison = delegate(EverythingSearchResultItem left, EverythingSearchResultItem right)
+                    {
+                        var result = StringComparer.OrdinalIgnoreCase.Compare(left == null ? string.Empty : left.DirectoryPath ?? string.Empty, right == null ? string.Empty : right.DirectoryPath ?? string.Empty);
+                        if (result != 0)
+                        {
+                            return result;
+                        }
+
+                        return StringComparer.OrdinalIgnoreCase.Compare(left == null ? string.Empty : left.FileName ?? string.Empty, right == null ? string.Empty : right.FileName ?? string.Empty);
+                    };
+                    break;
+                case "type":
+                    comparison = delegate(EverythingSearchResultItem left, EverythingSearchResultItem right)
+                    {
+                        var result = StringComparer.OrdinalIgnoreCase.Compare(left == null ? string.Empty : left.TypeText ?? string.Empty, right == null ? string.Empty : right.TypeText ?? string.Empty);
+                        if (result != 0)
+                        {
+                            return result;
+                        }
+
+                        result = StringComparer.OrdinalIgnoreCase.Compare(left == null ? string.Empty : left.FileName ?? string.Empty, right == null ? string.Empty : right.FileName ?? string.Empty);
+                        if (result != 0)
+                        {
+                            return result;
+                        }
+
+                        return StringComparer.OrdinalIgnoreCase.Compare(left == null ? string.Empty : left.DirectoryPath ?? string.Empty, right == null ? string.Empty : right.DirectoryPath ?? string.Empty);
+                    };
+                    break;
+            }
+
+            if (comparison != null)
+            {
+                items.Sort(comparison);
+            }
+        }
+
+        private void LogUiSearchBreakdown(SearchLoadOutcome loadOutcome, long bindMs, long totalUiSearchMs)
+        {
+            if (loadOutcome == null)
+            {
+                return;
+            }
+
+            var hostSearchMs = Math.Max(loadOutcome.HostSearchMs, 0);
+            var projectionMs = Math.Max(loadOutcome.ProjectionMs, 0);
+            var sortMs = Math.Max(loadOutcome.SortMs, 0);
+            var ipcMs = Math.Max(0, totalUiSearchMs - hostSearchMs - projectionMs - sortMs - bindMs);
+            Services.LoggingService.LogIndexPerf("UI",
+                $"[CTRLE UI SEARCH] keyword={Services.LoggingService.FormatPerfValue(_activeKeyword)} filter={_currentTypeFilter} " +
+                $"hostSearchMs={hostSearchMs} ipcMs={ipcMs} projectionMs={projectionMs} sortMs={sortMs} bindMs={bindMs} totalUiSearchMs={totalUiSearchMs} " +
+                $"matched={_totalMatchedCount} displayed={_loadedResultCount}");
         }
 
         private bool MatchesCurrentQueryAndType(string lowerName, string fullPath, bool isDirectory)
@@ -628,9 +827,7 @@ namespace MftScanner
             if (!_displayedPathSet.Add(normalizedPath))
                 return false;
 
-            var item = new EverythingSearchResultItem(fullPath, isDirectory);
-            _allLoadedResults.Add(item);
-            _displayedResults.Add(item);
+            _allLoadedResults.Add(new EverythingSearchResultItem(fullPath, isDirectory));
             return true;
         }
 
@@ -638,13 +835,12 @@ namespace MftScanner
         {
             if (!string.IsNullOrWhiteSpace(fullPath) && _displayedPathSet.Remove(fullPath))
             {
-                for (var i = _displayedResults.Count - 1; i >= 0; i--)
+                for (var i = _allLoadedResults.Count - 1; i >= 0; i--)
                 {
-                    if (!string.Equals(_displayedResults[i].FullPath, fullPath, StringComparison.OrdinalIgnoreCase))
+                    if (!string.Equals(_allLoadedResults[i].FullPath, fullPath, StringComparison.OrdinalIgnoreCase))
                         continue;
 
-                    _allLoadedResults.Remove(_displayedResults[i]);
-                    _displayedResults.RemoveAt(i);
+                    _allLoadedResults.RemoveAt(i);
                     return true;
                 }
             }
@@ -652,14 +848,13 @@ namespace MftScanner
             if (string.IsNullOrWhiteSpace(lowerName))
                 return false;
 
-            for (var i = _displayedResults.Count - 1; i >= 0; i--)
+            for (var i = _allLoadedResults.Count - 1; i >= 0; i--)
             {
-                if (!string.Equals((_displayedResults[i].FileName ?? string.Empty).ToLowerInvariant(), lowerName, StringComparison.OrdinalIgnoreCase))
+                if (!string.Equals((_allLoadedResults[i].FileName ?? string.Empty).ToLowerInvariant(), lowerName, StringComparison.OrdinalIgnoreCase))
                     continue;
 
-                _displayedPathSet.Remove(_displayedResults[i].FullPath ?? string.Empty);
-                _allLoadedResults.Remove(_displayedResults[i]);
-                _displayedResults.RemoveAt(i);
+                _displayedPathSet.Remove(_allLoadedResults[i].FullPath ?? string.Empty);
+                _allLoadedResults.RemoveAt(i);
                 return true;
             }
 
@@ -711,44 +906,32 @@ namespace MftScanner
 
         private void ApplyCurrentSort(string preferredSelectionPath, bool forceRebind)
         {
-            if (_displayedResults.Count == 0)
+            if (_allLoadedResults.Count == 0)
             {
                 if (ResultsGrid.SelectedItem != null)
                     ResultsGrid.SelectedItem = null;
+                if (_displayedResults.Count > 0)
+                    _displayedResults.ReplaceAll(Array.Empty<EverythingSearchResultItem>());
                 return;
             }
 
+            IList<EverythingSearchResultItem> orderedItems;
             if (_currentSortKey == "default")
             {
-                if (forceRebind)
-                    RebindDisplayedResults(_allLoadedResults);
-
-                RestorePreferredSelection(preferredSelectionPath, forceRebind);
-                return;
+                orderedItems = _allLoadedResults;
             }
-
-            IEnumerable<EverythingSearchResultItem> orderedItems = _allLoadedResults;
-            switch (_currentSortKey)
+            else
             {
-                case "name":
-                    orderedItems = _allLoadedResults
-                        .OrderBy(item => item.FileName ?? string.Empty, StringComparer.OrdinalIgnoreCase)
-                        .ThenBy(item => item.DirectoryPath ?? string.Empty, StringComparer.OrdinalIgnoreCase);
-                    break;
-                case "path":
-                    orderedItems = _allLoadedResults
-                        .OrderBy(item => item.DirectoryPath ?? string.Empty, StringComparer.OrdinalIgnoreCase)
-                        .ThenBy(item => item.FileName ?? string.Empty, StringComparer.OrdinalIgnoreCase);
-                    break;
-                case "type":
-                    orderedItems = _allLoadedResults
-                        .OrderBy(item => item.TypeText ?? string.Empty, StringComparer.OrdinalIgnoreCase)
-                        .ThenBy(item => item.FileName ?? string.Empty, StringComparer.OrdinalIgnoreCase)
-                        .ThenBy(item => item.DirectoryPath ?? string.Empty, StringComparer.OrdinalIgnoreCase);
-                    break;
+                var sortedItems = new List<EverythingSearchResultItem>(_allLoadedResults);
+                SortResultsInPlace(sortedItems);
+                orderedItems = sortedItems;
             }
 
-            RebindDisplayedResults(orderedItems.ToList());
+            if (forceRebind || !ReferenceEquals(orderedItems, _displayedResults))
+            {
+                RebindDisplayedResults(orderedItems);
+            }
+
             RestorePreferredSelection(preferredSelectionPath, true);
         }
 
@@ -863,9 +1046,7 @@ namespace MftScanner
                     return;
             }
 
-            _displayedResults.Clear();
-            for (var i = 0; i < orderedItems.Count; i++)
-                _displayedResults.Add(orderedItems[i]);
+            _displayedResults.ReplaceAll(orderedItems);
         }
     }
 }

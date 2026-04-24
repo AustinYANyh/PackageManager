@@ -211,7 +211,7 @@
                         </Border>
                     </DockPanel>
                     <Grid Grid.Row="1" Margin="12,0,12,12">
-                        <dataGrid:CDataGrid x:Name="ResultsGrid" IsReadOnly="True" EnableAutoTemplateSelection="True" TextAlignment="Left" SelectionUnit="FullRow" SelectionMode="Single" AutoGeneratingColumn="ResultsGrid_AutoGeneratingColumn" MouseDoubleClick="ResultsGrid_MouseDoubleClick" SelectionChanged="ResultsGrid_SelectionChanged" PreviewKeyDown="ResultsGrid_PreviewKeyDown" ScrollViewer.VerticalScrollBarVisibility="Auto" ScrollViewer.HorizontalScrollBarVisibility="Auto">
+                        <dataGrid:CDataGrid x:Name="ResultsGrid" IsReadOnly="True" EnableAutoTemplateSelection="True" TextAlignment="Left" SelectionUnit="FullRow" SelectionMode="Single" AutoGeneratingColumn="ResultsGrid_AutoGeneratingColumn" MouseDoubleClick="ResultsGrid_MouseDoubleClick" SelectionChanged="ResultsGrid_SelectionChanged" PreviewKeyDown="ResultsGrid_PreviewKeyDown" ScrollViewer.VerticalScrollBarVisibility="Auto" ScrollViewer.HorizontalScrollBarVisibility="Auto" ScrollViewer.CanContentScroll="True" EnableRowVirtualization="True" EnableColumnVirtualization="True" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling">
                             <dataGrid:CDataGrid.ContextMenu>
                                 <ContextMenu>
                                     <MenuItem Header="打开" Click="OpenMenuItem_Click" />

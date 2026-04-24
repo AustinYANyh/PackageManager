@@ -1,8 +1,6 @@
 using System;
 using System.ComponentModel;
 using System.Diagnostics;
-using System.Runtime.InteropServices;
-using System.Threading;
 using System.Windows;
 using MftScanner;
 
@@ -10,15 +8,7 @@ namespace PackageManager.Services
 {
     internal sealed class FileSearchWindowManager
     {
-        private const int ShowRequestRetryCount = 15;
-        private const int ShowRequestRetryDelayMilliseconds = 100;
         private readonly string _sessionId = SharedIndexConstants.SearchUiSessionId;
-        private readonly string _showRequestEventName;
-
-        public FileSearchWindowManager()
-        {
-            _showRequestEventName = BuildShowRequestEventName(_sessionId);
-        }
 
         public void ShowOrActivate()
         {
@@ -39,30 +29,9 @@ namespace PackageManager.Services
                 return;
             }
 
-            if (IndexHostTaskService.TryRunRegisteredTaskSilently())
-            {
-                if (SharedIndexServiceClient.TryWaitForHostAvailability(15000))
-                {
-                    for (var i = 0; i < 30; i++)
-                    {
-                        if (SharedIndexServiceClient.TryShowSearchUi())
-                        {
-                            if (TrySignalShowRequest(ShowRequestRetryCount, ShowRequestRetryDelayMilliseconds))
-                            {
-                                return;
-                            }
-
-                            Thread.Sleep(120);
-                        }
-                        else
-                        {
-                            Thread.Sleep(120);
-                        }
-                    }
-                }
-            }
-
-            if (TrySignalShowRequest(ShowRequestRetryCount, ShowRequestRetryDelayMilliseconds))
+            if (IndexHostTaskService.TryRunRegisteredTaskSilently()
+                && SharedIndexServiceClient.TryWaitForHostAvailability(15000)
+                && SharedIndexServiceClient.TryShowSearchUi())
             {
                 return;
             }
@@ -92,6 +61,7 @@ namespace PackageManager.Services
                     UseShellExecute = true
                 }))
                 {
+                    LoggingService.LogWarning($"文件搜索 UI 进入最后兜底启动路径：SessionId={_sessionId}");
                     LoggingService.LogInfo($"已启动文件搜索 UI：SessionId={_sessionId}，PID={process?.Id}");
                 }
             }
@@ -103,58 +73,6 @@ namespace PackageManager.Services
                 LoggingService.LogError(ex, "打开文件搜索工具失败");
                 MessageBox.Show($"打开文件搜索工具失败：{ex.Message}", "文件搜索", MessageBoxButton.OK, MessageBoxImage.Error);
             }
-        }
-
-        private bool TrySignalShowRequest(int retryCount = 1, int retryDelayMilliseconds = 0)
-        {
-            for (var attempt = 0; attempt < retryCount; attempt++)
-            {
-                try
-                {
-                    using (var showEvent = EventWaitHandle.OpenExisting(_showRequestEventName))
-                    {
-                        var signaled = showEvent.Set();
-                        if (signaled)
-                        {
-                            return true;
-                        }
-                    }
-                }
-                catch (WaitHandleCannotBeOpenedException)
-                {
-                    if (attempt + 1 >= retryCount)
-                    {
-                        return false;
-                    }
-                }
-                catch (UnauthorizedAccessException ex)
-                {
-                    LoggingService.LogWarning($"文件搜索 UI 唤醒事件访问被拒绝：SessionId={_sessionId}，{ex.Message}");
-                    return false;
-                }
-                catch (Exception ex)
-                {
-                    LoggingService.LogWarning($"文件搜索 UI 唤醒事件发送失败：SessionId={_sessionId}，{ex.Message}");
-                    return false;
-                }
-
-                if (retryDelayMilliseconds > 0)
-                {
-                    Thread.Sleep(retryDelayMilliseconds);
-                }
-            }
-
-            return false;
-        }
-
-        private static string BuildShowRequestEventName(string sessionId)
-        {
-            return "PackageManager.MftScanner.Show." + NormalizeSessionId(sessionId);
-        }
-
-        private static string NormalizeSessionId(string sessionId)
-        {
-            return string.IsNullOrWhiteSpace(sessionId) ? "default" : sessionId.Trim();
         }
     }
 }

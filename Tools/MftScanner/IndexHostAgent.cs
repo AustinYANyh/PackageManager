@@ -9,11 +9,14 @@ using System.Security.Principal;
 using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
+using MftScanner.Services;
 
 namespace MftScanner
 {
     internal sealed class IndexHostAgent : IDisposable
     {
+        private const int SearchUiReadyWaitMilliseconds = 5000;
+        private const int SearchUiShownWaitMilliseconds = 3000;
         private readonly IndexService _indexService = new IndexService();
         private readonly Action _showSearchUi;
         private readonly object _buildLock = new object();
@@ -209,6 +212,7 @@ namespace MftScanner
                 RegisteredWaitHandle cancelRegistration = null;
                 try
                 {
+                    var searchStopwatch = Stopwatch.StartNew();
                     cancelRegistration = ThreadPool.RegisterWaitForSingleObject(
                         slotResources.CancelEvent,
                         (state, timedOut) =>
@@ -229,7 +233,8 @@ namespace MftScanner
                         request?.Filter ?? SearchTypeFilter.All,
                         null,
                         linkedCts.Token).ConfigureAwait(false);
-                    return BuildSearchResponse(searchResult, request?.RequestId ?? 0);
+                    searchStopwatch.Stop();
+                    return BuildSearchResponse(searchResult, request?.RequestId ?? 0, searchStopwatch.ElapsedMilliseconds);
                 }
                 finally
                 {
@@ -306,12 +311,13 @@ namespace MftScanner
             };
         }
 
-        private SharedIndexIpcResponse BuildSearchResponse(SearchQueryResult result, long requestId)
+        private SharedIndexIpcResponse BuildSearchResponse(SearchQueryResult result, long requestId, long hostSearchMs)
         {
             var response = BuildStateResponse(requestId);
             response.TotalIndexedCount = result?.TotalIndexedCount ?? _indexService.IndexedCount;
             response.TotalMatchedCount = result?.TotalMatchedCount ?? 0;
             response.IsTruncated = result != null && result.IsTruncated;
+            response.HostSearchMs = result == null ? hostSearchMs : Math.Max(result.HostSearchMs, hostSearchMs);
             response.Results = result?.Results ?? new List<ScannedFileInfo>();
             return response;
         }
@@ -507,7 +513,8 @@ namespace MftScanner
             var command = (request?.command ?? string.Empty).Trim();
             if (string.Equals(command, "show-search-ui", StringComparison.OrdinalIgnoreCase))
             {
-                _showSearchUi();
+                LoggingService.LogDebug("[INDEX HOST SHOW] stage=host-control-received command=show-search-ui");
+                EnsureSearchUiShown();
             }
 
             return Task.FromResult(new SharedIndexResponse
@@ -520,6 +527,88 @@ namespace MftScanner
                 isTruncated = false,
                 results = new List<ScannedFileInfo>()
             });
+        }
+
+        private void EnsureSearchUiShown()
+        {
+            var sessionId = SharedIndexConstants.SearchUiSessionId;
+            var readyEventName = SharedIndexConstants.BuildSearchUiReadyEventName(sessionId);
+            var shownEventName = SharedIndexConstants.BuildSearchUiShownEventName(sessionId);
+            var showRequestEventName = SharedIndexConstants.BuildSearchUiShowRequestEventName(sessionId);
+
+            if (!TryIsEventSignaled(readyEventName))
+            {
+                LoggingService.LogDebug("[INDEX HOST SHOW] stage=search-ui-start-requested");
+                _showSearchUi();
+                if (!TryWaitForEvent(readyEventName, SearchUiReadyWaitMilliseconds))
+                {
+                    LoggingService.LogWarning("[INDEX HOST SHOW] stage=show-request-timeout reason=search-ui-ready-timeout");
+                    throw new TimeoutException("文件搜索 UI 未在规定时间内完成就绪。");
+                }
+
+                LoggingService.LogDebug("[INDEX HOST SHOW] stage=search-ui-ready");
+            }
+
+            ResetNamedEventIfExists(shownEventName);
+            SignalNamedEvent(showRequestEventName);
+            LoggingService.LogDebug("[INDEX HOST SHOW] stage=show-request-signaled");
+            if (!TryWaitForEvent(shownEventName, SearchUiShownWaitMilliseconds))
+            {
+                LoggingService.LogWarning("[INDEX HOST SHOW] stage=show-request-timeout reason=search-ui-shown-timeout");
+                throw new TimeoutException("文件搜索 UI 未在规定时间内完成显示。");
+            }
+        }
+
+        private static bool TryIsEventSignaled(string eventName)
+        {
+            try
+            {
+                using (var handle = EventWaitHandle.OpenExisting(eventName))
+                {
+                    return handle.WaitOne(0);
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool TryWaitForEvent(string eventName, int timeoutMilliseconds)
+        {
+            try
+            {
+                using (var handle = EventWaitHandle.OpenExisting(eventName))
+                {
+                    return handle.WaitOne(timeoutMilliseconds);
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void ResetNamedEventIfExists(string eventName)
+        {
+            try
+            {
+                using (var handle = EventWaitHandle.OpenExisting(eventName))
+                {
+                    handle.Reset();
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private static void SignalNamedEvent(string eventName)
+        {
+            using (var handle = EventWaitHandle.OpenExisting(eventName))
+            {
+                handle.Set();
+            }
         }
 
         private static NamedPipeServerStream CreatePipeServer(string pipeName)

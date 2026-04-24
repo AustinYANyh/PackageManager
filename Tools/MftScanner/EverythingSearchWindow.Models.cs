@@ -1,5 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Collections.Specialized;
+using System.ComponentModel;
 using System.IO;
 using CustomControlLibrary.CustomControl.Attribute.DataGrid;
 using Newtonsoft.Json;
@@ -29,6 +32,11 @@ namespace MftScanner
             SizeText = string.Empty;
             ModifiedText = string.Empty;
             ModifiedTime = DateTime.MinValue;
+        }
+
+        public EverythingSearchResultItem(ScannedFileInfo source)
+            : this(source == null ? string.Empty : source.FullPath, source != null && source.IsDirectory)
+        {
         }
 
         [DataGridColumn(1, DisplayName = "名称", Width = "220", IsReadOnly = true)]
@@ -199,5 +207,43 @@ namespace MftScanner
 
         public string Key { get; private set; }
         public string DisplayName { get; private set; }
+    }
+
+    internal sealed class ReplaceableObservableCollection<T> : ObservableCollection<T>
+    {
+        public void ReplaceAll(IList<T> items)
+        {
+            CheckReentrancy();
+            Items.Clear();
+            if (items != null)
+            {
+                for (var i = 0; i < items.Count; i++)
+                {
+                    Items.Add(items[i]);
+                }
+            }
+
+            OnPropertyChanged(new PropertyChangedEventArgs(nameof(Count)));
+            OnPropertyChanged(new PropertyChangedEventArgs("Item[]"));
+            OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
+        }
+
+        public void AddRange(IList<T> items)
+        {
+            if (items == null || items.Count == 0)
+            {
+                return;
+            }
+
+            CheckReentrancy();
+            for (var i = 0; i < items.Count; i++)
+            {
+                Items.Add(items[i]);
+            }
+
+            OnPropertyChanged(new PropertyChangedEventArgs(nameof(Count)));
+            OnPropertyChanged(new PropertyChangedEventArgs("Item[]"));
+            OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
+        }
     }
 }

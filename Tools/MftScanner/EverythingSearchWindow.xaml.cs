@@ -29,7 +29,7 @@ namespace MftScanner
 
         private readonly ISharedIndexService _indexService;
         private readonly IncrementalFilter _filter;
-        private readonly ObservableCollection<EverythingSearchResultItem> _displayedResults = new ObservableCollection<EverythingSearchResultItem>();
+        private readonly ReplaceableObservableCollection<EverythingSearchResultItem> _displayedResults = new ReplaceableObservableCollection<EverythingSearchResultItem>();
         private readonly ObservableCollection<SearchHistoryEntry> _recentSearches = new ObservableCollection<SearchHistoryEntry>();
         private readonly DispatcherTimer _debounceTimer;
         private readonly DispatcherTimer _liveRefreshTimer;

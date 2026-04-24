@@ -62,6 +62,7 @@ namespace MftScanner
         public int TotalIndexedCount { get; set; }
         public int TotalMatchedCount { get; set; }
         public bool IsTruncated { get; set; }
+        public long HostSearchMs { get; set; }
         public List<ScannedFileInfo> Results { get; set; }
     }
 
@@ -140,7 +141,7 @@ namespace MftScanner
 
     public static class SharedIndexMemoryProtocol
     {
-        public const int ProtocolVersion = 1;
+        public const int ProtocolVersion = 2;
         public const int RequestCapacityBytes = 64 * 1024;
         public const int ResponseCapacityBytes = 32 * 1024 * 1024;
         public const int StateCapacityBytes = 64 * 1024;
@@ -561,6 +562,7 @@ namespace MftScanner
                 writer.Write(response.TotalIndexedCount);
                 writer.Write(response.TotalMatchedCount);
                 writer.Write(response.IsTruncated ? 1 : 0);
+                writer.Write(response.HostSearchMs);
                 WriteSizedString(writer, response.CurrentStatusMessage);
                 WriteSizedString(writer, response.ErrorMessage);
 
@@ -614,6 +616,7 @@ namespace MftScanner
                     TotalIndexedCount = reader.ReadInt32(),
                     TotalMatchedCount = reader.ReadInt32(),
                     IsTruncated = reader.ReadInt32() != 0,
+                    HostSearchMs = reader.ReadInt64(),
                     CurrentStatusMessage = ReadSizedString(reader),
                     ErrorMessage = ReadSizedString(reader),
                     Results = new List<ScannedFileInfo>()

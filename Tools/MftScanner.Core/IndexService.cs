@@ -891,6 +891,7 @@ namespace MftScanner
                 TotalIndexedCount = totalIndexedCount,
                 TotalMatchedCount = 0,
                 IsTruncated = false,
+                HostSearchMs = 0,
                 Results = new List<ScannedFileInfo>()
             };
         }
@@ -912,6 +913,10 @@ namespace MftScanner
             SearchQueryResult result)
         {
             totalStopwatch.Stop();
+            if (result != null)
+            {
+                result.HostSearchMs = totalStopwatch.ElapsedMilliseconds;
+            }
             UsnDiagLog.Write(
                 $"[SEARCH] outcome={outcome} totalMs={totalStopwatch.ElapsedMilliseconds} matchMs={matchElapsedMilliseconds} " +
                 $"resolveMs={resolveElapsedMilliseconds} filter={filter} mode={mode} offset={offset} maxResults={maxResults} " +

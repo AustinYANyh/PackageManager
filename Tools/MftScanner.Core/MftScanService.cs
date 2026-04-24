@@ -899,6 +899,7 @@ namespace MftScanner
         public int TotalIndexedCount { get; set; }
         public int TotalMatchedCount { get; set; }
         public bool IsTruncated { get; set; }
+        public long HostSearchMs { get; set; }
         public List<ScannedFileInfo> Results { get; set; } = new List<ScannedFileInfo>();
     }
 

@@ -126,7 +126,7 @@ namespace MftScanner
         {
             try
             {
-                using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
+                using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(6)))
                 {
                     var response = SendControlRequestAsyncStatic(new SharedIndexRequest
                     {
@@ -176,6 +176,7 @@ namespace MftScanner
                     TotalIndexedCount = response.TotalIndexedCount,
                     TotalMatchedCount = response.TotalMatchedCount,
                     IsTruncated = response.IsTruncated,
+                    HostSearchMs = response.HostSearchMs,
                     Results = response.Results ?? new List<ScannedFileInfo>()
                 };
             }
@@ -474,7 +475,7 @@ namespace MftScanner
                 IndexPerfLog.Write("IPC",
                     $"[MMF] outcome=success command={request.CommandType} consumer={IndexPerfLog.FormatValue(_consumerName)} " +
                     $"keyword={IndexPerfLog.FormatValue(request.Keyword)} filter={request.Filter} " +
-                    $"openMs={openMs} writeMs={writeMs} waitMs={waitMs} readMs={readMs} totalMs={totalStopwatch.ElapsedMilliseconds}");
+                    $"hostSearchMs={response.HostSearchMs} openMs={openMs} writeMs={writeMs} waitMs={waitMs} readMs={readMs} totalMs={totalStopwatch.ElapsedMilliseconds}");
                 return response;
             }
             catch (Exception ex) when (!(ex is OperationCanceledException))
@@ -756,7 +757,7 @@ namespace MftScanner
         {
             using (var stream = new NamedPipeClientStream(".", SharedIndexConstants.IndexHostCommandPipeName, PipeDirection.InOut, PipeOptions.Asynchronous))
             {
-                await stream.ConnectAsync(2000, ct).ConfigureAwait(false);
+                await stream.ConnectAsync(6000, ct).ConfigureAwait(false);
                 using (var reader = new StreamReader(stream))
                 using (var writer = new StreamWriter(stream) { AutoFlush = true })
                 {

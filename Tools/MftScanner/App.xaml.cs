@@ -30,6 +30,8 @@ namespace MftScanner
 
         private DispatcherTimer _ownerMonitorTimer;
         private EventWaitHandle _showRequestEvent;
+        private EventWaitHandle _searchUiReadyEvent;
+        private EventWaitHandle _searchUiShownEvent;
         private CancellationTokenSource _showRequestCts;
         private Task _showRequestListenerTask;
         private Mutex _singleInstanceMutex;
@@ -108,8 +110,8 @@ namespace MftScanner
                     ?? (string.Equals(windowMode, "search-ui", StringComparison.OrdinalIgnoreCase)
                         ? SharedIndexConstants.SearchUiSessionId
                         : Guid.NewGuid().ToString("N"));
-                _showRequestEventName = BuildShowRequestEventName(_sessionId);
-                _singleInstanceMutexName = BuildSingleInstanceMutexName(_sessionId);
+                _showRequestEventName = SharedIndexConstants.BuildSearchUiShowRequestEventName(_sessionId);
+                _singleInstanceMutexName = SharedIndexConstants.BuildSearchUiSingleInstanceMutexName(_sessionId);
 
                 if (!TryAcquireSingleInstance())
                 {
@@ -137,6 +139,8 @@ namespace MftScanner
 
                 if (IsSearchWindowMode(windowMode))
                 {
+                    SignalSearchUiReady("window-shown");
+                    SignalSearchUiShown("window-shown");
                     StartOwnerMonitor();
                 }
             }
@@ -307,6 +311,10 @@ namespace MftScanner
 
             bool createdNew;
             _showRequestEvent = new EventWaitHandle(false, EventResetMode.AutoReset, _showRequestEventName, out createdNew, security);
+            _searchUiReadyEvent = new EventWaitHandle(false, EventResetMode.ManualReset, SharedIndexConstants.BuildSearchUiReadyEventName(_sessionId), out createdNew, security);
+            _searchUiShownEvent = new EventWaitHandle(false, EventResetMode.ManualReset, SharedIndexConstants.BuildSearchUiShownEventName(_sessionId), out createdNew, security);
+            _searchUiReadyEvent.Reset();
+            _searchUiShownEvent.Reset();
             _showRequestCts = new CancellationTokenSource();
             _showRequestListenerTask = Task.Run(() => ListenForShowRequests(_showRequestCts.Token));
         }
@@ -327,6 +335,24 @@ namespace MftScanner
             {
                 _showRequestEvent?.Dispose();
                 _showRequestEvent = null;
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                _searchUiShownEvent?.Dispose();
+                _searchUiShownEvent = null;
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                _searchUiReadyEvent?.Dispose();
+                _searchUiReadyEvent = null;
             }
             catch
             {
@@ -375,6 +401,7 @@ namespace MftScanner
             window.Focus();
             window.FocusSearchBoxAndSelectAll();
             BringWindowToFront(window);
+            SignalSearchUiReady("show-request");
 
             var delayedBringTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(80) };
             delayedBringTimer.Tick += (sender, args) =>
@@ -382,6 +409,7 @@ namespace MftScanner
                 delayedBringTimer.Stop();
                 BringWindowToFront(window);
                 window.FocusSearchBoxAndSelectAll();
+                SignalSearchUiShown("show-request");
             };
             delayedBringTimer.Start();
         }
@@ -486,19 +514,28 @@ namespace MftScanner
             return string.IsNullOrWhiteSpace(sessionId) ? null : sessionId.Trim();
         }
 
-        private static string BuildShowRequestEventName(string sessionId)
+        private void SignalSearchUiReady(string reason)
         {
-            return "PackageManager.MftScanner.Show." + NormalizeSessionId(sessionId);
+            try
+            {
+                _searchUiReadyEvent?.Set();
+                Services.LoggingService.LogDebug($"[SEARCH UI READY] session={_sessionId} reason={reason}");
+            }
+            catch
+            {
+            }
         }
 
-        private static string BuildSingleInstanceMutexName(string sessionId)
+        private void SignalSearchUiShown(string reason)
         {
-            return "PackageManager.MftScanner.Singleton." + NormalizeSessionId(sessionId);
-        }
-
-        private static string NormalizeSessionId(string sessionId)
-        {
-            return string.IsNullOrWhiteSpace(sessionId) ? "default" : sessionId.Trim();
+            try
+            {
+                _searchUiShownEvent?.Set();
+                Services.LoggingService.LogDebug($"[SEARCH UI SHOWN] session={_sessionId} reason={reason}");
+            }
+            catch
+            {
+            }
         }
 
         private static bool IsProcessAlive(int processId)
