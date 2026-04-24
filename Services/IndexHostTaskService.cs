@@ -6,12 +6,15 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Management;
 using MftScanner;
 
 namespace PackageManager.Services
 {
     internal static class IndexHostTaskService
     {
+        private const int HostAvailabilityWaitMilliseconds = 15000;
+
         public static bool EnsureRegisteredAndRunningOnStartup()
         {
             try
@@ -29,7 +32,11 @@ namespace PackageManager.Services
                 {
                     if (taskExists && !taskMatches)
                     {
-                        TryStopRegisteredTaskInstance();
+                        if (!StopRegisteredTaskInstanceWithElevation())
+                        {
+                            LoggingService.LogWarning("后台索引宿主计划任务定义已变化，但无法结束旧任务实例。");
+                            return false;
+                        }
                     }
 
                     if (!RunElevatedRegister(toolPath))
@@ -38,7 +45,7 @@ namespace PackageManager.Services
                     }
                 }
 
-                return TryRunRegisteredTaskSilently();
+                return EnsureTaskRunning(toolPath);
             }
             catch (Exception ex)
             {
@@ -58,31 +65,72 @@ namespace PackageManager.Services
             }
 
             LoggingService.LogInfo("检测到后台索引宿主文件缺失或版本已变化，准备同步最新宿主。");
-            TryStopRegisteredTaskInstance();
-            Thread.Sleep(300);
+            return EnsureHostToolCurrentCore();
+        }
 
-            toolPath = AdminElevationService.ExtractEmbeddedTool("MftScanner.exe", "MftScanner.exe");
-            if (!string.IsNullOrWhiteSpace(toolPath)
-                && File.Exists(toolPath)
-                && AdminElevationService.IsEmbeddedToolUpToDate("MftScanner.exe", "MftScanner.exe"))
+        private static string EnsureHostToolCurrentCore()
+        {
+            var toolPath = AdminElevationService.GetExtractedToolPath("MftScanner.exe");
+            if (TrySyncHostToolOnce(toolPath))
             {
                 return toolPath;
+            }
+
+            if (!AdminElevationService.IsRunningAsAdministrator())
+            {
+                LoggingService.LogInfo("后台索引宿主需要管理员权限完成同步，准备拉起提升流程。");
+                if (!RunElevatedEnsureHost())
+                {
+                    return null;
+                }
+
+                toolPath = AdminElevationService.GetExtractedToolPath("MftScanner.exe");
+                if (File.Exists(toolPath) && AdminElevationService.IsEmbeddedToolUpToDate("MftScanner.exe", "MftScanner.exe"))
+                {
+                    return toolPath;
+                }
+
+                LoggingService.LogWarning("管理员同步后台索引宿主已执行，但宿主文件仍不是最新版本。");
+                return null;
             }
 
             LoggingService.LogInfo("后台索引宿主仍被占用，准备结束旧版 MftScanner 进程后重试同步。");
             TryStopProcessesUsingImagePath(toolPath);
             Thread.Sleep(500);
 
-            toolPath = AdminElevationService.ExtractEmbeddedTool("MftScanner.exe", "MftScanner.exe");
-            if (!string.IsNullOrWhiteSpace(toolPath)
-                && File.Exists(toolPath)
-                && AdminElevationService.IsEmbeddedToolUpToDate("MftScanner.exe", "MftScanner.exe"))
+            if (TrySyncHostToolOnce(toolPath))
             {
                 return toolPath;
             }
 
             LoggingService.LogWarning("同步后台索引宿主失败，提取后的 MftScanner.exe 仍不是最新版本。");
             return null;
+        }
+
+        private static bool TrySyncHostToolOnce(string toolPath)
+        {
+            TryStopRegisteredTaskInstance();
+            Thread.Sleep(300);
+
+            toolPath = AdminElevationService.ExtractEmbeddedTool("MftScanner.exe", "MftScanner.exe");
+            return !string.IsNullOrWhiteSpace(toolPath)
+                && File.Exists(toolPath)
+                && AdminElevationService.IsEmbeddedToolUpToDate("MftScanner.exe", "MftScanner.exe");
+        }
+
+        private static bool EnsureTaskRunning(string toolPath)
+        {
+            if (SharedIndexServiceClient.TryWaitForHostAvailability(1500))
+            {
+                return true;
+            }
+
+            if (!TryRunRegisteredTaskSilently())
+            {
+                return SharedIndexServiceClient.TryWaitForHostAvailability(HostAvailabilityWaitMilliseconds);
+            }
+
+            return SharedIndexServiceClient.TryWaitForHostAvailability(HostAvailabilityWaitMilliseconds);
         }
 
         private static bool TaskExists()
@@ -159,6 +207,24 @@ namespace PackageManager.Services
             }
         }
 
+        private static bool StopRegisteredTaskInstanceWithElevation()
+        {
+            try
+            {
+                TryStopRegisteredTaskInstance();
+                return true;
+            }
+            catch
+            {
+                if (AdminElevationService.IsRunningAsAdministrator())
+                {
+                    return false;
+                }
+
+                return RunElevatedEnsureHost();
+            }
+        }
+
         private static void TryStopProcessesUsingImagePath(string toolPath)
         {
             if (string.IsNullOrWhiteSpace(toolPath))
@@ -172,8 +238,7 @@ namespace PackageManager.Services
                 {
                     try
                     {
-                        var mainModule = process.MainModule;
-                        var processPath = mainModule?.FileName;
+                        var processPath = TryGetProcessImagePath(process);
                         if (!string.Equals(processPath, toolPath, StringComparison.OrdinalIgnoreCase))
                         {
                             continue;
@@ -205,6 +270,43 @@ namespace PackageManager.Services
             }
         }
 
+        private static string TryGetProcessImagePath(Process process)
+        {
+            if (process == null)
+            {
+                return null;
+            }
+
+            try
+            {
+                return process.MainModule?.FileName;
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                using (var searcher = new ManagementObjectSearcher(
+                    $"SELECT ExecutablePath FROM Win32_Process WHERE ProcessId = {process.Id}"))
+                {
+                    foreach (var item in searcher.Get().OfType<ManagementObject>())
+                    {
+                        var executablePath = item["ExecutablePath"] as string;
+                        if (!string.IsNullOrWhiteSpace(executablePath))
+                        {
+                            return executablePath;
+                        }
+                    }
+                }
+            }
+            catch
+            {
+            }
+
+            return null;
+        }
+
         private static bool RunElevatedRegister(string toolPath)
         {
             try
@@ -234,6 +336,35 @@ namespace PackageManager.Services
             }
         }
 
+        private static bool RunElevatedEnsureHost()
+        {
+            try
+            {
+                var exePath = Process.GetCurrentProcess().MainModule?.FileName;
+                if (string.IsNullOrWhiteSpace(exePath))
+                {
+                    return false;
+                }
+
+                using (var process = Process.Start(new ProcessStartInfo
+                {
+                    FileName = exePath,
+                    UseShellExecute = true,
+                    Verb = "runas",
+                    Arguments = "--pm-admin-ensure-index-host"
+                }))
+                {
+                    process?.WaitForExit();
+                    return process != null && process.ExitCode == 0;
+                }
+            }
+            catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
+            {
+                LoggingService.LogWarning("用户取消了后台索引宿主同步所需的管理员授权。");
+                return false;
+            }
+        }
+
         internal static int RunAdminRegister(string toolPath)
         {
             if (string.IsNullOrWhiteSpace(toolPath) || !File.Exists(toolPath))
@@ -247,6 +378,48 @@ namespace PackageManager.Services
             arguments.Append("/TR ").Append(Quote($"\"{toolPath}\" --index-agent"));
 
             return RunSchtasks(arguments.ToString(), true).ExitCode;
+        }
+
+        internal static int RunAdminEnsureHost()
+        {
+            try
+            {
+                var toolPath = AdminElevationService.GetExtractedToolPath("MftScanner.exe");
+                TryStopRegisteredTaskInstance();
+                Thread.Sleep(300);
+                TryStopProcessesUsingImagePath(toolPath);
+                Thread.Sleep(500);
+
+                toolPath = AdminElevationService.ExtractEmbeddedTool("MftScanner.exe", "MftScanner.exe");
+                if (string.IsNullOrWhiteSpace(toolPath)
+                    || !File.Exists(toolPath)
+                    || !AdminElevationService.IsEmbeddedToolUpToDate("MftScanner.exe", "MftScanner.exe"))
+                {
+                    return 2;
+                }
+
+                if (!TaskExists() || !TaskDefinitionMatches(toolPath))
+                {
+                    var registerExitCode = RunAdminRegister(toolPath);
+                    if (registerExitCode != 0)
+                    {
+                        return registerExitCode;
+                    }
+                }
+
+                if (!TryRunRegisteredTaskSilently()
+                    && !SharedIndexServiceClient.TryWaitForHostAvailability(HostAvailabilityWaitMilliseconds))
+                {
+                    return 3;
+                }
+
+                return SharedIndexServiceClient.TryWaitForHostAvailability(HostAvailabilityWaitMilliseconds) ? 0 : 4;
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, "管理员确保后台索引宿主失败");
+                return 5;
+            }
         }
 
         private static ProcessResult RunSchtasks(string arguments, bool hidden)

@@ -157,6 +157,13 @@ namespace PackageManager
                     Environment.Exit(exitCode);
                     return true;
                 }
+
+                if (args != null && args.Length >= 1 && string.Equals(args[0], "--pm-admin-ensure-index-host", StringComparison.OrdinalIgnoreCase))
+                {
+                    var exitCode = IndexHostTaskService.RunAdminEnsureHost();
+                    Environment.Exit(exitCode);
+                    return true;
+                }
             }
             catch (Exception ex)
             {
