@@ -435,7 +435,7 @@
       <EmbeddedResource Include="Assets\Tools\LogViewPro.exe" />
       <EmbeddedResource Include="Assets\Tools\MftScanner.exe" />
       <EmbeddedResource Include="Assets\Tools\MftScanner.Core.dll" />
-      <EmbeddedResource Include="Tools\CommonStartupTool\bin\$(Configuration)\CommonStartupTool.exe" />
+      <EmbeddedResource Include="Assets\Tools\CommonStartupTool.exe" />
       <EmbeddedResource Include="Assets\Tools\UnlockProcessAdmin.exe" />
       <Content Include="Assets\Icons\README.txt" />
       <Content Include="Assets\Icons\source.png" />
@@ -444,11 +444,14 @@
       <Content Include="FodyWeavers.xsd" />
       <Content Include="Folder.DotSettings.user" />
     </ItemGroup>
-    <Target Name="EnsureEmbeddedMftScannerArtifacts" BeforeTargets="BeforeBuild">
+    <Target Name="EnsureEmbeddedToolArtifacts" BeforeTargets="BeforeBuild">
       <MSBuild Projects="Tools\MftScanner.Core\MftScanner.Core.csproj"
                Targets="Build"
                Properties="Configuration=$(Configuration);Platform=AnyCPU" />
       <MSBuild Projects="Tools\MftScanner\MftScanner.csproj"
+               Targets="Build"
+               Properties="Configuration=$(Configuration);Platform=AnyCPU" />
+      <MSBuild Projects="Tools\CommonStartupTool\CommonStartupTool.csproj"
                Targets="Build"
                Properties="Configuration=$(Configuration);Platform=AnyCPU" />
       <MakeDir Directories="Assets\Tools" />
@@ -457,6 +460,9 @@
             SkipUnchangedFiles="false" />
       <Copy SourceFiles="Tools\MftScanner.Core\bin\$(Configuration)\MftScanner.Core.dll"
             DestinationFiles="Assets\Tools\MftScanner.Core.dll"
+            SkipUnchangedFiles="false" />
+      <Copy SourceFiles="Tools\CommonStartupTool\bin\$(Configuration)\CommonStartupTool.exe"
+            DestinationFiles="Assets\Tools\CommonStartupTool.exe"
             SkipUnchangedFiles="false" />
     </Target>
     <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets"/>

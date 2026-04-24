@@ -25,6 +25,7 @@ public partial class CommonStartupWindow : Window
     private const int MaxDisplayedResults = 500;
     private const int SearchPageSize = 500;
     private const int RecentDays = 7;
+    private static readonly TimeSpan FileSearchDebounceInterval = TimeSpan.FromMilliseconds(450);
 
     private static readonly string[] PresetGroupNames = { "项目入口", "开发工具", "运维脚本", "目录快捷方式", "临时工具" };
 
@@ -59,6 +60,7 @@ public partial class CommonStartupWindow : Window
     private bool _wasSearchKeywordActive;
     private int _searchContextTrackingSuppressionCount;
     private int _ignoredWorkbenchScrollChangeCount;
+    private int _workbenchRefreshVersion;
     private WorkbenchSearchContext _searchRestoreContext;
 
     public CommonStartupWindow(DataPersistenceService persistence)
@@ -75,7 +77,7 @@ public partial class CommonStartupWindow : Window
         CandidateList.ItemsSource = _scanResults;
         ActivityList.ItemsSource = _recentActivities;
 
-        _debounceTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
+        _debounceTimer = new DispatcherTimer { Interval = FileSearchDebounceInterval };
         _debounceTimer.Tick += DebounceTimer_Tick;
         _liveRefreshTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
         _liveRefreshTimer.Tick += LiveRefreshTimer_Tick;
@@ -289,10 +291,10 @@ public partial class CommonStartupWindow : Window
 
     private void RefreshWorkbench()
     {
-        RefreshWorkbench(refreshExpensivePanels: true);
+        RefreshWorkbench(refreshExpensivePanels: true, refreshSearchPanels: true);
     }
 
-    private void RefreshWorkbench(bool refreshExpensivePanels)
+    private void RefreshWorkbench(bool refreshExpensivePanels, bool refreshSearchPanels)
     {
         if (refreshExpensivePanels)
         {
@@ -317,15 +319,18 @@ public partial class CommonStartupWindow : Window
         EnsureSelectedItem(featuredItems, workspaceItems);
         RefreshHeader(visibleItems, featuredItems, workspaceItems);
         RefreshSummaryCards(visibleItems);
-        RefreshQueue();
         if (refreshExpensivePanels)
         {
             RefreshSidebarStats();
             RefreshRecentActivities();
             RefreshManagePreview();
         }
-        RefreshCandidateSuggestions();
-        RefreshCandidatePane();
+        if (refreshSearchPanels)
+        {
+            RefreshQueue();
+            RefreshCandidateSuggestions();
+            RefreshCandidatePane();
+        }
         UpdateFilterButtons();
     }
 
@@ -1283,7 +1288,8 @@ public partial class CommonStartupWindow : Window
         }
 
         _debounceTimer.Stop();
-        ApplyPendingSearchKeyword(startFileSearch: false);
+        Interlocked.Increment(ref _workbenchRefreshVersion);
+        ApplyPendingSearchKeyword(startFileSearch: false, refreshWorkbench: true);
         _ = StartScanAsync(forceRescan: false);
         e.Handled = true;
     }
@@ -1308,6 +1314,9 @@ public partial class CommonStartupWindow : Window
     private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
     {
         _debounceTimer.Stop();
+        CancelActiveSearch();
+        SetScanningState(false);
+
         var keyword = GetSearchKeyword();
         if (string.IsNullOrWhiteSpace(keyword))
         {
@@ -1317,13 +1326,14 @@ public partial class CommonStartupWindow : Window
             }
         }
 
+        ScheduleWorkbenchRefresh();
         _debounceTimer.Start();
     }
 
     private void DebounceTimer_Tick(object sender, EventArgs e)
     {
         _debounceTimer.Stop();
-        ApplyPendingSearchKeyword(startFileSearch: _canUseIntegratedFileSearch);
+        ApplyPendingSearchKeyword(startFileSearch: _canUseIntegratedFileSearch, refreshWorkbench: false);
     }
 
     private void LiveRefreshTimer_Tick(object sender, EventArgs e)
@@ -1351,6 +1361,7 @@ public partial class CommonStartupWindow : Window
     private void StopButton_Click(object sender, RoutedEventArgs e)
     {
         _debounceTimer.Stop();
+        Interlocked.Increment(ref _workbenchRefreshVersion);
         CancelActiveSearch();
         StatusText.Text = "检索已停止。";
         SetScanningState(false);
@@ -2055,37 +2066,54 @@ public partial class CommonStartupWindow : Window
 
     private string GetSearchKeyword() => SearchBox.Text?.Trim() ?? string.Empty;
 
-    private void ApplyPendingSearchKeyword(bool startFileSearch)
+    private void ScheduleWorkbenchRefresh()
+    {
+        var requestedVersion = Interlocked.Increment(ref _workbenchRefreshVersion);
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (requestedVersion != _workbenchRefreshVersion)
+            {
+                return;
+            }
+
+            ApplyPendingSearchKeyword(startFileSearch: false, refreshWorkbench: true);
+        }), DispatcherPriority.Background);
+    }
+
+    private void ApplyPendingSearchKeyword(bool startFileSearch, bool refreshWorkbench)
     {
         var keyword = GetSearchKeyword();
         var hasKeyword = !string.IsNullOrWhiteSpace(keyword);
 
-        if (hasKeyword && !_wasSearchKeywordActive)
+        if (refreshWorkbench && hasKeyword && !_wasSearchKeywordActive)
         {
             CaptureSearchRestoreContext();
         }
 
-        if (hasKeyword)
+        if (refreshWorkbench && hasKeyword)
         {
             if (!string.IsNullOrWhiteSpace(_currentGroupName))
                 _currentGroupName = string.Empty;
 
-            SuppressSearchContextTrackingUntilLayoutSettled(() => RefreshWorkbench(refreshExpensivePanels: false));
+            SuppressSearchContextTrackingUntilLayoutSettled(() => RefreshWorkbench(refreshExpensivePanels: false, refreshSearchPanels: false));
             ScrollWorkbenchToTop();
         }
-        else if (_wasSearchKeywordActive)
+        else if (refreshWorkbench && _wasSearchKeywordActive)
         {
             var restored = TryRestoreSearchContext();
             if (!restored)
                 ClearSearchRestoreContext();
 
-            SuppressSearchContextTrackingUntilLayoutSettled(() => RefreshWorkbench(refreshExpensivePanels: false));
+            SuppressSearchContextTrackingUntilLayoutSettled(() => RefreshWorkbench(refreshExpensivePanels: false, refreshSearchPanels: false));
 
             if (!restored)
                 ScrollWorkbenchToTop();
         }
 
-        _wasSearchKeywordActive = hasKeyword;
+        if (refreshWorkbench)
+        {
+            _wasSearchKeywordActive = hasKeyword;
+        }
 
         if (!_canUseIntegratedFileSearch)
         {
