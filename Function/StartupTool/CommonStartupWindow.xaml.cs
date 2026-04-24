@@ -1126,7 +1126,7 @@ public partial class CommonStartupWindow : Window
         _hasInitialized = true;
         if (_canUseIntegratedFileSearch)
         {
-            StatusText.Text = "正在建立 MFT 索引，首次加载可能稍慢，请稍候。";
+            StatusText.Text = "正在连接共享索引宿主，请稍候。";
             _ = WaitForIndexReadyAsync(forceRescan: false);
         }
         else
@@ -1429,20 +1429,20 @@ public partial class CommonStartupWindow : Window
             _indexReady = true;
             if (string.IsNullOrWhiteSpace(GetSearchKeyword()))
             {
-                StatusText.Text = $"已索引 {indexedCount} 个对象，输入关键词可继续查找候选。";
+                StatusText.Text = $"共享索引已就绪，当前可用 {indexedCount} 个对象。";
             }
 
             return true;
         }
         catch (OperationCanceledException)
         {
-            StatusText.Text = forceRescan ? "索引重建已取消。" : "索引初始化已取消。";
+            StatusText.Text = forceRescan ? "共享索引重建已取消。" : "共享索引连接已取消。";
             return false;
         }
         catch (Exception ex)
         {
-            LoggingService.LogError(ex, "[StartupSearch] Initialize index failed");
-            StatusText.Text = $"初始化索引失败：{ex.Message}";
+            LoggingService.LogError(ex, "[StartupSearch] Initialize shared index failed");
+            StatusText.Text = $"共享索引不可用：{ex.Message}";
             return false;
         }
     }

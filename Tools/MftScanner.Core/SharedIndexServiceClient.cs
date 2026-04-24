@@ -14,11 +14,10 @@ namespace MftScanner
     {
         private const int HostStartupWaitMilliseconds = 15000;
         private const int HostStartupProbeIntervalMilliseconds = 500;
+        private const int HostReadyPollIntervalMilliseconds = 200;
 
         private readonly string _consumerName;
         private readonly SharedIndexClientSlotId _slotId;
-        private readonly object _fallbackLock = new object();
-        private readonly object _fallbackBuildLock = new object();
         private readonly object _resourceLock = new object();
         private readonly object _stateLock = new object();
         private readonly SemaphoreSlim _requestGate = new SemaphoreSlim(1, 1);
@@ -26,8 +25,6 @@ namespace MftScanner
         private readonly Task _eventLoopTask;
         private readonly Task _heartbeatTask;
 
-        private ISharedIndexService _fallbackService;
-        private Task<int> _fallbackBuildTask;
         private SharedIndexClientSlotResources _slotResources;
         private MemoryMappedFile _stateMap;
         private long _nextRequestId;
@@ -37,6 +34,7 @@ namespace MftScanner
         private int _indexedCount;
         private string _currentStatusMessage = string.Empty;
         private bool _isBackgroundCatchUpInProgress;
+        private SharedIndexBuildState _buildState = SharedIndexBuildState.Unknown;
 
         public SharedIndexServiceClient(string consumerName)
         {
@@ -54,12 +52,6 @@ namespace MftScanner
         {
             get
             {
-                var fallback = _fallbackService;
-                if (fallback != null)
-                {
-                    return fallback.IndexedCount;
-                }
-
                 lock (_stateLock)
                 {
                     return _indexedCount;
@@ -71,12 +63,6 @@ namespace MftScanner
         {
             get
             {
-                var fallback = _fallbackService;
-                if (fallback != null)
-                {
-                    return fallback.IsBackgroundCatchUpInProgress;
-                }
-
                 lock (_stateLock)
                 {
                     return _isBackgroundCatchUpInProgress;
@@ -88,12 +74,6 @@ namespace MftScanner
         {
             get
             {
-                var fallback = _fallbackService;
-                if (fallback != null)
-                {
-                    return fallback.CurrentStatusMessage;
-                }
-
                 lock (_stateLock)
                 {
                     return _currentStatusMessage;
@@ -106,7 +86,7 @@ namespace MftScanner
 
         public Task<int> BuildIndexAsync(IProgress<string> progress, CancellationToken ct)
         {
-            return ExecuteHostIntCommandAsync(SharedIndexCommandType.Build, progress, ct);
+            return WaitForSharedIndexReadyAsync(progress, ct);
         }
 
         public Task<int> RebuildIndexAsync(IProgress<string> progress, CancellationToken ct)
@@ -129,14 +109,6 @@ namespace MftScanner
             try
             {
                 _eventLoopCts.Cancel();
-            }
-            catch
-            {
-            }
-
-            try
-            {
-                _fallbackService?.Shutdown();
             }
             catch
             {
@@ -170,15 +142,23 @@ namespace MftScanner
             }
         }
 
+        public static bool TryWaitForHostAvailability(int timeoutMilliseconds)
+        {
+            try
+            {
+                using (var cts = new CancellationTokenSource(Math.Max(timeoutMilliseconds, 0)))
+                {
+                    return WaitForHostAvailabilityAsync(timeoutMilliseconds, cts.Token).GetAwaiter().GetResult();
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         private async Task<SearchQueryResult> SearchAsyncCore(string keyword, int maxResults, int offset, SearchTypeFilter filter, IProgress<string> progress, CancellationToken ct, bool allowHostWarmupRetry)
         {
-            var fallback = _fallbackService;
-            if (fallback != null)
-            {
-                await EnsureFallbackReadyAsync(progress, ct).ConfigureAwait(false);
-                return await fallback.SearchAsync(keyword, maxResults, offset, filter, progress, ct).ConfigureAwait(false);
-            }
-
             try
             {
                 var response = await SendRequestAsync(new SharedIndexIpcRequest
@@ -206,11 +186,7 @@ namespace MftScanner
                     return await SearchAsyncCore(keyword, maxResults, offset, filter, progress, ct, allowHostWarmupRetry: false).ConfigureAwait(false);
                 }
 
-                LogFallback("search", ex);
-                progress?.Report("后台索引不可用，正在回退到本地索引...");
-                fallback = GetOrCreateFallbackService();
-                await EnsureFallbackReadyAsync(progress, ct).ConfigureAwait(false);
-                return await fallback.SearchAsync(keyword, maxResults, offset, filter, progress, ct).ConfigureAwait(false);
+                throw BuildHostUnavailableException("search", ex);
             }
         }
 
@@ -221,12 +197,9 @@ namespace MftScanner
 
         private async Task<int> ExecuteHostIntCommandAsync(SharedIndexCommandType commandType, IProgress<string> progress, CancellationToken ct, bool allowHostWarmupRetry)
         {
-            var fallback = _fallbackService;
-            if (fallback != null)
+            if (commandType == SharedIndexCommandType.Build)
             {
-                return commandType == SharedIndexCommandType.Rebuild
-                    ? await fallback.RebuildIndexAsync(progress, ct).ConfigureAwait(false)
-                    : await fallback.BuildIndexAsync(progress, ct).ConfigureAwait(false);
+                return await WaitForSharedIndexReadyAsync(progress, ct).ConfigureAwait(false);
             }
 
             try
@@ -255,77 +228,14 @@ namespace MftScanner
                     return await ExecuteHostIntCommandAsync(commandType, progress, ct, allowHostWarmupRetry: false).ConfigureAwait(false);
                 }
 
-                LogFallback(commandType.ToString(), ex);
-                progress?.Report("后台索引不可用，正在回退到本地索引...");
-                var local = GetOrCreateFallbackService();
-                return commandType == SharedIndexCommandType.Rebuild
-                    ? await local.RebuildIndexAsync(progress, ct).ConfigureAwait(false)
-                    : await local.BuildIndexAsync(progress, ct).ConfigureAwait(false);
+                throw BuildHostUnavailableException(commandType.ToString(), ex);
             }
-        }
-
-        private ISharedIndexService GetOrCreateFallbackService()
-        {
-            if (_fallbackService != null)
-            {
-                return _fallbackService;
-            }
-
-            lock (_fallbackLock)
-            {
-                if (_fallbackService != null)
-                {
-                    return _fallbackService;
-                }
-
-                var fallback = new IndexService();
-                fallback.IndexChanged += (sender, args) => IndexChanged?.Invoke(this, args);
-                fallback.IndexStatusChanged += (sender, args) => IndexStatusChanged?.Invoke(this, args);
-                _fallbackService = fallback;
-                return fallback;
-            }
-        }
-
-        private async Task EnsureFallbackReadyAsync(IProgress<string> progress, CancellationToken ct)
-        {
-            var fallback = GetOrCreateFallbackService();
-            Task<int> buildTask;
-            lock (_fallbackBuildLock)
-            {
-                if (_fallbackBuildTask == null || _fallbackBuildTask.IsCanceled || _fallbackBuildTask.IsFaulted)
-                {
-                    progress?.Report("后台索引不可用，正在建立本地索引...");
-                    _fallbackBuildTask = fallback.BuildIndexAsync(progress, CancellationToken.None);
-                }
-
-                buildTask = _fallbackBuildTask;
-            }
-
-            while (!buildTask.IsCompleted)
-            {
-                ct.ThrowIfCancellationRequested();
-                await Task.WhenAny(buildTask, Task.Delay(150, ct)).ConfigureAwait(false);
-            }
-
-            await buildTask.ConfigureAwait(false);
-        }
-
-        private void LogFallback(string operation, Exception ex)
-        {
-            IndexPerfLog.Write("IPC",
-                $"[FALLBACK] consumer={IndexPerfLog.FormatValue(_consumerName)} operation={IndexPerfLog.FormatValue(operation)} " +
-                $"reason={IndexPerfLog.FormatValue((ex?.GetType().Name ?? "Unknown") + ":" + (ex?.Message ?? string.Empty))}");
         }
 
         private async Task RunEventLoop(CancellationToken ct)
         {
             while (!ct.IsCancellationRequested)
             {
-                if (_fallbackService != null)
-                {
-                    return;
-                }
-
                 SharedIndexClientSlotResources slotResources = null;
                 try
                 {
@@ -341,7 +251,7 @@ namespace MftScanner
                     DrainPendingChanges();
 
                     var waitHandles = new WaitHandle[] { slotResources.StatusChangedEvent, slotResources.ChangeAvailableEvent, ct.WaitHandle };
-                    while (!ct.IsCancellationRequested && _fallbackService == null)
+                    while (!ct.IsCancellationRequested)
                     {
                         var waitIndex = WaitHandle.WaitAny(waitHandles, 1000);
                         if (waitIndex == 2)
@@ -383,11 +293,6 @@ namespace MftScanner
         {
             while (!ct.IsCancellationRequested)
             {
-                if (_fallbackService != null)
-                {
-                    return;
-                }
-
                 try
                 {
                     var slotResources = GetSlotResources();
@@ -443,16 +348,12 @@ namespace MftScanner
                 shouldRaise = snapshot.StateSequence > _lastStateSequence;
                 if (!shouldRaise)
                 {
-                    _indexedCount = snapshot.IndexedCount;
-                    _currentStatusMessage = snapshot.StatusMessage ?? string.Empty;
-                    _isBackgroundCatchUpInProgress = snapshot.IsBackgroundCatchUpInProgress;
+                    ApplySnapshotState(snapshot);
                     return;
                 }
 
                 _lastStateSequence = snapshot.StateSequence;
-                _indexedCount = snapshot.IndexedCount;
-                _currentStatusMessage = snapshot.StatusMessage ?? string.Empty;
-                _isBackgroundCatchUpInProgress = snapshot.IsBackgroundCatchUpInProgress;
+                ApplySnapshotState(snapshot);
                 requireRefresh = snapshot.RefreshSequence > _lastRefreshSequence;
                 if (requireRefresh)
                 {
@@ -716,16 +617,107 @@ namespace MftScanner
                 _indexedCount = response.IndexedCount > 0 ? response.IndexedCount : response.TotalIndexedCount;
                 _currentStatusMessage = response.CurrentStatusMessage ?? string.Empty;
                 _isBackgroundCatchUpInProgress = response.IsBackgroundCatchUpInProgress;
+                if (_indexedCount > 0)
+                {
+                    _buildState = SharedIndexBuildState.Ready;
+                }
             }
+        }
+
+        private async Task<int> WaitForSharedIndexReadyAsync(IProgress<string> progress, CancellationToken ct)
+        {
+            progress?.Report("正在连接共享索引宿主...");
+            if (!await WaitForHostAvailabilityAsync(HostStartupWaitMilliseconds, ct).ConfigureAwait(false))
+            {
+                throw BuildHostUnavailableException("build", null);
+            }
+
+            await EnsureResourcesAvailableAsync(ct).ConfigureAwait(false);
+            while (!ct.IsCancellationRequested)
+            {
+                var snapshot = ReadCurrentStateSnapshot();
+                if (snapshot != null)
+                {
+                    lock (_stateLock)
+                    {
+                        _lastStateSequence = Math.Max(_lastStateSequence, snapshot.StateSequence);
+                        _lastRefreshSequence = Math.Max(_lastRefreshSequence, snapshot.RefreshSequence);
+                        _lastChangeSequence = Math.Max(_lastChangeSequence, snapshot.LastCommittedChangeSequence);
+                        ApplySnapshotState(snapshot);
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(snapshot.StatusMessage))
+                    {
+                        progress?.Report(snapshot.StatusMessage);
+                    }
+
+                    if (snapshot.BuildState == SharedIndexBuildState.Failed)
+                    {
+                        throw new InvalidOperationException(string.IsNullOrWhiteSpace(snapshot.StatusMessage)
+                            ? "共享索引宿主初始化失败。"
+                            : snapshot.StatusMessage);
+                    }
+
+                    if (snapshot.BuildState == SharedIndexBuildState.Ready)
+                    {
+                        return snapshot.IndexedCount;
+                    }
+                }
+
+                await Task.Delay(HostReadyPollIntervalMilliseconds, ct).ConfigureAwait(false);
+            }
+
+            ct.ThrowIfCancellationRequested();
+            return 0;
+        }
+
+        private SharedIndexStateSnapshot ReadCurrentStateSnapshot()
+        {
+            MemoryMappedFile stateMap;
+            lock (_resourceLock)
+            {
+                stateMap = _stateMap;
+            }
+
+            if (stateMap == null)
+            {
+                return null;
+            }
+
+            try
+            {
+                return SharedIndexMemoryProtocol.ReadState(stateMap);
+            }
+            catch
+            {
+                ResetResources();
+                throw;
+            }
+        }
+
+        private void ApplySnapshotState(SharedIndexStateSnapshot snapshot)
+        {
+            if (snapshot == null)
+            {
+                return;
+            }
+
+            _indexedCount = snapshot.IndexedCount;
+            _currentStatusMessage = snapshot.StatusMessage ?? string.Empty;
+            _isBackgroundCatchUpInProgress = snapshot.IsBackgroundCatchUpInProgress;
+            _buildState = snapshot.BuildState;
+        }
+
+        private IOException BuildHostUnavailableException(string operation, Exception ex)
+        {
+            IndexPerfLog.Write("IPC",
+                $"[HOST REQUIRED] consumer={IndexPerfLog.FormatValue(_consumerName)} operation={IndexPerfLog.FormatValue(operation)} " +
+                $"reason={IndexPerfLog.FormatValue((ex?.GetType().Name ?? "Unavailable") + ":" + (ex?.Message ?? "共享索引宿主不可用。"))}");
+            return new IOException("共享索引宿主不可用，已禁止回退到本地索引。", ex);
         }
 
         private async Task<bool> RetryAgainstHostIfStartingAsync(IProgress<string> progress, CancellationToken ct)
         {
-            if (_fallbackService != null)
-            {
-                return false;
-            }
-
             progress?.Report("后台索引宿主连接中，正在等待其完成启动...");
             return await WaitForHostAvailabilityAsync(HostStartupWaitMilliseconds, ct).ConfigureAwait(false);
         }

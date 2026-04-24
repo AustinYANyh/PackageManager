@@ -21,10 +21,10 @@ namespace MftScanner
             var ct = _indexCts.Token;
             _indexReady = false;
             IndexingProgress.Visibility = Visibility.Visible;
-            IndexStateBadgeText.Text = forceRescan ? "正在重建索引" : "正在建立索引";
-            StatusText.Text = forceRescan ? "正在重建索引..." : "正在建立索引...";
-            EmptyStateTitleText.Text = "正在准备索引";
-            EmptyStateDescriptionText.Text = "索引准备完成后，你可以直接输入关键词开始搜索。";
+            IndexStateBadgeText.Text = forceRescan ? "正在重建共享索引" : "正在连接共享索引";
+            StatusText.Text = forceRescan ? "正在请求共享索引重建..." : "正在连接共享索引宿主...";
+            EmptyStateTitleText.Text = forceRescan ? "正在重建共享索引" : "正在连接共享索引";
+            EmptyStateDescriptionText.Text = "共享索引就绪后即可直接搜索，不再回退到本地索引。";
             UpdateEmptyState();
 
             try
@@ -111,7 +111,7 @@ namespace MftScanner
 
             if (!_indexReady)
             {
-                StatusText.Text = "正在建立索引，请稍候...";
+                StatusText.Text = "共享索引正在准备，请稍候...";
                 UpdateEmptyState();
                 return;
             }

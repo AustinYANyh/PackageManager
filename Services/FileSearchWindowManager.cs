@@ -41,17 +41,28 @@ namespace PackageManager.Services
 
             if (IndexHostTaskService.TryRunRegisteredTaskSilently())
             {
-                for (var i = 0; i < 20; i++)
+                if (SharedIndexServiceClient.TryWaitForHostAvailability(15000))
                 {
-                    Thread.Sleep(150);
-                    if (SharedIndexServiceClient.TryShowSearchUi())
+                    for (var i = 0; i < 30; i++)
                     {
-                        return;
+                        if (SharedIndexServiceClient.TryShowSearchUi())
+                        {
+                            if (TrySignalShowRequest(ShowRequestRetryCount, ShowRequestRetryDelayMilliseconds))
+                            {
+                                return;
+                            }
+
+                            Thread.Sleep(120);
+                        }
+                        else
+                        {
+                            Thread.Sleep(120);
+                        }
                     }
                 }
             }
 
-            if (TrySignalShowRequest())
+            if (TrySignalShowRequest(ShowRequestRetryCount, ShowRequestRetryDelayMilliseconds))
             {
                 return;
             }
