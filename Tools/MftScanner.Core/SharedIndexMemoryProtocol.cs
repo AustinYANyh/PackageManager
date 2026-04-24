@@ -92,6 +92,16 @@ namespace MftScanner
         public string NewLowerName { get; set; }
     }
 
+    public sealed class SearchUiStateSnapshot
+    {
+        public int ProcessId { get; set; }
+        public long HeartbeatTicks { get; set; }
+        public bool IsReady { get; set; }
+        public long ReadyEpoch { get; set; }
+        public long ShownEpoch { get; set; }
+        public long MainWindowHandle { get; set; }
+    }
+
     public sealed class SharedIndexClientSlotResources : IDisposable
     {
         public SharedIndexClientSlotResources(
@@ -145,7 +155,8 @@ namespace MftScanner
         public const int RequestCapacityBytes = 64 * 1024;
         public const int ResponseCapacityBytes = 32 * 1024 * 1024;
         public const int StateCapacityBytes = 64 * 1024;
-        public const int ChangeRingCapacity = 512;
+        public const int SearchUiStateCapacityBytes = 4 * 1024;
+        public const int ChangeRingCapacity = 4096;
         public const int ChangeRecordSizeBytes = 32 * 1024;
         public const long ClientHeartbeatTimeoutTicks = TimeSpan.TicksPerSecond * 5;
         public const long ClientHeartbeatIntervalTicks = TimeSpan.TicksPerSecond;
@@ -153,6 +164,7 @@ namespace MftScanner
         private const int RequestMagic = unchecked((int)0x51445850);
         private const int ResponseMagic = unchecked((int)0x52535850);
         private const int StateMagic = unchecked((int)0x53545850);
+        private const int SearchUiStateMagic = unchecked((int)0x55535850);
         private const int ChangeMagic = unchecked((int)0x43475850);
 
         private const int StateHeaderReservedBytes = 64;
@@ -274,6 +286,27 @@ namespace MftScanner
         public static MemoryMappedFile OpenStateMapForReadWrite()
         {
             return MemoryMappedFile.OpenExisting(BuildStateMapName(), MemoryMappedFileRights.ReadWrite);
+        }
+
+        public static MemoryMappedFile CreateSearchUiStateMap(string sessionId)
+        {
+            return CreateOrOpenMemoryMappedFile(
+                SharedIndexConstants.BuildSearchUiStateMapName(sessionId),
+                SearchUiStateCapacityBytes);
+        }
+
+        public static MemoryMappedFile OpenSearchUiStateMapForRead(string sessionId)
+        {
+            return MemoryMappedFile.OpenExisting(
+                SharedIndexConstants.BuildSearchUiStateMapName(sessionId),
+                MemoryMappedFileRights.Read);
+        }
+
+        public static MemoryMappedFile OpenSearchUiStateMapForReadWrite(string sessionId)
+        {
+            return MemoryMappedFile.OpenExisting(
+                SharedIndexConstants.BuildSearchUiStateMapName(sessionId),
+                MemoryMappedFileRights.ReadWrite);
         }
 
         public static void InitializeChangeMap(MemoryMappedFile map)
@@ -479,6 +512,62 @@ namespace MftScanner
                     LastCommittedChangeSequence = reader.ReadInt64(),
                     RefreshSequence = reader.ReadInt64(),
                     StatusMessage = ReadSizedString(reader)
+                };
+            }
+        }
+
+        public static void WriteSearchUiState(MemoryMappedFile stateMap, SearchUiStateSnapshot snapshot)
+        {
+            if (snapshot == null)
+            {
+                throw new ArgumentNullException(nameof(snapshot));
+            }
+
+            using (var stream = stateMap.CreateViewStream(0, SearchUiStateCapacityBytes, MemoryMappedFileAccess.ReadWrite))
+            using (var writer = new BinaryWriter(stream, Encoding.Unicode, leaveOpen: false))
+            {
+                writer.Write(SearchUiStateMagic);
+                writer.Write(ProtocolVersion);
+                writer.Write(snapshot.ProcessId);
+                writer.Write(snapshot.HeartbeatTicks);
+                writer.Write(snapshot.IsReady ? 1 : 0);
+                writer.Write(snapshot.ReadyEpoch);
+                writer.Write(snapshot.ShownEpoch);
+                writer.Write(snapshot.MainWindowHandle);
+
+                var remaining = SearchUiStateCapacityBytes - (int)stream.Position;
+                if (remaining < 0)
+                {
+                    throw new InvalidOperationException("SearchUi 状态块超过容量。");
+                }
+
+                if (remaining > 0)
+                {
+                    writer.Write(new byte[remaining]);
+                }
+            }
+        }
+
+        public static SearchUiStateSnapshot ReadSearchUiState(MemoryMappedFile stateMap)
+        {
+            using (var stream = stateMap.CreateViewStream(0, SearchUiStateCapacityBytes, MemoryMappedFileAccess.Read))
+            using (var reader = new BinaryReader(stream, Encoding.Unicode, leaveOpen: false))
+            {
+                var magic = reader.ReadInt32();
+                var version = reader.ReadInt32();
+                if (magic != SearchUiStateMagic || version != ProtocolVersion)
+                {
+                    throw new InvalidOperationException("SearchUi 状态块版本不匹配。");
+                }
+
+                return new SearchUiStateSnapshot
+                {
+                    ProcessId = reader.ReadInt32(),
+                    HeartbeatTicks = reader.ReadInt64(),
+                    IsReady = reader.ReadInt32() != 0,
+                    ReadyEpoch = reader.ReadInt64(),
+                    ShownEpoch = reader.ReadInt64(),
+                    MainWindowHandle = reader.ReadInt64()
                 };
             }
         }

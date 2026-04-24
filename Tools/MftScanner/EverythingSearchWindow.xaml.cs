@@ -56,6 +56,7 @@ namespace MftScanner
         private bool _hideInsteadOfClose = true;
         private bool _allowProcessExit;
         private bool _pendingRefresh;
+        private bool _forcePendingRefresh;
         private string _latestIndexStatusMessage = string.Empty;
         private string _cachedKeyword;
         private Regex _cachedRegex;

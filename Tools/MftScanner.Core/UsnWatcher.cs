@@ -118,6 +118,7 @@ namespace MftScanner
     {
         private const bool LogUsnRecords = false;
         private static readonly TimeSpan WatcherPollLogInterval = TimeSpan.FromSeconds(30);
+        private const int ReadUsnBufferSize = 4 * 1024 * 1024;
 
         // ── Win32 常量 ──────────────────────────────────────────────────────────
         private const uint GENERIC_READ              = 0x80000000;
@@ -316,7 +317,7 @@ namespace MftScanner
             if (handle == INVALID_HANDLE_VALUE)
                 return false;
 
-            const int bufferSize = 1024 * 1024;
+            const int bufferSize = ReadUsnBufferSize;
             var buffer = Marshal.AllocHGlobal(bufferSize);
             try
             {
@@ -360,7 +361,7 @@ namespace MftScanner
         public bool TryCollectCatchUpChanges(char driveLetter, long startUsn, ulong journalId, CancellationToken ct,
             out List<UsnChangeEntry> changes, out long nextUsn, out ulong latestJournalId)
         {
-            changes = new List<UsnChangeEntry>(256);
+            changes = new List<UsnChangeEntry>(4096);
 
             var dl = char.ToUpperInvariant(driveLetter);
             nextUsn = startUsn;
@@ -374,7 +375,7 @@ namespace MftScanner
             if (handle == INVALID_HANDLE_VALUE)
                 return false;
 
-            const int bufferSize = 1024 * 1024;
+            const int bufferSize = ReadUsnBufferSize;
             var buffer = Marshal.AllocHGlobal(bufferSize);
             try
             {
@@ -424,7 +425,7 @@ namespace MftScanner
         private void WatchLoop(VolumeWatchState state)
         {
             var ct = state.Cts.Token;
-            const int bufferSize = 1024 * 1024;
+            const int bufferSize = ReadUsnBufferSize;
             var buffer = Marshal.AllocHGlobal(bufferSize);
             UsnDiagLog.Write($"[WATCHER LOOP START] drive={state.DriveLetter}");
             try

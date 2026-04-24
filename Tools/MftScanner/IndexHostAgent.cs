@@ -15,11 +15,15 @@ namespace MftScanner
 {
     internal sealed class IndexHostAgent : IDisposable
     {
-        private const int SearchUiReadyWaitMilliseconds = 25000;
-        private const int SearchUiShownWaitMilliseconds = 8000;
+        private const int SearchUiHotPathAckMilliseconds = 300;
+        private const int SearchUiRestartReadyMilliseconds = 3000;
+        private const int SearchUiRestartShownMilliseconds = 800;
+        private const int SearchUiHeartbeatStaleMilliseconds = 1000;
+        private const int SearchUiReadyPollMilliseconds = 50;
         private readonly IndexService _indexService = new IndexService();
         private readonly Action _showSearchUi;
         private readonly object _buildLock = new object();
+        private readonly object _showSearchUiLock = new object();
         private readonly object _stateLock = new object();
         private readonly CancellationTokenSource _cts = new CancellationTokenSource();
         private readonly Dictionary<SharedIndexClientSlotId, SharedIndexClientSlotResources> _slotResources
@@ -531,46 +535,27 @@ namespace MftScanner
 
         private void EnsureSearchUiShown()
         {
-            var sessionId = SharedIndexConstants.SearchUiSessionId;
-            var readyEventName = SharedIndexConstants.BuildSearchUiReadyEventName(sessionId);
-            var shownEventName = SharedIndexConstants.BuildSearchUiShownEventName(sessionId);
-            var showRequestEventName = SharedIndexConstants.BuildSearchUiShowRequestEventName(sessionId);
-
-            if (!TryIsEventSignaled(readyEventName))
+            lock (_showSearchUiLock)
             {
-                LoggingService.LogDebug("[INDEX HOST SHOW] stage=search-ui-start-requested");
-                _showSearchUi();
-                if (!TryWaitForEvent(readyEventName, SearchUiReadyWaitMilliseconds))
+                var sessionId = SharedIndexConstants.SearchUiSessionId;
+                if (TryReadSearchUiState(sessionId, out var state)
+                    && IsSearchUiAlive(state))
                 {
-                    LoggingService.LogWarning("[INDEX HOST SHOW] stage=show-request-timeout reason=search-ui-ready-timeout");
-                    throw new TimeoutException("文件搜索 UI 未在规定时间内完成就绪。");
+                    LoggingService.LogDebug($"[INDEX HOST SHOW] stage=show-hotpath-signaled pid={state.ProcessId} readyEpoch={state.ReadyEpoch} shownEpoch={state.ShownEpoch}");
+                    if (TrySignalShowRequestAndWaitShown(sessionId, SearchUiHotPathAckMilliseconds))
+                    {
+                        LoggingService.LogDebug($"[INDEX HOST SHOW] stage=show-hotpath-acked pid={state.ProcessId}");
+                        return;
+                    }
+
+                    LoggingService.LogWarning($"[INDEX HOST SHOW] stage=show-stale-ui-detected reason=hotpath-ack-timeout pid={state.ProcessId}");
+                }
+                else
+                {
+                    LoggingService.LogDebug($"[INDEX HOST SHOW] stage=show-stale-ui-detected reason={DescribeSearchUiState(state)}");
                 }
 
-                LoggingService.LogDebug("[INDEX HOST SHOW] stage=search-ui-ready");
-            }
-
-            ResetNamedEventIfExists(shownEventName);
-            SignalNamedEvent(showRequestEventName);
-            LoggingService.LogDebug("[INDEX HOST SHOW] stage=show-request-signaled");
-            if (!TryWaitForEvent(shownEventName, SearchUiShownWaitMilliseconds))
-            {
-                LoggingService.LogWarning("[INDEX HOST SHOW] stage=show-request-timeout reason=search-ui-shown-timeout");
-                throw new TimeoutException("文件搜索 UI 未在规定时间内完成显示。");
-            }
-        }
-
-        private static bool TryIsEventSignaled(string eventName)
-        {
-            try
-            {
-                using (var handle = EventWaitHandle.OpenExisting(eventName))
-                {
-                    return handle.WaitOne(0);
-                }
-            }
-            catch
-            {
-                return false;
+                RestartSearchUi(sessionId, state);
             }
         }
 
@@ -589,6 +574,128 @@ namespace MftScanner
             }
         }
 
+        private void RestartSearchUi(string sessionId, SearchUiStateSnapshot priorState)
+        {
+            if (priorState != null && priorState.ProcessId > 0)
+            {
+                TryTerminateProcess(priorState.ProcessId);
+            }
+
+            ResetNamedEventIfExists(SharedIndexConstants.BuildSearchUiReadyEventName(sessionId));
+            ResetNamedEventIfExists(SharedIndexConstants.BuildSearchUiShownEventName(sessionId));
+            TryClearSearchUiState(sessionId);
+
+            LoggingService.LogDebug("[INDEX HOST SHOW] stage=show-ui-restart");
+            _showSearchUi();
+
+            if (!TryWaitForReadyState(sessionId, SearchUiRestartReadyMilliseconds, out var restartedState))
+            {
+                LoggingService.LogWarning("[INDEX HOST SHOW] stage=show-ui-restart-timeout reason=ready-timeout");
+                throw new TimeoutException("文件搜索 UI 未在规定时间内进入可显示状态。");
+            }
+
+            LoggingService.LogDebug($"[INDEX HOST SHOW] stage=show-ui-restart-ready pid={restartedState.ProcessId} readyEpoch={restartedState.ReadyEpoch}");
+            if (!TrySignalShowRequestAndWaitShown(sessionId, SearchUiRestartShownMilliseconds))
+            {
+                LoggingService.LogWarning("[INDEX HOST SHOW] stage=show-ui-restart-timeout reason=shown-timeout");
+                throw new TimeoutException("文件搜索 UI 未在规定时间内完成显示。");
+            }
+        }
+
+        private static bool TryReadSearchUiState(string sessionId, out SearchUiStateSnapshot snapshot)
+        {
+            snapshot = null;
+            try
+            {
+                using (var stateMap = SharedIndexMemoryProtocol.OpenSearchUiStateMapForRead(sessionId))
+                {
+                    snapshot = SharedIndexMemoryProtocol.ReadSearchUiState(stateMap);
+                    return true;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool TryWaitForReadyState(string sessionId, int timeoutMilliseconds, out SearchUiStateSnapshot snapshot)
+        {
+            snapshot = null;
+            var deadline = DateTime.UtcNow.AddMilliseconds(Math.Max(timeoutMilliseconds, 0));
+            while (DateTime.UtcNow <= deadline)
+            {
+                if (TryReadSearchUiState(sessionId, out snapshot) && IsSearchUiAlive(snapshot))
+                {
+                    return true;
+                }
+
+                Thread.Sleep(SearchUiReadyPollMilliseconds);
+            }
+
+            return false;
+        }
+
+        private static bool IsSearchUiAlive(SearchUiStateSnapshot snapshot)
+        {
+            if (snapshot == null
+                || snapshot.ProcessId <= 0
+                || !snapshot.IsReady
+                || snapshot.ReadyEpoch <= 0)
+            {
+                return false;
+            }
+
+            if (!IsProcessAlive(snapshot.ProcessId))
+            {
+                return false;
+            }
+
+            var heartbeatAgeMs = (DateTime.UtcNow.Ticks - snapshot.HeartbeatTicks) / TimeSpan.TicksPerMillisecond;
+            return heartbeatAgeMs >= 0 && heartbeatAgeMs <= SearchUiHeartbeatStaleMilliseconds;
+        }
+
+        private static string DescribeSearchUiState(SearchUiStateSnapshot snapshot)
+        {
+            if (snapshot == null)
+            {
+                return "state-unavailable";
+            }
+
+            if (snapshot.ProcessId <= 0)
+            {
+                return "missing-pid";
+            }
+
+            if (!snapshot.IsReady || snapshot.ReadyEpoch <= 0)
+            {
+                return "not-ready";
+            }
+
+            if (!IsProcessAlive(snapshot.ProcessId))
+            {
+                return "dead-process";
+            }
+
+            var heartbeatAgeMs = (DateTime.UtcNow.Ticks - snapshot.HeartbeatTicks) / TimeSpan.TicksPerMillisecond;
+            return heartbeatAgeMs > SearchUiHeartbeatStaleMilliseconds
+                ? $"stale-heartbeat({heartbeatAgeMs}ms)"
+                : "unknown";
+        }
+
+        private static bool TrySignalShowRequestAndWaitShown(string sessionId, int shownWaitMilliseconds)
+        {
+            var shownEventName = SharedIndexConstants.BuildSearchUiShownEventName(sessionId);
+            var showRequestEventName = SharedIndexConstants.BuildSearchUiShowRequestEventName(sessionId);
+            ResetNamedEventIfExists(shownEventName);
+            if (!SignalNamedEvent(showRequestEventName))
+            {
+                return false;
+            }
+
+            return TryWaitForEvent(shownEventName, shownWaitMilliseconds);
+        }
+
         private static void ResetNamedEventIfExists(string eventName)
         {
             try
@@ -603,11 +710,76 @@ namespace MftScanner
             }
         }
 
-        private static void SignalNamedEvent(string eventName)
+        private static bool SignalNamedEvent(string eventName)
         {
-            using (var handle = EventWaitHandle.OpenExisting(eventName))
+            try
             {
-                handle.Set();
+                using (var handle = EventWaitHandle.OpenExisting(eventName))
+                {
+                    handle.Set();
+                    return true;
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void TryClearSearchUiState(string sessionId)
+        {
+            try
+            {
+                using (var stateMap = SharedIndexMemoryProtocol.OpenSearchUiStateMapForReadWrite(sessionId))
+                {
+                    SharedIndexMemoryProtocol.WriteSearchUiState(stateMap, new SearchUiStateSnapshot
+                    {
+                        ProcessId = 0,
+                        HeartbeatTicks = 0,
+                        IsReady = false,
+                        ReadyEpoch = 0,
+                        ShownEpoch = 0,
+                        MainWindowHandle = 0
+                    });
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private static void TryTerminateProcess(int processId)
+        {
+            try
+            {
+                using (var process = Process.GetProcessById(processId))
+                {
+                    if (process.HasExited)
+                    {
+                        return;
+                    }
+
+                    process.Kill();
+                    process.WaitForExit(1000);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        private static bool IsProcessAlive(int processId)
+        {
+            try
+            {
+                using (var process = Process.GetProcessById(processId))
+                {
+                    return !process.HasExited;
+                }
+            }
+            catch
+            {
+                return false;
             }
         }
 

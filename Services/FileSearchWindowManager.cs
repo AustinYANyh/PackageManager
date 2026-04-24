@@ -28,7 +28,7 @@ namespace PackageManager.Services
             }
 
             if (IndexHostTaskService.TryRunRegisteredTaskSilently()
-                && SharedIndexServiceClient.TryWaitForHostAvailability(15000)
+                && SharedIndexServiceClient.TryWaitForHostAvailability(5000)
                 && SharedIndexServiceClient.TryShowSearchUi())
             {
                 return;

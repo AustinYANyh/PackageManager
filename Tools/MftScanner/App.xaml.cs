@@ -29,6 +29,7 @@ namespace MftScanner
         private const int SwRestore = 9;
 
         private DispatcherTimer _ownerMonitorTimer;
+        private DispatcherTimer _searchUiHeartbeatTimer;
         private EventWaitHandle _showRequestEvent;
         private EventWaitHandle _searchUiReadyEvent;
         private EventWaitHandle _searchUiShownEvent;
@@ -37,7 +38,10 @@ namespace MftScanner
         private Mutex _singleInstanceMutex;
         private Mutex _indexHostMutex;
         private IndexHostAgent _indexHostAgent;
+        private MemoryMappedFile _searchUiStateMap;
         private int? _ownerProcessId;
+        private long _searchUiReadyEpoch;
+        private long _searchUiShownEpoch;
         private string _sessionId;
         private string _showRequestEventName;
         private string _singleInstanceMutexName;
@@ -315,6 +319,11 @@ namespace MftScanner
             _searchUiShownEvent = new EventWaitHandle(false, EventResetMode.ManualReset, SharedIndexConstants.BuildSearchUiShownEventName(_sessionId), out createdNew, security);
             _searchUiReadyEvent.Reset();
             _searchUiShownEvent.Reset();
+            _searchUiReadyEpoch = 0;
+            _searchUiShownEpoch = 0;
+            _searchUiStateMap = SharedIndexMemoryProtocol.CreateSearchUiStateMap(_sessionId);
+            PublishSearchUiState(isReady: false);
+            StartSearchUiHeartbeat();
             _showRequestCts = new CancellationTokenSource();
             _showRequestListenerTask = Task.Run(() => ListenForShowRequests(_showRequestCts.Token));
         }
@@ -333,8 +342,36 @@ namespace MftScanner
 
             try
             {
+                _searchUiHeartbeatTimer?.Stop();
+                _searchUiHeartbeatTimer = null;
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                _searchUiReadyEpoch = 0;
+                _searchUiShownEpoch = 0;
+                PublishSearchUiState(isReady: false, heartbeatTicks: 0);
+            }
+            catch
+            {
+            }
+
+            try
+            {
                 _showRequestEvent?.Dispose();
                 _showRequestEvent = null;
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                _searchUiStateMap?.Dispose();
+                _searchUiStateMap = null;
             }
             catch
             {
@@ -357,6 +394,49 @@ namespace MftScanner
             catch
             {
             }
+        }
+
+        private void StartSearchUiHeartbeat()
+        {
+            _searchUiHeartbeatTimer?.Stop();
+            _searchUiHeartbeatTimer = new DispatcherTimer(DispatcherPriority.Background)
+            {
+                Interval = TimeSpan.FromMilliseconds(250)
+            };
+            _searchUiHeartbeatTimer.Tick += (sender, args) => PublishSearchUiState();
+            _searchUiHeartbeatTimer.Start();
+        }
+
+        private void PublishSearchUiState(bool? isReady = null, long? heartbeatTicks = null)
+        {
+            if (_searchUiStateMap == null)
+            {
+                return;
+            }
+
+            var ready = isReady ?? _searchUiReadyEpoch > 0;
+            long windowHandle = 0;
+            try
+            {
+                if (MainWindow != null)
+                {
+                    windowHandle = new WindowInteropHelper(MainWindow).Handle.ToInt64();
+                }
+            }
+            catch
+            {
+                windowHandle = 0;
+            }
+
+            SharedIndexMemoryProtocol.WriteSearchUiState(_searchUiStateMap, new SearchUiStateSnapshot
+            {
+                ProcessId = Process.GetCurrentProcess().Id,
+                HeartbeatTicks = heartbeatTicks ?? DateTime.UtcNow.Ticks,
+                IsReady = ready,
+                ReadyEpoch = _searchUiReadyEpoch,
+                ShownEpoch = _searchUiShownEpoch,
+                MainWindowHandle = windowHandle
+            });
         }
 
         private void ListenForShowRequests(CancellationToken cancellationToken)
@@ -518,6 +598,12 @@ namespace MftScanner
         {
             try
             {
+                if (_searchUiReadyEpoch == 0)
+                {
+                    _searchUiReadyEpoch = DateTime.UtcNow.Ticks;
+                }
+
+                PublishSearchUiState(isReady: true);
                 _searchUiReadyEvent?.Set();
                 Services.LoggingService.LogDebug($"[SEARCH UI READY] session={_sessionId} reason={reason}");
             }
@@ -530,6 +616,13 @@ namespace MftScanner
         {
             try
             {
+                _searchUiShownEpoch = DateTime.UtcNow.Ticks;
+                if (_searchUiReadyEpoch == 0)
+                {
+                    _searchUiReadyEpoch = _searchUiShownEpoch;
+                }
+
+                PublishSearchUiState(isReady: true);
                 _searchUiShownEvent?.Set();
                 Services.LoggingService.LogDebug($"[SEARCH UI SHOWN] session={_sessionId} reason={reason}");
             }

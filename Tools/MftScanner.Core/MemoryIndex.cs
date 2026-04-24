@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Threading;
 
 namespace MftScanner
@@ -7,6 +8,7 @@ namespace MftScanner
     public sealed class MemoryIndex
     {
         private readonly ReaderWriterLockSlim _lock = new ReaderWriterLockSlim();
+        private long _contentVersion;
 
         /// <summary>精确匹配：文件名小写 → FileRecord 列表。</summary>
         public Dictionary<string, List<FileRecord>> ExactHashMap { get; private set; }
@@ -23,27 +25,101 @@ namespace MftScanner
         public FileRecord[] ScriptSortedArray { get; private set; } = Array.Empty<FileRecord>();
         public FileRecord[] LogSortedArray { get; private set; } = Array.Empty<FileRecord>();
         public FileRecord[] ConfigSortedArray { get; private set; } = Array.Empty<FileRecord>();
+        private ContainsAccelerator _containsAccelerator = ContainsAccelerator.Empty;
+        private bool _containsAcceleratorReady = true;
+        private long _containsAcceleratorEpoch;
+        private readonly List<PendingContainsMutation> _pendingContainsMutations = new List<PendingContainsMutation>();
+        private bool _pendingContainsMutationsOverflowed;
+        private const int MaxPendingContainsMutations = 65536;
 
         public int TotalCount => SortedArray.Length;
+
+        public bool HasContainsAccelerator
+        {
+            get
+            {
+                _lock.EnterReadLock();
+                try
+                {
+                    return _containsAcceleratorReady;
+                }
+                finally
+                {
+                    _lock.ExitReadLock();
+                }
+            }
+        }
+
+        public sealed class ContainsSearchResult
+        {
+            public List<FileRecord> Page { get; set; } = new List<FileRecord>();
+            public int Total { get; set; }
+            public string Mode { get; set; } = "fallback";
+            public int CandidateCount { get; set; }
+            public long IntersectMs { get; set; }
+            public long VerifyMs { get; set; }
+        }
 
         private static readonly IComparer<FileRecord> ByLowerName =
             Comparer<FileRecord>.Create((a, b) => string.CompareOrdinal(a.LowerName, b.LowerName));
 
-        public void LoadSortedRecords(IReadOnlyList<FileRecord> sortedRecords)
+        public bool TryContainsSearch(
+            string query,
+            SearchTypeFilter filter,
+            int offset,
+            int maxResults,
+            CancellationToken ct,
+            out ContainsSearchResult result)
         {
-            var arr = CopyRecords(sortedRecords);
-            Publish(
-                arr,
-                BuildExactHashMap(arr),
-                BuildExtensionHashMap(arr),
-                BuildFilteredArray(arr, SearchTypeFilter.Folder),
-                BuildFilteredArray(arr, SearchTypeFilter.Launchable),
-                BuildFilteredArray(arr, SearchTypeFilter.Script),
-                BuildFilteredArray(arr, SearchTypeFilter.Log),
-                BuildFilteredArray(arr, SearchTypeFilter.Config));
+            result = null;
+            if (string.IsNullOrEmpty(query))
+            {
+                return false;
+            }
+
+            _lock.EnterReadLock();
+            try
+            {
+                if (!_containsAcceleratorReady || _containsAccelerator == null || _containsAccelerator.IsEmpty)
+                {
+                    return false;
+                }
+
+                result = _containsAccelerator.Search(query, filter, offset, maxResults, ct);
+                return true;
+            }
+            finally
+            {
+                _lock.ExitReadLock();
+            }
         }
 
-        public void Build(IReadOnlyList<FileRecord> records)
+        public void LoadSortedRecords(IReadOnlyList<FileRecord> sortedRecords, bool buildContainsAccelerator = true)
+        {
+            var arr = CopyRecords(sortedRecords);
+            BuildDerivedStructures(
+                arr,
+                out var exactMap,
+                out var extensionMap,
+                out var directoryArr,
+                out var launchableArr,
+                out var scriptArr,
+                out var logArr,
+                out var configArr);
+            Publish(
+                arr,
+                exactMap,
+                extensionMap,
+                directoryArr,
+                launchableArr,
+                scriptArr,
+                logArr,
+                configArr,
+                buildContainsAccelerator ? ContainsAccelerator.Build(arr) : null,
+                buildContainsAccelerator);
+        }
+
+        public void Build(IReadOnlyList<FileRecord> records, bool buildContainsAccelerator = true)
         {
             if (records == null || records.Count == 0)
             {
@@ -55,21 +131,34 @@ namespace MftScanner
                     Array.Empty<FileRecord>(),
                     Array.Empty<FileRecord>(),
                     Array.Empty<FileRecord>(),
-                    Array.Empty<FileRecord>());
+                    Array.Empty<FileRecord>(),
+                    ContainsAccelerator.Empty,
+                    true);
                 return;
             }
 
             var arr = CopyRecords(records);
             Array.Sort(arr, ByLowerName);
+            BuildDerivedStructures(
+                arr,
+                out var exactMap,
+                out var extensionMap,
+                out var directoryArr,
+                out var launchableArr,
+                out var scriptArr,
+                out var logArr,
+                out var configArr);
             Publish(
                 arr,
-                BuildExactHashMap(arr),
-                BuildExtensionHashMap(arr),
-                BuildFilteredArray(arr, SearchTypeFilter.Folder),
-                BuildFilteredArray(arr, SearchTypeFilter.Launchable),
-                BuildFilteredArray(arr, SearchTypeFilter.Script),
-                BuildFilteredArray(arr, SearchTypeFilter.Log),
-                BuildFilteredArray(arr, SearchTypeFilter.Config));
+                exactMap,
+                extensionMap,
+                directoryArr,
+                launchableArr,
+                scriptArr,
+                logArr,
+                configArr,
+                buildContainsAccelerator ? ContainsAccelerator.Build(arr) : null,
+                buildContainsAccelerator);
         }
 
         public void Insert(FileRecord record)
@@ -89,6 +178,14 @@ namespace MftScanner
                 }
 
                 InsertIntoFilterBuckets(record);
+                if (_containsAcceleratorReady)
+                {
+                    _containsAccelerator = (_containsAccelerator ?? ContainsAccelerator.Empty).WithInserted(record);
+                }
+                else
+                {
+                    EnqueuePendingContainsInsert(record);
+                }
 
                 var arr = SortedArray;
                 var idx = Array.BinarySearch(arr, record, ByLowerName);
@@ -98,6 +195,7 @@ namespace MftScanner
                 newArr[idx] = record;
                 Array.Copy(arr, idx, newArr, idx + 1, arr.Length - idx);
                 SortedArray = newArr;
+                _contentVersion++;
             }
             finally { _lock.ExitWriteLock(); }
         }
@@ -129,6 +227,15 @@ namespace MftScanner
                 }
 
                 RemoveFromFilterBuckets(frn, lowerName, parentFrn, driveLetter);
+                if (_containsAcceleratorReady)
+                {
+                    _containsAccelerator = (_containsAccelerator ?? ContainsAccelerator.Empty).WithRemoved(
+                        new RecordKey(frn, lowerName, parentFrn, driveLetter));
+                }
+                else
+                {
+                    EnqueuePendingContainsRemove(new RecordKey(frn, lowerName, parentFrn, driveLetter));
+                }
 
                 var arr = SortedArray;
                 for (var i = 0; i < arr.Length; i++)
@@ -143,6 +250,7 @@ namespace MftScanner
                         Array.Copy(arr, 0, newArr, 0, i);
                         Array.Copy(arr, i + 1, newArr, i, arr.Length - i - 1);
                         SortedArray = newArr;
+                        _contentVersion++;
                         break;
                     }
                 }
@@ -203,6 +311,17 @@ namespace MftScanner
                 }
 
                 InsertIntoFilterBuckets(newRecord);
+                if (_containsAcceleratorReady)
+                {
+                    _containsAccelerator = (_containsAccelerator ?? ContainsAccelerator.Empty)
+                        .WithRemoved(new RecordKey(frn, oldLowerName, oldParentFrn, driveLetter))
+                        .WithInserted(newRecord);
+                }
+                else
+                {
+                    EnqueuePendingContainsRemove(new RecordKey(frn, oldLowerName, oldParentFrn, driveLetter));
+                    EnqueuePendingContainsInsert(newRecord);
+                }
 
                 var insertIdx = Array.BinarySearch(arr, newRecord, ByLowerName);
                 if (insertIdx < 0) insertIdx = ~insertIdx;
@@ -211,6 +330,7 @@ namespace MftScanner
                 newArr[insertIdx] = newRecord;
                 Array.Copy(arr, insertIdx, newArr, insertIdx + 1, arr.Length - insertIdx);
                 SortedArray = newArr;
+                _contentVersion++;
             }
             finally { _lock.ExitWriteLock(); }
         }
@@ -259,6 +379,95 @@ namespace MftScanner
             return map;
         }
 
+        private static void BuildDerivedStructures(
+            FileRecord[] arr,
+            out Dictionary<string, List<FileRecord>> exactMap,
+            out Dictionary<string, List<FileRecord>> extensionMap,
+            out FileRecord[] directoryArr,
+            out FileRecord[] launchableArr,
+            out FileRecord[] scriptArr,
+            out FileRecord[] logArr,
+            out FileRecord[] configArr)
+        {
+            if (arr == null || arr.Length == 0)
+            {
+                exactMap = new Dictionary<string, List<FileRecord>>();
+                extensionMap = new Dictionary<string, List<FileRecord>>();
+                directoryArr = Array.Empty<FileRecord>();
+                launchableArr = Array.Empty<FileRecord>();
+                scriptArr = Array.Empty<FileRecord>();
+                logArr = Array.Empty<FileRecord>();
+                configArr = Array.Empty<FileRecord>();
+                return;
+            }
+
+            exactMap = new Dictionary<string, List<FileRecord>>(arr.Length);
+            extensionMap = new Dictionary<string, List<FileRecord>>();
+            var directories = new List<FileRecord>();
+            var launchables = new List<FileRecord>();
+            var scripts = new List<FileRecord>();
+            var logs = new List<FileRecord>();
+            var configs = new List<FileRecord>();
+
+            for (var i = 0; i < arr.Length; i++)
+            {
+                var record = arr[i];
+                if (!exactMap.TryGetValue(record.LowerName, out var exactBucket))
+                {
+                    exactBucket = new List<FileRecord>(1);
+                    exactMap[record.LowerName] = exactBucket;
+                }
+
+                exactBucket.Add(record);
+
+                if (TryGetIndexedExtension(record.LowerName, out var extension))
+                {
+                    if (!extensionMap.TryGetValue(extension, out var extensionBucket))
+                    {
+                        extensionBucket = new List<FileRecord>();
+                        extensionMap[extension] = extensionBucket;
+                    }
+
+                    extensionBucket.Add(record);
+                }
+
+                if (record.IsDirectory)
+                {
+                    directories.Add(record);
+                    continue;
+                }
+
+                if (TryGetIndexedExtension(record.LowerName, out extension))
+                {
+                    if (SearchTypeFilterHelper.IsLaunchableExtension(extension))
+                    {
+                        launchables.Add(record);
+                    }
+
+                    if (SearchTypeFilterHelper.IsScriptExtension(extension))
+                    {
+                        scripts.Add(record);
+                    }
+
+                    if (SearchTypeFilterHelper.IsLogExtension(extension))
+                    {
+                        logs.Add(record);
+                    }
+
+                    if (SearchTypeFilterHelper.IsConfigExtension(extension))
+                    {
+                        configs.Add(record);
+                    }
+                }
+            }
+
+            directoryArr = directories.Count == 0 ? Array.Empty<FileRecord>() : directories.ToArray();
+            launchableArr = launchables.Count == 0 ? Array.Empty<FileRecord>() : launchables.ToArray();
+            scriptArr = scripts.Count == 0 ? Array.Empty<FileRecord>() : scripts.ToArray();
+            logArr = logs.Count == 0 ? Array.Empty<FileRecord>() : logs.ToArray();
+            configArr = configs.Count == 0 ? Array.Empty<FileRecord>() : configs.ToArray();
+        }
+
         private static FileRecord[] BuildFilteredArray(FileRecord[] arr, SearchTypeFilter filter)
         {
             if (arr == null || arr.Length == 0)
@@ -282,7 +491,9 @@ namespace MftScanner
             FileRecord[] launchableArr,
             FileRecord[] scriptArr,
             FileRecord[] logArr,
-            FileRecord[] configArr)
+            FileRecord[] configArr,
+            ContainsAccelerator containsAccelerator,
+            bool containsAcceleratorReady)
         {
             _lock.EnterWriteLock();
             try
@@ -295,11 +506,19 @@ namespace MftScanner
                 ScriptSortedArray = scriptArr;
                 LogSortedArray = logArr;
                 ConfigSortedArray = configArr;
+                _containsAccelerator = containsAcceleratorReady
+                    ? (containsAccelerator ?? ContainsAccelerator.Empty)
+                    : ContainsAccelerator.Empty;
+                _containsAcceleratorReady = containsAcceleratorReady;
+                _containsAcceleratorEpoch++;
+                _pendingContainsMutations.Clear();
+                _pendingContainsMutationsOverflowed = false;
+                _contentVersion++;
             }
             finally { _lock.ExitWriteLock(); }
         }
 
-        public void ApplyBatch(IReadOnlyList<UsnChangeEntry> changes)
+        public void ApplyBatch(IReadOnlyList<UsnChangeEntry> changes, bool rebuildContainsAccelerator = true)
         {
             if (changes == null || changes.Count == 0)
                 return;
@@ -307,44 +526,196 @@ namespace MftScanner
             _lock.EnterWriteLock();
             try
             {
-                var map = new Dictionary<RecordKey, FileRecord>(SortedArray.Length + changes.Count);
-                foreach (var record in SortedArray)
-                    map[RecordKey.FromRecord(record)] = record;
-
+                var deltaByKey = new Dictionary<RecordKey, FileRecord>(changes.Count * 2);
                 for (var i = 0; i < changes.Count; i++)
                 {
                     var change = changes[i];
                     switch (change.Kind)
                     {
                         case UsnChangeKind.Create:
-                            map[RecordKey.FromChange(change)] = change.ToRecord();
+                            deltaByKey[RecordKey.FromChange(change)] = change.ToRecord();
                             break;
                         case UsnChangeKind.Delete:
-                            map.Remove(RecordKey.FromChange(change));
+                            deltaByKey[RecordKey.FromChange(change)] = null;
                             break;
                         case UsnChangeKind.Rename:
-                            map.Remove(RecordKey.FromRenameOld(change));
-                            map[RecordKey.FromChange(change)] = change.ToRecord();
+                            deltaByKey[RecordKey.FromRenameOld(change)] = null;
+                            deltaByKey[RecordKey.FromChange(change)] = change.ToRecord();
                             break;
                     }
                 }
 
-                var arr = new FileRecord[map.Count];
-                var index = 0;
-                foreach (var record in map.Values)
-                    arr[index++] = record;
+                var baseArr = SortedArray;
+                var survivors = new FileRecord[baseArr.Length];
+                var survivorCount = 0;
+                foreach (var record in baseArr)
+                {
+                    if (deltaByKey.ContainsKey(RecordKey.FromRecord(record)))
+                    {
+                        continue;
+                    }
 
-                Array.Sort(arr, ByLowerName);
-                ExactHashMap = BuildExactHashMap(arr);
-                ExtensionHashMap = BuildExtensionHashMap(arr);
+                    survivors[survivorCount++] = record;
+                }
+
+                var inserted = new List<FileRecord>(deltaByKey.Count);
+                foreach (var entry in deltaByKey)
+                {
+                    if (entry.Value != null)
+                    {
+                        inserted.Add(entry.Value);
+                    }
+                }
+
+                if (inserted.Count > 1)
+                {
+                    inserted.Sort(ByLowerName);
+                }
+
+                var arr = MergeSortedRecords(survivors, survivorCount, inserted);
+                BuildDerivedStructures(
+                    arr,
+                    out var exactMap,
+                    out var extensionMap,
+                    out var directoryArr,
+                    out var launchableArr,
+                    out var scriptArr,
+                    out var logArr,
+                    out var configArr);
+                ExactHashMap = exactMap;
+                ExtensionHashMap = extensionMap;
                 SortedArray = arr;
-                DirectorySortedArray = BuildFilteredArray(arr, SearchTypeFilter.Folder);
-                LaunchableSortedArray = BuildFilteredArray(arr, SearchTypeFilter.Launchable);
-                ScriptSortedArray = BuildFilteredArray(arr, SearchTypeFilter.Script);
-                LogSortedArray = BuildFilteredArray(arr, SearchTypeFilter.Log);
-                ConfigSortedArray = BuildFilteredArray(arr, SearchTypeFilter.Config);
+                DirectorySortedArray = directoryArr;
+                LaunchableSortedArray = launchableArr;
+                ScriptSortedArray = scriptArr;
+                LogSortedArray = logArr;
+                ConfigSortedArray = configArr;
+                _containsAccelerator = rebuildContainsAccelerator ? ContainsAccelerator.Build(arr) : ContainsAccelerator.Empty;
+                _containsAcceleratorReady = rebuildContainsAccelerator;
+                _containsAcceleratorEpoch++;
+                _pendingContainsMutations.Clear();
+                _pendingContainsMutationsOverflowed = false;
+                _contentVersion++;
             }
             finally { _lock.ExitWriteLock(); }
+        }
+
+        private static FileRecord[] MergeSortedRecords(FileRecord[] survivors, int survivorCount, List<FileRecord> inserted)
+        {
+            if (survivorCount == 0)
+            {
+                return inserted == null || inserted.Count == 0
+                    ? Array.Empty<FileRecord>()
+                    : inserted.ToArray();
+            }
+
+            if (inserted == null || inserted.Count == 0)
+            {
+                if (survivorCount == survivors.Length)
+                {
+                    return survivors;
+                }
+
+                var trimmed = new FileRecord[survivorCount];
+                Array.Copy(survivors, 0, trimmed, 0, survivorCount);
+                return trimmed;
+            }
+
+            var merged = new FileRecord[survivorCount + inserted.Count];
+            var left = 0;
+            var right = 0;
+            var index = 0;
+            while (left < survivorCount && right < inserted.Count)
+            {
+                if (ByLowerName.Compare(survivors[left], inserted[right]) <= 0)
+                {
+                    merged[index++] = survivors[left++];
+                }
+                else
+                {
+                    merged[index++] = inserted[right++];
+                }
+            }
+
+            while (left < survivorCount)
+            {
+                merged[index++] = survivors[left++];
+            }
+
+            while (right < inserted.Count)
+            {
+                merged[index++] = inserted[right++];
+            }
+
+            return merged;
+        }
+
+        public bool TryEnsureContainsAccelerator(CancellationToken ct)
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                FileRecord[] snapshot;
+                long epoch;
+                int pendingStartIndex;
+
+                _lock.EnterReadLock();
+                try
+                {
+                    if (_containsAcceleratorReady)
+                    {
+                        return true;
+                    }
+
+                    snapshot = SortedArray;
+                    epoch = _containsAcceleratorEpoch;
+                    pendingStartIndex = _pendingContainsMutations.Count;
+                }
+                finally
+                {
+                    _lock.ExitReadLock();
+                }
+
+                var accelerator = ContainsAccelerator.Build(snapshot, ct);
+
+                _lock.EnterWriteLock();
+                try
+                {
+                    if (_containsAcceleratorReady)
+                    {
+                        return true;
+                    }
+
+                    if (epoch != _containsAcceleratorEpoch)
+                    {
+                        continue;
+                    }
+
+                    if (_pendingContainsMutationsOverflowed)
+                    {
+                        _pendingContainsMutations.Clear();
+                        _pendingContainsMutationsOverflowed = false;
+                        continue;
+                    }
+
+                    for (var i = pendingStartIndex; i < _pendingContainsMutations.Count; i++)
+                    {
+                        _pendingContainsMutations[i].ApplyTo(accelerator);
+                    }
+
+                    _containsAccelerator = accelerator ?? ContainsAccelerator.Empty;
+                    _containsAcceleratorReady = true;
+                    _pendingContainsMutations.Clear();
+                    _pendingContainsMutationsOverflowed = false;
+                    return true;
+                }
+                finally
+                {
+                    _lock.ExitWriteLock();
+                }
+            }
+
+            ct.ThrowIfCancellationRequested();
+            return false;
         }
 
         private void InsertIntoFilterBuckets(FileRecord record)
@@ -476,7 +847,598 @@ namespace MftScanner
 
             bucket.RemoveAll(r => r.LowerName == lowerName
                                   && r.DriveLetter == driveLetter
-                                  && (parentFrn == 0 || r.ParentFrn == parentFrn));
+                && (parentFrn == 0 || r.ParentFrn == parentFrn));
+        }
+
+        private void EnqueuePendingContainsInsert(FileRecord record)
+        {
+            EnqueuePendingContainsMutation(PendingContainsMutation.ForInsert(record));
+        }
+
+        private void EnqueuePendingContainsRemove(RecordKey key)
+        {
+            EnqueuePendingContainsMutation(PendingContainsMutation.ForRemove(key));
+        }
+
+        private void EnqueuePendingContainsMutation(PendingContainsMutation mutation)
+        {
+            if (_containsAcceleratorReady || _pendingContainsMutationsOverflowed)
+            {
+                return;
+            }
+
+            if (_pendingContainsMutations.Count >= MaxPendingContainsMutations)
+            {
+                _pendingContainsMutations.Clear();
+                _pendingContainsMutationsOverflowed = true;
+                return;
+            }
+
+            _pendingContainsMutations.Add(mutation);
+        }
+
+        private sealed class ContainsAccelerator
+        {
+            private readonly Dictionary<int, FileRecord> _recordsById;
+            private readonly Dictionary<RecordKey, int> _recordIdsByKey;
+            private readonly Dictionary<char, List<int>> _charBuckets = new Dictionary<char, List<int>>();
+            private readonly Dictionary<uint, List<int>> _bigramBuckets = new Dictionary<uint, List<int>>();
+            private readonly Dictionary<ulong, List<int>> _trigramBuckets = new Dictionary<ulong, List<int>>();
+            private int _nextRecordId = 1;
+
+            public static ContainsAccelerator Empty => new ContainsAccelerator();
+
+            public bool IsEmpty => _recordsById.Count == 0;
+
+            private ContainsAccelerator()
+                : this(0)
+            {
+            }
+
+            private ContainsAccelerator(int recordCapacity)
+            {
+                _recordsById = recordCapacity > 0
+                    ? new Dictionary<int, FileRecord>(recordCapacity)
+                    : new Dictionary<int, FileRecord>();
+                _recordIdsByKey = recordCapacity > 0
+                    ? new Dictionary<RecordKey, int>(recordCapacity)
+                    : new Dictionary<RecordKey, int>();
+            }
+
+            public static ContainsAccelerator Build(FileRecord[] records, CancellationToken ct = default)
+            {
+                var accelerator = new ContainsAccelerator(records?.Length ?? 0);
+                if (records == null || records.Length == 0)
+                {
+                    return accelerator;
+                }
+
+                for (var i = 0; i < records.Length; i++)
+                {
+                    if (((i + 1) & 0x7FF) == 0)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                    }
+
+                    accelerator.AddRecord(records[i], appendOnly: true);
+                }
+
+                return accelerator;
+            }
+
+            public ContainsAccelerator WithInserted(FileRecord record)
+            {
+                AddRecord(record, appendOnly: false);
+                return this;
+            }
+
+            public ContainsAccelerator WithRemoved(RecordKey key)
+            {
+                RemoveRecord(key);
+                return this;
+            }
+
+            public ContainsSearchResult Search(string query, SearchTypeFilter filter, int offset, int maxResults, CancellationToken ct)
+            {
+                var normalizedOffset = Math.Max(offset, 0);
+                var normalizedMaxResults = Math.Max(maxResults, 0);
+                if (query.Length == 1)
+                {
+                    return SearchSingleChar(query[0], filter, normalizedOffset, normalizedMaxResults, ct);
+                }
+
+                if (query.Length == 2)
+                {
+                    return SearchBigram(PackBigram(query[0], query[1]), filter, normalizedOffset, normalizedMaxResults, ct);
+                }
+
+                return SearchTrigram(query, filter, normalizedOffset, normalizedMaxResults, ct);
+            }
+
+            private ContainsSearchResult SearchSingleChar(char token, SearchTypeFilter filter, int offset, int maxResults, CancellationToken ct)
+            {
+                if (!_charBuckets.TryGetValue(token, out var bucket) || bucket == null || bucket.Count == 0)
+                {
+                    return new ContainsSearchResult { Mode = "char" };
+                }
+
+                return BuildBucketResult(bucket, filter, offset, maxResults, "char", ct);
+            }
+
+            private ContainsSearchResult SearchBigram(uint token, SearchTypeFilter filter, int offset, int maxResults, CancellationToken ct)
+            {
+                if (!_bigramBuckets.TryGetValue(token, out var bucket) || bucket == null || bucket.Count == 0)
+                {
+                    return new ContainsSearchResult { Mode = "bigram" };
+                }
+
+                return BuildBucketResult(bucket, filter, offset, maxResults, "bigram", ct);
+            }
+
+            private ContainsSearchResult SearchTrigram(string query, SearchTypeFilter filter, int offset, int maxResults, CancellationToken ct)
+            {
+                var trigramKeys = BuildUniqueTrigramKeys(query);
+                if (trigramKeys.Count == 0)
+                {
+                    return new ContainsSearchResult { Mode = "fallback" };
+                }
+
+                var postingLists = new List<List<int>>(trigramKeys.Count);
+                for (var i = 0; i < trigramKeys.Count; i++)
+                {
+                    if (!_trigramBuckets.TryGetValue(trigramKeys[i], out var bucket) || bucket == null || bucket.Count == 0)
+                    {
+                        return new ContainsSearchResult { Mode = "trigram" };
+                    }
+
+                    postingLists.Add(bucket);
+                }
+
+                postingLists.Sort((a, b) => a.Count.CompareTo(b.Count));
+                var intersectStopwatch = Stopwatch.StartNew();
+                var primary = postingLists[0];
+                var others = new HashSet<int>[postingLists.Count - 1];
+                for (var i = 1; i < postingLists.Count; i++)
+                {
+                    others[i - 1] = new HashSet<int>(postingLists[i]);
+                }
+
+                var candidates = new List<int>(primary.Count);
+                var lastRecordId = int.MinValue;
+                for (var i = 0; i < primary.Count; i++)
+                {
+                    if (((i + 1) & 0xFFF) == 0)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                    }
+
+                    var recordId = primary[i];
+                    if (recordId == lastRecordId)
+                    {
+                        continue;
+                    }
+
+                    lastRecordId = recordId;
+                    var matched = true;
+                    for (var j = 0; j < others.Length; j++)
+                    {
+                        if (!others[j].Contains(recordId))
+                        {
+                            matched = false;
+                            break;
+                        }
+                    }
+
+                    if (matched)
+                    {
+                        candidates.Add(recordId);
+                    }
+                }
+
+                intersectStopwatch.Stop();
+
+                var result = new ContainsSearchResult
+                {
+                    Mode = "trigram",
+                    CandidateCount = candidates.Count,
+                    IntersectMs = intersectStopwatch.ElapsedMilliseconds
+                };
+
+                var verifyStopwatch = Stopwatch.StartNew();
+                var page = new List<FileRecord>(Math.Min(maxResults, 64));
+                var total = 0;
+                for (var i = 0; i < candidates.Count; i++)
+                {
+                    if (((i + 1) & 0xFFF) == 0)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                    }
+
+                    var record = _recordsById[candidates[i]];
+                    if (!record.LowerName.Contains(query) || !MatchesFilter(record, filter))
+                    {
+                        continue;
+                    }
+
+                    total++;
+                    if (total > offset && page.Count < maxResults)
+                    {
+                        page.Add(record);
+                    }
+                }
+
+                verifyStopwatch.Stop();
+                result.Total = total;
+                result.Page = page;
+                result.VerifyMs = verifyStopwatch.ElapsedMilliseconds;
+                return result;
+            }
+
+            private ContainsSearchResult BuildBucketResult(List<int> bucket, SearchTypeFilter filter, int offset, int maxResults, string mode, CancellationToken ct)
+            {
+                var page = new List<FileRecord>(Math.Min(maxResults, 64));
+                var total = 0;
+                var lastRecordId = int.MinValue;
+                for (var i = 0; i < bucket.Count; i++)
+                {
+                    if (((i + 1) & 0xFFF) == 0)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                    }
+
+                    var recordId = bucket[i];
+                    if (recordId == lastRecordId)
+                    {
+                        continue;
+                    }
+
+                    lastRecordId = recordId;
+                    var record = _recordsById[recordId];
+                    if (filter != SearchTypeFilter.All && !MatchesFilter(record, filter))
+                    {
+                        continue;
+                    }
+
+                    total++;
+                    if (total > offset && page.Count < maxResults)
+                    {
+                        page.Add(record);
+                    }
+                }
+
+                return new ContainsSearchResult
+                {
+                    Mode = mode,
+                    CandidateCount = total,
+                    Total = total,
+                    Page = page
+                };
+            }
+
+            private void AddRecord(FileRecord record, bool appendOnly)
+            {
+                if (record == null)
+                {
+                    return;
+                }
+
+                var key = RecordKey.FromRecord(record);
+                if (_recordIdsByKey.ContainsKey(key))
+                {
+                    return;
+                }
+
+                var recordId = _nextRecordId++;
+                _recordIdsByKey[key] = recordId;
+                _recordsById[recordId] = record;
+
+                AddToCharBuckets(recordId, record.LowerName, appendOnly);
+                AddToBigramBuckets(recordId, record.LowerName, appendOnly);
+                AddToTrigramBuckets(recordId, record.LowerName, appendOnly);
+            }
+
+            private void RemoveRecord(RecordKey key)
+            {
+                if (!_recordIdsByKey.TryGetValue(key, out var recordId)
+                    || !_recordsById.TryGetValue(recordId, out var record))
+                {
+                    return;
+                }
+
+                _recordIdsByKey.Remove(key);
+                _recordsById.Remove(recordId);
+                RemoveFromCharBuckets(recordId, record.LowerName);
+                RemoveFromBigramBuckets(recordId, record.LowerName);
+                RemoveFromTrigramBuckets(recordId, record.LowerName);
+            }
+
+            private void AddToCharBuckets(int recordId, string lowerName, bool appendOnly)
+            {
+                if (string.IsNullOrEmpty(lowerName))
+                {
+                    return;
+                }
+
+                if (appendOnly)
+                {
+                    for (var i = 0; i < lowerName.Length; i++)
+                    {
+                        AddToBucket(_charBuckets, lowerName[i], recordId, appendOnly: true);
+                    }
+
+                    return;
+                }
+
+                var seen = new HashSet<char>();
+                for (var i = 0; i < lowerName.Length; i++)
+                {
+                    var token = lowerName[i];
+                    if (!seen.Add(token))
+                    {
+                        continue;
+                    }
+
+                    AddToBucket(_charBuckets, token, recordId, appendOnly);
+                }
+            }
+
+            private void AddToBigramBuckets(int recordId, string lowerName, bool appendOnly)
+            {
+                if (string.IsNullOrEmpty(lowerName) || lowerName.Length < 2)
+                {
+                    return;
+                }
+
+                if (appendOnly)
+                {
+                    for (var i = 0; i < lowerName.Length - 1; i++)
+                    {
+                        AddToBucket(_bigramBuckets, PackBigram(lowerName[i], lowerName[i + 1]), recordId, appendOnly: true);
+                    }
+
+                    return;
+                }
+
+                var seen = new HashSet<uint>();
+                for (var i = 0; i < lowerName.Length - 1; i++)
+                {
+                    var token = PackBigram(lowerName[i], lowerName[i + 1]);
+                    if (!seen.Add(token))
+                    {
+                        continue;
+                    }
+
+                    AddToBucket(_bigramBuckets, token, recordId, appendOnly);
+                }
+            }
+
+            private void AddToTrigramBuckets(int recordId, string lowerName, bool appendOnly)
+            {
+                if (string.IsNullOrEmpty(lowerName) || lowerName.Length < 3)
+                {
+                    return;
+                }
+
+                if (appendOnly)
+                {
+                    for (var i = 0; i < lowerName.Length - 2; i++)
+                    {
+                        AddToBucket(_trigramBuckets, PackTrigram(lowerName[i], lowerName[i + 1], lowerName[i + 2]), recordId, appendOnly: true);
+                    }
+
+                    return;
+                }
+
+                var seen = new HashSet<ulong>();
+                for (var i = 0; i < lowerName.Length - 2; i++)
+                {
+                    var token = PackTrigram(lowerName[i], lowerName[i + 1], lowerName[i + 2]);
+                    if (!seen.Add(token))
+                    {
+                        continue;
+                    }
+
+                    AddToBucket(_trigramBuckets, token, recordId, appendOnly);
+                }
+            }
+
+            private void RemoveFromCharBuckets(int recordId, string lowerName)
+            {
+                if (string.IsNullOrEmpty(lowerName))
+                {
+                    return;
+                }
+
+                var seen = new HashSet<char>();
+                for (var i = 0; i < lowerName.Length; i++)
+                {
+                    if (!seen.Add(lowerName[i]))
+                    {
+                        continue;
+                    }
+
+                    RemoveFromBucket(_charBuckets, lowerName[i], recordId);
+                }
+            }
+
+            private void RemoveFromBigramBuckets(int recordId, string lowerName)
+            {
+                if (string.IsNullOrEmpty(lowerName) || lowerName.Length < 2)
+                {
+                    return;
+                }
+
+                var seen = new HashSet<uint>();
+                for (var i = 0; i < lowerName.Length - 1; i++)
+                {
+                    var token = PackBigram(lowerName[i], lowerName[i + 1]);
+                    if (!seen.Add(token))
+                    {
+                        continue;
+                    }
+
+                    RemoveFromBucket(_bigramBuckets, token, recordId);
+                }
+            }
+
+            private void RemoveFromTrigramBuckets(int recordId, string lowerName)
+            {
+                if (string.IsNullOrEmpty(lowerName) || lowerName.Length < 3)
+                {
+                    return;
+                }
+
+                var seen = new HashSet<ulong>();
+                for (var i = 0; i < lowerName.Length - 2; i++)
+                {
+                    var token = PackTrigram(lowerName[i], lowerName[i + 1], lowerName[i + 2]);
+                    if (!seen.Add(token))
+                    {
+                        continue;
+                    }
+
+                    RemoveFromBucket(_trigramBuckets, token, recordId);
+                }
+            }
+
+            private void AddToBucket<TKey>(Dictionary<TKey, List<int>> buckets, TKey key, int recordId, bool appendOnly)
+            {
+                if (!buckets.TryGetValue(key, out var bucket))
+                {
+                    bucket = new List<int>();
+                    buckets[key] = bucket;
+                }
+
+                if (appendOnly || bucket.Count == 0)
+                {
+                    bucket.Add(recordId);
+                    return;
+                }
+
+                var insertIndex = FindInsertIndex(bucket, recordId);
+                bucket.Insert(insertIndex, recordId);
+            }
+
+            private void RemoveFromBucket<TKey>(Dictionary<TKey, List<int>> buckets, TKey key, int recordId)
+            {
+                if (!buckets.TryGetValue(key, out var bucket) || bucket == null || bucket.Count == 0)
+                {
+                    return;
+                }
+
+                while (bucket.Remove(recordId))
+                {
+                }
+
+                if (bucket.Count == 0)
+                {
+                    buckets.Remove(key);
+                }
+            }
+
+            private int FindInsertIndex(List<int> bucket, int recordId)
+            {
+                var target = _recordsById[recordId];
+                var lo = 0;
+                var hi = bucket.Count;
+                while (lo < hi)
+                {
+                    var mid = lo + ((hi - lo) / 2);
+                    var currentId = bucket[mid];
+                    var current = _recordsById[currentId];
+                    var compare = ByLowerName.Compare(current, target);
+                    if (compare == 0)
+                    {
+                        compare = currentId.CompareTo(recordId);
+                    }
+
+                    if (compare <= 0)
+                    {
+                        lo = mid + 1;
+                    }
+                    else
+                    {
+                        hi = mid;
+                    }
+                }
+
+                return lo;
+            }
+
+            private static List<ulong> BuildUniqueTrigramKeys(string query)
+            {
+                var keys = new List<ulong>(Math.Max(query.Length - 2, 1));
+                var seen = new HashSet<ulong>();
+                for (var i = 0; i < query.Length - 2; i++)
+                {
+                    var token = PackTrigram(query[i], query[i + 1], query[i + 2]);
+                    if (!seen.Add(token))
+                    {
+                        continue;
+                    }
+
+                    keys.Add(token);
+                }
+
+                return keys;
+            }
+
+            private static uint PackBigram(char first, char second)
+            {
+                return ((uint)first << 16) | second;
+            }
+
+            private static ulong PackTrigram(char first, char second, char third)
+            {
+                return ((ulong)first << 32) | ((ulong)second << 16) | third;
+            }
+        }
+
+        private struct PendingContainsMutation
+        {
+            public PendingContainsMutationKind Kind;
+            public RecordKey Key;
+            public FileRecord Record;
+
+            public static PendingContainsMutation ForInsert(FileRecord record)
+            {
+                return new PendingContainsMutation
+                {
+                    Kind = PendingContainsMutationKind.Insert,
+                    Record = record
+                };
+            }
+
+            public static PendingContainsMutation ForRemove(RecordKey key)
+            {
+                return new PendingContainsMutation
+                {
+                    Kind = PendingContainsMutationKind.Remove,
+                    Key = key
+                };
+            }
+
+            public void ApplyTo(ContainsAccelerator accelerator)
+            {
+                if (accelerator == null)
+                {
+                    return;
+                }
+
+                if (Kind == PendingContainsMutationKind.Insert)
+                {
+                    accelerator.WithInserted(Record);
+                    return;
+                }
+
+                accelerator.WithRemoved(Key);
+            }
+        }
+
+        private enum PendingContainsMutationKind
+        {
+            Insert,
+            Remove
         }
 
         private struct RecordKey : IEquatable<RecordKey>

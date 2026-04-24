@@ -23,11 +23,14 @@ namespace MftScanner
         private readonly object _snapshotSaveLock = new object();
         private readonly object _snapshotWriteLock = new object();
         private readonly object _backgroundCatchUpLock = new object();
+        private readonly object _containsWarmupLock = new object();
         private bool _watcherInitialized;
         private CancellationTokenSource _snapshotSaveCts;
         private DateTime _pendingSnapshotSaveStartedUtc = DateTime.MinValue;
         private CancellationTokenSource _backgroundCatchUpCts;
         private Task _backgroundCatchUpTask;
+        private CancellationTokenSource _containsWarmupCts;
+        private Task _containsWarmupTask;
         private volatile bool _isBackgroundCatchUpInProgress;
         private volatile string _currentStatusMessage = string.Empty;
         private readonly object _periodicSnapshotSaveLock = new object();
@@ -134,6 +137,7 @@ namespace MftScanner
             StopPeriodicSnapshotSaveLoop();
             CancelPendingSnapshotSave();
             CancelBackgroundCatchUp();
+            CancelContainsWarmup();
             SaveCurrentSnapshot("shutdown");
             _usnWatcher.StopWatching();
         }
@@ -612,11 +616,15 @@ namespace MftScanner
                 var totalStopwatch = Stopwatch.StartNew();
                 long matchElapsedMilliseconds = 0;
                 long resolveElapsedMilliseconds = 0;
+                long containsIntersectMilliseconds = 0;
+                long containsVerifyMilliseconds = 0;
                 string pathPrefix = null;
                 string searchTerm = null;
                 string normalizedQuery = null;
+                string containsMode = null;
                 var mode = MatchMode.Contains;
                 var candidateCount = 0;
+                var containsCandidateCount = 0;
 
                 try
                 {
@@ -722,7 +730,23 @@ namespace MftScanner
                                         { var r = SuffixMatch(simplifiedQuery, candidateSource, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
                                         break;
                                     default:
-                                        { var r = ContainsMatch(simplifiedQuery, filter == SearchTypeFilter.All ? idx.ExactHashMap : null, candidateSource, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
+                                        if (TryContainsAccelerated(idx, simplifiedQuery, filter, fetchOffset, fetchLimit, ct, out var wildcardContains))
+                                        {
+                                            matched = wildcardContains.Page;
+                                            totalMatched = wildcardContains.Total;
+                                            containsMode = wildcardContains.Mode;
+                                            containsCandidateCount = wildcardContains.CandidateCount;
+                                            containsIntersectMilliseconds = wildcardContains.IntersectMs;
+                                            containsVerifyMilliseconds = wildcardContains.VerifyMs;
+                                        }
+                                        else
+                                        {
+                                            var r = ContainsMatch(simplifiedQuery, filter == SearchTypeFilter.All ? idx.ExactHashMap : null, candidateSource, fetchOffset, fetchLimit, ct);
+                                            matched = r.page;
+                                            totalMatched = r.total;
+                                            containsMode = "fallback";
+                                            containsCandidateCount = candidateSource?.Length ?? 0;
+                                        }
                                         break;
                                 }
                             }
@@ -734,7 +758,23 @@ namespace MftScanner
                             }
                             break;
                         default:
-                            { var r = ContainsMatch(normalizedQuery, filter == SearchTypeFilter.All ? idx.ExactHashMap : null, candidateSource, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
+                            if (TryContainsAccelerated(idx, normalizedQuery, filter, fetchOffset, fetchLimit, ct, out var containsResult))
+                            {
+                                matched = containsResult.Page;
+                                totalMatched = containsResult.Total;
+                                containsMode = containsResult.Mode;
+                                containsCandidateCount = containsResult.CandidateCount;
+                                containsIntersectMilliseconds = containsResult.IntersectMs;
+                                containsVerifyMilliseconds = containsResult.VerifyMs;
+                            }
+                            else
+                            {
+                                var r = ContainsMatch(normalizedQuery, filter == SearchTypeFilter.All ? idx.ExactHashMap : null, candidateSource, fetchOffset, fetchLimit, ct);
+                                matched = r.page;
+                                totalMatched = r.total;
+                                containsMode = "fallback";
+                                containsCandidateCount = candidateSource?.Length ?? 0;
+                            }
                             break;
                     }
                     matchStopwatch.Stop();
@@ -807,6 +847,21 @@ namespace MftScanner
                     resolveStopwatch.Stop();
                     resolveElapsedMilliseconds = resolveStopwatch.ElapsedMilliseconds;
 
+                    if (mode == MatchMode.Contains || (mode == MatchMode.Wildcard && !string.IsNullOrEmpty(containsMode)))
+                    {
+                        LogContainsDiagnostics(
+                            "success",
+                            keyword,
+                            searchTerm,
+                            normalizedQuery,
+                            filter,
+                            containsMode ?? "fallback",
+                            containsCandidateCount,
+                            containsIntersectMilliseconds,
+                            containsVerifyMilliseconds,
+                            totalMatched);
+                    }
+
                     return FinalizeSearchResult(
                         totalStopwatch,
                         "success",
@@ -831,6 +886,21 @@ namespace MftScanner
                 }
                 catch (OperationCanceledException)
                 {
+                    if (mode == MatchMode.Contains || (mode == MatchMode.Wildcard && !string.IsNullOrEmpty(containsMode)))
+                    {
+                        LogContainsDiagnostics(
+                            "canceled",
+                            keyword,
+                            searchTerm,
+                            normalizedQuery,
+                            filter,
+                            containsMode ?? "fallback",
+                            containsCandidateCount,
+                            containsIntersectMilliseconds,
+                            containsVerifyMilliseconds,
+                            0);
+                    }
+
                     LogSearchFailure(
                         totalStopwatch,
                         "canceled",
@@ -850,6 +920,21 @@ namespace MftScanner
                 }
                 catch (Exception ex)
                 {
+                    if (mode == MatchMode.Contains || (mode == MatchMode.Wildcard && !string.IsNullOrEmpty(containsMode)))
+                    {
+                        LogContainsDiagnostics(
+                            "failed",
+                            keyword,
+                            searchTerm,
+                            normalizedQuery,
+                            filter,
+                            containsMode ?? "fallback",
+                            containsCandidateCount,
+                            containsIntersectMilliseconds,
+                            containsVerifyMilliseconds,
+                            0);
+                    }
+
                     LogSearchFailure(
                         totalStopwatch,
                         "failed",
@@ -870,12 +955,28 @@ namespace MftScanner
             }, ct);
         }
 
+        private static bool TryContainsAccelerated(
+            MemoryIndex index,
+            string query,
+            SearchTypeFilter filter,
+            int offset,
+            int maxResults,
+            CancellationToken ct,
+            out MemoryIndex.ContainsSearchResult result)
+        {
+            result = null;
+            return index != null
+                && !string.IsNullOrEmpty(query)
+                && index.TryContainsSearch(query, filter, offset, maxResults, ct, out result);
+        }
+
         // ── 私有实现 ────────────────────────────────────────────────────────────
 
         private int BuildIndex(IProgress<string> progress, CancellationToken ct)
         {
             CancelPendingSnapshotSave();
             CancelBackgroundCatchUp();
+            CancelContainsWarmup();
             _usnWatcher.StopWatching();
 
             if (TryRestoreFromSnapshot(progress, ct, out var restoredCount))
@@ -925,6 +1026,25 @@ namespace MftScanner
                 $"keyword={IndexPerfLog.FormatValue(keyword)} searchTerm={IndexPerfLog.FormatValue(searchTerm)} " +
                 $"normalized={IndexPerfLog.FormatValue(normalizedQuery)} pathPrefix={IndexPerfLog.FormatValue(pathPrefix)}");
             return result;
+        }
+
+        private static void LogContainsDiagnostics(
+            string outcome,
+            string keyword,
+            string searchTerm,
+            string normalizedQuery,
+            SearchTypeFilter filter,
+            string mode,
+            int candidateCount,
+            long intersectMs,
+            long verifyMs,
+            int matchedCount)
+        {
+            UsnDiagLog.Write(
+                $"[CONTAINS QUERY] outcome={outcome} mode={mode} filter={filter} candidateCount={candidateCount} " +
+                $"intersectMs={intersectMs} verifyMs={verifyMs} matched={matchedCount} " +
+                $"keyword={IndexPerfLog.FormatValue(keyword)} searchTerm={IndexPerfLog.FormatValue(searchTerm)} " +
+                $"normalized={IndexPerfLog.FormatValue(normalizedQuery)}");
         }
 
         private void LogSearchFailure(
@@ -981,7 +1101,7 @@ namespace MftScanner
             progress?.Report("正在恢复内存索引...");
             var restoreStopwatch = Stopwatch.StartNew();
             _enumerator.LoadVolumeSnapshots(snapshot.Volumes);
-            _index.LoadSortedRecords(snapshot.Records);
+            _index.LoadSortedRecords(snapshot.Records, buildContainsAccelerator: false);
             restoreStopwatch.Stop();
             UsnDiagLog.Write($"[SNAPSHOT RESTORE] elapsedMs={restoreStopwatch.ElapsedMilliseconds} records={snapshot.Records.Length} volumes={snapshot.Volumes.Length}");
 
@@ -1079,7 +1199,7 @@ namespace MftScanner
                 mergeStopwatch.Stop();
 
                 var buildStopwatch = Stopwatch.StartNew();
-                _index.Build(allRecords);
+                _index.Build(allRecords, buildContainsAccelerator: false);
                 buildStopwatch.Stop();
                 progress?.Report($"已索引 {_index.TotalCount} 个对象");
 
@@ -1090,7 +1210,7 @@ namespace MftScanner
                     _usnWatcher.StartWatching(letter, nextUsn, journalId, ct);
 
                 watcherStartStopwatch.Stop();
-
+                QueueContainsAcceleratorWarmup("post-full-build");
                 QueueSnapshotSave(allRecords, volumeSnapshots);
                 PublishIndexStatus($"已索引 {_index.TotalCount} 个对象", false, requireSearchRefresh: true);
 
@@ -1124,6 +1244,7 @@ namespace MftScanner
             if (volumes == null || volumes.Count == 0)
             {
                 PublishIndexStatus($"已索引 {_index.TotalCount} 个对象", false);
+                QueueContainsAcceleratorWarmup("snapshot-no-catchup");
                 return;
             }
 
@@ -1135,6 +1256,18 @@ namespace MftScanner
             }
         }
 
+        private sealed class CatchUpVolumeResult
+        {
+            public char DriveLetter { get; set; }
+            public long StartUsn { get; set; }
+            public ulong StartJournalId { get; set; }
+            public List<UsnChangeEntry> Changes { get; set; }
+            public long NextUsn { get; set; }
+            public ulong LatestJournalId { get; set; }
+            public long ElapsedMs { get; set; }
+            public bool IsExpired { get; set; }
+        }
+
         private void RunBackgroundCatchUp(IReadOnlyList<VolumeSnapshot> volumes, IProgress<string> progress, CancellationTokenSource backgroundCatchUpCts)
         {
             var ct = backgroundCatchUpCts.Token;
@@ -1144,27 +1277,56 @@ namespace MftScanner
                     $"已从快照恢复 {_index.TotalCount} 个对象，可立即搜索；后台正在追平 USN...",
                     true);
 
-                var checkpoints = new (char driveLetter, long nextUsn, ulong journalId)[volumes.Count];
                 var catchUpStopwatch = Stopwatch.StartNew();
+                var volumeResults = new CatchUpVolumeResult[volumes.Count];
+                System.Threading.Tasks.Parallel.For(0, volumes.Count, new ParallelOptions
+                {
+                    MaxDegreeOfParallelism = Math.Min(volumes.Count, Environment.ProcessorCount),
+                    CancellationToken = ct
+                }, i =>
+                {
+                    var volume = volumes[i];
+                    var volumeCatchUpStopwatch = Stopwatch.StartNew();
+                    var result = new CatchUpVolumeResult
+                    {
+                        DriveLetter = volume.DriveLetter,
+                        StartUsn = volume.NextUsn,
+                        StartJournalId = volume.JournalId
+                    };
 
-                for (var i = 0; i < volumes.Count; i++)
+                    if (_usnWatcher.TryCollectCatchUpChanges(
+                            volume.DriveLetter,
+                            volume.NextUsn,
+                            volume.JournalId,
+                            ct,
+                            out var changes,
+                            out var nextUsn,
+                            out var latestJournalId))
+                    {
+                        result.Changes = changes;
+                        result.NextUsn = nextUsn;
+                        result.LatestJournalId = latestJournalId;
+                    }
+                    else
+                    {
+                        result.IsExpired = true;
+                    }
+
+                    volumeCatchUpStopwatch.Stop();
+                    result.ElapsedMs = volumeCatchUpStopwatch.ElapsedMilliseconds;
+                    volumeResults[i] = result;
+                });
+
+                for (var i = 0; i < volumeResults.Length; i++)
                 {
                     ct.ThrowIfCancellationRequested();
-
-                    var volume = volumes[i];
-                    PublishIndexStatus(
-                        $"已从快照恢复 {_index.TotalCount} 个对象，可立即搜索；后台正在追平 {volume.DriveLetter}: ({i + 1}/{volumes.Count})",
-                        true);
-
-                    var volumeCatchUpStopwatch = Stopwatch.StartNew();
-                    if (!_usnWatcher.TryCollectCatchUpChanges(volume.DriveLetter, volume.NextUsn, volume.JournalId, ct,
-                            out var changes, out var nextUsn, out var latestJournalId))
+                    var result = volumeResults[i];
+                    if (result.IsExpired)
                     {
-                        volumeCatchUpStopwatch.Stop();
                         catchUpStopwatch.Stop();
                         UsnDiagLog.Write(
-                            $"[SNAPSHOT CATCHUP] drive={volume.DriveLetter} expired elapsedMs={volumeCatchUpStopwatch.ElapsedMilliseconds} " +
-                            $"startUsn={volume.NextUsn} journalId={volume.JournalId}");
+                            $"[SNAPSHOT CATCHUP] drive={result.DriveLetter} expired elapsedMs={result.ElapsedMs} " +
+                            $"startUsn={result.StartUsn} journalId={result.StartJournalId}");
 
                         PublishIndexStatus("索引快照已过期，后台正在重建索引...", true);
                         var rebuiltCount = BuildIndexFromMft(progress, ct);
@@ -1172,29 +1334,45 @@ namespace MftScanner
                         return;
                     }
 
-                    if (changes.Count > 0)
-                    {
-                        var indexChangedArgs = BuildBatchIndexChangedArgs(changes);
-                        _enumerator.ApplyUsnChanges(changes);
-                        _index.ApplyBatch(changes);
-                        PublishBatchIndexChanges(indexChangedArgs);
-                    }
-
-                    volumeCatchUpStopwatch.Stop();
                     UsnDiagLog.Write(
-                        $"[SNAPSHOT CATCHUP] drive={volume.DriveLetter} elapsedMs={volumeCatchUpStopwatch.ElapsedMilliseconds} " +
-                        $"startUsn={volume.NextUsn} nextUsn={nextUsn} journalId={latestJournalId} changes={changes.Count}");
-
-                    checkpoints[i] = (volume.DriveLetter, nextUsn, latestJournalId);
-
-                    PublishIndexStatus(
-                        $"已从快照恢复 {_index.TotalCount} 个对象，可立即搜索；后台正在追平 USN ({i + 1}/{volumes.Count})",
-                        true);
+                        $"[SNAPSHOT CATCHUP] drive={result.DriveLetter} elapsedMs={result.ElapsedMs} " +
+                        $"startUsn={result.StartUsn} nextUsn={result.NextUsn} journalId={result.LatestJournalId} changes={result.Changes?.Count ?? 0}");
                 }
 
+                var applyStopwatch = Stopwatch.StartNew();
+                var totalChangeCount = 0;
+                for (var i = 0; i < volumeResults.Length; i++)
+                {
+                    totalChangeCount += volumeResults[i].Changes?.Count ?? 0;
+                }
+
+                if (totalChangeCount > 0)
+                {
+                    var allChanges = new List<UsnChangeEntry>(totalChangeCount);
+                    for (var i = 0; i < volumeResults.Length; i++)
+                    {
+                        if (volumeResults[i].Changes != null && volumeResults[i].Changes.Count > 0)
+                        {
+                            allChanges.AddRange(volumeResults[i].Changes);
+                        }
+                    }
+
+                    var indexChangedArgs = BuildBatchIndexChangedArgs(allChanges);
+                    _enumerator.ApplyUsnChanges(allChanges);
+                    _index.ApplyBatch(allChanges, rebuildContainsAccelerator: false);
+                    PublishBatchIndexChanges(indexChangedArgs);
+                }
+
+                applyStopwatch.Stop();
                 catchUpStopwatch.Stop();
 
                 var watcherStartStopwatch = Stopwatch.StartNew();
+                var checkpoints = new (char driveLetter, long nextUsn, ulong journalId)[volumeResults.Length];
+                for (var i = 0; i < volumeResults.Length; i++)
+                {
+                    checkpoints[i] = (volumeResults[i].DriveLetter, volumeResults[i].NextUsn, volumeResults[i].LatestJournalId);
+                }
+
                 var volumeSnapshots = _enumerator.CreateVolumeSnapshots(checkpoints);
 
                 for (var i = 0; i < checkpoints.Length; i++)
@@ -1205,9 +1383,11 @@ namespace MftScanner
 
                 watcherStartStopwatch.Stop();
                 QueueSnapshotSave(_index.SortedArray, volumeSnapshots);
+                QueueContainsAcceleratorWarmup("post-catchup");
 
                 UsnDiagLog.Write(
                     $"[SNAPSHOT CATCHUP TOTAL] catchUpMs={catchUpStopwatch.ElapsedMilliseconds} " +
+                    $"applyMs={applyStopwatch.ElapsedMilliseconds} totalChanges={totalChangeCount} " +
                     $"watcherStartMs={watcherStartStopwatch.ElapsedMilliseconds} indexedCount={_index.TotalCount}");
 
                 PublishIndexStatus($"已索引 {_index.TotalCount} 个对象", false);
@@ -1257,6 +1437,119 @@ namespace MftScanner
             finally
             {
                 cts.Dispose();
+            }
+        }
+
+        private void QueueContainsAcceleratorWarmup(string reason)
+        {
+            var index = _index;
+            if (index == null || index.TotalCount == 0 || index.HasContainsAccelerator)
+            {
+                return;
+            }
+
+            CancellationTokenSource cts;
+            lock (_containsWarmupLock)
+            {
+                try
+                {
+                    _containsWarmupCts?.Cancel();
+                    _containsWarmupCts?.Dispose();
+                }
+                catch
+                {
+                }
+
+                cts = new CancellationTokenSource();
+                _containsWarmupCts = cts;
+                _containsWarmupTask = Task.Run(() => RunContainsAcceleratorWarmup(index, reason, cts), cts.Token);
+            }
+        }
+
+        private void RunContainsAcceleratorWarmup(MemoryIndex index, string reason, CancellationTokenSource warmupCts)
+        {
+            var ct = warmupCts.Token;
+            var stopwatch = Stopwatch.StartNew();
+            try
+            {
+                if (index == null || index.TotalCount == 0 || index.HasContainsAccelerator)
+                {
+                    return;
+                }
+
+                UsnDiagLog.Write(
+                    $"[CONTAINS WARMUP] outcome=start reason={IndexPerfLog.FormatValue(reason)} " +
+                    $"records={index.TotalCount}");
+                index.TryEnsureContainsAccelerator(ct);
+                stopwatch.Stop();
+                UsnDiagLog.Write(
+                    $"[CONTAINS WARMUP] outcome=success reason={IndexPerfLog.FormatValue(reason)} " +
+                    $"elapsedMs={stopwatch.ElapsedMilliseconds} records={index.TotalCount}");
+            }
+            catch (OperationCanceledException)
+            {
+                stopwatch.Stop();
+                UsnDiagLog.Write(
+                    $"[CONTAINS WARMUP] outcome=canceled reason={IndexPerfLog.FormatValue(reason)} " +
+                    $"elapsedMs={stopwatch.ElapsedMilliseconds}");
+            }
+            catch (Exception ex)
+            {
+                stopwatch.Stop();
+                UsnDiagLog.Write(
+                    $"[CONTAINS WARMUP] outcome=failed reason={IndexPerfLog.FormatValue(reason)} " +
+                    $"elapsedMs={stopwatch.ElapsedMilliseconds} error={ex.GetType().Name}:{IndexPerfLog.FormatValue(ex.Message)}");
+            }
+            finally
+            {
+                lock (_containsWarmupLock)
+                {
+                    if (ReferenceEquals(_containsWarmupCts, warmupCts))
+                    {
+                        _containsWarmupTask = null;
+                        _containsWarmupCts = null;
+                    }
+                }
+
+                try
+                {
+                    warmupCts.Dispose();
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        private void CancelContainsWarmup()
+        {
+            CancellationTokenSource cts;
+            lock (_containsWarmupLock)
+            {
+                cts = _containsWarmupCts;
+                _containsWarmupCts = null;
+                _containsWarmupTask = null;
+            }
+
+            if (cts == null)
+            {
+                return;
+            }
+
+            try
+            {
+                cts.Cancel();
+            }
+            catch
+            {
+            }
+
+            try
+            {
+                cts.Dispose();
+            }
+            catch
+            {
             }
         }
 

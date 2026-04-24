@@ -29,6 +29,11 @@ namespace MftScanner
             return "PackageManager.MftScanner.Shown." + NormalizeSessionId(sessionId);
         }
 
+        public static string BuildSearchUiStateMapName(string sessionId)
+        {
+            return "PackageManager.MftScanner.UiState." + NormalizeSessionId(sessionId);
+        }
+
         private static string NormalizeSessionId(string sessionId)
         {
             return string.IsNullOrWhiteSpace(sessionId) ? "default" : sessionId.Trim();

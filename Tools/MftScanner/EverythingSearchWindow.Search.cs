@@ -245,7 +245,7 @@ namespace MftScanner
                 IndexingProgress.Visibility = Visibility.Collapsed;
 
             if (e.RequireSearchRefresh)
-                RequestRefreshCurrentQuery();
+                RequestRefreshCurrentQuery(force: true);
 
             UpdateSummaryStatus();
         }
@@ -343,18 +343,20 @@ namespace MftScanner
             return resultsChanged;
         }
 
-        private void RequestRefreshCurrentQuery()
+        private void RequestRefreshCurrentQuery(bool force = false)
         {
             if (string.IsNullOrWhiteSpace(_activeKeyword))
                 return;
 
-            if (!ShouldAutoRefreshCurrentQuery())
+            if (!ShouldAutoRefreshCurrentQuery(force))
             {
                 _pendingRefresh = false;
+                _forcePendingRefresh = false;
                 return;
             }
 
             _pendingRefresh = true;
+            _forcePendingRefresh = force;
             _liveRefreshTimer.Stop();
             _liveRefreshTimer.Start();
         }
@@ -362,16 +364,17 @@ namespace MftScanner
         private void LiveRefreshTimer_Tick(object sender, EventArgs e)
         {
             _liveRefreshTimer.Stop();
-            if (_pendingRefresh && !_isSearchInProgress && !string.IsNullOrWhiteSpace(SearchBox.Text) && ShouldAutoRefreshCurrentQuery())
+            if (_pendingRefresh && !_isSearchInProgress && !string.IsNullOrWhiteSpace(SearchBox.Text) && ShouldAutoRefreshCurrentQuery(_forcePendingRefresh))
             {
                 _pendingRefresh = false;
+                _forcePendingRefresh = false;
                 _ = ApplyFilterAsync(SearchBox.Text, false);
             }
         }
 
-        private bool ShouldAutoRefreshCurrentQuery()
+        private bool ShouldAutoRefreshCurrentQuery(bool force = false)
         {
-            return _displayedResults.Count == 0 && ResultsGrid.SelectedItem == null;
+            return force || (_displayedResults.Count == 0 && ResultsGrid.SelectedItem == null);
         }
 
         private void ResultsGrid_AutoGeneratingColumn(object sender, DataGridAutoGeneratingColumnEventArgs e)

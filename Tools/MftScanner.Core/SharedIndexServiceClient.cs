@@ -15,6 +15,8 @@ namespace MftScanner
         private const int HostStartupWaitMilliseconds = 15000;
         private const int HostStartupProbeIntervalMilliseconds = 500;
         private const int HostReadyPollIntervalMilliseconds = 200;
+        private const int ShowSearchUiRequestTimeoutMilliseconds = 5000;
+        private const int ShowSearchUiPipeConnectMilliseconds = 1200;
 
         private readonly string _consumerName;
         private readonly SharedIndexClientSlotId _slotId;
@@ -126,7 +128,7 @@ namespace MftScanner
         {
             try
             {
-                using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30)))
+                using (var cts = new CancellationTokenSource(ShowSearchUiRequestTimeoutMilliseconds))
                 {
                     var response = SendControlRequestAsyncStatic(new SharedIndexRequest
                     {
@@ -383,10 +385,30 @@ namespace MftScanner
             }
 
             var publishedSequence = SharedIndexMemoryProtocol.ReadPublishedChangeSequence(slotResources.ChangeMap);
+            if (publishedSequence - _lastChangeSequence > SharedIndexMemoryProtocol.ChangeRingCapacity)
+            {
+                _lastChangeSequence = publishedSequence;
+                SharedIndexMemoryProtocol.WriteConsumedChangeSequence(slotResources.ChangeMap, _lastChangeSequence);
+                RaiseRefreshRequired();
+                return;
+            }
+
             while (_lastChangeSequence < publishedSequence)
             {
                 var nextSequence = _lastChangeSequence + 1;
-                var record = SharedIndexMemoryProtocol.ReadChangeRecord(slotResources.ChangeMap, nextSequence);
+                SharedIndexChangeRecord record;
+                try
+                {
+                    record = SharedIndexMemoryProtocol.ReadChangeRecord(slotResources.ChangeMap, nextSequence);
+                }
+                catch
+                {
+                    _lastChangeSequence = publishedSequence;
+                    SharedIndexMemoryProtocol.WriteConsumedChangeSequence(slotResources.ChangeMap, _lastChangeSequence);
+                    RaiseRefreshRequired();
+                    return;
+                }
+
                 _lastChangeSequence = nextSequence;
 
                 IndexChanged?.Invoke(this, new IndexChangedEventArgs(
@@ -400,6 +422,25 @@ namespace MftScanner
             }
 
             SharedIndexMemoryProtocol.WriteConsumedChangeSequence(slotResources.ChangeMap, _lastChangeSequence);
+        }
+
+        private void RaiseRefreshRequired()
+        {
+            string message;
+            int indexedCount;
+            bool isBackgroundCatchUpInProgress;
+            lock (_stateLock)
+            {
+                message = _currentStatusMessage;
+                indexedCount = _indexedCount;
+                isBackgroundCatchUpInProgress = _isBackgroundCatchUpInProgress;
+            }
+
+            IndexStatusChanged?.Invoke(this, new IndexStatusChangedEventArgs(
+                message ?? string.Empty,
+                indexedCount,
+                isBackgroundCatchUpInProgress,
+                requireSearchRefresh: true));
         }
 
         private async Task<SharedIndexIpcResponse> SendRequestAsync(SharedIndexIpcRequest request, CancellationToken ct)
@@ -757,12 +798,19 @@ namespace MftScanner
         {
             using (var stream = new NamedPipeClientStream(".", SharedIndexConstants.IndexHostCommandPipeName, PipeDirection.InOut, PipeOptions.Asynchronous))
             {
-                await stream.ConnectAsync(10000, ct).ConfigureAwait(false);
+                await stream.ConnectAsync(ShowSearchUiPipeConnectMilliseconds, ct).ConfigureAwait(false);
                 using (var reader = new StreamReader(stream))
                 using (var writer = new StreamWriter(stream) { AutoFlush = true })
                 {
                     await writer.WriteLineAsync(JsonConvert.SerializeObject(request ?? new SharedIndexRequest())).ConfigureAwait(false);
-                    var line = await reader.ReadLineAsync().ConfigureAwait(false);
+                    var readTask = reader.ReadLineAsync();
+                    var completedTask = await Task.WhenAny(readTask, Task.Delay(ShowSearchUiRequestTimeoutMilliseconds, ct)).ConfigureAwait(false);
+                    if (!ReferenceEquals(completedTask, readTask))
+                    {
+                        throw new TimeoutException("后台索引宿主未在规定时间内返回 show-search-ui 响应。");
+                    }
+
+                    var line = await readTask.ConfigureAwait(false);
                     if (string.IsNullOrWhiteSpace(line))
                     {
                         throw new IOException("后台索引宿主未返回控制命令响应。");
