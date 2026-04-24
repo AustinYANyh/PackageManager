@@ -2,7 +2,9 @@ using System;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using MftScanner;
 
@@ -14,15 +16,22 @@ namespace PackageManager.Services
         {
             try
             {
-                var toolPath = AdminElevationService.ExtractEmbeddedTool("MftScanner.exe", "MftScanner.exe");
+                var toolPath = EnsureHostToolCurrent();
                 if (string.IsNullOrWhiteSpace(toolPath))
                 {
-                    LoggingService.LogWarning("提取 MftScanner.exe 失败，无法启动后台索引宿主。");
+                    LoggingService.LogWarning("同步 MftScanner.exe 失败，无法启动后台索引宿主。");
                     return false;
                 }
 
-                if (!TaskExists())
+                var taskExists = TaskExists();
+                var taskMatches = taskExists && TaskDefinitionMatches(toolPath);
+                if (!taskExists || !taskMatches)
                 {
+                    if (taskExists && !taskMatches)
+                    {
+                        TryStopRegisteredTaskInstance();
+                    }
+
                     if (!RunElevatedRegister(toolPath))
                     {
                         return false;
@@ -38,9 +47,81 @@ namespace PackageManager.Services
             }
         }
 
+        private static string EnsureHostToolCurrent()
+        {
+            var toolPath = AdminElevationService.GetExtractedToolPath("MftScanner.exe");
+            var toolExists = !string.IsNullOrWhiteSpace(toolPath) && File.Exists(toolPath);
+            var toolUpToDate = toolExists && AdminElevationService.IsEmbeddedToolUpToDate("MftScanner.exe", "MftScanner.exe");
+            if (toolUpToDate)
+            {
+                return toolPath;
+            }
+
+            LoggingService.LogInfo("检测到后台索引宿主文件缺失或版本已变化，准备同步最新宿主。");
+            TryStopRegisteredTaskInstance();
+            Thread.Sleep(300);
+
+            toolPath = AdminElevationService.ExtractEmbeddedTool("MftScanner.exe", "MftScanner.exe");
+            if (!string.IsNullOrWhiteSpace(toolPath)
+                && File.Exists(toolPath)
+                && AdminElevationService.IsEmbeddedToolUpToDate("MftScanner.exe", "MftScanner.exe"))
+            {
+                return toolPath;
+            }
+
+            LoggingService.LogInfo("后台索引宿主仍被占用，准备结束旧版 MftScanner 进程后重试同步。");
+            TryStopProcessesUsingImagePath(toolPath);
+            Thread.Sleep(500);
+
+            toolPath = AdminElevationService.ExtractEmbeddedTool("MftScanner.exe", "MftScanner.exe");
+            if (!string.IsNullOrWhiteSpace(toolPath)
+                && File.Exists(toolPath)
+                && AdminElevationService.IsEmbeddedToolUpToDate("MftScanner.exe", "MftScanner.exe"))
+            {
+                return toolPath;
+            }
+
+            LoggingService.LogWarning("同步后台索引宿主失败，提取后的 MftScanner.exe 仍不是最新版本。");
+            return null;
+        }
+
         private static bool TaskExists()
         {
             return RunSchtasks($"/Query /TN \"{SharedIndexConstants.IndexHostTaskName}\"", true).ExitCode == 0;
+        }
+
+        private static bool TaskDefinitionMatches(string toolPath)
+        {
+            if (string.IsNullOrWhiteSpace(toolPath))
+            {
+                return false;
+            }
+
+            try
+            {
+                var result = RunSchtasks($"/Query /TN \"{SharedIndexConstants.IndexHostTaskName}\" /V /FO LIST", true);
+                if (result.ExitCode != 0 || string.IsNullOrWhiteSpace(result.Stdout))
+                {
+                    return false;
+                }
+
+                var expectedCommand = $"\"{toolPath}\" --index-agent";
+                var line = result.Stdout
+                    .Split(new[] { "\r\n", "\n" }, StringSplitOptions.None)
+                    .FirstOrDefault(item => item.StartsWith("Task To Run:", StringComparison.OrdinalIgnoreCase));
+                if (string.IsNullOrWhiteSpace(line))
+                {
+                    return false;
+                }
+
+                var actualCommand = line.Substring(line.IndexOf(':') + 1).Trim();
+                return string.Equals(actualCommand, expectedCommand, StringComparison.OrdinalIgnoreCase);
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogWarning($"校验后台索引宿主计划任务定义失败：{ex.Message}");
+                return false;
+            }
         }
 
         internal static bool TryRunRegisteredTaskSilently()
@@ -58,6 +139,69 @@ namespace PackageManager.Services
             {
                 LoggingService.LogWarning($"静默启动后台索引宿主任务失败：{ex.Message}");
                 return false;
+            }
+        }
+
+        private static void TryStopRegisteredTaskInstance()
+        {
+            try
+            {
+                if (!TaskExists())
+                {
+                    return;
+                }
+
+                RunSchtasks($"/End /TN \"{SharedIndexConstants.IndexHostTaskName}\"", true);
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogWarning($"结束后台索引宿主计划任务实例失败：{ex.Message}");
+            }
+        }
+
+        private static void TryStopProcessesUsingImagePath(string toolPath)
+        {
+            if (string.IsNullOrWhiteSpace(toolPath))
+            {
+                return;
+            }
+
+            try
+            {
+                foreach (var process in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(toolPath)))
+                {
+                    try
+                    {
+                        var mainModule = process.MainModule;
+                        var processPath = mainModule?.FileName;
+                        if (!string.Equals(processPath, toolPath, StringComparison.OrdinalIgnoreCase))
+                        {
+                            continue;
+                        }
+
+                        LoggingService.LogInfo($"结束旧版 MftScanner 进程：PID={process.Id}");
+                        process.Kill();
+                        process.WaitForExit(5000);
+                    }
+                    catch (Exception ex)
+                    {
+                        LoggingService.LogWarning($"结束旧版 MftScanner 进程失败：PID={process.Id}，{ex.Message}");
+                    }
+                    finally
+                    {
+                        try
+                        {
+                            process.Dispose();
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogWarning($"扫描旧版 MftScanner 进程失败：{ex.Message}");
             }
         }
 

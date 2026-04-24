@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Security.Principal;
+using System.Security.Cryptography;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 using PackageManager.Models;
@@ -200,6 +201,32 @@ namespace PackageManager.Services
             }
         }
 
+        public static bool IsEmbeddedToolUpToDate(string resourceSuffix, string outputFileName)
+        {
+            try
+            {
+                var asm = typeof(AdminElevationService).Assembly;
+                if (!IsEmbeddedResourceCurrent(asm, resourceSuffix, GetExtractedToolPath(outputFileName)))
+                {
+                    return false;
+                }
+
+                foreach (var sidecarSuffix in GetEmbeddedToolSidecars(outputFileName))
+                {
+                    if (!IsEmbeddedResourceCurrent(asm, sidecarSuffix, GetExtractedToolPath(Path.GetFileName(sidecarSuffix))))
+                    {
+                        return false;
+                    }
+                }
+
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         public static string GetExtractedToolPath(string outputFileName)
         {
             if (string.IsNullOrWhiteSpace(outputFileName))
@@ -246,6 +273,55 @@ namespace PackageManager.Services
                 {
                     stream.CopyTo(fs);
                 }
+            }
+        }
+
+        private static bool IsEmbeddedResourceCurrent(System.Reflection.Assembly asm, string resourceSuffix, string targetPath)
+        {
+            if (asm == null || string.IsNullOrWhiteSpace(resourceSuffix) || string.IsNullOrWhiteSpace(targetPath) || !File.Exists(targetPath))
+            {
+                return false;
+            }
+
+            var resourceName = asm.GetManifestResourceNames()
+                .FirstOrDefault(n => n.EndsWith(resourceSuffix, StringComparison.OrdinalIgnoreCase));
+            if (string.IsNullOrEmpty(resourceName))
+            {
+                return false;
+            }
+
+            using (var stream = asm.GetManifestResourceStream(resourceName))
+            {
+                if (stream == null)
+                {
+                    return false;
+                }
+
+                var resourceHash = ComputeSha256(stream);
+                using (var fs = new FileStream(targetPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                {
+                    var fileHash = ComputeSha256(fs);
+                    return string.Equals(resourceHash, fileHash, StringComparison.OrdinalIgnoreCase);
+                }
+            }
+        }
+
+        private static string ComputeSha256(Stream stream)
+        {
+            if (stream == null)
+            {
+                return string.Empty;
+            }
+
+            if (stream.CanSeek)
+            {
+                stream.Position = 0;
+            }
+
+            using (var sha = SHA256.Create())
+            {
+                var bytes = sha.ComputeHash(stream);
+                return BitConverter.ToString(bytes).Replace("-", string.Empty);
             }
         }
         
