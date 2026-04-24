@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.IO.MemoryMappedFiles;
 using System.IO.Pipes;
 using System.Security.AccessControl;
 using System.Security.Principal;
@@ -15,11 +16,19 @@ namespace MftScanner
     {
         private readonly IndexService _indexService = new IndexService();
         private readonly Action _showSearchUi;
-        private readonly List<NamedPipeServerStream> _eventSubscribers = new List<NamedPipeServerStream>();
-        private readonly object _subscriberLock = new object();
         private readonly object _buildLock = new object();
+        private readonly object _stateLock = new object();
         private readonly CancellationTokenSource _cts = new CancellationTokenSource();
+        private readonly Dictionary<SharedIndexClientSlotId, SharedIndexClientSlotResources> _slotResources
+            = new Dictionary<SharedIndexClientSlotId, SharedIndexClientSlotResources>();
+
+        private MemoryMappedFile _stateMap;
         private Task<int> _buildTask;
+        private long _stateSequence;
+        private long _indexEpoch;
+        private long _lastCommittedChangeSequence;
+        private long _refreshSequence;
+        private SharedIndexBuildState _buildState = SharedIndexBuildState.Unknown;
 
         public IndexHostAgent(Action showSearchUi)
         {
@@ -30,8 +39,16 @@ namespace MftScanner
 
         public void Start()
         {
-            Task.Run(() => RunCommandServerLoop(_cts.Token));
-            Task.Run(() => RunEventServerLoop(_cts.Token));
+            InitializeSharedMemory();
+            Task.Run(() => RunControlCommandServerLoop(_cts.Token));
+            Task.Run(() => RunHeartbeatLoop(_cts.Token));
+
+            foreach (var pair in _slotResources)
+            {
+                var slotResources = pair.Value;
+                Task.Run(() => RunSlotWorker(slotResources, _cts.Token));
+            }
+
             Task.Run(() => EnsureBuiltAsync(rebuild: false, _cts.Token));
         }
 
@@ -45,48 +62,377 @@ namespace MftScanner
             {
             }
 
-            lock (_subscriberLock)
+            foreach (var slotResources in _slotResources.Values)
             {
-                foreach (var subscriber in _eventSubscribers.ToArray())
+                try
                 {
-                    TryDisposeSubscriber(subscriber);
+                    slotResources.Dispose();
                 }
+                catch
+                {
+                }
+            }
 
-                _eventSubscribers.Clear();
+            _slotResources.Clear();
+
+            try
+            {
+                _stateMap?.Dispose();
+            }
+            catch
+            {
             }
 
             _indexService.Shutdown();
             _cts.Dispose();
         }
 
+        private void InitializeSharedMemory()
+        {
+            _stateMap = SharedIndexMemoryProtocol.CreateStateMap();
+            foreach (var slotId in SharedIndexMemoryProtocol.EnumerateSlots())
+            {
+                var slotResources = SharedIndexMemoryProtocol.CreateHostSlotResources(slotId);
+                SharedIndexMemoryProtocol.InitializeChangeMap(slotResources.ChangeMap);
+                slotResources.CancelEvent.Reset();
+                _slotResources[slotId] = slotResources;
+            }
+
+            PublishState(signalClients: false);
+        }
+
         private void IndexService_IndexStatusChanged(object sender, IndexStatusChangedEventArgs e)
         {
-            Broadcast(new SharedIndexEventMessage
+            if (e.RequireSearchRefresh)
             {
-                type = "status",
-                indexedCount = e.IndexedCount,
-                currentStatusMessage = e.Message,
-                isBackgroundCatchUpInProgress = e.IsBackgroundCatchUpInProgress,
-                requireSearchRefresh = e.RequireSearchRefresh
-            });
+                Interlocked.Increment(ref _refreshSequence);
+            }
+
+            PublishState(signalClients: true);
         }
 
         private void IndexService_IndexChanged(object sender, IndexChangedEventArgs e)
         {
-            Broadcast(new SharedIndexEventMessage
+            if (e == null)
             {
-                type = "change",
-                changeType = e.Type.ToString(),
-                lowerName = e.LowerName,
-                fullPath = e.FullPath,
-                oldFullPath = e.OldFullPath,
-                newOriginalName = e.NewOriginalName,
-                newLowerName = e.NewLowerName,
-                isDirectory = e.IsDirectory
-            });
+                return;
+            }
+
+            var sequence = Interlocked.Increment(ref _lastCommittedChangeSequence);
+            var record = new SharedIndexChangeRecord
+            {
+                Sequence = sequence,
+                ChangeType = e.Type,
+                IsDirectory = e.IsDirectory,
+                LowerName = e.LowerName,
+                FullPath = e.FullPath,
+                OldFullPath = e.OldFullPath,
+                NewOriginalName = e.NewOriginalName,
+                NewLowerName = e.NewLowerName
+            };
+
+            foreach (var slotResources in _slotResources.Values)
+            {
+                PublishChangeToSlot(slotResources, record, _cts.Token);
+            }
+
+            PublishState(signalClients: false);
         }
 
-        private void RunCommandServerLoop(CancellationToken ct)
+        private void RunSlotWorker(SharedIndexClientSlotResources slotResources, CancellationToken ct)
+        {
+            var waitHandles = new WaitHandle[] { slotResources.RequestReadyEvent, ct.WaitHandle };
+            while (!ct.IsCancellationRequested)
+            {
+                var waitIndex = WaitHandle.WaitAny(waitHandles);
+                if (waitIndex != 0)
+                {
+                    break;
+                }
+
+                SharedIndexIpcRequest request = null;
+                SharedIndexIpcResponse response;
+                try
+                {
+                    request = SharedIndexMemoryProtocol.ReadRequest(slotResources.RequestMap);
+                    response = ExecuteRequestAsync(request, slotResources, ct).GetAwaiter().GetResult();
+                    response.Status = SharedIndexResponseStatus.Success;
+                }
+                catch (OperationCanceledException)
+                {
+                    if (ct.IsCancellationRequested)
+                    {
+                        break;
+                    }
+
+                    response = BuildCanceledResponse(request);
+                }
+                catch (Exception ex)
+                {
+                    response = BuildErrorResponse(request, ex);
+                }
+
+                try
+                {
+                    SharedIndexMemoryProtocol.WriteResponse(slotResources.ResponseMap, response);
+                    slotResources.ResponseReadyEvent.Set();
+                }
+                catch (Exception ex)
+                {
+                    Services.LoggingService.LogWarning($"[INDEX HOST] 写入 {slotResources.SlotId} 响应失败：{ex.GetType().Name}: {ex.Message}");
+                }
+            }
+        }
+
+        private async Task<SharedIndexIpcResponse> ExecuteRequestAsync(SharedIndexIpcRequest request, SharedIndexClientSlotResources slotResources, CancellationToken hostToken)
+        {
+            switch (request?.CommandType ?? SharedIndexCommandType.None)
+            {
+                case SharedIndexCommandType.Build:
+                    return await ExecuteBuildAsync(request?.RequestId ?? 0, rebuild: false, hostToken).ConfigureAwait(false);
+                case SharedIndexCommandType.Rebuild:
+                    return await ExecuteBuildAsync(request?.RequestId ?? 0, rebuild: true, hostToken).ConfigureAwait(false);
+                case SharedIndexCommandType.State:
+                    return BuildStateResponse(request?.RequestId ?? 0);
+                case SharedIndexCommandType.Search:
+                    await EnsureBuiltAsync(rebuild: false, hostToken).ConfigureAwait(false);
+                    return await ExecuteSearchAsync(request, slotResources, hostToken).ConfigureAwait(false);
+                default:
+                    return BuildStateResponse(request?.RequestId ?? 0);
+            }
+        }
+
+        private async Task<SharedIndexIpcResponse> ExecuteSearchAsync(SharedIndexIpcRequest request, SharedIndexClientSlotResources slotResources, CancellationToken hostToken)
+        {
+            using (var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(hostToken))
+            {
+                RegisteredWaitHandle cancelRegistration = null;
+                try
+                {
+                    cancelRegistration = ThreadPool.RegisterWaitForSingleObject(
+                        slotResources.CancelEvent,
+                        (state, timedOut) =>
+                        {
+                            if (!timedOut)
+                            {
+                                ((CancellationTokenSource)state).Cancel();
+                            }
+                        },
+                        linkedCts,
+                        Timeout.Infinite,
+                        executeOnlyOnce: true);
+
+                    var searchResult = await _indexService.SearchAsync(
+                        request?.Keyword ?? string.Empty,
+                        request != null && request.MaxResults > 0 ? request.MaxResults : 500,
+                        Math.Max(request?.Offset ?? 0, 0),
+                        request?.Filter ?? SearchTypeFilter.All,
+                        null,
+                        linkedCts.Token).ConfigureAwait(false);
+                    return BuildSearchResponse(searchResult, request?.RequestId ?? 0);
+                }
+                finally
+                {
+                    try
+                    {
+                        cancelRegistration?.Unregister(null);
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+        }
+
+        private async Task<SharedIndexIpcResponse> ExecuteBuildAsync(long requestId, bool rebuild, CancellationToken ct)
+        {
+            var indexedCount = await EnsureBuiltAsync(rebuild, ct).ConfigureAwait(false);
+            var response = BuildStateResponse(requestId);
+            response.IndexedCount = indexedCount;
+            return response;
+        }
+
+        private Task<int> EnsureBuiltAsync(bool rebuild, CancellationToken ct)
+        {
+            lock (_buildLock)
+            {
+                if (rebuild || _buildTask == null)
+                {
+                    Interlocked.Increment(ref _indexEpoch);
+                    _buildState = SharedIndexBuildState.Building;
+                    PublishState(signalClients: true);
+
+                    var buildTask = rebuild
+                        ? _indexService.RebuildIndexAsync(null, _cts.Token)
+                        : _indexService.BuildIndexAsync(null, _cts.Token);
+                    _buildTask = TrackBuildAsync(buildTask);
+                }
+
+                return _buildTask;
+            }
+        }
+
+        private async Task<int> TrackBuildAsync(Task<int> buildTask)
+        {
+            try
+            {
+                var indexedCount = await buildTask.ConfigureAwait(false);
+                _buildState = SharedIndexBuildState.Ready;
+                PublishState(signalClients: true);
+                return indexedCount;
+            }
+            catch
+            {
+                _buildState = SharedIndexBuildState.Failed;
+                PublishState(signalClients: true);
+                throw;
+            }
+        }
+
+        private SharedIndexIpcResponse BuildStateResponse(long requestId)
+        {
+            return new SharedIndexIpcResponse
+            {
+                RequestId = requestId,
+                IndexedCount = _indexService.IndexedCount,
+                CurrentStatusMessage = _indexService.CurrentStatusMessage,
+                IsBackgroundCatchUpInProgress = _indexService.IsBackgroundCatchUpInProgress,
+                RequireSearchRefresh = false,
+                RefreshSequence = Interlocked.Read(ref _refreshSequence),
+                TotalIndexedCount = _indexService.IndexedCount,
+                TotalMatchedCount = 0,
+                IsTruncated = false,
+                Results = new List<ScannedFileInfo>()
+            };
+        }
+
+        private SharedIndexIpcResponse BuildSearchResponse(SearchQueryResult result, long requestId)
+        {
+            var response = BuildStateResponse(requestId);
+            response.TotalIndexedCount = result?.TotalIndexedCount ?? _indexService.IndexedCount;
+            response.TotalMatchedCount = result?.TotalMatchedCount ?? 0;
+            response.IsTruncated = result != null && result.IsTruncated;
+            response.Results = result?.Results ?? new List<ScannedFileInfo>();
+            return response;
+        }
+
+        private SharedIndexIpcResponse BuildErrorResponse(SharedIndexIpcRequest request, Exception ex)
+        {
+            var response = BuildStateResponse(request?.RequestId ?? 0);
+            response.Status = SharedIndexResponseStatus.Error;
+            response.ErrorMessage = ex?.Message ?? "后台索引宿主执行失败。";
+            response.Results = new List<ScannedFileInfo>();
+            return response;
+        }
+
+        private SharedIndexIpcResponse BuildCanceledResponse(SharedIndexIpcRequest request)
+        {
+            var response = BuildStateResponse(request?.RequestId ?? 0);
+            response.Status = SharedIndexResponseStatus.Error;
+            response.ErrorMessage = "请求已取消。";
+            response.Results = new List<ScannedFileInfo>();
+            return response;
+        }
+
+        private void PublishState(bool signalClients)
+        {
+            if (_stateMap == null)
+            {
+                return;
+            }
+
+            lock (_stateLock)
+            {
+                var snapshot = new SharedIndexStateSnapshot
+                {
+                    HostProcessId = Process.GetCurrentProcess().Id,
+                    HostHeartbeatTicks = DateTime.UtcNow.Ticks,
+                    StateSequence = Interlocked.Increment(ref _stateSequence),
+                    IndexEpoch = Interlocked.Read(ref _indexEpoch),
+                    IndexedCount = _indexService.IndexedCount,
+                    IsBackgroundCatchUpInProgress = _indexService.IsBackgroundCatchUpInProgress,
+                    StatusMessage = _indexService.CurrentStatusMessage ?? string.Empty,
+                    BuildState = _buildState,
+                    LastCommittedChangeSequence = Interlocked.Read(ref _lastCommittedChangeSequence),
+                    RefreshSequence = Interlocked.Read(ref _refreshSequence)
+                };
+
+                SharedIndexMemoryProtocol.WriteState(_stateMap, snapshot);
+            }
+
+            if (!signalClients)
+            {
+                return;
+            }
+
+            foreach (var slotResources in _slotResources.Values)
+            {
+                try
+                {
+                    slotResources.StatusChangedEvent.Set();
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        private void PublishChangeToSlot(SharedIndexClientSlotResources slotResources, SharedIndexChangeRecord record, CancellationToken ct)
+        {
+            if (slotResources == null || record == null)
+            {
+                return;
+            }
+
+            if (!SharedIndexMemoryProtocol.IsClientActive(slotResources.ChangeMap))
+            {
+                SharedIndexMemoryProtocol.ResetClientChangeCursor(slotResources.ChangeMap, record.Sequence);
+                return;
+            }
+
+            while (!ct.IsCancellationRequested)
+            {
+                var consumedSequence = SharedIndexMemoryProtocol.ReadConsumedChangeSequence(slotResources.ChangeMap);
+                if (record.Sequence - consumedSequence <= SharedIndexMemoryProtocol.ChangeRingCapacity)
+                {
+                    SharedIndexMemoryProtocol.WriteChangeRecord(slotResources.ChangeMap, record);
+                    slotResources.ChangeAvailableEvent.Set();
+                    return;
+                }
+
+                if (!SharedIndexMemoryProtocol.IsClientActive(slotResources.ChangeMap))
+                {
+                    SharedIndexMemoryProtocol.ResetClientChangeCursor(slotResources.ChangeMap, record.Sequence);
+                    return;
+                }
+
+                Thread.Sleep(5);
+            }
+        }
+
+        private void RunHeartbeatLoop(CancellationToken ct)
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                try
+                {
+                    PublishState(signalClients: false);
+                    if (ct.WaitHandle.WaitOne(1000))
+                    {
+                        return;
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        private void RunControlCommandServerLoop(CancellationToken ct)
         {
             while (!ct.IsCancellationRequested)
             {
@@ -95,7 +441,7 @@ namespace MftScanner
                 {
                     server = CreatePipeServer(SharedIndexConstants.IndexHostCommandPipeName);
                     server.WaitForConnection();
-                    HandleCommandConnection(server, ct).GetAwaiter().GetResult();
+                    HandleControlConnection(server, ct).GetAwaiter().GetResult();
                 }
                 catch (OperationCanceledException)
                 {
@@ -103,7 +449,7 @@ namespace MftScanner
                 }
                 catch (Exception ex)
                 {
-                    Services.LoggingService.LogWarning($"[INDEX HOST] 命令循环异常：{ex.GetType().Name}: {ex.Message}");
+                    Services.LoggingService.LogWarning($"[INDEX HOST] 控制命令循环异常：{ex.GetType().Name}: {ex.Message}");
                 }
                 finally
                 {
@@ -118,40 +464,7 @@ namespace MftScanner
             }
         }
 
-        private void RunEventServerLoop(CancellationToken ct)
-        {
-            while (!ct.IsCancellationRequested)
-            {
-                NamedPipeServerStream server = null;
-                try
-                {
-                    server = CreatePipeServer(SharedIndexConstants.IndexHostEventPipeName);
-                    server.WaitForConnection();
-                    RegisterEventSubscriber(server);
-                    server = null;
-                }
-                catch (OperationCanceledException)
-                {
-                    break;
-                }
-                catch (Exception ex)
-                {
-                    Services.LoggingService.LogWarning($"[INDEX HOST] 事件循环异常：{ex.GetType().Name}: {ex.Message}");
-                }
-                finally
-                {
-                    try
-                    {
-                        server?.Dispose();
-                    }
-                    catch
-                    {
-                    }
-                }
-            }
-        }
-
-        private async Task HandleCommandConnection(NamedPipeServerStream server, CancellationToken ct)
+        private async Task HandleControlConnection(NamedPipeServerStream server, CancellationToken ct)
         {
             using (var reader = new StreamReader(server))
             using (var writer = new StreamWriter(server) { AutoFlush = true })
@@ -164,7 +477,7 @@ namespace MftScanner
                 SharedIndexResponse response;
                 try
                 {
-                    response = await ExecuteRequestAsync(request, ct).ConfigureAwait(false);
+                    response = await ExecuteControlRequestAsync(request, ct).ConfigureAwait(false);
                     response.success = true;
                 }
                 catch (OperationCanceledException)
@@ -173,97 +486,40 @@ namespace MftScanner
                 }
                 catch (Exception ex)
                 {
-                    response = BuildStateResponse();
-                    response.success = false;
-                    response.error = ex.Message;
+                    response = new SharedIndexResponse
+                    {
+                        success = false,
+                        error = ex.Message,
+                        indexedCount = _indexService.IndexedCount,
+                        currentStatusMessage = _indexService.CurrentStatusMessage,
+                        isBackgroundCatchUpInProgress = _indexService.IsBackgroundCatchUpInProgress,
+                        totalIndexedCount = _indexService.IndexedCount,
+                        results = new List<ScannedFileInfo>()
+                    };
                 }
 
                 await writer.WriteLineAsync(JsonConvert.SerializeObject(response)).ConfigureAwait(false);
             }
         }
 
-        private async Task<SharedIndexResponse> ExecuteRequestAsync(SharedIndexRequest request, CancellationToken ct)
+        private Task<SharedIndexResponse> ExecuteControlRequestAsync(SharedIndexRequest request, CancellationToken ct)
         {
             var command = (request?.command ?? string.Empty).Trim();
-            switch (command.ToLowerInvariant())
+            if (string.Equals(command, "show-search-ui", StringComparison.OrdinalIgnoreCase))
             {
-                case "build":
-                    return await ExecuteBuildAsync(rebuild: false, ct).ConfigureAwait(false);
-                case "rebuild":
-                    return await ExecuteBuildAsync(rebuild: true, ct).ConfigureAwait(false);
-                case "search":
-                    await EnsureBuiltAsync(rebuild: false, ct).ConfigureAwait(false);
-                    var filter = ParseFilter(request?.filter);
-                    var searchResult = await _indexService.SearchAsync(
-                        request?.keyword ?? string.Empty,
-                        request?.maxResults > 0 ? request.maxResults : 500,
-                        Math.Max(request?.offset ?? 0, 0),
-                        filter,
-                        null,
-                        ct).ConfigureAwait(false);
-                    return BuildSearchResponse(searchResult);
-                case "state":
-                    return BuildStateResponse();
-                case "show-search-ui":
-                    _showSearchUi();
-                    return BuildStateResponse();
-                default:
-                    return BuildStateResponse();
+                _showSearchUi();
             }
-        }
 
-        private async Task<SharedIndexResponse> ExecuteBuildAsync(bool rebuild, CancellationToken ct)
-        {
-            var indexedCount = await EnsureBuiltAsync(rebuild, ct).ConfigureAwait(false);
-            var response = BuildStateResponse();
-            response.indexedCount = indexedCount;
-            return response;
-        }
-
-        private Task<int> EnsureBuiltAsync(bool rebuild, CancellationToken ct)
-        {
-            lock (_buildLock)
-            {
-                if (rebuild || _buildTask == null)
-                {
-                    _buildTask = rebuild
-                        ? _indexService.RebuildIndexAsync(null, _cts.Token)
-                        : _indexService.BuildIndexAsync(null, _cts.Token);
-                }
-
-                return _buildTask;
-            }
-        }
-
-        private SharedIndexResponse BuildStateResponse()
-        {
-            return new SharedIndexResponse
+            return Task.FromResult(new SharedIndexResponse
             {
                 indexedCount = _indexService.IndexedCount,
                 currentStatusMessage = _indexService.CurrentStatusMessage,
                 isBackgroundCatchUpInProgress = _indexService.IsBackgroundCatchUpInProgress,
-                totalIndexedCount = _indexService.IndexedCount
-            };
-        }
-
-        private SharedIndexResponse BuildSearchResponse(SearchQueryResult result)
-        {
-            var response = BuildStateResponse();
-            response.totalIndexedCount = result?.TotalIndexedCount ?? _indexService.IndexedCount;
-            response.totalMatchedCount = result?.TotalMatchedCount ?? 0;
-            response.isTruncated = result != null && result.IsTruncated;
-            response.results = result?.Results ?? new List<ScannedFileInfo>();
-            return response;
-        }
-
-        private static SearchTypeFilter ParseFilter(string filter)
-        {
-            if (Enum.TryParse(filter, true, out SearchTypeFilter parsed))
-            {
-                return parsed;
-            }
-
-            return SearchTypeFilter.All;
+                totalIndexedCount = _indexService.IndexedCount,
+                totalMatchedCount = 0,
+                isTruncated = false,
+                results = new List<ScannedFileInfo>()
+            });
         }
 
         private static NamedPipeServerStream CreatePipeServer(string pipeName)
@@ -271,11 +527,11 @@ namespace MftScanner
             return new NamedPipeServerStream(
                 pipeName,
                 PipeDirection.InOut,
-                NamedPipeServerStream.MaxAllowedServerInstances,
+                1,
                 PipeTransmissionMode.Byte,
                 PipeOptions.Asynchronous,
-                65536,
-                65536,
+                4096,
+                4096,
                 CreatePipeSecurity());
         }
 
@@ -287,72 +543,6 @@ namespace MftScanner
                 PipeAccessRights.ReadWrite | PipeAccessRights.CreateNewInstance,
                 AccessControlType.Allow));
             return security;
-        }
-
-        private void RegisterEventSubscriber(NamedPipeServerStream server)
-        {
-            lock (_subscriberLock)
-            {
-                _eventSubscribers.Add(server);
-            }
-
-            Broadcast(new SharedIndexEventMessage
-            {
-                type = "status",
-                indexedCount = _indexService.IndexedCount,
-                currentStatusMessage = _indexService.CurrentStatusMessage,
-                isBackgroundCatchUpInProgress = _indexService.IsBackgroundCatchUpInProgress,
-                requireSearchRefresh = false
-            });
-        }
-
-        private void Broadcast(SharedIndexEventMessage message)
-        {
-            var payload = System.Text.Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(message) + Environment.NewLine);
-            List<NamedPipeServerStream> stale = null;
-            lock (_subscriberLock)
-            {
-                foreach (var subscriber in _eventSubscribers.ToArray())
-                {
-                    try
-                    {
-                        if (!subscriber.IsConnected)
-                        {
-                            (stale ??= new List<NamedPipeServerStream>()).Add(subscriber);
-                            continue;
-                        }
-
-                        subscriber.Write(payload, 0, payload.Length);
-                        subscriber.Flush();
-                    }
-                    catch
-                    {
-                        (stale ??= new List<NamedPipeServerStream>()).Add(subscriber);
-                    }
-                }
-
-                if (stale == null)
-                {
-                    return;
-                }
-
-                foreach (var subscriber in stale)
-                {
-                    _eventSubscribers.Remove(subscriber);
-                    TryDisposeSubscriber(subscriber);
-                }
-            }
-        }
-
-        private static void TryDisposeSubscriber(NamedPipeServerStream subscriber)
-        {
-            try
-            {
-                subscriber.Dispose();
-            }
-            catch
-            {
-            }
         }
 
         public static void ShowSearchUiFromHost()

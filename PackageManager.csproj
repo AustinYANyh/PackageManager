@@ -447,21 +447,36 @@
     <Target Name="EnsureEmbeddedToolArtifacts" BeforeTargets="BeforeBuild">
       <MSBuild Projects="Tools\MftScanner.Core\MftScanner.Core.csproj"
                Targets="Build"
-               Properties="Configuration=$(Configuration);Platform=AnyCPU" />
+               Properties="Configuration=$(Configuration);Platform=AnyCPU;OutDir=" />
+      <MSBuild Projects="Tools\MftScanner.Core\MftScanner.Core.csproj"
+               Targets="GetTargetPath"
+               Properties="Configuration=$(Configuration);Platform=AnyCPU;OutDir=">
+        <Output TaskParameter="TargetOutputs" ItemName="EmbeddedMftScannerCoreTarget" />
+      </MSBuild>
       <MSBuild Projects="Tools\MftScanner\MftScanner.csproj"
                Targets="Build"
-               Properties="Configuration=$(Configuration);Platform=AnyCPU" />
+               Properties="Configuration=$(Configuration);Platform=AnyCPU;OutDir=" />
+      <MSBuild Projects="Tools\MftScanner\MftScanner.csproj"
+               Targets="GetTargetPath"
+               Properties="Configuration=$(Configuration);Platform=AnyCPU;OutDir=">
+        <Output TaskParameter="TargetOutputs" ItemName="EmbeddedMftScannerTarget" />
+      </MSBuild>
       <MSBuild Projects="Tools\CommonStartupTool\CommonStartupTool.csproj"
                Targets="Build"
-               Properties="Configuration=$(Configuration);Platform=AnyCPU" />
+               Properties="Configuration=$(Configuration);Platform=AnyCPU;OutDir=" />
+      <MSBuild Projects="Tools\CommonStartupTool\CommonStartupTool.csproj"
+               Targets="GetTargetPath"
+               Properties="Configuration=$(Configuration);Platform=AnyCPU;OutDir=">
+        <Output TaskParameter="TargetOutputs" ItemName="EmbeddedCommonStartupToolTarget" />
+      </MSBuild>
       <MakeDir Directories="Assets\Tools" />
-      <Copy SourceFiles="Tools\MftScanner\bin\$(Configuration)\MftScanner.exe"
+      <Copy SourceFiles="@(EmbeddedMftScannerTarget)"
             DestinationFiles="Assets\Tools\MftScanner.exe"
             SkipUnchangedFiles="false" />
-      <Copy SourceFiles="Tools\MftScanner.Core\bin\$(Configuration)\MftScanner.Core.dll"
+      <Copy SourceFiles="@(EmbeddedMftScannerCoreTarget)"
             DestinationFiles="Assets\Tools\MftScanner.Core.dll"
             SkipUnchangedFiles="false" />
-      <Copy SourceFiles="Tools\CommonStartupTool\bin\$(Configuration)\CommonStartupTool.exe"
+      <Copy SourceFiles="@(EmbeddedCommonStartupToolTarget)"
             DestinationFiles="Assets\Tools\CommonStartupTool.exe"
             SkipUnchangedFiles="false" />
     </Target>

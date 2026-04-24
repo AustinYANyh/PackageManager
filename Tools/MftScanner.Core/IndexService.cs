@@ -1504,6 +1504,7 @@ namespace MftScanner
         {
             try
             {
+                var totalStopwatch = Stopwatch.StartNew();
                 var checkpoints = _usnWatcher.GetVolumeCheckpoints();
                 if (checkpoints == null || checkpoints.Length == 0)
                     return;
@@ -1512,9 +1513,14 @@ namespace MftScanner
                 if (records == null || records.Length == 0)
                     return;
 
+                var prepStopwatch = Stopwatch.StartNew();
                 var recordCopy = new FileRecord[records.Length];
                 Array.Copy(records, recordCopy, records.Length);
+                var recordCopyMilliseconds = prepStopwatch.ElapsedMilliseconds;
+
+                prepStopwatch.Restart();
                 var volumeSnapshots = _enumerator.CreateVolumeSnapshots(checkpoints);
+                var volumeSnapshotMilliseconds = prepStopwatch.ElapsedMilliseconds;
 
                 IndexSnapshotSaveMetrics metrics;
                 long elapsedMilliseconds;
@@ -1528,9 +1534,13 @@ namespace MftScanner
 
                 if (metrics != null)
                 {
+                    totalStopwatch.Stop();
                     UsnDiagLog.Write(
                         $"[SNAPSHOT SAVE LIVE] reason={reason} elapsedMs={elapsedMilliseconds} version={metrics.Version} " +
                         $"fileBytes={metrics.FileBytes} records={metrics.RecordCount} volumes={metrics.VolumeCount} frnEntries={metrics.FrnEntryCount}");
+                    UsnDiagLog.Write(
+                        $"[SNAPSHOT SAVE LIVE DETAIL] reason={reason} totalMs={totalStopwatch.ElapsedMilliseconds} " +
+                        $"recordCopyMs={recordCopyMilliseconds} volumeSnapshotMs={volumeSnapshotMilliseconds} saveMs={elapsedMilliseconds}");
                 }
             }
             catch (Exception ex)

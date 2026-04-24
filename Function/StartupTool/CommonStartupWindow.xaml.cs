@@ -1454,6 +1454,11 @@ public partial class CommonStartupWindow : Window
             return;
         }
 
+        var totalStopwatch = Stopwatch.StartNew();
+        var stageStopwatch = Stopwatch.StartNew();
+        long indexWaitMs = 0;
+        long searchMs = 0;
+        long applyMs = 0;
         var keyword = GetSearchKeyword();
         CancelActiveSearch();
         _scanCts = new CancellationTokenSource();
@@ -1481,6 +1486,7 @@ public partial class CommonStartupWindow : Window
         try
         {
             var indexReady = await WaitForIndexReadyAsync(forceRescan).ConfigureAwait(true);
+            indexWaitMs = stageStopwatch.ElapsedMilliseconds;
             if (!indexReady || ct.IsCancellationRequested || currentVersion != _searchVersion)
             {
                 return;
@@ -1500,19 +1506,17 @@ public partial class CommonStartupWindow : Window
                 }
             });
 
+            stageStopwatch.Restart();
             var searchResult = await SearchStartupResultsAsync(keyword, queryProgress, ct).ConfigureAwait(true);
+            searchMs = stageStopwatch.ElapsedMilliseconds;
             if (ct.IsCancellationRequested || currentVersion != _searchVersion)
             {
                 return;
             }
 
-            await Dispatcher.Yield(DispatcherPriority.Background);
-            if (ct.IsCancellationRequested || currentVersion != _searchVersion)
-            {
-                return;
-            }
-
+            stageStopwatch.Restart();
             ApplySearchResult(searchResult.Response, searchResult.Results);
+            applyMs = stageStopwatch.ElapsedMilliseconds;
         }
         catch (OperationCanceledException)
         {
@@ -1531,6 +1535,15 @@ public partial class CommonStartupWindow : Window
         }
         finally
         {
+            totalStopwatch.Stop();
+            if (totalStopwatch.ElapsedMilliseconds >= 60 && !silentRefresh)
+            {
+                LoggingService.LogDebug(
+                    $"[CtrlQ Search UI] keyword={keyword} totalMs={totalStopwatch.ElapsedMilliseconds} " +
+                    $"indexWaitMs={indexWaitMs} searchMs={searchMs} applyMs={applyMs} " +
+                    $"preserveExistingResults={preserveExistingResults} forceRescan={forceRescan}");
+            }
+
             if (!silentRefresh && currentVersion == _searchVersion)
             {
                 SetScanningState(false);
@@ -2068,16 +2081,8 @@ public partial class CommonStartupWindow : Window
 
     private void ScheduleWorkbenchRefresh()
     {
-        var requestedVersion = Interlocked.Increment(ref _workbenchRefreshVersion);
-        Dispatcher.BeginInvoke(new Action(() =>
-        {
-            if (requestedVersion != _workbenchRefreshVersion)
-            {
-                return;
-            }
-
-            ApplyPendingSearchKeyword(startFileSearch: false, refreshWorkbench: true);
-        }), DispatcherPriority.Background);
+        Interlocked.Increment(ref _workbenchRefreshVersion);
+        ApplyPendingSearchKeyword(startFileSearch: false, refreshWorkbench: true);
     }
 
     private void ApplyPendingSearchKeyword(bool startFileSearch, bool refreshWorkbench)

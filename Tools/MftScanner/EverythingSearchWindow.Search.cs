@@ -93,8 +93,9 @@ namespace MftScanner
         private async Task ApplyFilterAsync(string keyword, bool updateHistory)
         {
             CancelToken(ref _searchCts);
-            _searchCts = new CancellationTokenSource();
-            var ct = _searchCts.Token;
+            var currentSearchCts = new CancellationTokenSource();
+            _searchCts = currentSearchCts;
+            var ct = currentSearchCts.Token;
 
             _displayedResults.Clear();
             _displayedPathSet.Clear();
@@ -145,9 +146,9 @@ namespace MftScanner
             }
             finally
             {
-                _isSearchInProgress = false;
-                if (!ct.IsCancellationRequested)
+                if (ReferenceEquals(_searchCts, currentSearchCts))
                 {
+                    _isSearchInProgress = false;
                     IndexingProgress.Visibility = Visibility.Collapsed;
                     UpdateSummaryStatus();
                     UpdateEmptyState();

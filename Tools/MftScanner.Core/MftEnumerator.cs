@@ -99,7 +99,7 @@ namespace MftScanner
 
         private readonly Dictionary<char, Dictionary<ulong, string>> _pathCaches
             = new Dictionary<char, Dictionary<ulong, string>>();
-        private readonly object _mapsLock = new object();
+        private readonly ReaderWriterLockSlim _mapsLock = new ReaderWriterLockSlim(LockRecursionPolicy.NoRecursion);
 
         // ── 公开 API ────────────────────────────────────────────────────────────
 
@@ -216,10 +216,15 @@ namespace MftScanner
                     frn:          kv.Key));
             }
 
-            lock (_mapsLock)
+            _mapsLock.EnterWriteLock();
+            try
             {
                 _frnMaps[dl] = frnMap;
                 _pathCaches[dl] = new Dictionary<ulong, string>();
+            }
+            finally
+            {
+                _mapsLock.ExitWriteLock();
             }
 
             return (output.Count - startCount, nextUsn, journalId);
@@ -231,16 +236,31 @@ namespace MftScanner
         public void MergeFrnMap(char driveLetter, MftEnumerator source)
         {
             var dl = char.ToUpperInvariant(driveLetter);
-            lock (source._mapsLock)
+            if (ReferenceEquals(source, this))
+            {
+                return;
+            }
+
+            source._mapsLock.EnterReadLock();
+            try
             {
                 if (!source._frnMaps.TryGetValue(dl, out var srcMap))
                     return;
 
-                lock (_mapsLock)
+                _mapsLock.EnterWriteLock();
+                try
                 {
                     _frnMaps[dl] = srcMap;
                     _pathCaches[dl] = new Dictionary<ulong, string>();
                 }
+                finally
+                {
+                    _mapsLock.ExitWriteLock();
+                }
+            }
+            finally
+            {
+                source._mapsLock.ExitReadLock();
             }
         }
 
@@ -250,7 +270,8 @@ namespace MftScanner
                 return Array.Empty<VolumeSnapshot>();
 
             var snapshots = new VolumeSnapshot[checkpoints.Length];
-            lock (_mapsLock)
+            _mapsLock.EnterReadLock();
+            try
             {
                 for (var i = 0; i < checkpoints.Length; i++)
                 {
@@ -276,13 +297,18 @@ namespace MftScanner
                     snapshots[i] = new VolumeSnapshot(dl, checkpoint.nextUsn, checkpoint.journalId, entries);
                 }
             }
+            finally
+            {
+                _mapsLock.ExitReadLock();
+            }
 
             return snapshots;
         }
 
         public void LoadVolumeSnapshots(IReadOnlyList<VolumeSnapshot> snapshots)
         {
-            lock (_mapsLock)
+            _mapsLock.EnterWriteLock();
+            try
             {
                 _frnMaps.Clear();
                 _pathCaches.Clear();
@@ -310,6 +336,10 @@ namespace MftScanner
                     _pathCaches[dl] = new Dictionary<ulong, string>();
                 }
             }
+            finally
+            {
+                _mapsLock.ExitWriteLock();
+            }
         }
 
         /// <summary>
@@ -319,13 +349,18 @@ namespace MftScanner
         public void RegisterFrn(char driveLetter, ulong frn, string fileName, ulong parentFrn, bool isDirectory)
         {
             var dl = char.ToUpperInvariant(driveLetter);
-            lock (_mapsLock)
+            _mapsLock.EnterWriteLock();
+            try
             {
                 if (!_frnMaps.TryGetValue(dl, out var frnMap))
                     return; // 该卷尚未枚举，忽略
                 frnMap[frn] = (fileName, parentFrn, isDirectory);
                 if (_pathCaches.TryGetValue(dl, out var pathCache))
                     pathCache.Remove(frn);
+            }
+            finally
+            {
+                _mapsLock.ExitWriteLock();
             }
         }
 
@@ -335,12 +370,17 @@ namespace MftScanner
         public void UnregisterFrn(char driveLetter, ulong frn)
         {
             var dl = char.ToUpperInvariant(driveLetter);
-            lock (_mapsLock)
+            _mapsLock.EnterWriteLock();
+            try
             {
                 if (_frnMaps.TryGetValue(dl, out var frnMap))
                     frnMap.Remove(frn);
                 if (_pathCaches.TryGetValue(dl, out var pathCache))
                     pathCache.Remove(frn);
+            }
+            finally
+            {
+                _mapsLock.ExitWriteLock();
             }
         }
 
@@ -349,7 +389,8 @@ namespace MftScanner
             if (changes == null || changes.Count == 0)
                 return;
 
-            lock (_mapsLock)
+            _mapsLock.EnterWriteLock();
+            try
             {
                 for (var i = 0; i < changes.Count; i++)
                 {
@@ -375,6 +416,10 @@ namespace MftScanner
                     }
                 }
             }
+            finally
+            {
+                _mapsLock.ExitWriteLock();
+            }
         }
 
         /// <summary>
@@ -383,7 +428,8 @@ namespace MftScanner
         public string ResolveFullPath(char driveLetter, ulong parentFrn, string fileName)
         {
             var dl = char.ToUpperInvariant(driveLetter);
-            lock (_mapsLock)
+            _mapsLock.EnterReadLock();
+            try
             {
                 if (!_frnMaps.TryGetValue(dl, out var frnMap))
                     return dl + ":\\" + fileName;
@@ -393,6 +439,10 @@ namespace MftScanner
 
                 var dirPath = ResolveDir(parentFrn, dl, frnMap, pathCache);
                 return dirPath + "\\" + fileName;
+            }
+            finally
+            {
+                _mapsLock.ExitReadLock();
             }
         }
 
