@@ -40,6 +40,7 @@
     <Compile Include="IndexSnapshotStore.cs" />
     <Compile Include="TrieNode.cs" />
     <Compile Include="MemoryIndex.cs" />
+    <Compile Include="MemoryIndex.ContainsAccelerator.cs" />
     <Compile Include="MftEnumerator.cs" />
     <Compile Include="IndexService.cs" />
     <Compile Include="IncrementalFilter.cs" />

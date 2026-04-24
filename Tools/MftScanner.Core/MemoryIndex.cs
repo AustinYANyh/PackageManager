@@ -5,7 +5,7 @@ using System.Threading;
 
 namespace MftScanner
 {
-    public sealed class MemoryIndex
+    public sealed partial class MemoryIndex
     {
         private readonly ReaderWriterLockSlim _lock = new ReaderWriterLockSlim();
         private long _contentVersion;
@@ -192,6 +192,7 @@ namespace MftScanner
                 if (_containsAcceleratorReady)
                 {
                     _containsAccelerator = (_containsAccelerator ?? ContainsAccelerator.Empty).WithInserted(record);
+                    _containsAcceleratorEpoch++;
                 }
                 else
                 {
@@ -242,6 +243,7 @@ namespace MftScanner
                 {
                     _containsAccelerator = (_containsAccelerator ?? ContainsAccelerator.Empty).WithRemoved(
                         new RecordKey(frn, lowerName, parentFrn, driveLetter));
+                    _containsAcceleratorEpoch++;
                 }
                 else
                 {
@@ -327,6 +329,7 @@ namespace MftScanner
                     _containsAccelerator = (_containsAccelerator ?? ContainsAccelerator.Empty)
                         .WithRemoved(new RecordKey(frn, oldLowerName, oldParentFrn, driveLetter))
                         .WithInserted(newRecord);
+                    _containsAcceleratorEpoch++;
                 }
                 else
                 {
@@ -898,6 +901,7 @@ namespace MftScanner
             _pendingContainsMutations.Add(mutation);
         }
 
+        #if false
         private sealed class ContainsAccelerator
         {
             [Flags]
@@ -1512,6 +1516,8 @@ namespace MftScanner
                 return result;
             }
         }
+
+        #endif
 
         [Flags]
         private enum ContainsAcceleratorBucketKinds

@@ -1,0 +1,1123 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace MftScanner
+{
+    public sealed partial class MemoryIndex
+    {
+        private sealed class ContainsAccelerator
+        {
+            [Flags]
+            private enum BucketKinds
+            {
+                None = 0,
+                Char = 1,
+                Bigram = 2,
+                Trigram = 4,
+                All = Char | Bigram | Trigram
+            }
+
+            private const int ParallelBuildMinRecords = 32768;
+            private const int CancellationStride = 0x7FF;
+
+            private readonly List<FileRecord> _recordsById;
+            private readonly Dictionary<RecordKey, int> _recordIdsByKey;
+            private readonly BucketStore<char> _charBuckets;
+            private readonly BucketStore<uint> _bigramBuckets;
+            private readonly BucketStore<ulong> _trigramBuckets;
+            private readonly BucketKinds _builtBuckets;
+            private int _nextRecordId = 1;
+
+            public static ContainsAccelerator Empty => new ContainsAccelerator();
+
+            public bool IsEmpty => _recordIdsByKey.Count == 0;
+            public bool IsComplete => _builtBuckets == BucketKinds.All;
+
+            private ContainsAccelerator()
+            {
+                _recordsById = new List<FileRecord>(1);
+                _recordsById.Add(null);
+                _recordIdsByKey = new Dictionary<RecordKey, int>();
+                _charBuckets = BucketStore<char>.Empty;
+                _bigramBuckets = BucketStore<uint>.Empty;
+                _trigramBuckets = BucketStore<ulong>.Empty;
+                _builtBuckets = BucketKinds.None;
+            }
+
+            private ContainsAccelerator(
+                FileRecord[] records,
+                BucketKinds builtBuckets,
+                BucketStore<char> charBuckets,
+                BucketStore<uint> bigramBuckets,
+                BucketStore<ulong> trigramBuckets)
+            {
+                _builtBuckets = builtBuckets;
+                _recordsById = new List<FileRecord>((records?.Length ?? 0) + 1);
+                _recordsById.Add(null);
+                _recordIdsByKey = new Dictionary<RecordKey, int>(records?.Length ?? 0);
+
+                if (records != null)
+                {
+                    for (var i = 0; i < records.Length; i++)
+                    {
+                        var record = records[i];
+                        if (record == null)
+                        {
+                            continue;
+                        }
+
+                        var recordId = _recordsById.Count;
+                        _recordsById.Add(record);
+                        _recordIdsByKey[RecordKey.FromRecord(record)] = recordId;
+                    }
+                }
+
+                _nextRecordId = _recordsById.Count;
+                _charBuckets = charBuckets ?? BucketStore<char>.Empty;
+                _bigramBuckets = bigramBuckets ?? BucketStore<uint>.Empty;
+                _trigramBuckets = trigramBuckets ?? BucketStore<ulong>.Empty;
+            }
+
+            public bool Supports(string query)
+            {
+                if (string.IsNullOrEmpty(query))
+                {
+                    return false;
+                }
+
+                if (query.Length == 1)
+                {
+                    return (_builtBuckets & BucketKinds.Char) != 0;
+                }
+
+                if (query.Length == 2)
+                {
+                    return (_builtBuckets & BucketKinds.Bigram) != 0;
+                }
+
+                return (_builtBuckets & BucketKinds.Trigram) != 0;
+            }
+
+            public bool Supports(ContainsAcceleratorBucketKinds requiredBuckets)
+            {
+                var flags = ToBucketKinds(requiredBuckets);
+                return (_builtBuckets & flags) == flags;
+            }
+
+            public static ContainsAccelerator Build(
+                FileRecord[] records,
+                ContainsAcceleratorBucketKinds requiredBuckets,
+                CancellationToken ct = default(CancellationToken))
+            {
+                var builtBuckets = ToBucketKinds(requiredBuckets);
+                if (records == null || records.Length == 0)
+                {
+                    return new ContainsAccelerator(records, builtBuckets, BucketStore<char>.Empty, BucketStore<uint>.Empty, BucketStore<ulong>.Empty);
+                }
+
+                var charBuckets = (builtBuckets & BucketKinds.Char) != 0
+                    ? BuildBucketStore(records, CountCharTokens, FillCharTokens, ct)
+                    : BucketStore<char>.Empty;
+                var bigramBuckets = (builtBuckets & BucketKinds.Bigram) != 0
+                    ? BuildBucketStore(records, CountBigramTokens, FillBigramTokens, ct)
+                    : BucketStore<uint>.Empty;
+                var trigramBuckets = (builtBuckets & BucketKinds.Trigram) != 0
+                    ? BuildBucketStore(records, CountTrigramTokens, FillTrigramTokens, ct)
+                    : BucketStore<ulong>.Empty;
+
+                return new ContainsAccelerator(records, builtBuckets, charBuckets, bigramBuckets, trigramBuckets);
+            }
+
+            public ContainsAccelerator WithInserted(FileRecord record)
+            {
+                AddRecord(record);
+                return this;
+            }
+
+            public ContainsAccelerator WithRemoved(RecordKey key)
+            {
+                RemoveRecord(key);
+                return this;
+            }
+
+            public ContainsSearchResult Search(string query, SearchTypeFilter filter, int offset, int maxResults, CancellationToken ct)
+            {
+                var normalizedOffset = Math.Max(offset, 0);
+                var normalizedMaxResults = Math.Max(maxResults, 0);
+                if (query.Length == 1)
+                {
+                    return SearchSingleChar(query[0], filter, normalizedOffset, normalizedMaxResults, ct);
+                }
+
+                if (query.Length == 2)
+                {
+                    return SearchBigram(PackBigram(query[0], query[1]), filter, normalizedOffset, normalizedMaxResults, ct);
+                }
+
+                return SearchTrigram(query, filter, normalizedOffset, normalizedMaxResults, ct);
+            }
+
+            private ContainsSearchResult SearchSingleChar(char token, SearchTypeFilter filter, int offset, int maxResults, CancellationToken ct)
+            {
+                BucketPosting posting;
+                if (!_charBuckets.TryGetPosting(token, out posting) || posting.Count == 0)
+                {
+                    return new ContainsSearchResult { Mode = "char" };
+                }
+
+                return BuildBucketResult(posting, filter, offset, maxResults, "char", ct);
+            }
+
+            private ContainsSearchResult SearchBigram(uint token, SearchTypeFilter filter, int offset, int maxResults, CancellationToken ct)
+            {
+                BucketPosting posting;
+                if (!_bigramBuckets.TryGetPosting(token, out posting) || posting.Count == 0)
+                {
+                    return new ContainsSearchResult { Mode = "bigram" };
+                }
+
+                return BuildBucketResult(posting, filter, offset, maxResults, "bigram", ct);
+            }
+
+            private ContainsSearchResult SearchTrigram(string query, SearchTypeFilter filter, int offset, int maxResults, CancellationToken ct)
+            {
+                var trigramKeys = BuildUniqueTrigramKeys(query);
+                if (trigramKeys.Count == 0)
+                {
+                    return new ContainsSearchResult { Mode = "fallback" };
+                }
+
+                var postingLists = new List<BucketPosting>(trigramKeys.Count);
+                for (var i = 0; i < trigramKeys.Count; i++)
+                {
+                    BucketPosting posting;
+                    if (!_trigramBuckets.TryGetPosting(trigramKeys[i], out posting) || posting.Count == 0)
+                    {
+                        return new ContainsSearchResult { Mode = "trigram" };
+                    }
+
+                    postingLists.Add(posting);
+                }
+
+                postingLists.Sort((a, b) => a.Count.CompareTo(b.Count));
+                var intersectStopwatch = Stopwatch.StartNew();
+                var primary = postingLists[0];
+                var candidates = new List<int>(Math.Min(primary.Count, 256));
+                var lastRecordId = int.MinValue;
+                for (var i = 0; i < primary.Count; i++)
+                {
+                    if (((i + 1) & 0xFFF) == 0)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                    }
+
+                    var recordId = primary.Postings[primary.Offset + i];
+                    if (recordId == lastRecordId)
+                    {
+                        continue;
+                    }
+
+                    lastRecordId = recordId;
+                    var matched = true;
+                    for (var j = 1; j < postingLists.Count; j++)
+                    {
+                        if (!ContainsRecordId(postingLists[j], recordId))
+                        {
+                            matched = false;
+                            break;
+                        }
+                    }
+
+                    if (matched)
+                    {
+                        candidates.Add(recordId);
+                    }
+                }
+
+                intersectStopwatch.Stop();
+
+                var result = new ContainsSearchResult
+                {
+                    Mode = "trigram",
+                    CandidateCount = candidates.Count,
+                    IntersectMs = intersectStopwatch.ElapsedMilliseconds
+                };
+
+                var verifyStopwatch = Stopwatch.StartNew();
+                var page = new List<FileRecord>(Math.Min(maxResults, 64));
+                var total = 0;
+                for (var i = 0; i < candidates.Count; i++)
+                {
+                    if (((i + 1) & 0xFFF) == 0)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                    }
+
+                    var record = _recordsById[candidates[i]];
+                    if (!record.LowerName.Contains(query) || !MatchesFilter(record, filter))
+                    {
+                        continue;
+                    }
+
+                    total++;
+                    if (total > offset && page.Count < maxResults)
+                    {
+                        page.Add(record);
+                    }
+                }
+
+                verifyStopwatch.Stop();
+                result.Total = total;
+                result.Page = page;
+                result.VerifyMs = verifyStopwatch.ElapsedMilliseconds;
+                return result;
+            }
+
+            private ContainsSearchResult BuildBucketResult(BucketPosting posting, SearchTypeFilter filter, int offset, int maxResults, string mode, CancellationToken ct)
+            {
+                var page = new List<FileRecord>(Math.Min(maxResults, 64));
+                var total = 0;
+                var lastRecordId = int.MinValue;
+                for (var i = 0; i < posting.Count; i++)
+                {
+                    if (((i + 1) & 0xFFF) == 0)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                    }
+
+                    var recordId = posting.Postings[posting.Offset + i];
+                    if (recordId == lastRecordId)
+                    {
+                        continue;
+                    }
+
+                    lastRecordId = recordId;
+                    var record = _recordsById[recordId];
+                    if (filter != SearchTypeFilter.All && !MatchesFilter(record, filter))
+                    {
+                        continue;
+                    }
+
+                    total++;
+                    if (total > offset && page.Count < maxResults)
+                    {
+                        page.Add(record);
+                    }
+                }
+
+                return new ContainsSearchResult
+                {
+                    Mode = mode,
+                    CandidateCount = total,
+                    Total = total,
+                    Page = page
+                };
+            }
+
+            private void AddRecord(FileRecord record)
+            {
+                if (record == null)
+                {
+                    return;
+                }
+
+                var key = RecordKey.FromRecord(record);
+                if (_recordIdsByKey.ContainsKey(key))
+                {
+                    return;
+                }
+
+                var recordId = _nextRecordId++;
+                _recordIdsByKey[key] = recordId;
+                _recordsById.Add(record);
+
+                if ((_builtBuckets & BucketKinds.Char) != 0)
+                {
+                    AddCharTokens(recordId, record.LowerName);
+                }
+
+                if ((_builtBuckets & BucketKinds.Bigram) != 0)
+                {
+                    AddBigramTokens(recordId, record.LowerName);
+                }
+
+                if ((_builtBuckets & BucketKinds.Trigram) != 0)
+                {
+                    AddTrigramTokens(recordId, record.LowerName);
+                }
+            }
+
+            private void RemoveRecord(RecordKey key)
+            {
+                int recordId;
+                if (!_recordIdsByKey.TryGetValue(key, out recordId)
+                    || recordId <= 0
+                    || recordId >= _recordsById.Count)
+                {
+                    return;
+                }
+
+                var record = _recordsById[recordId];
+                if (record == null)
+                {
+                    return;
+                }
+
+                _recordIdsByKey.Remove(key);
+                _recordsById[recordId] = null;
+
+                if ((_builtBuckets & BucketKinds.Char) != 0)
+                {
+                    RemoveCharTokens(recordId, record.LowerName);
+                }
+
+                if ((_builtBuckets & BucketKinds.Bigram) != 0)
+                {
+                    RemoveBigramTokens(recordId, record.LowerName);
+                }
+
+                if ((_builtBuckets & BucketKinds.Trigram) != 0)
+                {
+                    RemoveTrigramTokens(recordId, record.LowerName);
+                }
+            }
+
+            private void AddCharTokens(int recordId, string lowerName)
+            {
+                if (string.IsNullOrEmpty(lowerName))
+                {
+                    return;
+                }
+
+                var seen = new HashSet<char>();
+                for (var i = 0; i < lowerName.Length; i++)
+                {
+                    var token = lowerName[i];
+                    if (!seen.Add(token))
+                    {
+                        continue;
+                    }
+
+                    _charBuckets.Insert(token, recordId, CompareRecordIds);
+                }
+            }
+
+            private void AddBigramTokens(int recordId, string lowerName)
+            {
+                if (string.IsNullOrEmpty(lowerName) || lowerName.Length < 2)
+                {
+                    return;
+                }
+
+                var seen = new HashSet<uint>();
+                for (var i = 0; i < lowerName.Length - 1; i++)
+                {
+                    var token = PackBigram(lowerName[i], lowerName[i + 1]);
+                    if (!seen.Add(token))
+                    {
+                        continue;
+                    }
+
+                    _bigramBuckets.Insert(token, recordId, CompareRecordIds);
+                }
+            }
+
+            private void AddTrigramTokens(int recordId, string lowerName)
+            {
+                if (string.IsNullOrEmpty(lowerName) || lowerName.Length < 3)
+                {
+                    return;
+                }
+
+                var seen = new HashSet<ulong>();
+                for (var i = 0; i < lowerName.Length - 2; i++)
+                {
+                    var token = PackTrigram(lowerName[i], lowerName[i + 1], lowerName[i + 2]);
+                    if (!seen.Add(token))
+                    {
+                        continue;
+                    }
+
+                    _trigramBuckets.Insert(token, recordId, CompareRecordIds);
+                }
+            }
+
+            private void RemoveCharTokens(int recordId, string lowerName)
+            {
+                if (string.IsNullOrEmpty(lowerName))
+                {
+                    return;
+                }
+
+                var seen = new HashSet<char>();
+                for (var i = 0; i < lowerName.Length; i++)
+                {
+                    var token = lowerName[i];
+                    if (!seen.Add(token))
+                    {
+                        continue;
+                    }
+
+                    _charBuckets.Remove(token, recordId);
+                }
+            }
+
+            private void RemoveBigramTokens(int recordId, string lowerName)
+            {
+                if (string.IsNullOrEmpty(lowerName) || lowerName.Length < 2)
+                {
+                    return;
+                }
+
+                var seen = new HashSet<uint>();
+                for (var i = 0; i < lowerName.Length - 1; i++)
+                {
+                    var token = PackBigram(lowerName[i], lowerName[i + 1]);
+                    if (!seen.Add(token))
+                    {
+                        continue;
+                    }
+
+                    _bigramBuckets.Remove(token, recordId);
+                }
+            }
+
+            private void RemoveTrigramTokens(int recordId, string lowerName)
+            {
+                if (string.IsNullOrEmpty(lowerName) || lowerName.Length < 3)
+                {
+                    return;
+                }
+
+                var seen = new HashSet<ulong>();
+                for (var i = 0; i < lowerName.Length - 2; i++)
+                {
+                    var token = PackTrigram(lowerName[i], lowerName[i + 1], lowerName[i + 2]);
+                    if (!seen.Add(token))
+                    {
+                        continue;
+                    }
+
+                    _trigramBuckets.Remove(token, recordId);
+                }
+            }
+
+            private bool ContainsRecordId(BucketPosting posting, int recordId)
+            {
+                var lo = posting.Offset;
+                var hi = posting.Offset + posting.Count - 1;
+                while (lo <= hi)
+                {
+                    var mid = lo + ((hi - lo) / 2);
+                    var compare = CompareRecordIds(posting.Postings[mid], recordId);
+                    if (compare == 0)
+                    {
+                        return true;
+                    }
+
+                    if (compare < 0)
+                    {
+                        lo = mid + 1;
+                    }
+                    else
+                    {
+                        hi = mid - 1;
+                    }
+                }
+
+                return false;
+            }
+
+            private int CompareRecordIds(int leftRecordId, int rightRecordId)
+            {
+                var compare = ByLowerName.Compare(_recordsById[leftRecordId], _recordsById[rightRecordId]);
+                if (compare == 0)
+                {
+                    compare = leftRecordId.CompareTo(rightRecordId);
+                }
+
+                return compare;
+            }
+
+            private static BucketStore<char> BuildBucketStore(
+                FileRecord[] records,
+                Action<string, Dictionary<char, int>> countTokens,
+                Action<string, int, Dictionary<char, int>, int[]> fillTokens,
+                CancellationToken ct)
+            {
+                return BuildBucketStoreCore(records, countTokens, fillTokens, ct);
+            }
+
+            private static BucketStore<uint> BuildBucketStore(
+                FileRecord[] records,
+                Action<string, Dictionary<uint, int>> countTokens,
+                Action<string, int, Dictionary<uint, int>, int[]> fillTokens,
+                CancellationToken ct)
+            {
+                return BuildBucketStoreCore(records, countTokens, fillTokens, ct);
+            }
+
+            private static BucketStore<ulong> BuildBucketStore(
+                FileRecord[] records,
+                Action<string, Dictionary<ulong, int>> countTokens,
+                Action<string, int, Dictionary<ulong, int>, int[]> fillTokens,
+                CancellationToken ct)
+            {
+                return BuildBucketStoreCore(records, countTokens, fillTokens, ct);
+            }
+
+            private static BucketStore<TKey> BuildBucketStoreCore<TKey>(
+                FileRecord[] records,
+                Action<string, Dictionary<TKey, int>> countTokens,
+                Action<string, int, Dictionary<TKey, int>, int[]> fillTokens,
+                CancellationToken ct)
+            {
+                if (records == null || records.Length == 0)
+                {
+                    return BucketStore<TKey>.Empty;
+                }
+
+                var workerCount = DetermineWorkerCount(records.Length);
+                var ranges = BuildWorkerRanges(records.Length, workerCount);
+                var localCounts = new Dictionary<TKey, int>[workerCount];
+
+                if (workerCount == 1)
+                {
+                    localCounts[0] = CountRange(records, ranges[0], countTokens, ct);
+                }
+                else
+                {
+                    Parallel.For(0, workerCount, new ParallelOptions
+                    {
+                        CancellationToken = ct,
+                        MaxDegreeOfParallelism = workerCount
+                    }, i =>
+                    {
+                        localCounts[i] = CountRange(records, ranges[i], countTokens, ct);
+                    });
+                }
+
+                var globalCounts = new Dictionary<TKey, int>();
+                for (var i = 0; i < localCounts.Length; i++)
+                {
+                    var counts = localCounts[i];
+                    if (counts == null || counts.Count == 0)
+                    {
+                        continue;
+                    }
+
+                    foreach (var kv in counts)
+                    {
+                        int current;
+                        globalCounts.TryGetValue(kv.Key, out current);
+                        globalCounts[kv.Key] = current + kv.Value;
+                    }
+                }
+
+                if (globalCounts.Count == 0)
+                {
+                    return BucketStore<TKey>.Empty;
+                }
+
+                var bucketIndexes = new Dictionary<TKey, int>(globalCounts.Count);
+                var entries = new BucketEntry[globalCounts.Count];
+                var totalPostings = 0;
+                var bucketIndex = 0;
+                foreach (var kv in globalCounts)
+                {
+                    bucketIndexes[kv.Key] = bucketIndex;
+                    entries[bucketIndex] = new BucketEntry(totalPostings, kv.Value);
+                    totalPostings += kv.Value;
+                    bucketIndex++;
+                }
+
+                var workerPositions = new Dictionary<TKey, int>[workerCount];
+                var consumedByBucket = new int[entries.Length];
+                for (var i = 0; i < workerCount; i++)
+                {
+                    var counts = localCounts[i];
+                    if (counts == null || counts.Count == 0)
+                    {
+                        workerPositions[i] = new Dictionary<TKey, int>();
+                        continue;
+                    }
+
+                    var positions = new Dictionary<TKey, int>(counts.Count);
+                    foreach (var kv in counts)
+                    {
+                        var idx = bucketIndexes[kv.Key];
+                        positions[kv.Key] = entries[idx].Offset + consumedByBucket[idx];
+                        consumedByBucket[idx] += kv.Value;
+                    }
+
+                    workerPositions[i] = positions;
+                }
+
+                var postings = new int[totalPostings];
+                if (workerCount == 1)
+                {
+                    FillRange(records, ranges[0], workerPositions[0], postings, fillTokens, ct);
+                }
+                else
+                {
+                    Parallel.For(0, workerCount, new ParallelOptions
+                    {
+                        CancellationToken = ct,
+                        MaxDegreeOfParallelism = workerCount
+                    }, i =>
+                    {
+                        FillRange(records, ranges[i], workerPositions[i], postings, fillTokens, ct);
+                    });
+                }
+
+                return new BucketStore<TKey>(bucketIndexes, entries, postings);
+            }
+
+            private static Dictionary<TKey, int> CountRange<TKey>(
+                FileRecord[] records,
+                WorkerRange range,
+                Action<string, Dictionary<TKey, int>> countTokens,
+                CancellationToken ct)
+            {
+                var counts = new Dictionary<TKey, int>();
+                for (var i = range.Start; i < range.End; i++)
+                {
+                    if ((((i - range.Start) + 1) & CancellationStride) == 0)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                    }
+
+                    var record = records[i];
+                    if (record == null || string.IsNullOrEmpty(record.LowerName))
+                    {
+                        continue;
+                    }
+
+                    countTokens(record.LowerName, counts);
+                }
+
+                return counts;
+            }
+
+            private static void FillRange<TKey>(
+                FileRecord[] records,
+                WorkerRange range,
+                Dictionary<TKey, int> positions,
+                int[] postings,
+                Action<string, int, Dictionary<TKey, int>, int[]> fillTokens,
+                CancellationToken ct)
+            {
+                for (var i = range.Start; i < range.End; i++)
+                {
+                    if ((((i - range.Start) + 1) & CancellationStride) == 0)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                    }
+
+                    var record = records[i];
+                    if (record == null || string.IsNullOrEmpty(record.LowerName))
+                    {
+                        continue;
+                    }
+
+                    fillTokens(record.LowerName, i + 1, positions, postings);
+                }
+            }
+
+            private static WorkerRange[] BuildWorkerRanges(int recordCount, int workerCount)
+            {
+                var ranges = new WorkerRange[workerCount];
+                var baseSize = recordCount / workerCount;
+                var remainder = recordCount % workerCount;
+                var start = 0;
+                for (var i = 0; i < workerCount; i++)
+                {
+                    var length = baseSize + (i < remainder ? 1 : 0);
+                    ranges[i] = new WorkerRange(start, start + length);
+                    start += length;
+                }
+
+                return ranges;
+            }
+
+            private static int DetermineWorkerCount(int recordCount)
+            {
+                if (recordCount < ParallelBuildMinRecords)
+                {
+                    return 1;
+                }
+
+                return Math.Max(1, Math.Min(Environment.ProcessorCount, recordCount / 16384));
+            }
+
+            private static void CountCharTokens(string lowerName, Dictionary<char, int> counts)
+            {
+                for (var i = 0; i < lowerName.Length; i++)
+                {
+                    IncrementCount(counts, lowerName[i]);
+                }
+            }
+
+            private static void FillCharTokens(string lowerName, int recordId, Dictionary<char, int> positions, int[] postings)
+            {
+                for (var i = 0; i < lowerName.Length; i++)
+                {
+                    int position;
+                    if (!positions.TryGetValue(lowerName[i], out position))
+                    {
+                        continue;
+                    }
+
+                    postings[position] = recordId;
+                    positions[lowerName[i]] = position + 1;
+                }
+            }
+
+            private static void CountBigramTokens(string lowerName, Dictionary<uint, int> counts)
+            {
+                if (lowerName.Length < 2)
+                {
+                    return;
+                }
+
+                for (var i = 0; i < lowerName.Length - 1; i++)
+                {
+                    IncrementCount(counts, PackBigram(lowerName[i], lowerName[i + 1]));
+                }
+            }
+
+            private static void FillBigramTokens(string lowerName, int recordId, Dictionary<uint, int> positions, int[] postings)
+            {
+                if (lowerName.Length < 2)
+                {
+                    return;
+                }
+
+                for (var i = 0; i < lowerName.Length - 1; i++)
+                {
+                    var token = PackBigram(lowerName[i], lowerName[i + 1]);
+                    int position;
+                    if (!positions.TryGetValue(token, out position))
+                    {
+                        continue;
+                    }
+
+                    postings[position] = recordId;
+                    positions[token] = position + 1;
+                }
+            }
+
+            private static void CountTrigramTokens(string lowerName, Dictionary<ulong, int> counts)
+            {
+                if (lowerName.Length < 3)
+                {
+                    return;
+                }
+
+                for (var i = 0; i < lowerName.Length - 2; i++)
+                {
+                    IncrementCount(counts, PackTrigram(lowerName[i], lowerName[i + 1], lowerName[i + 2]));
+                }
+            }
+
+            private static void FillTrigramTokens(string lowerName, int recordId, Dictionary<ulong, int> positions, int[] postings)
+            {
+                if (lowerName.Length < 3)
+                {
+                    return;
+                }
+
+                for (var i = 0; i < lowerName.Length - 2; i++)
+                {
+                    var token = PackTrigram(lowerName[i], lowerName[i + 1], lowerName[i + 2]);
+                    int position;
+                    if (!positions.TryGetValue(token, out position))
+                    {
+                        continue;
+                    }
+
+                    postings[position] = recordId;
+                    positions[token] = position + 1;
+                }
+            }
+
+            private static void IncrementCount<TKey>(Dictionary<TKey, int> counts, TKey token)
+            {
+                int current;
+                counts.TryGetValue(token, out current);
+                counts[token] = current + 1;
+            }
+
+            private static List<ulong> BuildUniqueTrigramKeys(string query)
+            {
+                var keys = new List<ulong>(Math.Max(query.Length - 2, 1));
+                var seen = new HashSet<ulong>();
+                for (var i = 0; i < query.Length - 2; i++)
+                {
+                    var token = PackTrigram(query[i], query[i + 1], query[i + 2]);
+                    if (!seen.Add(token))
+                    {
+                        continue;
+                    }
+
+                    keys.Add(token);
+                }
+
+                return keys;
+            }
+
+            private static uint PackBigram(char first, char second)
+            {
+                return ((uint)first << 16) | second;
+            }
+
+            private static ulong PackTrigram(char first, char second, char third)
+            {
+                return ((ulong)first << 32) | ((ulong)second << 16) | third;
+            }
+
+            private static BucketKinds ToBucketKinds(ContainsAcceleratorBucketKinds requiredBuckets)
+            {
+                BucketKinds result = BucketKinds.None;
+                if ((requiredBuckets & ContainsAcceleratorBucketKinds.Char) != 0)
+                {
+                    result |= BucketKinds.Char;
+                }
+
+                if ((requiredBuckets & ContainsAcceleratorBucketKinds.Bigram) != 0)
+                {
+                    result |= BucketKinds.Bigram;
+                }
+
+                if ((requiredBuckets & ContainsAcceleratorBucketKinds.Trigram) != 0)
+                {
+                    result |= BucketKinds.Trigram;
+                }
+
+                return result;
+            }
+
+            private struct WorkerRange
+            {
+                public WorkerRange(int start, int end)
+                {
+                    Start = start;
+                    End = end;
+                }
+
+                public int Start { get; private set; }
+                public int End { get; private set; }
+            }
+
+            private struct BucketEntry
+            {
+                public BucketEntry(int offset, int count)
+                {
+                    Offset = offset;
+                    Count = count;
+                }
+
+                public int Offset { get; private set; }
+                public int Count { get; private set; }
+            }
+
+            private struct BucketPosting
+            {
+                public BucketPosting(int[] postings, int offset, int count)
+                {
+                    Postings = postings;
+                    Offset = offset;
+                    Count = count;
+                }
+
+                public int[] Postings { get; private set; }
+                public int Offset { get; private set; }
+                public int Count { get; private set; }
+            }
+
+            private sealed class BucketStore<TKey>
+            {
+                private static readonly BucketStore<TKey> EmptyStore = new BucketStore<TKey>(
+                    new Dictionary<TKey, int>(),
+                    Array.Empty<BucketEntry>(),
+                    Array.Empty<int>());
+
+                private readonly Dictionary<TKey, int> _bucketIndexes;
+                private readonly BucketEntry[] _entries;
+                private readonly int[] _postings;
+                private Dictionary<TKey, int[]> _overridePostings;
+
+                public static BucketStore<TKey> Empty => EmptyStore;
+
+                public BucketStore(Dictionary<TKey, int> bucketIndexes, BucketEntry[] entries, int[] postings)
+                {
+                    _bucketIndexes = bucketIndexes ?? new Dictionary<TKey, int>();
+                    _entries = entries ?? Array.Empty<BucketEntry>();
+                    _postings = postings ?? Array.Empty<int>();
+                }
+
+                public bool TryGetPosting(TKey token, out BucketPosting posting)
+                {
+                    if (_overridePostings != null)
+                    {
+                        int[] overridePosting;
+                        if (_overridePostings.TryGetValue(token, out overridePosting))
+                        {
+                            if (overridePosting == null || overridePosting.Length == 0)
+                            {
+                                posting = default(BucketPosting);
+                                return false;
+                            }
+
+                            posting = new BucketPosting(overridePosting, 0, overridePosting.Length);
+                            return true;
+                        }
+                    }
+
+                    int bucketIndex;
+                    if (!_bucketIndexes.TryGetValue(token, out bucketIndex))
+                    {
+                        posting = default(BucketPosting);
+                        return false;
+                    }
+
+                    var entry = _entries[bucketIndex];
+                    if (entry.Count == 0)
+                    {
+                        posting = default(BucketPosting);
+                        return false;
+                    }
+
+                    posting = new BucketPosting(_postings, entry.Offset, entry.Count);
+                    return true;
+                }
+
+                public void Insert(TKey token, int recordId, Func<int, int, int> comparer)
+                {
+                    var current = Materialize(token);
+                    var insertIndex = FindInsertIndex(current, recordId, comparer);
+                    if (insertIndex > 0 && current[insertIndex - 1] == recordId)
+                    {
+                        return;
+                    }
+
+                    if (insertIndex < current.Length && current[insertIndex] == recordId)
+                    {
+                        return;
+                    }
+
+                    var updated = new int[current.Length + 1];
+                    Array.Copy(current, 0, updated, 0, insertIndex);
+                    updated[insertIndex] = recordId;
+                    Array.Copy(current, insertIndex, updated, insertIndex + 1, current.Length - insertIndex);
+                    SetOverride(token, updated);
+                }
+
+                public void Remove(TKey token, int recordId)
+                {
+                    var current = Materialize(token);
+                    if (current.Length == 0)
+                    {
+                        return;
+                    }
+
+                    var remaining = 0;
+                    for (var i = 0; i < current.Length; i++)
+                    {
+                        if (current[i] != recordId)
+                        {
+                            remaining++;
+                        }
+                    }
+
+                    if (remaining == current.Length)
+                    {
+                        return;
+                    }
+
+                    if (remaining == 0)
+                    {
+                        SetOverride(token, Array.Empty<int>());
+                        return;
+                    }
+
+                    var updated = new int[remaining];
+                    var index = 0;
+                    for (var i = 0; i < current.Length; i++)
+                    {
+                        if (current[i] == recordId)
+                        {
+                            continue;
+                        }
+
+                        updated[index++] = current[i];
+                    }
+
+                    SetOverride(token, updated);
+                }
+
+                private void SetOverride(TKey token, int[] updated)
+                {
+                    if (_overridePostings == null)
+                    {
+                        _overridePostings = new Dictionary<TKey, int[]>();
+                    }
+
+                    _overridePostings[token] = updated ?? Array.Empty<int>();
+                }
+
+                private int[] Materialize(TKey token)
+                {
+                    if (_overridePostings != null)
+                    {
+                        int[] overridePosting;
+                        if (_overridePostings.TryGetValue(token, out overridePosting))
+                        {
+                            return overridePosting ?? Array.Empty<int>();
+                        }
+                    }
+
+                    int bucketIndex;
+                    if (!_bucketIndexes.TryGetValue(token, out bucketIndex))
+                    {
+                        return Array.Empty<int>();
+                    }
+
+                    var entry = _entries[bucketIndex];
+                    if (entry.Count == 0)
+                    {
+                        return Array.Empty<int>();
+                    }
+
+                    var copy = new int[entry.Count];
+                    Array.Copy(_postings, entry.Offset, copy, 0, entry.Count);
+                    return copy;
+                }
+
+                private static int FindInsertIndex(int[] bucket, int recordId, Func<int, int, int> comparer)
+                {
+                    var lo = 0;
+                    var hi = bucket.Length;
+                    while (lo < hi)
+                    {
+                        var mid = lo + ((hi - lo) / 2);
+                        var compare = comparer(bucket[mid], recordId);
+                        if (compare <= 0)
+                        {
+                            lo = mid + 1;
+                        }
+                        else
+                        {
+                            hi = mid;
+                        }
+                    }
+
+                    return lo;
+                }
+            }
+        }
+    }
+}
