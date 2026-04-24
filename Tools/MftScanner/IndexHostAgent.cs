@@ -15,8 +15,8 @@ namespace MftScanner
 {
     internal sealed class IndexHostAgent : IDisposable
     {
-        private const int SearchUiReadyWaitMilliseconds = 5000;
-        private const int SearchUiShownWaitMilliseconds = 3000;
+        private const int SearchUiReadyWaitMilliseconds = 25000;
+        private const int SearchUiShownWaitMilliseconds = 8000;
         private readonly IndexService _indexService = new IndexService();
         private readonly Action _showSearchUi;
         private readonly object _buildLock = new object();

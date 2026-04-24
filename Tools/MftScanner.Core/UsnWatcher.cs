@@ -117,6 +117,7 @@ namespace MftScanner
     public sealed class UsnWatcher
     {
         private const bool LogUsnRecords = false;
+        private static readonly TimeSpan WatcherPollLogInterval = TimeSpan.FromSeconds(30);
 
         // ── Win32 常量 ──────────────────────────────────────────────────────────
         private const uint GENERIC_READ              = 0x80000000;
@@ -202,6 +203,9 @@ namespace MftScanner
             public ulong  JournalId;
             public CancellationTokenSource Cts;
             public Task   WatchTask;
+            public DateTime LastPollLogUtc = DateTime.MinValue;
+            public long LastLoggedNextUsn = long.MinValue;
+            public long LastLoggedJournalNextUsn = long.MinValue;
             public Dictionary<ulong, (string oldName, ulong oldParentFrn)> PendingRenameOldByFrn
                 = new Dictionary<ulong, (string oldName, ulong oldParentFrn)>();
         }
@@ -466,7 +470,7 @@ namespace MftScanner
                         if (state.NextUsn >= journalData.NextUsn)
                             continue;
 
-                        UsnDiagLog.Write($"[WATCHER POLL] drive={state.DriveLetter} nextUsn={state.NextUsn} journalNextUsn={journalData.NextUsn}");
+                        LogWatcherPollIfNeeded(state, journalData.NextUsn);
                         ReadUsnBatch(state, handle, ref journalData, buffer, bufferSize, ct,
                             raiseOverflowEvent: true, collectedChanges: null);
                     }
@@ -478,6 +482,36 @@ namespace MftScanner
                 Marshal.FreeHGlobal(buffer);
                 UsnDiagLog.Write($"[WATCHER LOOP END] drive={state.DriveLetter}");
             }
+        }
+
+        private static void LogWatcherPollIfNeeded(VolumeWatchState state, long journalNextUsn)
+        {
+            if (state == null)
+            {
+                return;
+            }
+
+            var utcNow = DateTime.UtcNow;
+            var previousBacklog = state.LastLoggedJournalNextUsn > state.LastLoggedNextUsn
+                ? state.LastLoggedJournalNextUsn - state.LastLoggedNextUsn
+                : 0;
+            var currentBacklog = journalNextUsn > state.NextUsn
+                ? journalNextUsn - state.NextUsn
+                : 0;
+            var backlogStateChanged = (previousBacklog == 0) != (currentBacklog == 0);
+            var shouldLog = state.LastPollLogUtc == DateTime.MinValue
+                || utcNow - state.LastPollLogUtc >= WatcherPollLogInterval
+                || backlogStateChanged;
+
+            if (!shouldLog)
+            {
+                return;
+            }
+
+            state.LastPollLogUtc = utcNow;
+            state.LastLoggedNextUsn = state.NextUsn;
+            state.LastLoggedJournalNextUsn = journalNextUsn;
+            UsnDiagLog.Write($"[WATCHER POLL] drive={state.DriveLetter} nextUsn={state.NextUsn} journalNextUsn={journalNextUsn}");
         }
 
         private bool ReadUsnBatch(VolumeWatchState state, IntPtr handle,

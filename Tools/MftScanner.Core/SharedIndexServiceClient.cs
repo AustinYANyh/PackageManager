@@ -126,7 +126,7 @@ namespace MftScanner
         {
             try
             {
-                using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(6)))
+                using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30)))
                 {
                     var response = SendControlRequestAsyncStatic(new SharedIndexRequest
                     {
@@ -757,7 +757,7 @@ namespace MftScanner
         {
             using (var stream = new NamedPipeClientStream(".", SharedIndexConstants.IndexHostCommandPipeName, PipeDirection.InOut, PipeOptions.Asynchronous))
             {
-                await stream.ConnectAsync(6000, ct).ConfigureAwait(false);
+                await stream.ConnectAsync(10000, ct).ConfigureAwait(false);
                 using (var reader = new StreamReader(stream))
                 using (var writer = new StreamWriter(stream) { AutoFlush = true })
                 {
