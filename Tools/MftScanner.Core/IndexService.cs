@@ -1480,7 +1480,11 @@ namespace MftScanner
                 UsnDiagLog.Write(
                     $"[CONTAINS WARMUP] outcome=start reason={IndexPerfLog.FormatValue(reason)} " +
                     $"records={index.TotalCount}");
-                index.TryEnsureContainsAccelerator(ct);
+                index.TryEnsureContainsAccelerator(MemoryIndex.ContainsWarmupScope.TrigramOnly, ct);
+                UsnDiagLog.Write(
+                    $"[CONTAINS WARMUP] outcome=stage reason={IndexPerfLog.FormatValue(reason)} " +
+                    $"stage=trigram-ready elapsedMs={stopwatch.ElapsedMilliseconds} records={index.TotalCount}");
+                index.TryEnsureContainsAccelerator(MemoryIndex.ContainsWarmupScope.Full, ct);
                 stopwatch.Stop();
                 UsnDiagLog.Write(
                     $"[CONTAINS WARMUP] outcome=success reason={IndexPerfLog.FormatValue(reason)} " +

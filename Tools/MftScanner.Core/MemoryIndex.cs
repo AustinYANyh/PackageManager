@@ -60,6 +60,12 @@ namespace MftScanner
             public long VerifyMs { get; set; }
         }
 
+        public enum ContainsWarmupScope
+        {
+            TrigramOnly,
+            Full
+        }
+
         private static readonly IComparer<FileRecord> ByLowerName =
             Comparer<FileRecord>.Create((a, b) => string.CompareOrdinal(a.LowerName, b.LowerName));
 
@@ -81,6 +87,11 @@ namespace MftScanner
             try
             {
                 if (!_containsAcceleratorReady || _containsAccelerator == null || _containsAccelerator.IsEmpty)
+                {
+                    return false;
+                }
+
+                if (!_containsAccelerator.Supports(query))
                 {
                     return false;
                 }
@@ -115,7 +126,7 @@ namespace MftScanner
                 scriptArr,
                 logArr,
                 configArr,
-                buildContainsAccelerator ? ContainsAccelerator.Build(arr) : null,
+                buildContainsAccelerator ? ContainsAccelerator.Build(arr, ContainsAcceleratorBucketKinds.All) : null,
                 buildContainsAccelerator);
         }
 
@@ -157,7 +168,7 @@ namespace MftScanner
                 scriptArr,
                 logArr,
                 configArr,
-                buildContainsAccelerator ? ContainsAccelerator.Build(arr) : null,
+                buildContainsAccelerator ? ContainsAccelerator.Build(arr, ContainsAcceleratorBucketKinds.All) : null,
                 buildContainsAccelerator);
         }
 
@@ -590,7 +601,9 @@ namespace MftScanner
                 ScriptSortedArray = scriptArr;
                 LogSortedArray = logArr;
                 ConfigSortedArray = configArr;
-                _containsAccelerator = rebuildContainsAccelerator ? ContainsAccelerator.Build(arr) : ContainsAccelerator.Empty;
+                _containsAccelerator = rebuildContainsAccelerator
+                    ? ContainsAccelerator.Build(arr, ContainsAcceleratorBucketKinds.All)
+                    : ContainsAccelerator.Empty;
                 _containsAcceleratorReady = rebuildContainsAccelerator;
                 _containsAcceleratorEpoch++;
                 _pendingContainsMutations.Clear();
@@ -650,8 +663,12 @@ namespace MftScanner
             return merged;
         }
 
-        public bool TryEnsureContainsAccelerator(CancellationToken ct)
+        public bool TryEnsureContainsAccelerator(ContainsWarmupScope scope, CancellationToken ct)
         {
+            var requiredBuckets = scope == ContainsWarmupScope.Full
+                ? ContainsAcceleratorBucketKinds.All
+                : ContainsAcceleratorBucketKinds.Trigram;
+
             while (!ct.IsCancellationRequested)
             {
                 FileRecord[] snapshot;
@@ -661,7 +678,9 @@ namespace MftScanner
                 _lock.EnterReadLock();
                 try
                 {
-                    if (_containsAcceleratorReady)
+                    if (_containsAcceleratorReady
+                        && _containsAccelerator != null
+                        && _containsAccelerator.Supports(requiredBuckets))
                     {
                         return true;
                     }
@@ -675,12 +694,14 @@ namespace MftScanner
                     _lock.ExitReadLock();
                 }
 
-                var accelerator = ContainsAccelerator.Build(snapshot, ct);
+                var accelerator = ContainsAccelerator.Build(snapshot, requiredBuckets, ct);
 
                 _lock.EnterWriteLock();
                 try
                 {
-                    if (_containsAcceleratorReady)
+                    if (_containsAcceleratorReady
+                        && _containsAccelerator != null
+                        && _containsAccelerator.Supports(requiredBuckets))
                     {
                         return true;
                     }
@@ -879,35 +900,79 @@ namespace MftScanner
 
         private sealed class ContainsAccelerator
         {
-            private readonly Dictionary<int, FileRecord> _recordsById;
+            [Flags]
+            private enum BucketKinds
+            {
+                None = 0,
+                Char = 1,
+                Bigram = 2,
+                Trigram = 4,
+                All = Char | Bigram | Trigram
+            }
+
+            private readonly List<FileRecord> _recordsById;
             private readonly Dictionary<RecordKey, int> _recordIdsByKey;
             private readonly Dictionary<char, List<int>> _charBuckets = new Dictionary<char, List<int>>();
             private readonly Dictionary<uint, List<int>> _bigramBuckets = new Dictionary<uint, List<int>>();
             private readonly Dictionary<ulong, List<int>> _trigramBuckets = new Dictionary<ulong, List<int>>();
+            private readonly BucketKinds _builtBuckets;
             private int _nextRecordId = 1;
 
             public static ContainsAccelerator Empty => new ContainsAccelerator();
 
-            public bool IsEmpty => _recordsById.Count == 0;
+            public bool IsEmpty => _recordIdsByKey.Count == 0;
+            public bool IsComplete => _builtBuckets == BucketKinds.All;
 
             private ContainsAccelerator()
-                : this(0)
+                : this(0, BucketKinds.None)
             {
             }
 
-            private ContainsAccelerator(int recordCapacity)
+            private ContainsAccelerator(int recordCapacity, BucketKinds builtBuckets)
             {
+                _builtBuckets = builtBuckets;
                 _recordsById = recordCapacity > 0
-                    ? new Dictionary<int, FileRecord>(recordCapacity)
-                    : new Dictionary<int, FileRecord>();
+                    ? new List<FileRecord>(recordCapacity + 1)
+                    : new List<FileRecord>(1);
+                _recordsById.Add(null);
                 _recordIdsByKey = recordCapacity > 0
                     ? new Dictionary<RecordKey, int>(recordCapacity)
                     : new Dictionary<RecordKey, int>();
             }
 
-            public static ContainsAccelerator Build(FileRecord[] records, CancellationToken ct = default)
+            public bool Supports(string query)
             {
-                var accelerator = new ContainsAccelerator(records?.Length ?? 0);
+                if (string.IsNullOrEmpty(query))
+                {
+                    return false;
+                }
+
+                if (query.Length == 1)
+                {
+                    return (_builtBuckets & BucketKinds.Char) != 0;
+                }
+
+                if (query.Length == 2)
+                {
+                    return (_builtBuckets & BucketKinds.Bigram) != 0;
+                }
+
+                return (_builtBuckets & BucketKinds.Trigram) != 0;
+            }
+
+            public bool Supports(ContainsAcceleratorBucketKinds requiredBuckets)
+            {
+                var flags = ToBucketKinds(requiredBuckets);
+                return (_builtBuckets & flags) == flags;
+            }
+
+            public static ContainsAccelerator Build(
+                FileRecord[] records,
+                ContainsAcceleratorBucketKinds requiredBuckets,
+                CancellationToken ct = default)
+            {
+                var builtBuckets = ToBucketKinds(requiredBuckets);
+                var accelerator = new ContainsAccelerator(records?.Length ?? 0, builtBuckets);
                 if (records == null || records.Length == 0)
                 {
                     return accelerator;
@@ -1130,26 +1195,55 @@ namespace MftScanner
 
                 var recordId = _nextRecordId++;
                 _recordIdsByKey[key] = recordId;
-                _recordsById[recordId] = record;
+                _recordsById.Add(record);
 
-                AddToCharBuckets(recordId, record.LowerName, appendOnly);
-                AddToBigramBuckets(recordId, record.LowerName, appendOnly);
-                AddToTrigramBuckets(recordId, record.LowerName, appendOnly);
+                if ((_builtBuckets & BucketKinds.Char) != 0)
+                {
+                    AddToCharBuckets(recordId, record.LowerName, appendOnly);
+                }
+
+                if ((_builtBuckets & BucketKinds.Bigram) != 0)
+                {
+                    AddToBigramBuckets(recordId, record.LowerName, appendOnly);
+                }
+
+                if ((_builtBuckets & BucketKinds.Trigram) != 0)
+                {
+                    AddToTrigramBuckets(recordId, record.LowerName, appendOnly);
+                }
             }
 
             private void RemoveRecord(RecordKey key)
             {
                 if (!_recordIdsByKey.TryGetValue(key, out var recordId)
-                    || !_recordsById.TryGetValue(recordId, out var record))
+                    || recordId <= 0
+                    || recordId >= _recordsById.Count)
+                {
+                    return;
+                }
+
+                var record = _recordsById[recordId];
+                if (record == null)
                 {
                     return;
                 }
 
                 _recordIdsByKey.Remove(key);
-                _recordsById.Remove(recordId);
-                RemoveFromCharBuckets(recordId, record.LowerName);
-                RemoveFromBigramBuckets(recordId, record.LowerName);
-                RemoveFromTrigramBuckets(recordId, record.LowerName);
+                _recordsById[recordId] = null;
+                if ((_builtBuckets & BucketKinds.Char) != 0)
+                {
+                    RemoveFromCharBuckets(recordId, record.LowerName);
+                }
+
+                if ((_builtBuckets & BucketKinds.Bigram) != 0)
+                {
+                    RemoveFromBigramBuckets(recordId, record.LowerName);
+                }
+
+                if ((_builtBuckets & BucketKinds.Trigram) != 0)
+                {
+                    RemoveFromTrigramBuckets(recordId, record.LowerName);
+                }
             }
 
             private void AddToCharBuckets(int recordId, string lowerName, bool appendOnly)
@@ -1311,7 +1405,11 @@ namespace MftScanner
 
                 if (appendOnly || bucket.Count == 0)
                 {
-                    bucket.Add(recordId);
+                    if (bucket.Count == 0 || bucket[bucket.Count - 1] != recordId)
+                    {
+                        bucket.Add(recordId);
+                    }
+
                     return;
                 }
 
@@ -1392,6 +1490,37 @@ namespace MftScanner
             {
                 return ((ulong)first << 32) | ((ulong)second << 16) | third;
             }
+
+            private static BucketKinds ToBucketKinds(ContainsAcceleratorBucketKinds requiredBuckets)
+            {
+                BucketKinds result = BucketKinds.None;
+                if ((requiredBuckets & ContainsAcceleratorBucketKinds.Char) != 0)
+                {
+                    result |= BucketKinds.Char;
+                }
+
+                if ((requiredBuckets & ContainsAcceleratorBucketKinds.Bigram) != 0)
+                {
+                    result |= BucketKinds.Bigram;
+                }
+
+                if ((requiredBuckets & ContainsAcceleratorBucketKinds.Trigram) != 0)
+                {
+                    result |= BucketKinds.Trigram;
+                }
+
+                return result;
+            }
+        }
+
+        [Flags]
+        private enum ContainsAcceleratorBucketKinds
+        {
+            None = 0,
+            Char = 1,
+            Bigram = 2,
+            Trigram = 4,
+            All = Char | Bigram | Trigram
         }
 
         private struct PendingContainsMutation
