@@ -28,21 +28,18 @@ namespace PackageManager.Services
 
                 var taskExists = TaskExists();
                 var taskMatches = taskExists && TaskDefinitionMatches(toolPath);
-                if (!taskExists || !taskMatches)
+                LoggingService.LogDebug($"[索引宿主启动] taskExists={taskExists} taskMatches={taskMatches} toolPath={toolPath}");
+                if (!taskExists)
                 {
-                    if (taskExists && !taskMatches)
-                    {
-                        if (!StopRegisteredTaskInstanceWithElevation())
-                        {
-                            LoggingService.LogWarning("后台索引宿主计划任务定义已变化，但无法结束旧任务实例。");
-                            return false;
-                        }
-                    }
-
+                    LoggingService.LogInfo("后台索引宿主计划任务不存在，准备以管理员权限注册。");
                     if (!RunElevatedRegister(toolPath))
                     {
                         return false;
                     }
+                }
+                else if (!taskMatches)
+                {
+                    LoggingService.LogDebug("[索引宿主启动] 计划任务已存在，但定义校验未通过；当前版本跳过重建，继续复用既有任务。");
                 }
 
                 return EnsureTaskRunning(toolPath);
@@ -156,20 +153,40 @@ namespace PackageManager.Services
                 var expectedCommand = $"\"{toolPath}\" --index-agent";
                 var line = result.Stdout
                     .Split(new[] { "\r\n", "\n" }, StringSplitOptions.None)
-                    .FirstOrDefault(item => item.StartsWith("Task To Run:", StringComparison.OrdinalIgnoreCase));
+                    .FirstOrDefault(item => item.IndexOf("Task To Run:", StringComparison.OrdinalIgnoreCase) >= 0);
                 if (string.IsNullOrWhiteSpace(line))
                 {
+                    LoggingService.LogDebug("[索引宿主启动] 计划任务输出中未找到 Task To Run 行。");
                     return false;
                 }
 
                 var actualCommand = line.Substring(line.IndexOf(':') + 1).Trim();
-                return string.Equals(actualCommand, expectedCommand, StringComparison.OrdinalIgnoreCase);
+                var normalizedActual = NormalizeTaskCommand(actualCommand);
+                var normalizedExpected = NormalizeTaskCommand(expectedCommand);
+                var matched = string.Equals(normalizedActual, normalizedExpected, StringComparison.OrdinalIgnoreCase)
+                    || (normalizedActual.IndexOf(NormalizeTaskCommand(toolPath), StringComparison.OrdinalIgnoreCase) >= 0
+                        && normalizedActual.IndexOf("--index-agent", StringComparison.OrdinalIgnoreCase) >= 0);
+
+                LoggingService.LogDebug($"[索引宿主启动] expectedTaskCommand={expectedCommand} actualTaskCommand={actualCommand} matched={matched}");
+                return matched;
             }
             catch (Exception ex)
             {
                 LoggingService.LogWarning($"校验后台索引宿主计划任务定义失败：{ex.Message}");
                 return false;
             }
+        }
+
+        private static string NormalizeTaskCommand(string command)
+        {
+            if (string.IsNullOrWhiteSpace(command))
+            {
+                return string.Empty;
+            }
+
+            return string.Join(" ",
+                command.Trim()
+                    .Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries));
         }
 
         internal static bool TryRunRegisteredTaskSilently()
