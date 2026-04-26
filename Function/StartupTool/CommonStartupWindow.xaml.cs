@@ -5,6 +5,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -62,6 +63,9 @@ public partial class CommonStartupWindow : Window
     private int _ignoredWorkbenchScrollChangeCount;
     private int _workbenchRefreshVersion;
     private WorkbenchSearchContext _searchRestoreContext;
+
+    private const int SwShow = 5;
+    private const int SwRestore = 9;
 
     public CommonStartupWindow(DataPersistenceService persistence)
     {
@@ -887,7 +891,7 @@ public partial class CommonStartupWindow : Window
         StatusText.Text = item.IsFavorite ? $"已收藏：{item.Name}" : $"已取消收藏：{item.Name}";
     }
 
-    private void LaunchItem(StartupItemVm item)
+    private void LaunchItem(StartupItemVm item, bool forceNewInstance = false)
     {
         if (item == null)
         {
@@ -896,33 +900,299 @@ public partial class CommonStartupWindow : Window
 
         try
         {
-            var startInfo = new ProcessStartInfo
+            if (!forceNewInstance && TryActivateExistingInstance(item.FullPath))
             {
-                FileName = item.FullPath,
-                Arguments = item.Arguments ?? string.Empty,
-                UseShellExecute = true
-            };
-
-            var workingDirectory = GetLaunchWorkingDirectory(item.FullPath);
-            if (!string.IsNullOrWhiteSpace(workingDirectory))
-            {
-                startInfo.WorkingDirectory = workingDirectory;
+                RecordItemLaunch(item);
+                StatusText.Text = $"已唤醒：{item.Name}";
+                return;
             }
+
+            var startInfo = CreateLaunchStartInfo(item);
 
             Process.Start(startInfo);
 
-            item.LastLaunchedAt = DateTime.Now;
-            item.LaunchCount++;
-            SaveItems();
-            SelectStartupItem(item);
-            RefreshWorkbench();
-            StatusText.Text = $"已启动：{item.Name}";
+            RecordItemLaunch(item);
+            StatusText.Text = forceNewInstance ? $"已强制启动：{item.Name}" : $"已启动：{item.Name}";
         }
         catch (Exception ex)
         {
             UpdateItemRuntimeState(item);
             RefreshWorkbench();
             MessageBox.Show($"启动失败：{ex.Message}", "常用启动项", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void RecordItemLaunch(StartupItemVm item)
+    {
+        item.LastLaunchedAt = DateTime.Now;
+        item.LaunchCount++;
+        SaveItems();
+        SelectStartupItem(item);
+        RefreshWorkbench();
+    }
+
+    private static ProcessStartInfo CreateLaunchStartInfo(StartupItemVm item)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = item.FullPath,
+            Arguments = item.Arguments ?? string.Empty,
+            UseShellExecute = true
+        };
+
+        var shortcut = TryResolveShortcut(item.FullPath);
+        if (shortcut != null)
+        {
+            startInfo.FileName = shortcut.TargetPath;
+            startInfo.Arguments = CombineArguments(shortcut.Arguments, item.Arguments);
+            if (!string.IsNullOrWhiteSpace(shortcut.WorkingDirectory) && Directory.Exists(shortcut.WorkingDirectory))
+            {
+                startInfo.WorkingDirectory = shortcut.WorkingDirectory;
+            }
+
+            return startInfo;
+        }
+
+        var workingDirectory = GetLaunchWorkingDirectory(item.FullPath);
+        if (!string.IsNullOrWhiteSpace(workingDirectory))
+        {
+            startInfo.WorkingDirectory = workingDirectory;
+        }
+
+        return startInfo;
+    }
+
+    private static string ResolveActivationPath(string fullPath)
+    {
+        return TryResolveShortcut(fullPath)?.TargetPath ?? fullPath;
+    }
+
+    private static string CombineArguments(string shortcutArguments, string itemArguments)
+    {
+        if (string.IsNullOrWhiteSpace(itemArguments))
+        {
+            return shortcutArguments ?? string.Empty;
+        }
+
+        if (string.IsNullOrWhiteSpace(shortcutArguments))
+        {
+            return itemArguments ?? string.Empty;
+        }
+
+        return shortcutArguments + " " + itemArguments;
+    }
+
+    private static ShortcutTarget TryResolveShortcut(string fullPath)
+    {
+        if (string.IsNullOrWhiteSpace(fullPath)
+            || !string.Equals(System.IO.Path.GetExtension(fullPath), ".lnk", StringComparison.OrdinalIgnoreCase)
+            || !File.Exists(fullPath))
+        {
+            return null;
+        }
+
+        try
+        {
+            var shell = Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell"));
+            if (shell == null)
+            {
+                return null;
+            }
+
+            try
+            {
+                var shortcut = shell.GetType().InvokeMember("CreateShortcut", System.Reflection.BindingFlags.InvokeMethod, null, shell, new object[] { fullPath });
+                if (shortcut == null)
+                {
+                    return null;
+                }
+
+                var shortcutType = shortcut.GetType();
+                var targetPath = shortcutType.InvokeMember("TargetPath", System.Reflection.BindingFlags.GetProperty, null, shortcut, null) as string;
+                if (string.IsNullOrWhiteSpace(targetPath))
+                {
+                    return null;
+                }
+
+                try
+                {
+                    return new ShortcutTarget
+                    {
+                        TargetPath = targetPath,
+                        Arguments = shortcutType.InvokeMember("Arguments", System.Reflection.BindingFlags.GetProperty, null, shortcut, null) as string ?? string.Empty,
+                        WorkingDirectory = shortcutType.InvokeMember("WorkingDirectory", System.Reflection.BindingFlags.GetProperty, null, shortcut, null) as string ?? string.Empty
+                    };
+                }
+                finally
+                {
+                    if (Marshal.IsComObject(shortcut))
+                    {
+                        Marshal.FinalReleaseComObject(shortcut);
+                    }
+                }
+            }
+            finally
+            {
+                Marshal.FinalReleaseComObject(shell);
+            }
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool TryActivateExistingInstance(string fullPath)
+    {
+        var process = FindExistingProcess(fullPath);
+        if (process == null)
+        {
+            return false;
+        }
+
+        try
+        {
+            using (process)
+            {
+                return TryBringProcessToFront(process);
+            }
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static Process FindExistingProcess(string fullPath)
+    {
+        var activationPath = ResolveActivationPath(fullPath);
+        if (string.IsNullOrWhiteSpace(activationPath) || !File.Exists(activationPath))
+        {
+            return null;
+        }
+
+        if (!string.Equals(System.IO.Path.GetExtension(activationPath), ".exe", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        var processName = System.IO.Path.GetFileNameWithoutExtension(activationPath);
+        if (string.IsNullOrWhiteSpace(processName))
+        {
+            return null;
+        }
+
+        var normalizedPath = NormalizeFilePath(activationPath);
+        Process fallback = null;
+        foreach (var process in Process.GetProcessesByName(processName))
+        {
+            var shouldDispose = true;
+            try
+            {
+                var processPath = TryGetProcessPath(process);
+                if (!string.IsNullOrWhiteSpace(processPath))
+                {
+                    if (string.Equals(NormalizeFilePath(processPath), normalizedPath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return process;
+                    }
+                }
+                else if (fallback == null)
+                {
+                    fallback = process;
+                    shouldDispose = false;
+                }
+            }
+            catch
+            {
+            }
+            finally
+            {
+                if (shouldDispose)
+                {
+                    process.Dispose();
+                }
+            }
+        }
+
+        return fallback;
+    }
+
+    private static string TryGetProcessPath(Process process)
+    {
+        try
+        {
+            return process.MainModule?.FileName;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static string NormalizeFilePath(string path)
+    {
+        try
+        {
+            return System.IO.Path.GetFullPath(path).TrimEnd(System.IO.Path.DirectorySeparatorChar, System.IO.Path.AltDirectorySeparatorChar);
+        }
+        catch
+        {
+            return path ?? string.Empty;
+        }
+    }
+
+    private static bool TryBringProcessToFront(Process process)
+    {
+        var handle = FindProcessWindow(process);
+        if (handle == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        if (IsIconic(handle))
+        {
+            ShowWindow(handle, SwRestore);
+        }
+        else
+        {
+            ShowWindow(handle, SwShow);
+        }
+
+        BringWindowToTop(handle);
+        SetForegroundWindow(handle);
+        return true;
+    }
+
+    private static IntPtr FindProcessWindow(Process process)
+    {
+        try
+        {
+            process.Refresh();
+            if (process.MainWindowHandle != IntPtr.Zero)
+            {
+                return process.MainWindowHandle;
+            }
+
+            var processId = process.Id;
+            var foundHandle = IntPtr.Zero;
+            EnumWindows((handle, _) =>
+            {
+                GetWindowThreadProcessId(handle, out var windowProcessId);
+                if (windowProcessId == processId && IsWindowVisible(handle))
+                {
+                    foundHandle = handle;
+                    return false;
+                }
+
+                return true;
+            }, IntPtr.Zero);
+
+            return foundHandle;
+        }
+        catch
+        {
+            return IntPtr.Zero;
         }
     }
 
@@ -1188,6 +1458,11 @@ public partial class CommonStartupWindow : Window
                 LaunchItem(_selectedItem);
                 e.Handled = true;
             }
+            else if (_selectedItem != null && e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Shift)
+            {
+                LaunchItem(_selectedItem, forceNewInstance: true);
+                e.Handled = true;
+            }
             else if (_selectedItem != null && e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Control)
             {
                 OpenItemFolder(_selectedItem.FullPath);
@@ -1213,6 +1488,13 @@ public partial class CommonStartupWindow : Window
         if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.None)
         {
             LaunchItem(_selectedItem);
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Shift)
+        {
+            LaunchItem(_selectedItem, forceNewInstance: true);
             e.Handled = true;
             return;
         }
@@ -1931,6 +2213,29 @@ public partial class CommonStartupWindow : Window
     }
 
     private void CandidateList_SelectionChanged(object sender, SelectionChangedEventArgs e) => RefreshCandidatePane();
+
+    private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindowVisible(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsIconic(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+
+    [DllImport("user32.dll")]
+    private static extern bool BringWindowToTop(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out int lpdwProcessId);
 
     private void CandidateList_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
@@ -2925,6 +3230,15 @@ public class StartupActivityVm
     public string TimeText { get; set; }
 
     public string Summary { get; set; }
+}
+
+internal class ShortcutTarget
+{
+    public string TargetPath { get; set; }
+
+    public string Arguments { get; set; }
+
+    public string WorkingDirectory { get; set; }
 }
 
 public enum StartupViewKind

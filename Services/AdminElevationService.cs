@@ -206,14 +206,14 @@ namespace PackageManager.Services
             try
             {
                 var asm = typeof(AdminElevationService).Assembly;
-                if (!IsEmbeddedResourceCurrent(asm, resourceSuffix, GetExtractedToolPath(outputFileName)))
+                if (!IsEmbeddedToolFileCurrent(asm, resourceSuffix, GetExtractedToolPath(outputFileName)))
                 {
                     return false;
                 }
 
                 foreach (var sidecarSuffix in GetEmbeddedToolSidecars(outputFileName))
                 {
-                    if (!IsEmbeddedResourceCurrent(asm, sidecarSuffix, GetExtractedToolPath(Path.GetFileName(sidecarSuffix))))
+                    if (!IsEmbeddedToolFileCurrent(asm, sidecarSuffix, GetExtractedToolPath(Path.GetFileName(sidecarSuffix))))
                     {
                         return false;
                     }
@@ -276,6 +276,11 @@ namespace PackageManager.Services
             }
         }
 
+        private static bool IsEmbeddedToolFileCurrent(System.Reflection.Assembly asm, string resourceSuffix, string targetPath)
+        {
+            return IsEmbeddedAssemblyIdentityCurrent(asm, resourceSuffix, targetPath);
+        }
+
         private static bool IsEmbeddedResourceCurrent(System.Reflection.Assembly asm, string resourceSuffix, string targetPath)
         {
             if (asm == null || string.IsNullOrWhiteSpace(resourceSuffix) || string.IsNullOrWhiteSpace(targetPath) || !File.Exists(targetPath))
@@ -304,6 +309,92 @@ namespace PackageManager.Services
                     return string.Equals(resourceHash, fileHash, StringComparison.OrdinalIgnoreCase);
                 }
             }
+        }
+
+        private static bool IsEmbeddedAssemblyIdentityCurrent(System.Reflection.Assembly asm, string resourceSuffix, string targetPath)
+        {
+            if (asm == null || string.IsNullOrWhiteSpace(resourceSuffix) || string.IsNullOrWhiteSpace(targetPath) || !File.Exists(targetPath))
+            {
+                return false;
+            }
+
+            var resourceName = asm.GetManifestResourceNames()
+                .FirstOrDefault(n => n.EndsWith(resourceSuffix, StringComparison.OrdinalIgnoreCase));
+            if (string.IsNullOrEmpty(resourceName))
+            {
+                return false;
+            }
+
+            try
+            {
+                using (var stream = asm.GetManifestResourceStream(resourceName))
+                {
+                    if (stream == null)
+                    {
+                        return false;
+                    }
+
+                    var tempPath = Path.Combine(Path.GetTempPath(), "PackageManager", "tool_identity_" + Guid.NewGuid().ToString("N") + Path.GetExtension(resourceSuffix));
+                    Directory.CreateDirectory(Path.GetDirectoryName(tempPath));
+                    try
+                    {
+                        using (var fs = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.Read))
+                        {
+                            stream.CopyTo(fs);
+                        }
+
+                        return SameAssemblyIdentity(tempPath, targetPath);
+                    }
+                    finally
+                    {
+                        try { File.Delete(tempPath); } catch { }
+                    }
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool SameAssemblyIdentity(string leftPath, string rightPath)
+        {
+            try
+            {
+                var leftName = System.Reflection.AssemblyName.GetAssemblyName(leftPath);
+                var rightName = System.Reflection.AssemblyName.GetAssemblyName(rightPath);
+                return string.Equals(leftName.Name, rightName.Name, StringComparison.OrdinalIgnoreCase)
+                    && Equals(leftName.Version, rightName.Version)
+                    && string.Equals(leftName.CultureName ?? string.Empty, rightName.CultureName ?? string.Empty, StringComparison.OrdinalIgnoreCase)
+                    && PublicKeyTokensEqual(leftName.GetPublicKeyToken(), rightName.GetPublicKeyToken());
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool PublicKeyTokensEqual(byte[] left, byte[] right)
+        {
+            if (left == null || left.Length == 0)
+            {
+                return right == null || right.Length == 0;
+            }
+
+            if (right == null || left.Length != right.Length)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < left.Length; i++)
+            {
+                if (left[i] != right[i])
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         private static string ComputeSha256(Stream stream)

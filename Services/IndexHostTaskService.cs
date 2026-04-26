@@ -106,9 +106,6 @@ namespace PackageManager.Services
 
         private static bool TrySyncHostToolOnce(string toolPath)
         {
-            TryStopRegisteredTaskInstance();
-            Thread.Sleep(300);
-
             toolPath = AdminElevationService.ExtractEmbeddedTool("MftScanner.exe", "MftScanner.exe");
             return !string.IsNullOrWhiteSpace(toolPath)
                 && File.Exists(toolPath)
