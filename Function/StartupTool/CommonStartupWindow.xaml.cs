@@ -6,6 +6,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
@@ -26,6 +27,11 @@ public partial class CommonStartupWindow : Window
     private const int MaxDisplayedResults = 500;
     private const int SearchPageSize = 500;
     private const int RecentDays = 7;
+    private const uint SwpNoSize = 0x0001;
+    private const uint SwpNoMove = 0x0002;
+    private const uint SwpShowWindow = 0x0040;
+    private static readonly IntPtr HwndTopMost = new IntPtr(-1);
+    private static readonly IntPtr HwndNoTopMost = new IntPtr(-2);
     private static readonly TimeSpan FileSearchDebounceInterval = TimeSpan.FromMilliseconds(450);
 
     private static readonly string[] PresetGroupNames = { "项目入口", "开发工具", "运维脚本", "目录快捷方式", "临时工具" };
@@ -66,6 +72,23 @@ public partial class CommonStartupWindow : Window
 
     private const int SwShow = 5;
     private const int SwRestore = 9;
+    private const uint WmSysCommand = 0x0112;
+    private static readonly UIntPtr ScRestore = new UIntPtr(0xF120);
+    private const byte VkMenu = 0x12;
+    private const uint KeyEventFKeyUp = 0x0002;
+    private const uint TbButtonCount = 0x0418;
+    private const uint TbGetButtonTextW = 0x044B;
+    private const uint TbGetItemRect = 0x041D;
+    private const uint MouseEventFLeftDown = 0x0002;
+    private const uint MouseEventFLeftUp = 0x0004;
+    private const uint GwOwner = 4;
+    private const int GwlStyle = -16;
+    private const int GwlExStyle = -20;
+    private const int WsChild = 0x40000000;
+    private const int WsDisabled = 0x08000000;
+    private const int WsExToolWindow = 0x00000080;
+    private const int WsExAppWindow = 0x00040000;
+    private const int WsExNoActivate = 0x08000000;
 
     public CommonStartupWindow(DataPersistenceService persistence)
     {
@@ -900,19 +923,30 @@ public partial class CommonStartupWindow : Window
 
         try
         {
-            if (!forceNewInstance && TryActivateExistingInstance(item.FullPath))
+            var activationResult = forceNewInstance ? ExistingInstanceActivationResult.NotFound : TryActivateExistingInstance(item);
+            if (activationResult == ExistingInstanceActivationResult.Activated)
             {
                 RecordItemLaunch(item);
                 StatusText.Text = $"已唤醒：{item.Name}";
                 return;
             }
 
-            var startInfo = CreateLaunchStartInfo(item);
+            if (activationResult == ExistingInstanceActivationResult.FoundWithoutWindow && IsKnownSingleInstanceTrayApp(item.FullPath))
+            {
+                StatusText.Text = $"未能唤醒：{item.Name}，已保持工作台焦点。";
+                return;
+            }
+
+            var startInfo = activationResult == ExistingInstanceActivationResult.FoundWithoutWindow && ShouldUseOriginalShellActivation(item.FullPath)
+                ? CreateOriginalShellActivationStartInfo(item)
+                : CreateLaunchStartInfo(item, forceNewInstance);
 
             Process.Start(startInfo);
 
             RecordItemLaunch(item);
-            StatusText.Text = forceNewInstance ? $"已强制启动：{item.Name}" : $"已启动：{item.Name}";
+            StatusText.Text = activationResult == ExistingInstanceActivationResult.FoundWithoutWindow
+                ? $"已尝试从托盘唤醒：{item.Name}"
+                : (forceNewInstance ? $"已强制启动：{item.Name}" : $"已启动：{item.Name}");
         }
         catch (Exception ex)
         {
@@ -931,8 +965,21 @@ public partial class CommonStartupWindow : Window
         RefreshWorkbench();
     }
 
-    private static ProcessStartInfo CreateLaunchStartInfo(StartupItemVm item)
+    private static ProcessStartInfo CreateLaunchStartInfo(StartupItemVm item, bool forceNewInstance)
     {
+        if (forceNewInstance
+            && !string.IsNullOrWhiteSpace(item.FullPath)
+            && string.Equals(System.IO.Path.GetExtension(item.FullPath), ".lnk", StringComparison.OrdinalIgnoreCase)
+            && File.Exists(item.FullPath))
+        {
+            return new ProcessStartInfo
+            {
+                FileName = item.FullPath,
+                Arguments = item.Arguments ?? string.Empty,
+                UseShellExecute = true
+            };
+        }
+
         var startInfo = new ProcessStartInfo
         {
             FileName = item.FullPath,
@@ -950,13 +997,47 @@ public partial class CommonStartupWindow : Window
                 startInfo.WorkingDirectory = shortcut.WorkingDirectory;
             }
 
-            return startInfo;
+            return NormalizeForceNewProcessStartInfo(startInfo, forceNewInstance);
         }
 
         var workingDirectory = GetLaunchWorkingDirectory(item.FullPath);
         if (!string.IsNullOrWhiteSpace(workingDirectory))
         {
             startInfo.WorkingDirectory = workingDirectory;
+        }
+
+        return NormalizeForceNewProcessStartInfo(startInfo, forceNewInstance);
+    }
+
+    private static ProcessStartInfo CreateOriginalShellActivationStartInfo(StartupItemVm item)
+    {
+        return new ProcessStartInfo
+        {
+            FileName = item.FullPath,
+            Arguments = item.Arguments ?? string.Empty,
+            UseShellExecute = true
+        };
+    }
+
+    private static ProcessStartInfo NormalizeForceNewProcessStartInfo(ProcessStartInfo startInfo, bool forceNewInstance)
+    {
+        if (!forceNewInstance
+            || startInfo == null
+            || string.IsNullOrWhiteSpace(startInfo.FileName)
+            || !string.Equals(System.IO.Path.GetExtension(startInfo.FileName), ".exe", StringComparison.OrdinalIgnoreCase)
+            || !File.Exists(startInfo.FileName))
+        {
+            return startInfo;
+        }
+
+        startInfo.UseShellExecute = false;
+        if (string.IsNullOrWhiteSpace(startInfo.WorkingDirectory))
+        {
+            var directory = System.IO.Path.GetDirectoryName(startInfo.FileName);
+            if (Directory.Exists(directory))
+            {
+                startInfo.WorkingDirectory = directory;
+            }
         }
 
         return startInfo;
@@ -1042,48 +1123,69 @@ public partial class CommonStartupWindow : Window
         }
     }
 
-    private static bool TryActivateExistingInstance(string fullPath)
+    private ExistingInstanceActivationResult TryActivateExistingInstance(StartupItemVm item)
     {
-        var process = FindExistingProcess(fullPath);
-        if (process == null)
-        {
-            return false;
-        }
-
+        var fullPath = item?.FullPath;
+        var processes = FindExistingProcesses(fullPath);
+        var ownerHandle = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        var foundExistingProcess = processes.Count > 0;
         try
         {
-            using (process)
+            foreach (var process in processes)
             {
-                return TryBringProcessToFront(process);
+                if (TryBringProcessToFront(process, ownerHandle))
+                {
+                    return ExistingInstanceActivationResult.Activated;
+                }
             }
+
+            if (foundExistingProcess && TryActivateFromTrayOrShell(item, ownerHandle))
+            {
+                return ExistingInstanceActivationResult.Activated;
+            }
+
+            RestoreOwnerFocus(ownerHandle);
+            return foundExistingProcess
+                ? ExistingInstanceActivationResult.FoundWithoutWindow
+                : ExistingInstanceActivationResult.NotFound;
         }
-        catch
+        finally
         {
-            return false;
+            foreach (var process in processes)
+            {
+                try
+                {
+                    process.Dispose();
+                }
+                catch
+                {
+                }
+            }
         }
     }
 
-    private static Process FindExistingProcess(string fullPath)
+    private static List<Process> FindExistingProcesses(string fullPath)
     {
         var activationPath = ResolveActivationPath(fullPath);
         if (string.IsNullOrWhiteSpace(activationPath) || !File.Exists(activationPath))
         {
-            return null;
+            return new List<Process>();
         }
 
         if (!string.Equals(System.IO.Path.GetExtension(activationPath), ".exe", StringComparison.OrdinalIgnoreCase))
         {
-            return null;
+            return new List<Process>();
         }
 
         var processName = System.IO.Path.GetFileNameWithoutExtension(activationPath);
         if (string.IsNullOrWhiteSpace(processName))
         {
-            return null;
+            return new List<Process>();
         }
 
         var normalizedPath = NormalizeFilePath(activationPath);
-        Process fallback = null;
+        var exactMatches = new List<Process>();
+        var fallbackMatches = new List<Process>();
         foreach (var process in Process.GetProcessesByName(processName))
         {
             var shouldDispose = true;
@@ -1094,12 +1196,13 @@ public partial class CommonStartupWindow : Window
                 {
                     if (string.Equals(NormalizeFilePath(processPath), normalizedPath, StringComparison.OrdinalIgnoreCase))
                     {
-                        return process;
+                        exactMatches.Add(process);
+                        shouldDispose = false;
                     }
                 }
-                else if (fallback == null)
+                else
                 {
-                    fallback = process;
+                    fallbackMatches.Add(process);
                     shouldDispose = false;
                 }
             }
@@ -1115,7 +1218,10 @@ public partial class CommonStartupWindow : Window
             }
         }
 
-        return fallback;
+        exactMatches.Sort(CompareProcessesByWindowPriority);
+        fallbackMatches.Sort(CompareProcessesByWindowPriority);
+        exactMatches.AddRange(fallbackMatches);
+        return exactMatches;
     }
 
     private static string TryGetProcessPath(Process process)
@@ -1142,58 +1248,485 @@ public partial class CommonStartupWindow : Window
         }
     }
 
-    private static bool TryBringProcessToFront(Process process)
+    private static int CompareProcessesByWindowPriority(Process left, Process right)
     {
-        var handle = FindProcessWindow(process);
-        if (handle == IntPtr.Zero)
+        var leftCandidate = FindBestProcessWindow(left);
+        var rightCandidate = FindBestProcessWindow(right);
+        if (leftCandidate.Handle != IntPtr.Zero && rightCandidate.Handle == IntPtr.Zero)
+        {
+            return -1;
+        }
+
+        if (leftCandidate.Handle == IntPtr.Zero && rightCandidate.Handle != IntPtr.Zero)
+        {
+            return 1;
+        }
+
+        var scoreCompare = rightCandidate.Score.CompareTo(leftCandidate.Score);
+        if (scoreCompare != 0)
+        {
+            return scoreCompare;
+        }
+
+        return (right?.StartTime ?? DateTime.MinValue).CompareTo(left?.StartTime ?? DateTime.MinValue);
+    }
+
+    private static bool TryBringProcessToFront(Process process, IntPtr ownerHandle)
+    {
+        var candidate = FindBestProcessWindow(process);
+        if (candidate.Handle == IntPtr.Zero)
         {
             return false;
         }
 
-        if (IsIconic(handle))
+        var processName = process?.ProcessName ?? string.Empty;
+        if (ShouldUseShellActivationForHiddenMainWindow(processName, candidate))
+        {
+            return false;
+        }
+
+        var handle = candidate.Handle;
+        if (candidate.IsIconic)
         {
             ShowWindow(handle, SwRestore);
+            SendMessage(handle, WmSysCommand, ScRestore, IntPtr.Zero);
         }
         else
         {
             ShowWindow(handle, SwShow);
         }
 
-        BringWindowToTop(handle);
-        SetForegroundWindow(handle);
-        return true;
+        if (BringWindowToFrontLegacy(handle))
+        {
+            return true;
+        }
+
+        if (ShouldUseAggressiveForeground(processName) || candidate.PreferAggressive)
+        {
+            if (ForceBringWindowToFront(handle))
+            {
+                return true;
+            }
+        }
+
+        RestoreOwnerFocus(ownerHandle);
+        return false;
     }
 
-    private static IntPtr FindProcessWindow(Process process)
+    private static bool BringWindowToFrontLegacy(IntPtr handle)
     {
+        BringWindowToTop(handle);
+        return SetForegroundWindow(handle);
+    }
+
+    private static bool ForceBringWindowToFront(IntPtr handle)
+    {
+        keybd_event(VkMenu, 0, 0, UIntPtr.Zero);
+        keybd_event(VkMenu, 0, KeyEventFKeyUp, UIntPtr.Zero);
+        BringWindowToTop(handle);
+        SetWindowPos(handle, HwndTopMost, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpShowWindow);
+        SetWindowPos(handle, HwndNoTopMost, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpShowWindow);
+        SwitchToThisWindow(handle, true);
+        if (SetForegroundWindow(handle))
+        {
+            return true;
+        }
+
+        var foregroundHandle = GetForegroundWindow();
+        var currentThreadId = GetCurrentThreadId();
+        var targetThreadId = GetWindowThreadProcessId(handle, out _);
+        var foregroundThreadId = foregroundHandle == IntPtr.Zero
+            ? 0
+            : GetWindowThreadProcessId(foregroundHandle, out _);
+
+        var attachedToTarget = targetThreadId != 0 && targetThreadId != currentThreadId && AttachThreadInput(currentThreadId, targetThreadId, true);
+        var attachedToForeground = foregroundThreadId != 0 && foregroundThreadId != currentThreadId && AttachThreadInput(currentThreadId, foregroundThreadId, true);
         try
         {
-            process.Refresh();
-            if (process.MainWindowHandle != IntPtr.Zero)
+            BringWindowToTop(handle);
+            SetActiveWindow(handle);
+            SetFocus(handle);
+            SwitchToThisWindow(handle, true);
+            return SetForegroundWindow(handle);
+        }
+        finally
+        {
+            if (attachedToForeground)
             {
-                return process.MainWindowHandle;
+                AttachThreadInput(currentThreadId, foregroundThreadId, false);
             }
 
-            var processId = process.Id;
-            var foundHandle = IntPtr.Zero;
-            EnumWindows((handle, _) =>
+            if (attachedToTarget)
             {
-                GetWindowThreadProcessId(handle, out var windowProcessId);
-                if (windowProcessId == processId && IsWindowVisible(handle))
+                AttachThreadInput(currentThreadId, targetThreadId, false);
+            }
+        }
+    }
+
+    private static bool ShouldUseShellActivationForHiddenMainWindow(string processName, WindowActivationCandidate candidate)
+    {
+        return !candidate.IsVisible
+            && (processName.Equals("Weixin", StringComparison.OrdinalIgnoreCase)
+                || processName.Equals("WeChat", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool ShouldUseAggressiveForeground(string processName)
+    {
+        return processName.Equals("QQ", StringComparison.OrdinalIgnoreCase)
+            || processName.Equals("Weixin", StringComparison.OrdinalIgnoreCase)
+            || processName.Equals("WeChat", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ShouldUseOriginalShellActivation(string fullPath)
+    {
+        var activationPath = ResolveActivationPath(fullPath);
+        var processName = System.IO.Path.GetFileNameWithoutExtension(activationPath ?? fullPath) ?? string.Empty;
+        return processName.Equals("Weixin", StringComparison.OrdinalIgnoreCase)
+               || processName.Equals("WeChat", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool TryActivateFromTrayOrShell(StartupItemVm item, IntPtr ownerHandle)
+    {
+        if (item == null || !IsKnownSingleInstanceTrayApp(item.FullPath))
+        {
+            return false;
+        }
+
+        var terms = GetTrayActivationTerms(item.FullPath);
+        if (TryClickTrayIcon(terms) && WaitForExistingInstanceActivation(item.FullPath, ownerHandle, 2000))
+        {
+            return true;
+        }
+
+        if (ShouldUseOriginalShellActivation(item.FullPath) && File.Exists(item.FullPath))
+        {
+            try
+            {
+                Process.Start(CreateOriginalShellActivationStartInfo(item));
+                return WaitForExistingInstanceActivation(item.FullPath, ownerHandle, 3000);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool WaitForExistingInstanceActivation(string fullPath, IntPtr ownerHandle, int timeoutMilliseconds)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMilliseconds);
+        while (DateTime.UtcNow < deadline)
+        {
+            using (var processes = new ProcessListScope(FindExistingProcesses(fullPath)))
+            {
+                foreach (var process in processes.Processes)
                 {
-                    foundHandle = handle;
-                    return false;
+                    if (TryBringProcessToFront(process, ownerHandle))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            Thread.Sleep(120);
+        }
+
+        RestoreOwnerFocus(ownerHandle);
+        return false;
+    }
+
+    private static bool IsKnownSingleInstanceTrayApp(string fullPath)
+    {
+        var activationPath = ResolveActivationPath(fullPath);
+        var processName = System.IO.Path.GetFileNameWithoutExtension(activationPath ?? fullPath) ?? string.Empty;
+        return processName.Equals("QQ", StringComparison.OrdinalIgnoreCase)
+               || processName.Equals("Weixin", StringComparison.OrdinalIgnoreCase)
+               || processName.Equals("WeChat", StringComparison.OrdinalIgnoreCase)
+               || processName.Equals("cc-switch", StringComparison.OrdinalIgnoreCase)
+               || processName.Equals("clash-verge", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string[] GetTrayActivationTerms(string fullPath)
+    {
+        var activationPath = ResolveActivationPath(fullPath);
+        var processName = System.IO.Path.GetFileNameWithoutExtension(activationPath ?? fullPath) ?? string.Empty;
+        if (processName.Equals("QQ", StringComparison.OrdinalIgnoreCase)) return new[] { "QQ" };
+        if (processName.Equals("Weixin", StringComparison.OrdinalIgnoreCase) || processName.Equals("WeChat", StringComparison.OrdinalIgnoreCase)) return new[] { "微信", "Weixin", "WeChat" };
+        if (processName.Equals("cc-switch", StringComparison.OrdinalIgnoreCase)) return new[] { "CC Switch", "cc-switch", "ccswitch" };
+        if (processName.Equals("clash-verge", StringComparison.OrdinalIgnoreCase)) return new[] { "Clash Verge", "clash-verge", "Verge" };
+        return Array.Empty<string>();
+    }
+
+    private static void RestoreOwnerFocus(IntPtr ownerHandle)
+    {
+        if (ownerHandle == IntPtr.Zero)
+        {
+            return;
+        }
+
+        ShowWindow(ownerHandle, SwShow);
+        BringWindowToTop(ownerHandle);
+        SetForegroundWindow(ownerHandle);
+    }
+
+    private static bool TryClickTrayIcon(string[] terms)
+    {
+        if (terms == null || terms.Length == 0)
+        {
+            return false;
+        }
+
+        foreach (var toolbarHandle in EnumerateTrayToolbarWindows())
+        {
+            if (TryClickToolbarButton(toolbarHandle, terms))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static IEnumerable<IntPtr> EnumerateTrayToolbarWindows()
+    {
+        var roots = new[]
+        {
+            FindWindow("Shell_TrayWnd", null),
+            FindWindow("NotifyIconOverflowWindow", null)
+        };
+
+        foreach (var root in roots.Where(handle => handle != IntPtr.Zero))
+        {
+            var handles = new List<IntPtr>();
+            EnumChildWindows(root, (handle, _) =>
+            {
+                if (string.Equals(GetWindowClassName(handle), "ToolbarWindow32", StringComparison.Ordinal))
+                {
+                    handles.Add(handle);
                 }
 
                 return true;
             }, IntPtr.Zero);
 
-            return foundHandle;
+            foreach (var handle in handles)
+            {
+                yield return handle;
+            }
+        }
+    }
+
+    private static bool TryClickToolbarButton(IntPtr toolbarHandle, string[] terms)
+    {
+        var count = (int)SendMessage(toolbarHandle, TbButtonCount, UIntPtr.Zero, IntPtr.Zero);
+        if (count <= 0)
+        {
+            return false;
+        }
+
+        for (var i = 0; i < count; i++)
+        {
+            var text = GetToolbarButtonText(toolbarHandle, i);
+            if (string.IsNullOrWhiteSpace(text) || !terms.Any(term => text.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0))
+            {
+                continue;
+            }
+
+            if (TryGetToolbarButtonRect(toolbarHandle, i, out var rect))
+            {
+                var point = new POINT
+                {
+                    X = rect.Left + ((rect.Right - rect.Left) / 2),
+                    Y = rect.Top + ((rect.Bottom - rect.Top) / 2)
+                };
+                ClientToScreen(toolbarHandle, ref point);
+                DoubleClickScreenPoint(point.X, point.Y);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static string GetToolbarButtonText(IntPtr toolbarHandle, int index)
+    {
+        var buffer = new StringBuilder(512);
+        SendMessage(toolbarHandle, TbGetButtonTextW, new UIntPtr((uint)index), buffer);
+        return buffer.ToString();
+    }
+
+    private static bool TryGetToolbarButtonRect(IntPtr toolbarHandle, int index, out RECT rect)
+    {
+        rect = default;
+        return SendMessage(toolbarHandle, TbGetItemRect, new UIntPtr((uint)index), ref rect) != IntPtr.Zero;
+    }
+
+    private static void DoubleClickScreenPoint(int x, int y)
+    {
+        SetCursorPos(x, y);
+        mouse_event(MouseEventFLeftDown | MouseEventFLeftUp, 0, 0, 0, UIntPtr.Zero);
+        Thread.Sleep(80);
+        mouse_event(MouseEventFLeftDown | MouseEventFLeftUp, 0, 0, 0, UIntPtr.Zero);
+    }
+
+    private static WindowActivationCandidate FindBestProcessWindow(Process process)
+    {
+        try
+        {
+            process.Refresh();
+            var processName = process.ProcessName ?? string.Empty;
+            var processId = process.Id;
+            var best = WindowActivationCandidate.Empty;
+            EnumWindows((handle, _) =>
+            {
+                GetWindowThreadProcessId(handle, out var windowProcessId);
+                if (windowProcessId == processId)
+                {
+                    var candidate = BuildWindowActivationCandidate(processName, handle, process.MainWindowHandle);
+                    if (candidate.Score > best.Score)
+                    {
+                        best = candidate;
+                    }
+                }
+
+                return true;
+            }, IntPtr.Zero);
+
+            if (best.Handle == IntPtr.Zero && process.MainWindowHandle != IntPtr.Zero)
+            {
+                best = BuildWindowActivationCandidate(processName, process.MainWindowHandle, process.MainWindowHandle);
+            }
+
+            return best.Score > 0 ? best : WindowActivationCandidate.Empty;
         }
         catch
         {
-            return IntPtr.Zero;
+            return WindowActivationCandidate.Empty;
         }
+    }
+
+    private static WindowActivationCandidate BuildWindowActivationCandidate(string processName, IntPtr handle, IntPtr mainWindowHandle)
+    {
+        if (handle == IntPtr.Zero)
+        {
+            return WindowActivationCandidate.Empty;
+        }
+
+        var className = GetWindowClassName(handle);
+        var title = GetWindowTitle(handle);
+        if (IsIgnoredActivationWindow(className, title))
+        {
+            return WindowActivationCandidate.Empty;
+        }
+
+        var style = GetWindowLong(handle, GwlStyle);
+        var exStyle = GetWindowLong(handle, GwlExStyle);
+        if ((style & WsChild) != 0)
+        {
+            return WindowActivationCandidate.Empty;
+        }
+
+        var visible = IsWindowVisible(handle);
+        var iconic = IsIconic(handle);
+        var hasTitle = !string.IsNullOrWhiteSpace(title);
+        var owner = GetWindow(handle, GwOwner);
+        var isOwnerless = owner == IntPtr.Zero;
+        var score = 0;
+
+        score += visible ? 260 : -80;
+        score += iconic ? 60 : (visible ? 40 : 0);
+        score += hasTitle ? 160 : -40;
+        score += isOwnerless ? 100 : -80;
+
+        if (handle == mainWindowHandle) score += 180;
+        if ((exStyle & WsExAppWindow) != 0) score += 80;
+        if ((exStyle & WsExToolWindow) != 0) score -= 180;
+        if ((exStyle & WsExNoActivate) != 0) score -= 220;
+        if ((style & WsDisabled) != 0) score -= 100;
+        if (IsLikelyApplicationWindowClass(className)) score += 70;
+        if (TitleContainsProcessName(title, processName)) score += 80;
+
+        var preferAggressive = processName.Equals("QQ", StringComparison.OrdinalIgnoreCase)
+                               || processName.Equals("Weixin", StringComparison.OrdinalIgnoreCase)
+                               || processName.Equals("WeChat", StringComparison.OrdinalIgnoreCase);
+        return score > 0
+            ? new WindowActivationCandidate(handle, score, preferAggressive, visible, iconic, title, className)
+            : WindowActivationCandidate.Empty;
+    }
+
+    private static bool IsIgnoredActivationWindow(string className, string title)
+    {
+        if (string.IsNullOrWhiteSpace(className))
+        {
+            return true;
+        }
+
+        return className.Equals("MSCTFIME UI", StringComparison.Ordinal)
+               || className.Equals("IME", StringComparison.Ordinal)
+               || className.Equals("Tao Thread Event Target", StringComparison.Ordinal)
+               || className.Equals("Base_PowerMessageWindow", StringComparison.Ordinal)
+               || className.Equals("Chrome_SystemMessageWindow", StringComparison.Ordinal)
+               || className.Equals("DisplayICC_SystemMessageWindow", StringComparison.Ordinal)
+               || className.Equals("tray_icon_app", StringComparison.Ordinal)
+               || className.Equals("Electron_NotifyIconHostWindow", StringComparison.Ordinal)
+               || className.Equals("com.ccswitch.desktop-sic", StringComparison.Ordinal)
+               || className.IndexOf("CandidateWindow", StringComparison.OrdinalIgnoreCase) >= 0
+               || string.Equals(title, "Default IME", StringComparison.OrdinalIgnoreCase)
+               || string.Equals(title, "Mode Indicator", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsLikelyApplicationWindowClass(string className)
+    {
+        if (string.IsNullOrWhiteSpace(className))
+        {
+            return false;
+        }
+
+        return className.IndexOf("Window", StringComparison.OrdinalIgnoreCase) >= 0
+               || className.IndexOf("Wnd", StringComparison.OrdinalIgnoreCase) >= 0
+               || className.IndexOf("QWindow", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private static bool TitleContainsProcessName(string title, string processName)
+    {
+        var normalizedTitle = NormalizeWindowMatchText(title);
+        var normalizedProcessName = NormalizeWindowMatchText(processName);
+        return normalizedTitle.Length > 0
+               && normalizedProcessName.Length > 0
+               && normalizedTitle.IndexOf(normalizedProcessName, StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private static string NormalizeWindowMatchText(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return string.Empty;
+        }
+
+        var builder = new StringBuilder(value.Length);
+        foreach (var ch in value)
+        {
+            if (char.IsLetterOrDigit(ch))
+            {
+                builder.Append(char.ToLowerInvariant(ch));
+            }
+        }
+
+        return builder.ToString();
+    }
+    private static string GetWindowTitle(IntPtr handle)
+    {
+        var builder = new StringBuilder(512);
+        GetWindowText(handle, builder, builder.Capacity);
+        return builder.ToString();
+    }
+
+    private static string GetWindowClassName(IntPtr handle)
+    {
+        var builder = new StringBuilder(256);
+        GetClassName(handle, builder, builder.Capacity);
+        return builder.ToString();
     }
 
     private static string GetLaunchWorkingDirectory(string fullPath)
@@ -2220,6 +2753,18 @@ public partial class CommonStartupWindow : Window
     private static extern bool EnumWindows(EnumWindowsProc lpEnumFunc, IntPtr lParam);
 
     [DllImport("user32.dll")]
+    private static extern bool EnumChildWindows(IntPtr hWndParent, EnumWindowsProc lpEnumFunc, IntPtr lParam);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+
+    [DllImport("user32.dll")]
+    private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+    [DllImport("user32.dll")]
     private static extern bool IsWindowVisible(IntPtr hWnd);
 
     [DllImport("user32.dll")]
@@ -2233,6 +2778,54 @@ public partial class CommonStartupWindow : Window
 
     [DllImport("user32.dll")]
     private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr hWnd, uint msg, UIntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr SendMessage(IntPtr hWnd, uint msg, UIntPtr wParam, StringBuilder lParam);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr hWnd, uint msg, UIntPtr wParam, ref RECT lParam);
+
+    [DllImport("user32.dll")]
+    private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
+
+    [DllImport("user32.dll")]
+    private static extern void SwitchToThisWindow(IntPtr hWnd, bool fAltTab);
+
+    [DllImport("user32.dll")]
+    private static extern bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetCursorPos(int x, int y);
+
+    [DllImport("user32.dll")]
+    private static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr hWnd, StringBuilder text, int count);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SetActiveWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SetFocus(IntPtr hWnd);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
 
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out int lpdwProcessId);
@@ -3230,6 +3823,83 @@ public class StartupActivityVm
     public string TimeText { get; set; }
 
     public string Summary { get; set; }
+}
+
+internal enum ExistingInstanceActivationResult
+{
+    NotFound,
+    Activated,
+    FoundWithoutWindow
+}
+
+internal readonly struct WindowActivationCandidate
+{
+    public static readonly WindowActivationCandidate Empty = new WindowActivationCandidate(IntPtr.Zero, int.MinValue, false, false, false, string.Empty, string.Empty);
+
+    public WindowActivationCandidate(IntPtr handle, int score, bool preferAggressive, bool isVisible, bool isIconic, string title, string className)
+    {
+        Handle = handle;
+        Score = score;
+        PreferAggressive = preferAggressive;
+        IsVisible = isVisible;
+        IsIconic = isIconic;
+        Title = title ?? string.Empty;
+        ClassName = className ?? string.Empty;
+    }
+
+    public IntPtr Handle { get; }
+
+    public int Score { get; }
+
+    public bool PreferAggressive { get; }
+
+    public bool IsVisible { get; }
+
+    public bool IsIconic { get; }
+
+    public string Title { get; }
+
+    public string ClassName { get; }
+}
+
+internal sealed class ProcessListScope : IDisposable
+{
+    public ProcessListScope(List<Process> processes)
+    {
+        Processes = processes ?? new List<Process>();
+    }
+
+    public List<Process> Processes { get; }
+
+    public void Dispose()
+    {
+        foreach (var process in Processes)
+        {
+            try
+            {
+                process.Dispose();
+            }
+            catch
+            {
+            }
+        }
+    }
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal struct RECT
+{
+    public int Left;
+    public int Top;
+    public int Right;
+    public int Bottom;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal struct POINT
+{
+    public int X;
+    public int Y;
 }
 
 internal class ShortcutTarget
