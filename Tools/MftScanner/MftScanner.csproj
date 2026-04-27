@@ -72,6 +72,9 @@
     </Resource>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="..\MftScanner.Shared\MftScannerToolAssemblyInfo.cs">
+      <Link>Properties\MftScannerToolAssemblyInfo.cs</Link>
+    </Compile>
     <Compile Include="EverythingSearchWindow.xaml.cs">
       <DependentUpon>EverythingSearchWindow.xaml</DependentUpon>
     </Compile>

@@ -33,6 +33,9 @@
     </Reference>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="..\MftScanner.Shared\MftScannerToolAssemblyInfo.cs">
+      <Link>Properties\MftScannerToolAssemblyInfo.cs</Link>
+    </Compile>
     <Compile Include="FileRecord.cs" />
     <Compile Include="ISharedIndexService.cs" />
     <Compile Include="SearchTypeFilter.cs" />

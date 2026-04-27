@@ -4,9 +4,12 @@
       xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
       xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
       xmlns:button="clr-namespace:CustomControlLibrary.CustomControl.Controls.Button;assembly=CustomControlLibrary"
+      xmlns:conv="clr-namespace:PackageManager.Converters"
       mc:Ignorable="d"
       Background="#F5F6F2">
     <Page.Resources>
+        <conv:BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
+
         <Style x:Key="PanelBorderStyle" TargetType="Border">
             <Setter Property="Background" Value="White"/>
             <Setter Property="BorderBrush" Value="#18000000"/>
@@ -206,6 +209,7 @@
                                                 <Grid.RowDefinitions>
                                                     <RowDefinition Height="Auto"/>
                                                     <RowDefinition Height="Auto"/>
+                                                    <RowDefinition Height="Auto"/>
                                                 </Grid.RowDefinitions>
 
                                                 <TextBlock Text="{Binding DisplayLabel}"
@@ -227,6 +231,30 @@
                                                                Text="{Binding StatusSummaryText}"
                                                                Foreground="#1A6A5F"
                                                                TextTrimming="CharacterEllipsis"/>
+                                                </Grid>
+                                                <Grid Grid.Row="2" Margin="0,6,0,0">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Text="{Binding SecretChatText}"
+                                                               Foreground="#7D6A1A"
+                                                               FontSize="12"/>
+                                                    <Border Grid.Column="1"
+                                                            MinWidth="22"
+                                                            Height="20"
+                                                            Margin="8,0,0,0"
+                                                            Padding="6,0"
+                                                            Background="#E64D3D"
+                                                            CornerRadius="10"
+                                                            Visibility="{Binding HasSecretUnread, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                                        <TextBlock Text="{Binding SecretChatBadgeText}"
+                                                                   Foreground="White"
+                                                                   FontSize="11"
+                                                                   FontWeight="Bold"
+                                                                   HorizontalAlignment="Center"
+                                                                   VerticalAlignment="Center"/>
+                                                    </Border>
                                                 </Grid>
                                             </Grid>
                                         </Border>
@@ -380,12 +408,17 @@
                                                TextTrimming="CharacterEllipsis"/>
                                 </StackPanel>
 
-                                <button:CButton Grid.Column="1"
-                                                Width="142"
-                                                Height="36"
-                                                Margin="16,0,0,0"
-                                                Content="发送到当前目标"
-                                                Click="SendButton_Click"/>
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="16,0,0,0">
+                                    <button:CButton Width="92"
+                                                    Height="36"
+                                                    Margin="0,0,10,0"
+                                                    Content="密语"
+                                                    Click="SecretChatButton_Click"/>
+                                    <button:CButton Width="142"
+                                                    Height="36"
+                                                    Content="发送到当前目标"
+                                                    Click="SendButton_Click"/>
+                                </StackPanel>
                             </Grid>
                         </Border>
                     </Grid>

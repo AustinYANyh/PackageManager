@@ -82,6 +82,8 @@ internal sealed class LanDiscoveryService : IDisposable
                         MachineName = identity.MachineName,
                         ListenPort = identity.ListenPort,
                         AppVersion = identity.AppVersion,
+                        Capabilities = identity.Capabilities,
+                        SecretChatPublicKey = identity.SecretChatPublicKey,
                     };
 
                     var payload = JsonConvert.SerializeObject(announcement);
@@ -200,6 +202,10 @@ internal sealed class LanDiscoveryAnnouncement
     public int ListenPort { get; set; }
 
     public string AppVersion { get; set; }
+
+    public List<string> Capabilities { get; set; } = new List<string>();
+
+    public string SecretChatPublicKey { get; set; }
 }
 
 internal sealed class LanLocalIdentity
@@ -215,9 +221,23 @@ internal sealed class LanLocalIdentity
     public int ListenPort { get; set; }
 
     public string AppVersion { get; set; }
+
+    public List<string> Capabilities { get; set; } = new List<string>();
+
+    public string SecretChatPublicKey { get; set; }
 }
 
 internal static class LanTransferProtocol
 {
     public const int ProtocolVersion = 1;
+
+    public const string SecretChatCapability = "secret-chat-v1";
+
+    public static List<string> CurrentCapabilities => new List<string> { SecretChatCapability };
+
+    public static bool SupportsSecretChat(IEnumerable<string> capabilities)
+    {
+        return capabilities != null && capabilities.Any(capability =>
+            string.Equals(capability, SecretChatCapability, StringComparison.OrdinalIgnoreCase));
+    }
 }

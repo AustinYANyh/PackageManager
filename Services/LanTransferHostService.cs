@@ -19,6 +19,8 @@ internal sealed class LanTransferHostService : IDisposable
 
     private readonly Func<LanHostConfiguration> _configurationProvider;
     private readonly Func<LanTransferRequest, Task<LanIncomingTransferDecision>> _requestApprovalAsync;
+    private readonly Func<LanSecretChatSessionRequest, Task<bool>> _secretChatApprovalAsync;
+    private readonly Action<LanSecretChatSessionRequest> _secretChatAccepted;
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _incomingTransferCancels = new ConcurrentDictionary<string, CancellationTokenSource>(StringComparer.OrdinalIgnoreCase);
     private readonly CancellationTokenSource _cts = new CancellationTokenSource();
 
@@ -27,10 +29,14 @@ internal sealed class LanTransferHostService : IDisposable
 
     public LanTransferHostService(
         Func<LanHostConfiguration> configurationProvider,
-        Func<LanTransferRequest, Task<LanIncomingTransferDecision>> requestApprovalAsync)
+        Func<LanTransferRequest, Task<LanIncomingTransferDecision>> requestApprovalAsync,
+        Func<LanSecretChatSessionRequest, Task<bool>> secretChatApprovalAsync = null,
+        Action<LanSecretChatSessionRequest> secretChatAccepted = null)
     {
         _configurationProvider = configurationProvider ?? throw new ArgumentNullException(nameof(configurationProvider));
         _requestApprovalAsync = requestApprovalAsync ?? throw new ArgumentNullException(nameof(requestApprovalAsync));
+        _secretChatApprovalAsync = secretChatApprovalAsync;
+        _secretChatAccepted = secretChatAccepted;
     }
 
     public int ListenPort { get; private set; }
@@ -40,6 +46,10 @@ internal sealed class LanTransferHostService : IDisposable
     public event Action<LanTransferSession> SessionCompleted;
 
     public event Action<LanTransferRecord> ReceiveRecorded;
+
+    public event Action<LanSecretMessageFrame> SecretMessageReceived;
+
+    public event Action<LanSecretReceiptFrame> SecretReceiptReceived;
 
     public void Start()
     {
@@ -119,6 +129,8 @@ internal sealed class LanTransferHostService : IDisposable
                     DisplayName = localConfiguration?.DisplayName,
                     MachineName = localConfiguration?.MachineName,
                     AppVersion = localConfiguration?.AppVersion,
+                    Capabilities = localConfiguration?.Capabilities,
+                    SecretChatPublicKey = localConfiguration?.SecretChatPublicKey,
                 };
 
                 await LanTransferWireProtocol.WriteFrameAsync(stream, hello, cancellationToken);
@@ -181,6 +193,8 @@ internal sealed class LanTransferHostService : IDisposable
                     DisplayName = config?.DisplayName,
                     MachineName = config?.MachineName,
                     AppVersion = config?.AppVersion,
+                    Capabilities = config?.Capabilities,
+                    SecretChatPublicKey = config?.SecretChatPublicKey,
                     Message = compatible ? "OK" : "协议版本不兼容",
                 };
 
@@ -201,6 +215,19 @@ internal sealed class LanTransferHostService : IDisposable
                 {
                     await HandleTransferRequestAsync(stream, nextFrameObject, hello, cancellationToken);
                 }
+                else if (string.Equals(frameType, "secretSessionRequest", StringComparison.OrdinalIgnoreCase))
+                {
+                    await HandleSecretSessionRequestAsync(stream, nextFrameObject, hello, cancellationToken);
+                }
+                else if (string.Equals(frameType, "secretMessage", StringComparison.OrdinalIgnoreCase))
+                {
+                    SecretMessageReceived?.Invoke(nextFrameObject.ToObject<LanSecretMessageFrame>());
+                }
+                else if (string.Equals(frameType, "secretReadReceipt", StringComparison.OrdinalIgnoreCase)
+                         || string.Equals(frameType, "secretDestroy", StringComparison.OrdinalIgnoreCase))
+                {
+                    SecretReceiptReceived?.Invoke(nextFrameObject.ToObject<LanSecretReceiptFrame>());
+                }
             }
             catch (EndOfStreamException)
             {
@@ -212,6 +239,40 @@ internal sealed class LanTransferHostService : IDisposable
             {
                 LanTransferLogger.LogError(ex, "处理局域网传输连接失败");
             }
+        }
+    }
+
+    private async Task HandleSecretSessionRequestAsync(NetworkStream stream, JObject requestObject, LanHelloFrame hello, CancellationToken cancellationToken)
+    {
+        var requestFrame = requestObject.ToObject<LanSecretSessionRequestFrame>();
+        if ((requestFrame == null) || string.IsNullOrWhiteSpace(requestFrame.SessionId))
+        {
+            return;
+        }
+
+        var request = new LanSecretChatSessionRequest
+        {
+            SessionId = requestFrame.SessionId,
+            PeerDeviceId = hello.DeviceId,
+            PeerDisplayName = requestFrame.SenderDisplayName ?? hello.DisplayName,
+            PeerMachineName = requestFrame.SenderMachineName ?? hello.MachineName,
+            PeerAddress = requestFrame.SenderAddress,
+            PeerPort = requestFrame.SenderPort,
+            PeerPublicKey = hello.SecretChatPublicKey,
+        };
+
+        var accepted = _secretChatApprovalAsync != null && await _secretChatApprovalAsync(request);
+        await LanTransferWireProtocol.WriteFrameAsync(stream, new LanSecretSessionResponseFrame
+        {
+            Type = "secretSessionAccept",
+            SessionId = request.SessionId,
+            Accepted = accepted,
+            Message = accepted ? "OK" : "对方拒绝密语请求",
+        }, cancellationToken);
+
+        if (accepted)
+        {
+            _secretChatAccepted?.Invoke(request);
         }
     }
 
@@ -571,6 +632,10 @@ internal sealed class LanHostConfiguration
     public string AppVersion { get; set; }
 
     public string InboxPath { get; set; }
+
+    public List<string> Capabilities { get; set; } = new List<string>();
+
+    public string SecretChatPublicKey { get; set; }
 }
 
 internal sealed class LanIncomingTransferDecision
@@ -620,6 +685,10 @@ internal class LanHelloFrame
     public string MachineName { get; set; }
 
     public string AppVersion { get; set; }
+
+    public List<string> Capabilities { get; set; } = new List<string>();
+
+    public string SecretChatPublicKey { get; set; }
 }
 
 internal sealed class LanHelloAckFrame : LanHelloFrame
@@ -684,6 +753,99 @@ internal sealed class LanErrorFrame
     public string Type { get; set; }
 
     public string Message { get; set; }
+}
+
+internal sealed class LanSecretSessionRequestFrame
+{
+    public string Type { get; set; }
+
+    public string SessionId { get; set; }
+
+    public string SenderDisplayName { get; set; }
+
+    public string SenderMachineName { get; set; }
+
+    public string SenderAddress { get; set; }
+
+    public int SenderPort { get; set; }
+}
+
+internal sealed class LanSecretSessionResponseFrame
+{
+    public string Type { get; set; }
+
+    public string SessionId { get; set; }
+
+    public bool Accepted { get; set; }
+
+    public string Message { get; set; }
+}
+
+internal sealed class LanSecretMessageFrame
+{
+    public string Type { get; set; }
+
+    public string SessionId { get; set; }
+
+    public string MessageId { get; set; }
+
+    public string SenderDeviceId { get; set; }
+
+    public string SenderDisplayName { get; set; }
+
+    public string SenderMachineName { get; set; }
+
+    public string SenderAddress { get; set; }
+
+    public int SenderPort { get; set; }
+
+    public string CipherText { get; set; }
+
+    public string EncryptedKey { get; set; }
+
+    public string Iv { get; set; }
+
+    public string Hmac { get; set; }
+
+    public string SenderPublicKey { get; set; }
+}
+
+internal sealed class LanSecretReceiptFrame
+{
+    public string Type { get; set; }
+
+    public string SessionId { get; set; }
+
+    public string MessageId { get; set; }
+
+    public string Receipt { get; set; }
+
+    public string SenderDeviceId { get; set; }
+
+    public string SenderAddress { get; set; }
+
+    public int SenderPort { get; set; }
+}
+
+internal sealed class LanSecretChatSessionRequest
+{
+    public string SessionId { get; set; }
+
+    public string PeerDeviceId { get; set; }
+
+    public string PeerDisplayName { get; set; }
+
+    public string PeerMachineName { get; set; }
+
+    public string PeerAddress { get; set; }
+
+    public int PeerPort { get; set; }
+
+    public string PeerPublicKey { get; set; }
+
+    public string PeerLabel => string.IsNullOrWhiteSpace(PeerMachineName)
+        ? (PeerDisplayName ?? "未知同事")
+        : $"{PeerDisplayName} ({PeerMachineName})";
 }
 
 internal static class LanTransferWireProtocol

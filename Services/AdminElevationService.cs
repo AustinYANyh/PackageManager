@@ -278,7 +278,76 @@ namespace PackageManager.Services
 
         private static bool IsEmbeddedToolFileCurrent(System.Reflection.Assembly asm, string resourceSuffix, string targetPath)
         {
-            return IsEmbeddedAssemblyIdentityCurrent(asm, resourceSuffix, targetPath);
+            var versionComparison = CompareEmbeddedAssemblyIdentity(asm, resourceSuffix, targetPath);
+            if (versionComparison.HasValue)
+            {
+                return versionComparison.Value;
+            }
+
+            return IsEmbeddedResourceCurrent(asm, resourceSuffix, targetPath);
+        }
+
+        private static bool? CompareEmbeddedAssemblyIdentity(System.Reflection.Assembly asm, string resourceSuffix, string targetPath)
+        {
+            if (asm == null || string.IsNullOrWhiteSpace(resourceSuffix) || string.IsNullOrWhiteSpace(targetPath) || !File.Exists(targetPath))
+            {
+                return false;
+            }
+
+            var resourceName = asm.GetManifestResourceNames()
+                .FirstOrDefault(n => n.EndsWith(resourceSuffix, StringComparison.OrdinalIgnoreCase));
+            if (string.IsNullOrEmpty(resourceName))
+            {
+                return false;
+            }
+
+            try
+            {
+                Version embeddedAssemblyVersion;
+                string embeddedFileVersion;
+                using (var stream = asm.GetManifestResourceStream(resourceName))
+                {
+                    if (stream == null)
+                    {
+                        return false;
+                    }
+
+                    var tempPath = Path.Combine(Path.GetTempPath(), "PackageManager", "version-" + Guid.NewGuid().ToString("N") + Path.GetExtension(resourceSuffix));
+                    Directory.CreateDirectory(Path.GetDirectoryName(tempPath));
+                    try
+                    {
+                        using (var fs = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.Read))
+                        {
+                            stream.CopyTo(fs);
+                        }
+
+                        embeddedAssemblyVersion = System.Reflection.AssemblyName.GetAssemblyName(tempPath).Version;
+                        embeddedFileVersion = FileVersionInfo.GetVersionInfo(tempPath).FileVersion;
+                    }
+                    finally
+                    {
+                        try { File.Delete(tempPath); } catch { }
+                    }
+                }
+
+                var targetAssemblyVersion = System.Reflection.AssemblyName.GetAssemblyName(targetPath).Version;
+                var targetFileVersion = FileVersionInfo.GetVersionInfo(targetPath).FileVersion;
+                var hasExplicitVersion = embeddedAssemblyVersion != null
+                                         && embeddedAssemblyVersion != new Version(0, 0, 0, 0)
+                                         && targetAssemblyVersion != null
+                                         && targetAssemblyVersion != new Version(0, 0, 0, 0);
+                if (!hasExplicitVersion)
+                {
+                    return null;
+                }
+
+                return Equals(embeddedAssemblyVersion, targetAssemblyVersion)
+                       && string.Equals(embeddedFileVersion, targetFileVersion, StringComparison.OrdinalIgnoreCase);
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private static bool IsEmbeddedResourceCurrent(System.Reflection.Assembly asm, string resourceSuffix, string targetPath)

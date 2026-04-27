@@ -1,4 +1,5 @@
 using System;
+using System.Collections.ObjectModel;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
@@ -39,6 +40,9 @@ public sealed class LanPeerInfo : LanTransferBindableBase
     private bool isOnline = true;
     private bool isManual;
     private string statusText;
+    private bool supportsSecretChat;
+    private string secretChatPublicKey;
+    private int secretUnreadCount;
 
     public string DeviceId { get; set; }
 
@@ -154,6 +158,41 @@ public sealed class LanPeerInfo : LanTransferBindableBase
         }
     }
 
+    public bool SupportsSecretChat
+    {
+        get => supportsSecretChat;
+        set
+        {
+            if (SetProperty(ref supportsSecretChat, value))
+            {
+                OnPropertyChanged(nameof(CanStartSecretChat));
+                OnPropertyChanged(nameof(SecretChatText));
+            }
+        }
+    }
+
+    public string SecretChatPublicKey
+    {
+        get => secretChatPublicKey;
+        set => SetProperty(ref secretChatPublicKey, value);
+    }
+
+    public int SecretUnreadCount
+    {
+        get => secretUnreadCount;
+        set
+        {
+            var count = Math.Max(0, value);
+            if (SetProperty(ref secretUnreadCount, count))
+            {
+                OnPropertyChanged(nameof(HasSecretUnread));
+                OnPropertyChanged(nameof(SecretChatText));
+                OnPropertyChanged(nameof(SecretChatBadgeText));
+                OnPropertyChanged(nameof(StatusSummaryText));
+            }
+        }
+    }
+
     public string DisplayLabel => string.IsNullOrWhiteSpace(MachineName)
         ? (DisplayName ?? "未知设备")
         : $"{DisplayName} ({MachineName})";
@@ -163,6 +202,14 @@ public sealed class LanPeerInfo : LanTransferBindableBase
     public string OnlineText => IsOnline ? "在线" : "离线";
 
     public string CompatibilityText => IsCompatible ? "兼容" : "版本不兼容";
+
+    public bool HasSecretUnread => SecretUnreadCount > 0;
+
+    public string SecretChatText => SecretUnreadCount > 0
+        ? $"密语未读 {SecretUnreadCount} 条"
+        : (SupportsSecretChat ? "支持密语" : "不支持密语");
+
+    public string SecretChatBadgeText => SecretUnreadCount > 0 ? SecretUnreadCount.ToString() : string.Empty;
 
     public string StatusSummaryText
     {
@@ -206,6 +253,220 @@ public sealed class LanPeerInfo : LanTransferBindableBase
     }
 
     public bool CanSend => IsOnline && IsCompatible && ListenPort > 0 && !string.IsNullOrWhiteSpace(Address);
+
+    public bool CanStartSecretChat => CanSend && SupportsSecretChat;
+}
+
+public enum SecretChatMessageDirection
+{
+    Incoming,
+    Outgoing,
+}
+
+public enum SecretChatMessageState
+{
+    Sending,
+    Sent,
+    Unread,
+    Read,
+    Destroyed,
+}
+
+public sealed class SecretChatMessage : LanTransferBindableBase
+{
+    private SecretChatMessageState state;
+    private int destroyCountdownSeconds;
+    private string text;
+
+    public string MessageId { get; set; }
+
+    public string WireSessionId { get; set; }
+
+    public SecretChatMessageDirection Direction { get; set; }
+
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+
+    public DateTime? ReadAtUtc { get; set; }
+
+    public string Text
+    {
+        get => text;
+        set => SetProperty(ref text, value);
+    }
+
+    public SecretChatMessageState State
+    {
+        get => state;
+        set
+        {
+            if (SetProperty(ref state, value))
+            {
+                OnPropertyChanged(nameof(StateText));
+                OnPropertyChanged(nameof(IsDestroyed));
+            }
+        }
+    }
+
+    public int DestroyCountdownSeconds
+    {
+        get => destroyCountdownSeconds;
+        set
+        {
+            if (SetProperty(ref destroyCountdownSeconds, value))
+            {
+                OnPropertyChanged(nameof(StateText));
+            }
+        }
+    }
+
+    public bool IsDestroyed => State == SecretChatMessageState.Destroyed;
+
+    public bool IsOutgoing => Direction == SecretChatMessageDirection.Outgoing;
+
+    public bool IsIncoming => Direction == SecretChatMessageDirection.Incoming;
+
+    public string CreatedAtText => CreatedAtUtc.ToLocalTime().ToString("HH:mm:ss");
+
+    public string StateText
+    {
+        get
+        {
+            if (State == SecretChatMessageState.Destroyed)
+            {
+                return "已销毁";
+            }
+
+            if (DestroyCountdownSeconds > 0)
+            {
+                return $"已读 · {DestroyCountdownSeconds}s 后销毁";
+            }
+
+            switch (State)
+            {
+                case SecretChatMessageState.Sending:
+                    return "发送中";
+                case SecretChatMessageState.Sent:
+                    return "未读";
+                case SecretChatMessageState.Unread:
+                    return "未读";
+                case SecretChatMessageState.Read:
+                    return "已读";
+                default:
+                    return string.Empty;
+            }
+        }
+    }
+}
+
+public sealed class SecretChatSession : LanTransferBindableBase
+{
+    private string statusText;
+    private bool isOpen = true;
+    private bool isProtected;
+    private bool canSend = true;
+    private int unreadCount;
+    private bool isWindowOpen;
+    private bool isWindowActive;
+
+    public string SessionId { get; set; }
+
+    public string SessionKey { get; set; }
+
+    public string PeerDeviceId { get; set; }
+
+    public string PeerDisplayName { get; set; }
+
+    public string PeerAddress { get; set; }
+
+    public ObservableCollection<SecretChatMessage> Messages { get; } = new ObservableCollection<SecretChatMessage>();
+
+    public int UnreadCount
+    {
+        get => unreadCount;
+        set
+        {
+            var count = Math.Max(0, value);
+            if (SetProperty(ref unreadCount, count))
+            {
+                OnPropertyChanged(nameof(HasUnread));
+                OnPropertyChanged(nameof(UnreadText));
+            }
+        }
+    }
+
+    public bool HasUnread => UnreadCount > 0;
+
+    public string UnreadText => UnreadCount > 0 ? $"未读 {UnreadCount} 条" : string.Empty;
+
+    public bool IsWindowOpen
+    {
+        get => isWindowOpen;
+        set => SetProperty(ref isWindowOpen, value);
+    }
+
+    public bool IsWindowActive
+    {
+        get => isWindowActive;
+        set => SetProperty(ref isWindowActive, value);
+    }
+
+    public string StatusText
+    {
+        get => statusText;
+        set => SetProperty(ref statusText, value);
+    }
+
+    public bool IsOpen
+    {
+        get => isOpen;
+        set
+        {
+            if (SetProperty(ref isOpen, value))
+            {
+                OnPropertyChanged(nameof(CanSend));
+            }
+        }
+    }
+
+    public bool IsProtected
+    {
+        get => isProtected;
+        set
+        {
+            if (SetProperty(ref isProtected, value))
+            {
+                OnPropertyChanged(nameof(CanSend));
+                OnPropertyChanged(nameof(ProtectionText));
+            }
+        }
+    }
+
+    public bool SendEnabled
+    {
+        get => canSend;
+        set
+        {
+            if (SetProperty(ref canSend, value))
+            {
+                OnPropertyChanged(nameof(CanSend));
+            }
+        }
+    }
+
+    public bool CanSend => IsOpen && IsProtected && SendEnabled;
+
+    public string PeerTitle => string.IsNullOrWhiteSpace(PeerAddress)
+        ? PeerDisplayName
+        : $"{PeerDisplayName} · {PeerAddress}";
+
+    public string ProtectionText => IsProtected
+        ? "系统截图/录屏将显示黑屏或排除该窗口"
+        : "当前系统未启用截图保护，已禁止发送";
+
+    public void RefreshPeerTitle()
+    {
+        OnPropertyChanged(nameof(PeerTitle));
+    }
 }
 
 public sealed class LanTransferItem

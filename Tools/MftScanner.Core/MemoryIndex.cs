@@ -192,6 +192,11 @@ namespace MftScanner
                 if (_containsAcceleratorReady)
                 {
                     _containsAccelerator = (_containsAccelerator ?? ContainsAccelerator.Empty).WithInserted(record);
+                    if (_containsAccelerator == null || !_containsAccelerator.Supports(ContainsAcceleratorBucketKinds.All))
+                    {
+                        EnqueuePendingContainsInsert(record);
+                    }
+
                     _containsAcceleratorEpoch++;
                 }
                 else
@@ -243,6 +248,11 @@ namespace MftScanner
                 {
                     _containsAccelerator = (_containsAccelerator ?? ContainsAccelerator.Empty).WithRemoved(
                         new RecordKey(frn, lowerName, parentFrn, driveLetter));
+                    if (_containsAccelerator == null || !_containsAccelerator.Supports(ContainsAcceleratorBucketKinds.All))
+                    {
+                        EnqueuePendingContainsRemove(new RecordKey(frn, lowerName, parentFrn, driveLetter));
+                    }
+
                     _containsAcceleratorEpoch++;
                 }
                 else
@@ -329,6 +339,12 @@ namespace MftScanner
                     _containsAccelerator = (_containsAccelerator ?? ContainsAccelerator.Empty)
                         .WithRemoved(new RecordKey(frn, oldLowerName, oldParentFrn, driveLetter))
                         .WithInserted(newRecord);
+                    if (_containsAccelerator == null || !_containsAccelerator.Supports(ContainsAcceleratorBucketKinds.All))
+                    {
+                        EnqueuePendingContainsRemove(new RecordKey(frn, oldLowerName, oldParentFrn, driveLetter));
+                        EnqueuePendingContainsInsert(newRecord);
+                    }
+
                     _containsAcceleratorEpoch++;
                 }
                 else
@@ -720,11 +736,6 @@ namespace MftScanner
                         && _containsAccelerator.Supports(requiredBuckets))
                     {
                         return true;
-                    }
-
-                    if (epoch != _containsAcceleratorEpoch)
-                    {
-                        continue;
                     }
 
                     if (_pendingContainsMutationsOverflowed)

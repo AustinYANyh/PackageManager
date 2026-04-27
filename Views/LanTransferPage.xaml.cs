@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
@@ -23,6 +24,7 @@ public partial class LanTransferPage : Page, INotifyPropertyChanged, ICentralPag
     private LanPeerInfo _selectedPeer;
     private QueuedTransferSource _selectedQueuedItem;
     private LanTransferSession _selectedActiveTransfer;
+    private readonly Dictionary<string, SecretChatWindow> _secretChatWindows = new Dictionary<string, SecretChatWindow>(StringComparer.OrdinalIgnoreCase);
     private string _manualAddress;
 
     public LanTransferPage(LanTransferService service)
@@ -90,11 +92,15 @@ public partial class LanTransferPage : Page, INotifyPropertyChanged, ICentralPag
 
     public string SelectedPeerSummaryText => SelectedPeer == null
         ? "先在左侧选择在线设备，或手动输入 IP / 主机名连接。"
-        : $"{SelectedPeer.EndpointDisplay} · {SelectedPeer.StatusSummaryText}";
+        : SelectedPeer.SecretUnreadCount > 0
+            ? $"{SelectedPeer.EndpointDisplay} · {SelectedPeer.StatusSummaryText} · 密语未读 {SelectedPeer.SecretUnreadCount} 条"
+            : $"{SelectedPeer.EndpointDisplay} · {SelectedPeer.StatusSummaryText}";
 
     public string SendTargetSummaryText => SelectedPeer == null
         ? "请选择左侧设备后再发送。"
-        : $"将发送到：{SelectedPeer.DisplayLabel}";
+        : SelectedPeer.SecretUnreadCount > 0
+            ? $"将发送到：{SelectedPeer.DisplayLabel} · 密语未读 {SelectedPeer.SecretUnreadCount} 条"
+            : $"将发送到：{SelectedPeer.DisplayLabel}";
 
     public string PendingRequestSummaryText => Service.PendingRequests.Count == 0
         ? "当前没有待确认请求。"
@@ -140,7 +146,9 @@ public partial class LanTransferPage : Page, INotifyPropertyChanged, ICentralPag
             || (e.PropertyName == nameof(LanPeerInfo.EndpointDisplay))
             || (e.PropertyName == nameof(LanPeerInfo.StatusText))
             || (e.PropertyName == nameof(LanPeerInfo.LastSeenText))
-            || (e.PropertyName == nameof(LanPeerInfo.StatusSummaryText)))
+            || (e.PropertyName == nameof(LanPeerInfo.StatusSummaryText))
+            || (e.PropertyName == nameof(LanPeerInfo.SupportsSecretChat))
+            || (e.PropertyName == nameof(LanPeerInfo.SecretUnreadCount)))
         {
             OnPropertyChanged(nameof(SelectedPeerSummaryTitle));
             OnPropertyChanged(nameof(SelectedPeerSummaryText));
@@ -244,6 +252,62 @@ public partial class LanTransferPage : Page, INotifyPropertyChanged, ICentralPag
         {
             MessageBox.Show($"发送失败：{ex.Message}", "文件传输", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
+    }
+
+    private async void SecretChatButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (SelectedPeer == null)
+        {
+            MessageBox.Show("请先选择一个在线同事。", "密语", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        try
+        {
+            var session = await Service.RequestSecretChatAsync(SelectedPeer);
+            OpenSecretChatWindow(session);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"密语请求失败：{ex.Message}", "密语", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private void OpenSecretChatWindow(SecretChatSession session)
+    {
+        if (session == null)
+        {
+            return;
+        }
+
+        var key = string.IsNullOrWhiteSpace(session.SessionKey) ? session.SessionId : session.SessionKey;
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return;
+        }
+
+        _secretChatWindows.TryGetValue(key, out var existing);
+        if (existing != null)
+        {
+            if (existing.WindowState == WindowState.Minimized)
+            {
+                existing.WindowState = WindowState.Normal;
+            }
+
+            existing.Show();
+            existing.Activate();
+            existing.Focus();
+            return;
+        }
+
+        var window = new SecretChatWindow(Service, session)
+        {
+            Owner = Window.GetWindow(this) ?? Application.Current?.MainWindow,
+        };
+        _secretChatWindows[key] = window;
+        window.Closed += (_, __) => _secretChatWindows.Remove(key);
+        window.Show();
+        window.Activate();
     }
 
     private void CancelTransferButton_Click(object sender, RoutedEventArgs e)

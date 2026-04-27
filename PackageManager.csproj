@@ -322,6 +322,7 @@
         </Page>
         <Page Include="Views\LanTransferConfirmWindow.xaml" />
         <Page Include="Views\LanTransferPage.xaml" />
+        <Page Include="Views\SecretChatWindow.xaml" />
         <Page Include="Views\PackageConfigPage.xaml" />
         <Page Include="Views\PluginManagementPage.xaml" />
         <Page Include="Views\ProductLogsPage.xaml" />
@@ -333,6 +334,10 @@
         </Compile>
         <Compile Include="Views\LanTransferPage.xaml.cs">
           <DependentUpon>LanTransferPage.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Compile Include="Views\SecretChatWindow.xaml.cs">
+          <DependentUpon>SecretChatWindow.xaml</DependentUpon>
           <SubType>Code</SubType>
         </Compile>
     </ItemGroup>

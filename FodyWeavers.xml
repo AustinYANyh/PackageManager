@@ -5,6 +5,7 @@
       Newtonsoft.Json
       CustomControlLibrary
       Endelib.v1.0.1
+      MftScanner.Core
       ChnCharInfo
       Microsoft.Web.WebView2.Core
       Microsoft.Web.WebView2.Wpf

@@ -154,6 +154,19 @@ namespace PackageManager.Converters
         }
     }
 
+    public class BooleanToVisibilityConverter : IValueConverter
+    {
+        public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            return value is bool boolValue && boolValue ? Visibility.Visible : Visibility.Collapsed;
+        }
+
+        public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+        {
+            return value is Visibility visibility && visibility == Visibility.Visible;
+        }
+    }
+
     /// <summary>
     /// URL/域名换行转换器：在常见分隔符后注入零宽空格以提供换行点
     /// </summary>
