@@ -604,13 +604,26 @@ namespace MftScanner
                 ScriptSortedArray = scriptArr;
                 LogSortedArray = logArr;
                 ConfigSortedArray = configArr;
-                _containsAccelerator = rebuildContainsAccelerator
-                    ? ContainsAccelerator.Build(arr, ContainsAcceleratorBucketKinds.All)
-                    : ContainsAccelerator.Empty;
-                _containsAcceleratorReady = rebuildContainsAccelerator;
-                _containsAcceleratorEpoch++;
-                _pendingContainsMutations.Clear();
-                _pendingContainsMutationsOverflowed = false;
+                if (rebuildContainsAccelerator)
+                {
+                    _containsAccelerator = ContainsAccelerator.Build(arr, ContainsAcceleratorBucketKinds.All);
+                    _containsAcceleratorReady = true;
+                    _containsAcceleratorEpoch++;
+                    _pendingContainsMutations.Clear();
+                    _pendingContainsMutationsOverflowed = false;
+                }
+                else if (_containsAcceleratorReady)
+                {
+                    ApplyContainsMutations(deltaByKey);
+                    if (_containsAccelerator == null || !_containsAccelerator.Supports(ContainsAcceleratorBucketKinds.All))
+                    {
+                        EnqueuePendingContainsMutations(deltaByKey);
+                    }
+                }
+                else
+                {
+                    EnqueuePendingContainsMutations(deltaByKey);
+                }
                 _contentVersion++;
             }
             finally { _lock.ExitWriteLock(); }
@@ -886,7 +899,7 @@ namespace MftScanner
 
         private void EnqueuePendingContainsMutation(PendingContainsMutation mutation)
         {
-            if (_containsAcceleratorReady || _pendingContainsMutationsOverflowed)
+            if (_pendingContainsMutationsOverflowed)
             {
                 return;
             }
@@ -899,6 +912,46 @@ namespace MftScanner
             }
 
             _pendingContainsMutations.Add(mutation);
+        }
+
+        private void EnqueuePendingContainsMutations(Dictionary<RecordKey, FileRecord> deltaByKey)
+        {
+            if (deltaByKey == null || deltaByKey.Count == 0 || _pendingContainsMutationsOverflowed)
+            {
+                return;
+            }
+
+            foreach (var entry in deltaByKey)
+            {
+                EnqueuePendingContainsMutation(entry.Value == null
+                    ? PendingContainsMutation.ForRemove(entry.Key)
+                    : PendingContainsMutation.ForInsert(entry.Value));
+
+                if (_pendingContainsMutationsOverflowed)
+                {
+                    return;
+                }
+            }
+        }
+
+        private void ApplyContainsMutations(Dictionary<RecordKey, FileRecord> deltaByKey)
+        {
+            if (deltaByKey == null || deltaByKey.Count == 0 || _containsAccelerator == null)
+            {
+                return;
+            }
+
+            foreach (var entry in deltaByKey)
+            {
+                if (entry.Value == null)
+                {
+                    _containsAccelerator.WithRemoved(entry.Key);
+                }
+                else
+                {
+                    _containsAccelerator.WithInserted(entry.Value);
+                }
+            }
         }
 
         #if false

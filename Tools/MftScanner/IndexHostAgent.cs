@@ -223,6 +223,8 @@ namespace MftScanner
                         {
                             if (!timedOut)
                             {
+                                LoggingService.LogIndexPerf("IPC",
+                                    $"[MMF] outcome=host-cancel-signal requestId={request?.RequestId ?? 0} keyword={LoggingService.FormatPerfValue(request?.Keyword)} filter={request?.Filter ?? SearchTypeFilter.All}");
                                 ((CancellationTokenSource)state).Cancel();
                             }
                         },

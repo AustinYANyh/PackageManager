@@ -531,9 +531,13 @@ namespace MftScanner
             int maxResults,
             CancellationToken ct = default)
         {
+            var stopwatch = Stopwatch.StartNew();
             var page = new List<FileRecord>(Math.Min(maxResults, 64));
             var total = 0;
             var hasExactBucket = false;
+            var candidateCount = sortedArray?.Length ?? 0;
+            IndexPerfLog.Write("INDEX",
+                $"[CONTAINS FALLBACK] outcome=start candidateCount={candidateCount} offset={offset} maxResults={maxResults} query={IndexPerfLog.FormatValue(query)}");
 
             if (exactHashMap != null && exactHashMap.TryGetValue(query, out var exactBucket))
             {
@@ -547,18 +551,42 @@ namespace MftScanner
             }
 
             var i = 0;
-            foreach (var record in sortedArray)
+            try
             {
-                if ((++i & 0xFFF) == 0) ct.ThrowIfCancellationRequested();
-                if (hasExactBucket && record.LowerName == query) continue;
-                if (record.LowerName.Contains(query))
+                foreach (var record in sortedArray)
                 {
-                    total++;
-                    if (total > offset && page.Count < maxResults)
-                        page.Add(record);
+                    i++;
+                    if ((i & 0xFFF) == 0)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                    }
+
+                    if ((i % 500000) == 0)
+                    {
+                        IndexPerfLog.Write("INDEX",
+                            $"[CONTAINS FALLBACK] outcome=progress scanned={i} candidateCount={candidateCount} matched={total} returned={page.Count} elapsedMs={stopwatch.ElapsedMilliseconds} query={IndexPerfLog.FormatValue(query)}");
+                    }
+
+                    if (hasExactBucket && record.LowerName == query) continue;
+                    if (record.LowerName.Contains(query))
+                    {
+                        total++;
+                        if (total > offset && page.Count < maxResults)
+                            page.Add(record);
+                    }
                 }
             }
+            catch (OperationCanceledException)
+            {
+                stopwatch.Stop();
+                IndexPerfLog.Write("INDEX",
+                    $"[CONTAINS FALLBACK] outcome=canceled scanned={i} candidateCount={candidateCount} matched={total} returned={page.Count} elapsedMs={stopwatch.ElapsedMilliseconds} query={IndexPerfLog.FormatValue(query)}");
+                throw;
+            }
 
+            stopwatch.Stop();
+            IndexPerfLog.Write("INDEX",
+                $"[CONTAINS FALLBACK] outcome=success scanned={i} candidateCount={candidateCount} matched={total} returned={page.Count} elapsedMs={stopwatch.ElapsedMilliseconds} query={IndexPerfLog.FormatValue(query)}");
             return (page, total);
         }
 
@@ -741,11 +769,11 @@ namespace MftScanner
                                         }
                                         else
                                         {
+                                            containsMode = "fallback";
+                                            containsCandidateCount = candidateSource?.Length ?? 0;
                                             var r = ContainsMatch(simplifiedQuery, filter == SearchTypeFilter.All ? idx.ExactHashMap : null, candidateSource, fetchOffset, fetchLimit, ct);
                                             matched = r.page;
                                             totalMatched = r.total;
-                                            containsMode = "fallback";
-                                            containsCandidateCount = candidateSource?.Length ?? 0;
                                         }
                                         break;
                                 }
@@ -769,11 +797,11 @@ namespace MftScanner
                             }
                             else
                             {
+                                containsMode = "fallback";
+                                containsCandidateCount = candidateSource?.Length ?? 0;
                                 var r = ContainsMatch(normalizedQuery, filter == SearchTypeFilter.All ? idx.ExactHashMap : null, candidateSource, fetchOffset, fetchLimit, ct);
                                 matched = r.page;
                                 totalMatched = r.total;
-                                containsMode = "fallback";
-                                containsCandidateCount = candidateSource?.Length ?? 0;
                             }
                             break;
                     }

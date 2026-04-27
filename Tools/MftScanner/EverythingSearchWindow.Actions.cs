@@ -609,6 +609,13 @@ namespace MftScanner
             try { cts.Cancel(); cts.Dispose(); } catch { } finally { cts = null; }
         }
 
+        private void CancelSearchToken()
+        {
+            var cts = _searchCts;
+            if (cts == null) return;
+            try { cts.Cancel(); } catch { } finally { _searchCts = null; }
+        }
+
         private static string ShowTextInputDialog(string title, string prompt, string initialValue)
         {
             var window = new Window { Title = title, Width = 420, Height = 170, WindowStartupLocation = WindowStartupLocation.CenterOwner, ResizeMode = ResizeMode.NoResize, ShowInTaskbar = false };

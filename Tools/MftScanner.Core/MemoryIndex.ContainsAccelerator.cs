@@ -112,6 +112,7 @@ namespace MftScanner
                 ContainsAcceleratorBucketKinds requiredBuckets,
                 CancellationToken ct = default(CancellationToken))
             {
+                var totalStopwatch = Stopwatch.StartNew();
                 var builtBuckets = ToBucketKinds(requiredBuckets);
                 if (records == null || records.Length == 0)
                 {
@@ -119,15 +120,18 @@ namespace MftScanner
                 }
 
                 var charBuckets = (builtBuckets & BucketKinds.Char) != 0
-                    ? BuildBucketStore(records, CountCharTokens, FillCharTokens, ct)
+                    ? BuildBucketStore(records, "char", CountCharTokens, FillCharTokens, ct)
                     : BucketStore<char>.Empty;
                 var bigramBuckets = (builtBuckets & BucketKinds.Bigram) != 0
-                    ? BuildBucketStore(records, CountBigramTokens, FillBigramTokens, ct)
+                    ? BuildBucketStore(records, "bigram", CountBigramTokens, FillBigramTokens, ct)
                     : BucketStore<uint>.Empty;
                 var trigramBuckets = (builtBuckets & BucketKinds.Trigram) != 0
-                    ? BuildBucketStore(records, CountTrigramTokens, FillTrigramTokens, ct)
+                    ? BuildBucketStore(records, "trigram", CountTrigramTokens, FillTrigramTokens, ct)
                     : BucketStore<ulong>.Empty;
 
+                totalStopwatch.Stop();
+                IndexPerfLog.Write("INDEX",
+                    $"[CONTAINS BUILD] outcome=success buckets={builtBuckets} records={records.Length} elapsedMs={totalStopwatch.ElapsedMilliseconds}");
                 return new ContainsAccelerator(records, builtBuckets, charBuckets, bigramBuckets, trigramBuckets);
             }
 
@@ -544,136 +548,178 @@ namespace MftScanner
 
             private static BucketStore<char> BuildBucketStore(
                 FileRecord[] records,
+                string bucketName,
                 Action<string, Dictionary<char, int>> countTokens,
                 Action<string, int, Dictionary<char, int>, int[]> fillTokens,
                 CancellationToken ct)
             {
-                return BuildBucketStoreCore(records, countTokens, fillTokens, ct);
+                return BuildBucketStoreCore(records, bucketName, countTokens, fillTokens, ct);
             }
 
             private static BucketStore<uint> BuildBucketStore(
                 FileRecord[] records,
+                string bucketName,
                 Action<string, Dictionary<uint, int>> countTokens,
                 Action<string, int, Dictionary<uint, int>, int[]> fillTokens,
                 CancellationToken ct)
             {
-                return BuildBucketStoreCore(records, countTokens, fillTokens, ct);
+                return BuildBucketStoreCore(records, bucketName, countTokens, fillTokens, ct);
             }
 
             private static BucketStore<ulong> BuildBucketStore(
                 FileRecord[] records,
+                string bucketName,
                 Action<string, Dictionary<ulong, int>> countTokens,
                 Action<string, int, Dictionary<ulong, int>, int[]> fillTokens,
                 CancellationToken ct)
             {
-                return BuildBucketStoreCore(records, countTokens, fillTokens, ct);
+                return BuildBucketStoreCore(records, bucketName, countTokens, fillTokens, ct);
             }
 
             private static BucketStore<TKey> BuildBucketStoreCore<TKey>(
                 FileRecord[] records,
+                string bucketName,
                 Action<string, Dictionary<TKey, int>> countTokens,
                 Action<string, int, Dictionary<TKey, int>, int[]> fillTokens,
                 CancellationToken ct)
             {
-                if (records == null || records.Length == 0)
-                {
-                    return BucketStore<TKey>.Empty;
-                }
-
-                var workerCount = DetermineWorkerCount(records.Length);
-                var ranges = BuildWorkerRanges(records.Length, workerCount);
-                var localCounts = new Dictionary<TKey, int>[workerCount];
-
-                if (workerCount == 1)
-                {
-                    localCounts[0] = CountRange(records, ranges[0], countTokens, ct);
-                }
-                else
-                {
-                    Parallel.For(0, workerCount, new ParallelOptions
-                    {
-                        CancellationToken = ct,
-                        MaxDegreeOfParallelism = workerCount
-                    }, i =>
-                    {
-                        localCounts[i] = CountRange(records, ranges[i], countTokens, ct);
-                    });
-                }
-
-                var globalCounts = new Dictionary<TKey, int>();
-                for (var i = 0; i < localCounts.Length; i++)
-                {
-                    var counts = localCounts[i];
-                    if (counts == null || counts.Count == 0)
-                    {
-                        continue;
-                    }
-
-                    foreach (var kv in counts)
-                    {
-                        int current;
-                        globalCounts.TryGetValue(kv.Key, out current);
-                        globalCounts[kv.Key] = current + kv.Value;
-                    }
-                }
-
-                if (globalCounts.Count == 0)
-                {
-                    return BucketStore<TKey>.Empty;
-                }
-
-                var bucketIndexes = new Dictionary<TKey, int>(globalCounts.Count);
-                var entries = new BucketEntry[globalCounts.Count];
+                var totalStopwatch = Stopwatch.StartNew();
+                long countMs = 0;
+                long mergeMs = 0;
+                long positionMs = 0;
+                long fillMs = 0;
+                var workerCount = 0;
+                var bucketCount = 0;
                 var totalPostings = 0;
-                var bucketIndex = 0;
-                foreach (var kv in globalCounts)
+                try
                 {
-                    bucketIndexes[kv.Key] = bucketIndex;
-                    entries[bucketIndex] = new BucketEntry(totalPostings, kv.Value);
-                    totalPostings += kv.Value;
-                    bucketIndex++;
-                }
-
-                var workerPositions = new Dictionary<TKey, int>[workerCount];
-                var consumedByBucket = new int[entries.Length];
-                for (var i = 0; i < workerCount; i++)
-                {
-                    var counts = localCounts[i];
-                    if (counts == null || counts.Count == 0)
+                    if (records == null || records.Length == 0)
                     {
-                        workerPositions[i] = new Dictionary<TKey, int>();
-                        continue;
+                        IndexPerfLog.Write("INDEX",
+                            $"[CONTAINS BUILD BUCKET] outcome=success bucket={IndexPerfLog.FormatValue(bucketName)} records=0 workerCount=0 buckets=0 postings=0 totalMs=0 countMs=0 mergeMs=0 positionMs=0 fillMs=0");
+                        return BucketStore<TKey>.Empty;
                     }
 
-                    var positions = new Dictionary<TKey, int>(counts.Count);
-                    foreach (var kv in counts)
+                    workerCount = DetermineWorkerCount(records.Length);
+                    var ranges = BuildWorkerRanges(records.Length, workerCount);
+                    var localCounts = new Dictionary<TKey, int>[workerCount];
+                    var stageStopwatch = Stopwatch.StartNew();
+
+                    if (workerCount == 1)
                     {
-                        var idx = bucketIndexes[kv.Key];
-                        positions[kv.Key] = entries[idx].Offset + consumedByBucket[idx];
-                        consumedByBucket[idx] += kv.Value;
+                        localCounts[0] = CountRange(records, ranges[0], countTokens, ct);
+                    }
+                    else
+                    {
+                        Parallel.For(0, workerCount, new ParallelOptions
+                        {
+                            CancellationToken = ct,
+                            MaxDegreeOfParallelism = workerCount
+                        }, i =>
+                        {
+                            localCounts[i] = CountRange(records, ranges[i], countTokens, ct);
+                        });
+                    }
+                    stageStopwatch.Stop();
+                    countMs = stageStopwatch.ElapsedMilliseconds;
+
+                    stageStopwatch.Restart();
+                    var globalCounts = new Dictionary<TKey, int>();
+                    for (var i = 0; i < localCounts.Length; i++)
+                    {
+                        var counts = localCounts[i];
+                        if (counts == null || counts.Count == 0)
+                        {
+                            continue;
+                        }
+
+                        foreach (var kv in counts)
+                        {
+                            int current;
+                            globalCounts.TryGetValue(kv.Key, out current);
+                            globalCounts[kv.Key] = current + kv.Value;
+                        }
+                    }
+                    stageStopwatch.Stop();
+                    mergeMs = stageStopwatch.ElapsedMilliseconds;
+                    bucketCount = globalCounts.Count;
+
+                    if (globalCounts.Count == 0)
+                    {
+                        totalStopwatch.Stop();
+                        IndexPerfLog.Write("INDEX",
+                            $"[CONTAINS BUILD BUCKET] outcome=success bucket={IndexPerfLog.FormatValue(bucketName)} records={records.Length} workerCount={workerCount} buckets=0 postings=0 totalMs={totalStopwatch.ElapsedMilliseconds} countMs={countMs} mergeMs={mergeMs} positionMs=0 fillMs=0");
+                        return BucketStore<TKey>.Empty;
                     }
 
-                    workerPositions[i] = positions;
-                }
-
-                var postings = new int[totalPostings];
-                if (workerCount == 1)
-                {
-                    FillRange(records, ranges[0], workerPositions[0], postings, fillTokens, ct);
-                }
-                else
-                {
-                    Parallel.For(0, workerCount, new ParallelOptions
+                    stageStopwatch.Restart();
+                    var bucketIndexes = new Dictionary<TKey, int>(globalCounts.Count);
+                    var entries = new BucketEntry[globalCounts.Count];
+                    var bucketIndex = 0;
+                    foreach (var kv in globalCounts)
                     {
-                        CancellationToken = ct,
-                        MaxDegreeOfParallelism = workerCount
-                    }, i =>
-                    {
-                        FillRange(records, ranges[i], workerPositions[i], postings, fillTokens, ct);
-                    });
-                }
+                        bucketIndexes[kv.Key] = bucketIndex;
+                        entries[bucketIndex] = new BucketEntry(totalPostings, kv.Value);
+                        totalPostings += kv.Value;
+                        bucketIndex++;
+                    }
 
-                return new BucketStore<TKey>(bucketIndexes, entries, postings);
+                    var workerPositions = new Dictionary<TKey, int>[workerCount];
+                    var consumedByBucket = new int[entries.Length];
+                    for (var i = 0; i < workerCount; i++)
+                    {
+                        var counts = localCounts[i];
+                        if (counts == null || counts.Count == 0)
+                        {
+                            workerPositions[i] = new Dictionary<TKey, int>();
+                            continue;
+                        }
+
+                        var positions = new Dictionary<TKey, int>(counts.Count);
+                        foreach (var kv in counts)
+                        {
+                            var idx = bucketIndexes[kv.Key];
+                            positions[kv.Key] = entries[idx].Offset + consumedByBucket[idx];
+                            consumedByBucket[idx] += kv.Value;
+                        }
+
+                        workerPositions[i] = positions;
+                    }
+                    stageStopwatch.Stop();
+                    positionMs = stageStopwatch.ElapsedMilliseconds;
+
+                    var postings = new int[totalPostings];
+                    stageStopwatch.Restart();
+                    if (workerCount == 1)
+                    {
+                        FillRange(records, ranges[0], workerPositions[0], postings, fillTokens, ct);
+                    }
+                    else
+                    {
+                        Parallel.For(0, workerCount, new ParallelOptions
+                        {
+                            CancellationToken = ct,
+                            MaxDegreeOfParallelism = workerCount
+                        }, i =>
+                        {
+                            FillRange(records, ranges[i], workerPositions[i], postings, fillTokens, ct);
+                        });
+                    }
+                    stageStopwatch.Stop();
+                    fillMs = stageStopwatch.ElapsedMilliseconds;
+                    totalStopwatch.Stop();
+                    IndexPerfLog.Write("INDEX",
+                        $"[CONTAINS BUILD BUCKET] outcome=success bucket={IndexPerfLog.FormatValue(bucketName)} records={records.Length} workerCount={workerCount} buckets={bucketCount} postings={totalPostings} totalMs={totalStopwatch.ElapsedMilliseconds} countMs={countMs} mergeMs={mergeMs} positionMs={positionMs} fillMs={fillMs}");
+
+                    return new BucketStore<TKey>(bucketIndexes, entries, postings);
+                }
+                catch (OperationCanceledException)
+                {
+                    totalStopwatch.Stop();
+                    IndexPerfLog.Write("INDEX",
+                        $"[CONTAINS BUILD BUCKET] outcome=canceled bucket={IndexPerfLog.FormatValue(bucketName)} records={(records == null ? 0 : records.Length)} workerCount={workerCount} buckets={bucketCount} postings={totalPostings} totalMs={totalStopwatch.ElapsedMilliseconds} countMs={countMs} mergeMs={mergeMs} positionMs={positionMs} fillMs={fillMs}");
+                    throw;
+                }
             }
 
             private static Dictionary<TKey, int> CountRange<TKey>(
@@ -750,14 +796,19 @@ namespace MftScanner
                     return 1;
                 }
 
-                return Math.Max(1, Math.Min(Environment.ProcessorCount, recordCount / 16384));
+                var processorBudget = Math.Max(1, Environment.ProcessorCount - 2);
+                return Math.Max(1, Math.Min(processorBudget, recordCount / 32768));
             }
 
             private static void CountCharTokens(string lowerName, Dictionary<char, int> counts)
             {
                 for (var i = 0; i < lowerName.Length; i++)
                 {
-                    IncrementCount(counts, lowerName[i]);
+                    var token = lowerName[i];
+                    if (lowerName.IndexOf(token) == i)
+                    {
+                        IncrementCount(counts, token);
+                    }
                 }
             }
 
@@ -765,14 +816,20 @@ namespace MftScanner
             {
                 for (var i = 0; i < lowerName.Length; i++)
                 {
+                    var token = lowerName[i];
+                    if (lowerName.IndexOf(token) != i)
+                    {
+                        continue;
+                    }
+
                     int position;
-                    if (!positions.TryGetValue(lowerName[i], out position))
+                    if (!positions.TryGetValue(token, out position))
                     {
                         continue;
                     }
 
                     postings[position] = recordId;
-                    positions[lowerName[i]] = position + 1;
+                    positions[token] = position + 1;
                 }
             }
 
@@ -785,7 +842,11 @@ namespace MftScanner
 
                 for (var i = 0; i < lowerName.Length - 1; i++)
                 {
-                    IncrementCount(counts, PackBigram(lowerName[i], lowerName[i + 1]));
+                    var token = PackBigram(lowerName[i], lowerName[i + 1]);
+                    if (!ContainsBigramBefore(lowerName, token, i))
+                    {
+                        IncrementCount(counts, token);
+                    }
                 }
             }
 
@@ -799,6 +860,11 @@ namespace MftScanner
                 for (var i = 0; i < lowerName.Length - 1; i++)
                 {
                     var token = PackBigram(lowerName[i], lowerName[i + 1]);
+                    if (ContainsBigramBefore(lowerName, token, i))
+                    {
+                        continue;
+                    }
+
                     int position;
                     if (!positions.TryGetValue(token, out position))
                     {
@@ -819,7 +885,11 @@ namespace MftScanner
 
                 for (var i = 0; i < lowerName.Length - 2; i++)
                 {
-                    IncrementCount(counts, PackTrigram(lowerName[i], lowerName[i + 1], lowerName[i + 2]));
+                    var token = PackTrigram(lowerName[i], lowerName[i + 1], lowerName[i + 2]);
+                    if (!ContainsTrigramBefore(lowerName, token, i))
+                    {
+                        IncrementCount(counts, token);
+                    }
                 }
             }
 
@@ -833,6 +903,11 @@ namespace MftScanner
                 for (var i = 0; i < lowerName.Length - 2; i++)
                 {
                     var token = PackTrigram(lowerName[i], lowerName[i + 1], lowerName[i + 2]);
+                    if (ContainsTrigramBefore(lowerName, token, i))
+                    {
+                        continue;
+                    }
+
                     int position;
                     if (!positions.TryGetValue(token, out position))
                     {
@@ -842,6 +917,32 @@ namespace MftScanner
                     postings[position] = recordId;
                     positions[token] = position + 1;
                 }
+            }
+
+            private static bool ContainsBigramBefore(string lowerName, uint token, int endExclusive)
+            {
+                for (var i = 0; i < endExclusive; i++)
+                {
+                    if (PackBigram(lowerName[i], lowerName[i + 1]) == token)
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
+
+            private static bool ContainsTrigramBefore(string lowerName, ulong token, int endExclusive)
+            {
+                for (var i = 0; i < endExclusive; i++)
+                {
+                    if (PackTrigram(lowerName[i], lowerName[i + 1], lowerName[i + 2]) == token)
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
             }
 
             private static void IncrementCount<TKey>(Dictionary<TKey, int> counts, TKey token)

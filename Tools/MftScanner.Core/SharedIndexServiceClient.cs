@@ -17,6 +17,7 @@ namespace MftScanner
         private const int HostReadyPollIntervalMilliseconds = 200;
         private const int ShowSearchUiRequestTimeoutMilliseconds = 5000;
         private const int ShowSearchUiPipeConnectMilliseconds = 1200;
+        private const int CanceledResponseDrainMilliseconds = 1500;
 
         private readonly string _consumerName;
         private readonly SharedIndexClientSlotId _slotId;
@@ -552,6 +553,11 @@ namespace MftScanner
                     {
                     }
 
+                    if (!slotResources.ResponseReadyEvent.WaitOne(CanceledResponseDrainMilliseconds))
+                    {
+                        IndexPerfLog.Write("IPC",
+                            $"[MMF] outcome=cancel-drain-timeout timeoutMs={CanceledResponseDrainMilliseconds}");
+                    }
                     ct.ThrowIfCancellationRequested();
                 }
             }, CancellationToken.None);

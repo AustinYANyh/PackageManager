@@ -45,7 +45,6 @@ namespace MftScanner
                 if (old != null)
                 {
                     old.Cancel();
-                    old.Dispose();
                 }
 
                 // 创建新 CTS，链接外部令牌
@@ -79,6 +78,18 @@ namespace MftScanner
                     IsTruncated = false,
                     Results = new List<ScannedFileInfo>()
                 };
+            }
+            finally
+            {
+                lock (_lock)
+                {
+                    if (ReferenceEquals(_currentCts, newCts))
+                    {
+                        _currentCts = null;
+                    }
+                }
+
+                newCts.Dispose();
             }
         }
     }
