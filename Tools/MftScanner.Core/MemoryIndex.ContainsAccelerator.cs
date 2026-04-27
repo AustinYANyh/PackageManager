@@ -107,6 +107,11 @@ namespace MftScanner
                 return (_builtBuckets & flags) == flags;
             }
 
+            public bool ContainsRecord(RecordKey key)
+            {
+                return _recordIdsByKey.ContainsKey(key);
+            }
+
             public static ContainsAccelerator Build(
                 FileRecord[] records,
                 ContainsAcceleratorBucketKinds requiredBuckets,
@@ -147,51 +152,58 @@ namespace MftScanner
                 return this;
             }
 
-            public ContainsSearchResult Search(string query, SearchTypeFilter filter, int offset, int maxResults, CancellationToken ct)
+            public ContainsSearchResult Search(
+                string query,
+                SearchTypeFilter filter,
+                int offset,
+                int maxResults,
+                CancellationToken ct,
+                ContainsOverlay overlay = null)
             {
                 var normalizedOffset = Math.Max(offset, 0);
                 var normalizedMaxResults = Math.Max(maxResults, 0);
+                var activeOverlay = overlay ?? ContainsOverlay.Empty;
                 if (query.Length == 1)
                 {
-                    return SearchSingleChar(query[0], filter, normalizedOffset, normalizedMaxResults, ct);
+                    return SearchSingleChar(query[0], query, filter, normalizedOffset, normalizedMaxResults, ct, activeOverlay);
                 }
 
                 if (query.Length == 2)
                 {
-                    return SearchBigram(PackBigram(query[0], query[1]), filter, normalizedOffset, normalizedMaxResults, ct);
+                    return SearchBigram(PackBigram(query[0], query[1]), query, filter, normalizedOffset, normalizedMaxResults, ct, activeOverlay);
                 }
 
-                return SearchTrigram(query, filter, normalizedOffset, normalizedMaxResults, ct);
+                return SearchTrigram(query, filter, normalizedOffset, normalizedMaxResults, ct, activeOverlay);
             }
 
-            private ContainsSearchResult SearchSingleChar(char token, SearchTypeFilter filter, int offset, int maxResults, CancellationToken ct)
+            private ContainsSearchResult SearchSingleChar(char token, string query, SearchTypeFilter filter, int offset, int maxResults, CancellationToken ct, ContainsOverlay overlay)
             {
                 BucketPosting posting;
                 if (!_charBuckets.TryGetPosting(token, out posting) || posting.Count == 0)
                 {
-                    return new ContainsSearchResult { Mode = "char" };
+                    return BuildOverlayOnlyResult(query, filter, offset, maxResults, "char", ct, overlay);
                 }
 
-                return BuildBucketResult(posting, filter, offset, maxResults, "char", ct);
+                return BuildBucketResult(posting, query, filter, offset, maxResults, "char", ct, overlay);
             }
 
-            private ContainsSearchResult SearchBigram(uint token, SearchTypeFilter filter, int offset, int maxResults, CancellationToken ct)
+            private ContainsSearchResult SearchBigram(uint token, string query, SearchTypeFilter filter, int offset, int maxResults, CancellationToken ct, ContainsOverlay overlay)
             {
                 BucketPosting posting;
                 if (!_bigramBuckets.TryGetPosting(token, out posting) || posting.Count == 0)
                 {
-                    return new ContainsSearchResult { Mode = "bigram" };
+                    return BuildOverlayOnlyResult(query, filter, offset, maxResults, "bigram", ct, overlay);
                 }
 
-                return BuildBucketResult(posting, filter, offset, maxResults, "bigram", ct);
+                return BuildBucketResult(posting, query, filter, offset, maxResults, "bigram", ct, overlay);
             }
 
-            private ContainsSearchResult SearchTrigram(string query, SearchTypeFilter filter, int offset, int maxResults, CancellationToken ct)
+            private ContainsSearchResult SearchTrigram(string query, SearchTypeFilter filter, int offset, int maxResults, CancellationToken ct, ContainsOverlay overlay)
             {
                 var trigramKeys = BuildUniqueTrigramKeys(query);
                 if (trigramKeys.Count == 0)
                 {
-                    return new ContainsSearchResult { Mode = "fallback" };
+                    return BuildOverlayOnlyResult(query, filter, offset, maxResults, "fallback", ct, overlay);
                 }
 
                 var postingLists = new List<BucketPosting>(trigramKeys.Count);
@@ -200,7 +212,7 @@ namespace MftScanner
                     BucketPosting posting;
                     if (!_trigramBuckets.TryGetPosting(trigramKeys[i], out posting) || posting.Count == 0)
                     {
-                        return new ContainsSearchResult { Mode = "trigram" };
+                        return BuildOverlayOnlyResult(query, filter, offset, maxResults, "trigram", ct, overlay);
                     }
 
                     postingLists.Add(posting);
@@ -261,7 +273,10 @@ namespace MftScanner
                     }
 
                     var record = _recordsById[candidates[i]];
-                    if (!record.LowerName.Contains(query) || !MatchesFilter(record, filter))
+                    if (record == null
+                        || overlay.ContainsRemoved(RecordKey.FromRecord(record))
+                        || !record.LowerName.Contains(query)
+                        || !MatchesFilter(record, filter))
                     {
                         continue;
                     }
@@ -273,6 +288,7 @@ namespace MftScanner
                     }
                 }
 
+                AddOverlayMatches(query, filter, offset, maxResults, page, ref total, ct, overlay);
                 verifyStopwatch.Stop();
                 result.Total = total;
                 result.Page = page;
@@ -280,7 +296,7 @@ namespace MftScanner
                 return result;
             }
 
-            private ContainsSearchResult BuildBucketResult(BucketPosting posting, SearchTypeFilter filter, int offset, int maxResults, string mode, CancellationToken ct)
+            private ContainsSearchResult BuildBucketResult(BucketPosting posting, string query, SearchTypeFilter filter, int offset, int maxResults, string mode, CancellationToken ct, ContainsOverlay overlay)
             {
                 var page = new List<FileRecord>(Math.Min(maxResults, 64));
                 var total = 0;
@@ -300,7 +316,10 @@ namespace MftScanner
 
                     lastRecordId = recordId;
                     var record = _recordsById[recordId];
-                    if (filter != SearchTypeFilter.All && !MatchesFilter(record, filter))
+                    if (record == null
+                        || overlay.ContainsRemoved(RecordKey.FromRecord(record))
+                        || !record.LowerName.Contains(query)
+                        || !MatchesFilter(record, filter))
                     {
                         continue;
                     }
@@ -312,6 +331,8 @@ namespace MftScanner
                     }
                 }
 
+                AddOverlayMatches(query, filter, offset, maxResults, page, ref total, ct, overlay);
+
                 return new ContainsSearchResult
                 {
                     Mode = mode,
@@ -319,6 +340,67 @@ namespace MftScanner
                     Total = total,
                     Page = page
                 };
+            }
+
+            private ContainsSearchResult BuildOverlayOnlyResult(
+                string query,
+                SearchTypeFilter filter,
+                int offset,
+                int maxResults,
+                string mode,
+                CancellationToken ct,
+                ContainsOverlay overlay)
+            {
+                var page = new List<FileRecord>(Math.Min(maxResults, 64));
+                var total = 0;
+                AddOverlayMatches(query, filter, offset, maxResults, page, ref total, ct, overlay);
+                return new ContainsSearchResult
+                {
+                    Mode = mode,
+                    CandidateCount = total,
+                    Total = total,
+                    Page = page
+                };
+            }
+
+            private static void AddOverlayMatches(
+                string query,
+                SearchTypeFilter filter,
+                int offset,
+                int maxResults,
+                List<FileRecord> page,
+                ref int total,
+                CancellationToken ct,
+                ContainsOverlay overlay)
+            {
+                if (overlay == null || overlay.AddedRecords.Count == 0)
+                {
+                    return;
+                }
+
+                for (var i = 0; i < overlay.AddedRecords.Count; i++)
+                {
+                    if (((i + 1) & CancellationStride) == 0)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                    }
+
+                    var record = overlay.AddedRecords[i];
+                    if (record == null
+                        || overlay.ContainsRemoved(RecordKey.FromRecord(record))
+                        || string.IsNullOrEmpty(record.LowerName)
+                        || !record.LowerName.Contains(query)
+                        || !MatchesFilter(record, filter))
+                    {
+                        continue;
+                    }
+
+                    total++;
+                    if (total > offset && page.Count < maxResults)
+                    {
+                        page.Add(record);
+                    }
+                }
             }
 
             private void AddRecord(FileRecord record)

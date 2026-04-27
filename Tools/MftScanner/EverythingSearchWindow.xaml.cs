@@ -45,6 +45,7 @@ namespace MftScanner
         private ScrollViewer _resultsScrollViewer;
         private List<EverythingSearchResultItem> _allLoadedResults = new List<EverythingSearchResultItem>();
         private string _activeKeyword = string.Empty;
+        private int _searchGeneration;
         private int _totalMatchedCount;
         private int _loadedResultCount;
         private int _loadedRawResultCount;

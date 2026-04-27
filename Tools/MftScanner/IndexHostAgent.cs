@@ -18,7 +18,7 @@ namespace MftScanner
         private const int SearchUiHotPathAckMilliseconds = 300;
         private const int SearchUiRestartReadyMilliseconds = 3000;
         private const int SearchUiRestartShownMilliseconds = 800;
-        private const int SearchUiHeartbeatStaleMilliseconds = 1000;
+        private const int SearchUiHeartbeatStaleMilliseconds = 5000;
         private const int SearchUiReadyPollMilliseconds = 50;
         private readonly IndexService _indexService = new IndexService();
         private readonly Action _showSearchUi;

@@ -108,8 +108,12 @@ namespace MftScanner
             var currentSearchCts = new CancellationTokenSource();
             _searchCts = currentSearchCts;
             var ct = currentSearchCts.Token;
+            var searchGeneration = unchecked(++_searchGeneration);
 
-            _activeKeyword = BuildEffectiveKeyword(keyword);
+            var effectiveKeyword = BuildEffectiveKeyword(keyword);
+            var typeFilter = _currentTypeFilter;
+            var hostTypeFilter = MapTypeFilter(typeFilter);
+            _activeKeyword = effectiveKeyword;
             _isLoadingMore = false;
             _hasMoreSearchResults = false;
             _cachedKeyword = null;
@@ -136,14 +140,18 @@ namespace MftScanner
             IndexingProgress.Visibility = Visibility.Visible;
             StatusText.Text = "正在搜索 \"" + GetVisibleQueryText() + "\"...";
             CurrentLoadSummaryText.Text = "正在搜索";
+            ClearDisplayedResults();
             UpdateEmptyState();
 
             try
             {
                 var uiTotalStopwatch = Stopwatch.StartNew();
-                var loadOutcome = await LoadInitialSearchResultsAsync(SearchBatchSize, ct).ConfigureAwait(true);
-                if (ct.IsCancellationRequested || loadOutcome == null)
+                var loadOutcome = await LoadInitialSearchResultsAsync(effectiveKeyword, typeFilter, hostTypeFilter, SearchBatchSize, ct).ConfigureAwait(true);
+                if (ct.IsCancellationRequested || loadOutcome == null || !IsCurrentSearch(searchGeneration, currentSearchCts, effectiveKeyword, typeFilter))
+                {
+                    LogDiscardedSearchOutcome(effectiveKeyword, typeFilter, searchGeneration);
                     return;
+                }
 
                 _totalMatchedCount = loadOutcome.TotalMatchedCount;
                 _loadedRawResultCount = loadOutcome.LoadedRawResultCount;
@@ -153,10 +161,10 @@ namespace MftScanner
                 bindStopwatch.Stop();
 
                 uiTotalStopwatch.Stop();
-                LogUiSearchBreakdown(loadOutcome, bindStopwatch.ElapsedMilliseconds, uiTotalStopwatch.ElapsedMilliseconds);
+                LogUiSearchBreakdown(effectiveKeyword, typeFilter, loadOutcome, bindStopwatch.ElapsedMilliseconds, uiTotalStopwatch.ElapsedMilliseconds);
 
                 if (updateHistory)
-                    PushRecentSearch(_activeKeyword);
+                    PushRecentSearch(effectiveKeyword);
                 UpdateSummaryStatus();
                 UpdateEmptyState();
             }
@@ -219,12 +227,17 @@ namespace MftScanner
             if (!_hasMoreSearchResults)
                 return;
 
+            var searchGeneration = _searchGeneration;
+            var effectiveKeyword = _activeKeyword;
+            var typeFilter = _currentTypeFilter;
+            var hostTypeFilter = MapTypeFilter(typeFilter);
+
             _isLoadingMore = true;
             IndexingProgress.Visibility = Visibility.Visible;
             StatusText.Text = "正在继续加载 \"" + GetVisibleQueryText() + "\"...";
             try
             {
-                await LoadSearchResultsAsync(SearchBatchSize, false, CancellationToken.None).ConfigureAwait(true);
+                await LoadSearchResultsAsync(effectiveKeyword, typeFilter, hostTypeFilter, SearchBatchSize, false, searchGeneration, null, CancellationToken.None).ConfigureAwait(true);
             }
             catch
             {
@@ -449,21 +462,26 @@ namespace MftScanner
                 RestoreSearchBoxInputState(preserveSelection: true);
         }
 
-        private async Task<SearchLoadOutcome> LoadInitialSearchResultsAsync(int desiredCount, CancellationToken ct)
+        private async Task<SearchLoadOutcome> LoadInitialSearchResultsAsync(
+            string effectiveKeyword,
+            FileSearchTypeFilter typeFilter,
+            SearchTypeFilter hostTypeFilter,
+            int desiredCount,
+            CancellationToken ct)
         {
             var queryStopwatch = Stopwatch.StartNew();
             SearchQueryResult result;
-            if (_currentTypeFilter == FileSearchTypeFilter.All)
+            if (typeFilter == FileSearchTypeFilter.All)
             {
-                result = await _filter.QueryAsync(_activeKeyword, Math.Max(desiredCount, SearchBatchSize), 0, ct).ConfigureAwait(true);
+                result = await _indexService.SearchAsync(effectiveKeyword, Math.Max(desiredCount, SearchBatchSize), 0, null, ct).ConfigureAwait(true);
             }
             else
             {
                 result = await _indexService.SearchAsync(
-                    _activeKeyword,
+                    effectiveKeyword,
                     Math.Max(desiredCount, SearchBatchSize),
                     0,
-                    MapCurrentTypeFilter(),
+                    hostTypeFilter,
                     null,
                     ct).ConfigureAwait(true);
             }
@@ -474,17 +492,26 @@ namespace MftScanner
                 return null;
             }
 
-            return BuildSearchLoadOutcome(result, 0, queryStopwatch.ElapsedMilliseconds, null);
+            return BuildSearchLoadOutcome(result, 0, queryStopwatch.ElapsedMilliseconds, null, typeFilter);
         }
 
-        private async Task<bool> LoadSearchResultsAsync(int desiredCount, bool isNewSearch, CancellationToken ct)
+        private async Task<bool> LoadSearchResultsAsync(
+            string effectiveKeyword,
+            FileSearchTypeFilter typeFilter,
+            SearchTypeFilter hostTypeFilter,
+            int desiredCount,
+            bool isNewSearch,
+            int searchGeneration,
+            CancellationTokenSource searchCts,
+            CancellationToken ct)
         {
             if (isNewSearch)
             {
                 var uiTotalStopwatch = Stopwatch.StartNew();
-                var initialLoadOutcome = await LoadInitialSearchResultsAsync(desiredCount, ct).ConfigureAwait(true);
-                if (ct.IsCancellationRequested || initialLoadOutcome == null)
+                var initialLoadOutcome = await LoadInitialSearchResultsAsync(effectiveKeyword, typeFilter, hostTypeFilter, desiredCount, ct).ConfigureAwait(true);
+                if (ct.IsCancellationRequested || initialLoadOutcome == null || !IsCurrentSearch(searchGeneration, searchCts, effectiveKeyword, typeFilter))
                 {
+                    LogDiscardedSearchOutcome(effectiveKeyword, typeFilter, searchGeneration);
                     return false;
                 }
 
@@ -492,28 +519,29 @@ namespace MftScanner
                 PublishLoadedResults(initialLoadOutcome.DisplayItems, preserveSelectionPath: null);
                 bindStopwatch.Stop();
                 uiTotalStopwatch.Stop();
-                LogUiSearchBreakdown(initialLoadOutcome, bindStopwatch.ElapsedMilliseconds, uiTotalStopwatch.ElapsedMilliseconds);
+                LogUiSearchBreakdown(effectiveKeyword, typeFilter, initialLoadOutcome, bindStopwatch.ElapsedMilliseconds, uiTotalStopwatch.ElapsedMilliseconds);
                 return true;
             }
 
             var queryStopwatch = Stopwatch.StartNew();
-            var result = _currentTypeFilter == FileSearchTypeFilter.All
-                ? await _indexService.SearchAsync(_activeKeyword, SearchBatchSize, _loadedRawResultCount, null, ct).ConfigureAwait(true)
+            var result = typeFilter == FileSearchTypeFilter.All
+                ? await _indexService.SearchAsync(effectiveKeyword, SearchBatchSize, _loadedRawResultCount, null, ct).ConfigureAwait(true)
                 : await _indexService.SearchAsync(
-                    _activeKeyword,
+                    effectiveKeyword,
                     Math.Max(desiredCount, SearchBatchSize),
                     _loadedRawResultCount,
-                    MapCurrentTypeFilter(),
+                    hostTypeFilter,
                     null,
                     ct).ConfigureAwait(true);
             queryStopwatch.Stop();
-            if (ct.IsCancellationRequested)
+            if (ct.IsCancellationRequested || !IsCurrentSearch(searchGeneration, searchCts, effectiveKeyword, typeFilter))
             {
+                LogDiscardedSearchOutcome(effectiveKeyword, typeFilter, searchGeneration);
                 return false;
             }
 
             var existingPaths = new HashSet<string>(_displayedPathSet, StringComparer.OrdinalIgnoreCase);
-            var loadOutcome = BuildSearchLoadOutcome(result, _loadedRawResultCount, queryStopwatch.ElapsedMilliseconds, existingPaths);
+            var loadOutcome = BuildSearchLoadOutcome(result, _loadedRawResultCount, queryStopwatch.ElapsedMilliseconds, existingPaths, typeFilter);
             _totalMatchedCount = loadOutcome.TotalMatchedCount;
             _loadedRawResultCount = loadOutcome.LoadedRawResultCount;
             _hasMoreSearchResults = loadOutcome.HasMoreSearchResults;
@@ -531,7 +559,12 @@ namespace MftScanner
             return true;
         }
 
-        private SearchLoadOutcome BuildSearchLoadOutcome(SearchQueryResult result, int currentRawOffset, long queryElapsedMs, HashSet<string> existingPaths)
+        private SearchLoadOutcome BuildSearchLoadOutcome(
+            SearchQueryResult result,
+            int currentRawOffset,
+            long queryElapsedMs,
+            HashSet<string> existingPaths,
+            FileSearchTypeFilter typeFilter)
         {
             var outcome = new SearchLoadOutcome
             {
@@ -564,7 +597,7 @@ namespace MftScanner
             sortStopwatch.Stop();
             outcome.SortMs = sortStopwatch.ElapsedMilliseconds;
 
-            if (_currentTypeFilter == FileSearchTypeFilter.All)
+            if (typeFilter == FileSearchTypeFilter.All)
             {
                 outcome.HasMoreSearchResults = outcome.LoadedRawResultCount < outcome.TotalMatchedCount;
             }
@@ -664,7 +697,35 @@ namespace MftScanner
             }
         }
 
-        private void LogUiSearchBreakdown(SearchLoadOutcome loadOutcome, long bindMs, long totalUiSearchMs)
+        private bool IsCurrentSearch(
+            int searchGeneration,
+            CancellationTokenSource searchCts,
+            string effectiveKeyword,
+            FileSearchTypeFilter typeFilter)
+        {
+            if (searchGeneration != _searchGeneration)
+            {
+                return false;
+            }
+
+            if (searchCts != null && !ReferenceEquals(_searchCts, searchCts))
+            {
+                return false;
+            }
+
+            return string.Equals(_activeKeyword ?? string.Empty, effectiveKeyword ?? string.Empty, StringComparison.Ordinal)
+                   && _currentTypeFilter == typeFilter;
+        }
+
+        private void LogDiscardedSearchOutcome(string effectiveKeyword, FileSearchTypeFilter typeFilter, int searchGeneration)
+        {
+            Services.LoggingService.LogIndexPerf("UI",
+                $"[CTRLE UI SEARCH] outcome=discarded keyword={Services.LoggingService.FormatPerfValue(effectiveKeyword)} " +
+                $"filter={typeFilter} generation={searchGeneration} currentGeneration={_searchGeneration} " +
+                $"currentKeyword={Services.LoggingService.FormatPerfValue(_activeKeyword)} currentFilter={_currentTypeFilter}");
+        }
+
+        private void LogUiSearchBreakdown(string effectiveKeyword, FileSearchTypeFilter typeFilter, SearchLoadOutcome loadOutcome, long bindMs, long totalUiSearchMs)
         {
             if (loadOutcome == null)
             {
@@ -676,7 +737,7 @@ namespace MftScanner
             var sortMs = Math.Max(loadOutcome.SortMs, 0);
             var ipcMs = Math.Max(0, totalUiSearchMs - hostSearchMs - projectionMs - sortMs - bindMs);
             Services.LoggingService.LogIndexPerf("UI",
-                $"[CTRLE UI SEARCH] keyword={Services.LoggingService.FormatPerfValue(_activeKeyword)} filter={_currentTypeFilter} " +
+                $"[CTRLE UI SEARCH] keyword={Services.LoggingService.FormatPerfValue(effectiveKeyword)} filter={typeFilter} " +
                 $"hostSearchMs={hostSearchMs} ipcMs={ipcMs} projectionMs={projectionMs} sortMs={sortMs} bindMs={bindMs} totalUiSearchMs={totalUiSearchMs} " +
                 $"matched={_totalMatchedCount} displayed={_loadedResultCount}");
         }
@@ -720,7 +781,12 @@ namespace MftScanner
 
         private SearchTypeFilter MapCurrentTypeFilter()
         {
-            switch (_currentTypeFilter)
+            return MapTypeFilter(_currentTypeFilter);
+        }
+
+        private static SearchTypeFilter MapTypeFilter(FileSearchTypeFilter filter)
+        {
+            switch (filter)
             {
                 case FileSearchTypeFilter.Launchable:
                     return SearchTypeFilter.Launchable;

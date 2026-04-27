@@ -26,6 +26,7 @@ namespace MftScanner
         public FileRecord[] LogSortedArray { get; private set; } = Array.Empty<FileRecord>();
         public FileRecord[] ConfigSortedArray { get; private set; } = Array.Empty<FileRecord>();
         private ContainsAccelerator _containsAccelerator = ContainsAccelerator.Empty;
+        private ContainsOverlay _containsOverlay = ContainsOverlay.Empty;
         private bool _containsAcceleratorReady = true;
         private long _containsAcceleratorEpoch;
         private readonly List<PendingContainsMutation> _pendingContainsMutations = new List<PendingContainsMutation>();
@@ -38,15 +39,12 @@ namespace MftScanner
         {
             get
             {
-                _lock.EnterReadLock();
-                try
-                {
-                    return _containsAcceleratorReady;
-                }
-                finally
-                {
-                    _lock.ExitReadLock();
-                }
+                var accelerator = Volatile.Read(ref _containsAccelerator);
+                var overlay = Volatile.Read(ref _containsOverlay) ?? ContainsOverlay.Empty;
+                return Volatile.Read(ref _containsAcceleratorReady)
+                       && !overlay.IsOverflowed
+                       && accelerator != null
+                       && !accelerator.IsEmpty;
             }
         }
 
@@ -83,26 +81,28 @@ namespace MftScanner
                 return false;
             }
 
-            _lock.EnterReadLock();
-            try
+            var accelerator = Volatile.Read(ref _containsAccelerator);
+            var overlay = Volatile.Read(ref _containsOverlay) ?? ContainsOverlay.Empty;
+            if (!Volatile.Read(ref _containsAcceleratorReady)
+                || overlay.IsOverflowed
+                || accelerator == null
+                || accelerator.IsEmpty)
             {
-                if (!_containsAcceleratorReady || _containsAccelerator == null || _containsAccelerator.IsEmpty)
+                if (overlay.IsOverflowed)
                 {
-                    return false;
+                    IndexPerfLog.Write("INDEX",
+                        $"[CONTAINS ACCELERATOR] outcome=overlay-overflow fallback=true query={IndexPerfLog.FormatValue(query)}");
                 }
-
-                if (!_containsAccelerator.Supports(query))
-                {
-                    return false;
-                }
-
-                result = _containsAccelerator.Search(query, filter, offset, maxResults, ct);
-                return true;
+                return false;
             }
-            finally
+
+            if (!accelerator.Supports(query))
             {
-                _lock.ExitReadLock();
+                return false;
             }
+
+            result = accelerator.Search(query, filter, offset, maxResults, ct, overlay);
+            return true;
         }
 
         public void LoadSortedRecords(IReadOnlyList<FileRecord> sortedRecords, bool buildContainsAccelerator = true)
@@ -191,13 +191,7 @@ namespace MftScanner
                 InsertIntoFilterBuckets(record);
                 if (_containsAcceleratorReady)
                 {
-                    _containsAccelerator = (_containsAccelerator ?? ContainsAccelerator.Empty).WithInserted(record);
-                    if (_containsAccelerator == null || !_containsAccelerator.Supports(ContainsAcceleratorBucketKinds.All))
-                    {
-                        EnqueuePendingContainsInsert(record);
-                    }
-
-                    _containsAcceleratorEpoch++;
+                    AppendContainsOverlay(PendingContainsMutation.ForInsert(record));
                 }
                 else
                 {
@@ -246,14 +240,7 @@ namespace MftScanner
                 RemoveFromFilterBuckets(frn, lowerName, parentFrn, driveLetter);
                 if (_containsAcceleratorReady)
                 {
-                    _containsAccelerator = (_containsAccelerator ?? ContainsAccelerator.Empty).WithRemoved(
-                        new RecordKey(frn, lowerName, parentFrn, driveLetter));
-                    if (_containsAccelerator == null || !_containsAccelerator.Supports(ContainsAcceleratorBucketKinds.All))
-                    {
-                        EnqueuePendingContainsRemove(new RecordKey(frn, lowerName, parentFrn, driveLetter));
-                    }
-
-                    _containsAcceleratorEpoch++;
+                    AppendContainsOverlay(PendingContainsMutation.ForRemove(new RecordKey(frn, lowerName, parentFrn, driveLetter)));
                 }
                 else
                 {
@@ -336,16 +323,8 @@ namespace MftScanner
                 InsertIntoFilterBuckets(newRecord);
                 if (_containsAcceleratorReady)
                 {
-                    _containsAccelerator = (_containsAccelerator ?? ContainsAccelerator.Empty)
-                        .WithRemoved(new RecordKey(frn, oldLowerName, oldParentFrn, driveLetter))
-                        .WithInserted(newRecord);
-                    if (_containsAccelerator == null || !_containsAccelerator.Supports(ContainsAcceleratorBucketKinds.All))
-                    {
-                        EnqueuePendingContainsRemove(new RecordKey(frn, oldLowerName, oldParentFrn, driveLetter));
-                        EnqueuePendingContainsInsert(newRecord);
-                    }
-
-                    _containsAcceleratorEpoch++;
+                    AppendContainsOverlay(PendingContainsMutation.ForRemove(new RecordKey(frn, oldLowerName, oldParentFrn, driveLetter)));
+                    AppendContainsOverlay(PendingContainsMutation.ForInsert(newRecord));
                 }
                 else
                 {
@@ -539,6 +518,7 @@ namespace MftScanner
                 _containsAccelerator = containsAcceleratorReady
                     ? (containsAccelerator ?? ContainsAccelerator.Empty)
                     : ContainsAccelerator.Empty;
+                _containsOverlay = ContainsOverlay.Empty;
                 _containsAcceleratorReady = containsAcceleratorReady;
                 _containsAcceleratorEpoch++;
                 _pendingContainsMutations.Clear();
@@ -623,6 +603,7 @@ namespace MftScanner
                 if (rebuildContainsAccelerator)
                 {
                     _containsAccelerator = ContainsAccelerator.Build(arr, ContainsAcceleratorBucketKinds.All);
+                    _containsOverlay = ContainsOverlay.Empty;
                     _containsAcceleratorReady = true;
                     _containsAcceleratorEpoch++;
                     _pendingContainsMutations.Clear();
@@ -630,11 +611,7 @@ namespace MftScanner
                 }
                 else if (_containsAcceleratorReady)
                 {
-                    ApplyContainsMutations(deltaByKey);
-                    if (_containsAccelerator == null || !_containsAccelerator.Supports(ContainsAcceleratorBucketKinds.All))
-                    {
-                        EnqueuePendingContainsMutations(deltaByKey);
-                    }
+                    AppendContainsOverlay(deltaByKey);
                 }
                 else
                 {
@@ -705,8 +682,6 @@ namespace MftScanner
             {
                 FileRecord[] snapshot;
                 long epoch;
-                int pendingStartIndex;
-
                 _lock.EnterReadLock();
                 try
                 {
@@ -719,7 +694,6 @@ namespace MftScanner
 
                     snapshot = SortedArray;
                     epoch = _containsAcceleratorEpoch;
-                    pendingStartIndex = _pendingContainsMutations.Count;
                 }
                 finally
                 {
@@ -745,15 +719,17 @@ namespace MftScanner
                         continue;
                     }
 
-                    for (var i = pendingStartIndex; i < _pendingContainsMutations.Count; i++)
-                    {
-                        _pendingContainsMutations[i].ApplyTo(accelerator);
-                    }
-
+                    var publishOverlay = Volatile.Read(ref _containsOverlay) ?? ContainsOverlay.Empty;
+                    publishOverlay = publishOverlay.WithMutations(_pendingContainsMutations, MaxPendingContainsMutations);
+                    publishOverlay = publishOverlay.PruneForBase(accelerator);
                     _containsAccelerator = accelerator ?? ContainsAccelerator.Empty;
                     _containsAcceleratorReady = true;
+                    _containsOverlay = publishOverlay;
                     _pendingContainsMutations.Clear();
                     _pendingContainsMutationsOverflowed = false;
+                    _containsAcceleratorEpoch++;
+                    IndexPerfLog.Write("INDEX",
+                        $"[CONTAINS PUBLISH] outcome=success scope={scope} overlayAdds={_containsOverlay.AddedCount} overlayRemoves={_containsOverlay.RemovedCount}");
                     return true;
                 }
                 finally
@@ -925,6 +901,44 @@ namespace MftScanner
             _pendingContainsMutations.Add(mutation);
         }
 
+        private void AppendContainsOverlay(PendingContainsMutation mutation)
+        {
+            if (!_containsAcceleratorReady)
+            {
+                EnqueuePendingContainsMutation(mutation);
+                return;
+            }
+
+            var overlay = Volatile.Read(ref _containsOverlay) ?? ContainsOverlay.Empty;
+            var updatedOverlay = overlay.WithMutation(mutation, MaxPendingContainsMutations);
+            Volatile.Write(ref _containsOverlay, updatedOverlay);
+            if (updatedOverlay.IsOverflowed)
+            {
+                _containsAcceleratorReady = false;
+                EnqueuePendingContainsMutation(mutation);
+                IndexPerfLog.Write("INDEX",
+                    $"[CONTAINS OVERLAY] outcome=overflow adds={overlay.AddedCount} removes={overlay.RemovedCount}");
+                return;
+            }
+
+            _containsAcceleratorEpoch++;
+        }
+
+        private void AppendContainsOverlay(Dictionary<RecordKey, FileRecord> deltaByKey)
+        {
+            if (deltaByKey == null || deltaByKey.Count == 0)
+            {
+                return;
+            }
+
+            foreach (var entry in deltaByKey)
+            {
+                AppendContainsOverlay(entry.Value == null
+                    ? PendingContainsMutation.ForRemove(entry.Key)
+                    : PendingContainsMutation.ForInsert(entry.Value));
+            }
+        }
+
         private void EnqueuePendingContainsMutations(Dictionary<RecordKey, FileRecord> deltaByKey)
         {
             if (deltaByKey == null || deltaByKey.Count == 0 || _pendingContainsMutationsOverflowed)
@@ -941,26 +955,6 @@ namespace MftScanner
                 if (_pendingContainsMutationsOverflowed)
                 {
                     return;
-                }
-            }
-        }
-
-        private void ApplyContainsMutations(Dictionary<RecordKey, FileRecord> deltaByKey)
-        {
-            if (deltaByKey == null || deltaByKey.Count == 0 || _containsAccelerator == null)
-            {
-                return;
-            }
-
-            foreach (var entry in deltaByKey)
-            {
-                if (entry.Value == null)
-                {
-                    _containsAccelerator.WithRemoved(entry.Key);
-                }
-                else
-                {
-                    _containsAccelerator.WithInserted(entry.Value);
                 }
             }
         }
@@ -1638,6 +1632,144 @@ namespace MftScanner
         {
             Insert,
             Remove
+        }
+
+        private sealed class ContainsOverlay
+        {
+            public static readonly ContainsOverlay Empty = new ContainsOverlay(
+                new Dictionary<RecordKey, FileRecord>(),
+                new HashSet<RecordKey>(),
+                false);
+
+            private readonly Dictionary<RecordKey, FileRecord> _addedByKey;
+            private readonly HashSet<RecordKey> _removedKeys;
+
+            private ContainsOverlay(
+                Dictionary<RecordKey, FileRecord> addedByKey,
+                HashSet<RecordKey> removedKeys,
+                bool isOverflowed)
+            {
+                _addedByKey = addedByKey ?? new Dictionary<RecordKey, FileRecord>();
+                _removedKeys = removedKeys ?? new HashSet<RecordKey>();
+                IsOverflowed = isOverflowed;
+                AddedRecords = new List<FileRecord>(_addedByKey.Values);
+            }
+
+            public IReadOnlyList<FileRecord> AddedRecords { get; }
+
+            public bool IsOverflowed { get; }
+
+            public int AddedCount => _addedByKey.Count;
+
+            public int RemovedCount => _removedKeys.Count;
+
+            public bool ContainsRemoved(RecordKey key)
+            {
+                return _removedKeys.Contains(key);
+            }
+
+            public ContainsOverlay WithMutation(PendingContainsMutation mutation, int maxMutations)
+            {
+                if (IsOverflowed)
+                {
+                    return this;
+                }
+
+                var addedByKey = new Dictionary<RecordKey, FileRecord>(_addedByKey);
+                var removedKeys = new HashSet<RecordKey>(_removedKeys);
+                ApplyMutation(addedByKey, removedKeys, mutation);
+                if (addedByKey.Count + removedKeys.Count > maxMutations)
+                {
+                    return new ContainsOverlay(addedByKey, removedKeys, true);
+                }
+
+                return new ContainsOverlay(addedByKey, removedKeys, false);
+            }
+
+            public ContainsOverlay WithMutations(IReadOnlyList<PendingContainsMutation> mutations, int maxMutations)
+            {
+                if (mutations == null || mutations.Count == 0 || IsOverflowed)
+                {
+                    return this;
+                }
+
+                var addedByKey = new Dictionary<RecordKey, FileRecord>(_addedByKey);
+                var removedKeys = new HashSet<RecordKey>(_removedKeys);
+                for (var i = 0; i < mutations.Count; i++)
+                {
+                    ApplyMutation(addedByKey, removedKeys, mutations[i]);
+                    if (addedByKey.Count + removedKeys.Count > maxMutations)
+                    {
+                        return new ContainsOverlay(addedByKey, removedKeys, true);
+                    }
+                }
+
+                return new ContainsOverlay(addedByKey, removedKeys, false);
+            }
+
+            public ContainsOverlay PruneForBase(ContainsAccelerator accelerator)
+            {
+                if (accelerator == null || IsOverflowed || (AddedCount == 0 && RemovedCount == 0))
+                {
+                    return this;
+                }
+
+                var addedByKey = new Dictionary<RecordKey, FileRecord>();
+                foreach (var entry in _addedByKey)
+                {
+                    if (!accelerator.ContainsRecord(entry.Key))
+                    {
+                        addedByKey[entry.Key] = entry.Value;
+                    }
+                }
+
+                var removedKeys = new HashSet<RecordKey>();
+                foreach (var key in _removedKeys)
+                {
+                    if (accelerator.ContainsRecord(key))
+                    {
+                        removedKeys.Add(key);
+                    }
+                }
+
+                return addedByKey.Count == 0 && removedKeys.Count == 0
+                    ? Empty
+                    : new ContainsOverlay(addedByKey, removedKeys, false);
+            }
+
+            public static ContainsOverlay FromPending(IReadOnlyList<PendingContainsMutation> pending)
+            {
+                if (pending == null || pending.Count == 0)
+                {
+                    return Empty;
+                }
+
+                var addedByKey = new Dictionary<RecordKey, FileRecord>();
+                var removedKeys = new HashSet<RecordKey>();
+                for (var i = 0; i < pending.Count; i++)
+                {
+                    ApplyMutation(addedByKey, removedKeys, pending[i]);
+                }
+
+                return new ContainsOverlay(addedByKey, removedKeys, false);
+            }
+
+            private static void ApplyMutation(
+                Dictionary<RecordKey, FileRecord> addedByKey,
+                HashSet<RecordKey> removedKeys,
+                PendingContainsMutation mutation)
+            {
+                if (mutation.Kind == PendingContainsMutationKind.Insert)
+                {
+                    var key = RecordKey.FromRecord(mutation.Record);
+                    removedKeys.Remove(key);
+                    addedByKey[key] = mutation.Record;
+                    return;
+                }
+
+                addedByKey.Remove(mutation.Key);
+                removedKeys.Add(mutation.Key);
+            }
         }
 
         private struct RecordKey : IEquatable<RecordKey>
