@@ -260,7 +260,7 @@ namespace MftScanner
 
         private static IndexSnapshot ReadVersion4(BinaryReader reader)
         {
-            return ReadVersion3Body(reader, readContainsPostings: true);
+            return ReadVersion3Body(reader, readContainsPostings: false);
         }
 
         private static IndexSnapshot ReadVersion3Body(BinaryReader reader, bool readContainsPostings)

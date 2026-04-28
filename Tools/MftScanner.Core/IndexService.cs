@@ -2228,8 +2228,7 @@ namespace MftScanner
                         var saveStopwatch = Stopwatch.StartNew();
                         metrics = _snapshotStore.Save(new IndexSnapshot(
                             recordCopy,
-                            volumeCopy,
-                            containsPostings: _index.ExportContainsPostingsSnapshot()));
+                            volumeCopy));
                         saveStopwatch.Stop();
                         elapsedMilliseconds = saveStopwatch.ElapsedMilliseconds;
                     }
@@ -2435,8 +2434,7 @@ namespace MftScanner
                     var saveStopwatch = Stopwatch.StartNew();
                     metrics = _snapshotStore.Save(new IndexSnapshot(
                         recordCopy,
-                        volumeSnapshots,
-                        containsPostings: _index.ExportContainsPostingsSnapshot()));
+                        volumeSnapshots));
                     saveStopwatch.Stop();
                     elapsedMilliseconds = saveStopwatch.ElapsedMilliseconds;
                 }
