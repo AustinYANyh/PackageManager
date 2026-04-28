@@ -105,10 +105,53 @@ function Parse-PathPrefilterEvents {
     return $events
 }
 
+function Parse-ContainsCacheEvents {
+    param(
+        [string]$LogPath,
+        [datetime]$Since
+    )
+
+    if (!(Test-Path $LogPath)) {
+        return @()
+    }
+
+    $events = New-Object System.Collections.Generic.List[object]
+    foreach ($match in Select-String -Path $LogPath -Pattern "\[CONTAINS CACHE\]" -ErrorAction SilentlyContinue) {
+        $line = $match.Line
+        if ($line -notmatch "^(?<time>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)") {
+            continue
+        }
+
+        $time = [datetime]$Matches.time
+        if ($time -lt $Since) {
+            continue
+        }
+
+        $outcome = if ($line -match "outcome=(?<v>\S+)") { $Matches.v } else { "" }
+        $elapsed = if ($line -match "elapsedMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+        $sourceCount = if ($line -match "sourceCount=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+        $matched = if ($line -match "matched=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+        $query = if ($line -match "query=(?<v>\S+)") { $Matches.v } else { "" }
+
+        $events.Add([pscustomobject]@{
+            Time = $time
+            Outcome = $outcome
+            ElapsedMs = $elapsed
+            SourceCount = $sourceCount
+            Matched = $matched
+            Query = $query
+            Raw = $line
+        })
+    }
+
+    return $events
+}
+
 function New-MarkdownReport {
     param(
         [object[]]$Rows,
         [object[]]$PrefilterEvents,
+        [object[]]$ContainsCacheEvents,
         [object[]]$MemoryBefore,
         [object[]]$MemoryAfter,
         [string]$PathPrefix,
@@ -140,6 +183,17 @@ function New-MarkdownReport {
         }
     }
 
+    $cacheSummary = $ContainsCacheEvents | Group-Object Outcome | ForEach-Object {
+        $items = @($_.Group)
+        [pscustomobject]@{
+            Outcome = $_.Name
+            Count = $items.Count
+            AvgElapsedMs = [math]::Round(($items | Measure-Object ElapsedMs -Average).Average, 1)
+            AvgSourceCount = [math]::Round(($items | Measure-Object SourceCount -Average).Average, 0)
+            AvgMatched = [math]::Round(($items | Measure-Object Matched -Average).Average, 0)
+        }
+    }
+
     $lines = New-Object System.Collections.Generic.List[string]
     $lines.Add("# MftScanner 基准测试报告")
     $lines.Add("")
@@ -165,6 +219,16 @@ function New-MarkdownReport {
     foreach ($item in $prefilterSummary) {
         $outcome = Convert-OutcomeToChinese $item.Outcome
         $lines.Add("| $outcome | $($item.Count) | $($item.AvgElapsedMs) | $($item.AvgCandidateCount) | $($item.AvgDirectoryCount) |")
+    }
+
+    $lines.Add("")
+    $lines.Add("## Contains 增量缓存")
+    $lines.Add("")
+    $lines.Add("| 结果 | 次数 | 平均耗时(ms) | 平均输入候选数 | 平均命中数 |")
+    $lines.Add("| --- | ---: | ---: | ---: | ---: |")
+    foreach ($item in $cacheSummary) {
+        $outcome = Convert-CacheOutcomeToChinese $item.Outcome
+        $lines.Add("| $outcome | $($item.Count) | $($item.AvgElapsedMs) | $($item.AvgSourceCount) | $($item.AvgMatched) |")
     }
 
     $lines.Add("")
@@ -209,6 +273,16 @@ function Convert-BoolToChinese {
     }
 
     return "否"
+}
+
+function Convert-CacheOutcomeToChinese {
+    param([string]$Outcome)
+
+    switch ($Outcome) {
+        "hit" { return "命中" }
+        "miss" { return "未命中" }
+        default { return $Outcome }
+    }
 }
 
 $repoRoot = Resolve-RepoRoot
@@ -276,8 +350,16 @@ try {
     $cases = @(
         [pscustomobject]@{ Name = "PathContainsSingleChar"; Keyword = "$PathPrefix d"; Filter = [MftScanner.SearchTypeFilter]::All },
         [pscustomobject]@{ Name = "PathContainsTwoChars"; Keyword = "$PathPrefix ve"; Filter = [MftScanner.SearchTypeFilter]::All },
+        [pscustomobject]@{ Name = "PathIncrementalV"; Keyword = "$PathPrefix v"; Filter = [MftScanner.SearchTypeFilter]::All },
+        [pscustomobject]@{ Name = "PathIncrementalVe"; Keyword = "$PathPrefix ve"; Filter = [MftScanner.SearchTypeFilter]::All },
+        [pscustomobject]@{ Name = "PathIncrementalVer"; Keyword = "$PathPrefix ver"; Filter = [MftScanner.SearchTypeFilter]::All },
         [pscustomobject]@{ Name = "PathWildcardExe"; Keyword = "$PathPrefix *.exe"; Filter = [MftScanner.SearchTypeFilter]::All },
         [pscustomobject]@{ Name = "PathLaunchableContains"; Keyword = "$PathPrefix ve"; Filter = [MftScanner.SearchTypeFilter]::Launchable },
+        [pscustomobject]@{ Name = "GlobalAllSingleChar"; Keyword = "d"; Filter = [MftScanner.SearchTypeFilter]::All },
+        [pscustomobject]@{ Name = "GlobalAllTwoChars"; Keyword = "ve"; Filter = [MftScanner.SearchTypeFilter]::All },
+        [pscustomobject]@{ Name = "GlobalIncrementalV"; Keyword = "v"; Filter = [MftScanner.SearchTypeFilter]::All },
+        [pscustomobject]@{ Name = "GlobalIncrementalVe"; Keyword = "ve"; Filter = [MftScanner.SearchTypeFilter]::All },
+        [pscustomobject]@{ Name = "GlobalIncrementalVer"; Keyword = "ver"; Filter = [MftScanner.SearchTypeFilter]::All },
         [pscustomobject]@{ Name = "GlobalLaunchableContains"; Keyword = "workbench"; Filter = [MftScanner.SearchTypeFilter]::Launchable }
     )
 
@@ -319,6 +401,7 @@ finally {
 Start-Sleep -Milliseconds 300
 $memoryAfter = @(Get-ProcessMemorySnapshot)
 $prefilterEvents = @(Parse-PathPrefilterEvents -LogPath $logPath -Since $startedAt.AddSeconds(-1))
+$containsCacheEvents = @(Parse-ContainsCacheEvents -LogPath $logPath -Since $startedAt.AddSeconds(-1))
 
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $jsonPath = Join-Path $outputRoot "mft-benchmark-$timestamp.json"
@@ -335,6 +418,7 @@ $report = [ordered]@{
     LogPath = $logPath
     Rows = @($rows.ToArray())
     PathPrefilterEvents = @($prefilterEvents)
+    ContainsCacheEvents = @($containsCacheEvents)
     MemoryBefore = @($memoryBefore)
     MemoryAfter = @($memoryAfter)
 }
@@ -343,6 +427,7 @@ $report | ConvertTo-Json -Depth 8 | Set-Content -Path $jsonPath -Encoding UTF8
 New-MarkdownReport `
     -Rows @($rows.ToArray()) `
     -PrefilterEvents @($prefilterEvents) `
+    -ContainsCacheEvents @($containsCacheEvents) `
     -MemoryBefore @($memoryBefore) `
     -MemoryAfter @($memoryAfter) `
     -PathPrefix $PathPrefix `
@@ -356,3 +441,4 @@ Write-Host "JSON: $jsonPath"
 Write-Host "Markdown: $mdPath"
 @($rows.ToArray()) | Format-Table Name, Filter, ClientMs, HostSearchMs, TotalMatchedCount, ReturnedCount, IsTruncated -AutoSize
 @($prefilterEvents) | Format-Table Outcome, ElapsedMs, CandidateCount, DirectoryCount, PathPrefix -AutoSize
+@($containsCacheEvents) | Format-Table Outcome, ElapsedMs, SourceCount, Matched, Query -AutoSize

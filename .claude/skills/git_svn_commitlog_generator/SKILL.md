@@ -141,7 +141,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commi
 
 - 无论 `Projects` 有几个有效项目，都只输出一条 `type(scope): summary`。\n
 - 若涉及多个项目，将项目/模块名合并到同一个 scope 中，例如 `feat(MftScanner.Core、MftScanner): ...`；不要按项目拆成多条提交。\n
-- 正文建议输出 2–8 条，以 `- ` 开头，不使用 `1、2、3` 编号。\n
+- 正文建议输出 2–8 条，以 `- ` 开头，前面不要留有空格，条目详情顶着最前开始输出，不使用 `1、2、3` 编号。\n
 - 同时输出 `本次排除清单`（来自 `ItemsExcluded`，仅列 `#Id + Path` 即可）。
 
 ## type / scope / 条目生成规则（落地细则）
