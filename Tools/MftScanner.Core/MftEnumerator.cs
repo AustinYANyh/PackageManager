@@ -102,6 +102,8 @@ namespace MftScanner
 
         private readonly Dictionary<char, Dictionary<ulong, string>> _pathCaches
             = new Dictionary<char, Dictionary<ulong, string>>();
+        private readonly Dictionary<string, DirectorySubtreeScope> _directorySubtreeCache
+            = new Dictionary<string, DirectorySubtreeScope>(StringComparer.OrdinalIgnoreCase);
         private readonly ReaderWriterLockSlim _mapsLock = new ReaderWriterLockSlim(LockRecursionPolicy.NoRecursion);
 
         // ── 公开 API ────────────────────────────────────────────────────────────
@@ -225,6 +227,7 @@ namespace MftScanner
                 _frnMaps[dl] = frnMap;
                 _childDirectoryFrnsByParent[dl] = BuildChildDirectoryMap(frnMap);
                 _pathCaches[dl] = new Dictionary<ulong, string>();
+                _directorySubtreeCache.Clear();
             }
             finally
             {
@@ -257,6 +260,7 @@ namespace MftScanner
                     _frnMaps[dl] = srcMap;
                     _childDirectoryFrnsByParent[dl] = BuildChildDirectoryMap(srcMap);
                     _pathCaches[dl] = new Dictionary<ulong, string>();
+                    _directorySubtreeCache.Clear();
                 }
                 finally
                 {
@@ -318,6 +322,7 @@ namespace MftScanner
                 _frnMaps.Clear();
                 _childDirectoryFrnsByParent.Clear();
                 _pathCaches.Clear();
+                _directorySubtreeCache.Clear();
 
                 if (snapshots == null)
                     return;
@@ -379,9 +384,13 @@ namespace MftScanner
                     else
                         pathCache.Remove(frn);
                 }
+                if (affectsDirectoryCache)
+                    _directorySubtreeCache.Clear();
 
                 if (isDirectory)
+                {
                     AddChildDirectory(childDirs, parentFrn, frn);
+                }
             }
             finally
             {
@@ -421,6 +430,8 @@ namespace MftScanner
                     else
                         pathCache.Remove(frn);
                 }
+                if (removedDirectory)
+                    _directorySubtreeCache.Clear();
             }
             finally
             {
@@ -466,6 +477,7 @@ namespace MftScanner
                             if (affectsDirectoryCache)
                             {
                                 pathCache.Clear();
+                                _directorySubtreeCache.Clear();
                             }
                             else
                             {
@@ -478,6 +490,7 @@ namespace MftScanner
                                 RemoveChildDirectory(childDirs, deleted.parentFrn, change.Frn);
                                 childDirs.Remove(change.Frn);
                                 pathCache.Clear();
+                                _directorySubtreeCache.Clear();
                             }
                             else
                             {
@@ -511,9 +524,15 @@ namespace MftScanner
             }
 
             var dl = char.ToUpperInvariant(normalized[0]);
-            _mapsLock.EnterReadLock();
+            _mapsLock.EnterUpgradeableReadLock();
             try
             {
+                if (_directorySubtreeCache.TryGetValue(normalized, out var cachedScope))
+                {
+                    scope = cachedScope;
+                    return true;
+                }
+
                 if (!_frnMaps.TryGetValue(dl, out var frnMap)
                     || !_childDirectoryFrnsByParent.TryGetValue(dl, out var childDirs)
                     || !TryFindRootFrn(frnMap, childDirs, out var currentFrn))
@@ -551,11 +570,21 @@ namespace MftScanner
                     dl,
                     currentFrn,
                     EnumerateDirectorySubtree(currentFrn, childDirs));
+                _mapsLock.EnterWriteLock();
+                try
+                {
+                    _directorySubtreeCache[normalized] = scope;
+                }
+                finally
+                {
+                    _mapsLock.ExitWriteLock();
+                }
+
                 return true;
             }
             finally
             {
-                _mapsLock.ExitReadLock();
+                _mapsLock.ExitUpgradeableReadLock();
             }
         }
 

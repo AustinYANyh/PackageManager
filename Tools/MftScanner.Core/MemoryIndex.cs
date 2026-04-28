@@ -49,6 +49,8 @@ namespace MftScanner
 
         public int TotalCount => SortedArray.Length;
 
+        public long ContentVersion => Interlocked.Read(ref _contentVersion);
+
         public bool HasContainsAccelerator
         {
             get
@@ -443,14 +445,44 @@ namespace MftScanner
             if (records == null || records.Count == 0)
                 return Array.Empty<FileRecord>();
 
-            var arr = records as FileRecord[];
-            if (arr != null)
-                return arr;
-
-            arr = new FileRecord[records.Count];
+            var arr = new FileRecord[records.Count];
+            var stringPool = new Dictionary<string, string>(StringComparer.Ordinal);
             for (var i = 0; i < records.Count; i++)
-                arr[i] = records[i];
+            {
+                arr[i] = CopyRecordWithPooledStrings(records[i], stringPool);
+            }
+
             return arr;
+        }
+
+        private static FileRecord CopyRecordWithPooledStrings(FileRecord record, Dictionary<string, string> stringPool)
+        {
+            if (record == null)
+                return null;
+
+            var lowerName = PoolString(record.LowerName, stringPool);
+            var originalName = string.Equals(record.OriginalName, lowerName, StringComparison.Ordinal)
+                ? lowerName
+                : PoolString(record.OriginalName, stringPool);
+            return new FileRecord(
+                lowerName,
+                originalName,
+                record.ParentFrn,
+                record.DriveLetter,
+                record.IsDirectory,
+                record.Frn);
+        }
+
+        private static string PoolString(string value, Dictionary<string, string> stringPool)
+        {
+            if (string.IsNullOrEmpty(value))
+                return value;
+
+            if (stringPool.TryGetValue(value, out var pooled))
+                return pooled;
+
+            stringPool[value] = value;
+            return value;
         }
 
         private static int CompareByParentThenLowerName(FileRecord a, FileRecord b)

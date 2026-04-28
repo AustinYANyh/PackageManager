@@ -23,17 +23,15 @@ namespace MftScanner
             private const int ParallelBuildMinRecords = 32768;
             private const int CancellationStride = 0x7FF;
 
-            private readonly List<FileRecord> _recordsById;
-            private readonly Dictionary<RecordKey, int> _recordIdsByKey;
+            private readonly FileRecord[] _records;
             private readonly BucketStore<char> _charBuckets;
             private readonly BucketStore<uint> _bigramBuckets;
             private readonly BucketStore<ulong> _trigramBuckets;
             private readonly BucketKinds _builtBuckets;
-            private int _nextRecordId = 1;
 
             public static ContainsAccelerator Empty => new ContainsAccelerator();
 
-            public bool IsEmpty => _recordIdsByKey.Count == 0;
+            public bool IsEmpty => _records.Length == 0;
             public bool IsComplete => _builtBuckets == BucketKinds.All;
             public bool HasCharBucket => (_builtBuckets & BucketKinds.Char) != 0;
             public bool HasBigramBucket => (_builtBuckets & BucketKinds.Bigram) != 0;
@@ -41,9 +39,7 @@ namespace MftScanner
 
             private ContainsAccelerator()
             {
-                _recordsById = new List<FileRecord>(1);
-                _recordsById.Add(null);
-                _recordIdsByKey = new Dictionary<RecordKey, int>();
+                _records = Array.Empty<FileRecord>();
                 _charBuckets = BucketStore<char>.Empty;
                 _bigramBuckets = BucketStore<uint>.Empty;
                 _trigramBuckets = BucketStore<ulong>.Empty;
@@ -58,27 +54,7 @@ namespace MftScanner
                 BucketStore<ulong> trigramBuckets)
             {
                 _builtBuckets = builtBuckets;
-                _recordsById = new List<FileRecord>((records?.Length ?? 0) + 1);
-                _recordsById.Add(null);
-                _recordIdsByKey = new Dictionary<RecordKey, int>(records?.Length ?? 0);
-
-                if (records != null)
-                {
-                    for (var i = 0; i < records.Length; i++)
-                    {
-                        var record = records[i];
-                        if (record == null)
-                        {
-                            continue;
-                        }
-
-                        var recordId = _recordsById.Count;
-                        _recordsById.Add(record);
-                        _recordIdsByKey[RecordKey.FromRecord(record)] = recordId;
-                    }
-                }
-
-                _nextRecordId = _recordsById.Count;
+                _records = records ?? Array.Empty<FileRecord>();
                 _charBuckets = charBuckets ?? BucketStore<char>.Empty;
                 _bigramBuckets = bigramBuckets ?? BucketStore<uint>.Empty;
                 _trigramBuckets = trigramBuckets ?? BucketStore<ulong>.Empty;
@@ -112,7 +88,33 @@ namespace MftScanner
 
             public bool ContainsRecord(RecordKey key)
             {
-                return _recordIdsByKey.ContainsKey(key);
+                if (string.IsNullOrEmpty(key.LowerName) || _records.Length == 0)
+                {
+                    return false;
+                }
+
+                var lo = LowerBoundByLowerName(_records, key.LowerName);
+                for (var i = lo; i < _records.Length; i++)
+                {
+                    var record = _records[i];
+                    if (record == null)
+                    {
+                        continue;
+                    }
+
+                    var compare = string.CompareOrdinal(record.LowerName, key.LowerName);
+                    if (compare != 0)
+                    {
+                        break;
+                    }
+
+                    if (RecordKey.FromRecord(record).Equals(key))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
             }
 
             public static ContainsAccelerator Build(
@@ -145,13 +147,13 @@ namespace MftScanner
 
             public ContainsAccelerator WithInserted(FileRecord record)
             {
-                AddRecord(record);
+                // Inserts after the immutable base build are represented by ContainsOverlay.
                 return this;
             }
 
             public ContainsAccelerator WithRemoved(RecordKey key)
             {
-                RemoveRecord(key);
+                // Removes after the immutable base build are represented by ContainsOverlay.
                 return this;
             }
 
@@ -275,7 +277,7 @@ namespace MftScanner
                         ct.ThrowIfCancellationRequested();
                     }
 
-                    var record = _recordsById[candidates[i]];
+                    var record = GetRecord(candidates[i]);
                     if (record == null
                         || overlay.ContainsRemoved(RecordKey.FromRecord(record))
                         || !record.LowerName.Contains(query)
@@ -318,7 +320,7 @@ namespace MftScanner
                     }
 
                     lastRecordId = recordId;
-                    var record = _recordsById[recordId];
+                    var record = GetRecord(recordId);
                     if (record == null
                         || overlay.ContainsRemoved(RecordKey.FromRecord(record))
                         || !record.LowerName.Contains(query)
@@ -406,194 +408,6 @@ namespace MftScanner
                 }
             }
 
-            private void AddRecord(FileRecord record)
-            {
-                if (record == null)
-                {
-                    return;
-                }
-
-                var key = RecordKey.FromRecord(record);
-                if (_recordIdsByKey.ContainsKey(key))
-                {
-                    return;
-                }
-
-                var recordId = _nextRecordId++;
-                _recordIdsByKey[key] = recordId;
-                _recordsById.Add(record);
-
-                if ((_builtBuckets & BucketKinds.Char) != 0)
-                {
-                    AddCharTokens(recordId, record.LowerName);
-                }
-
-                if ((_builtBuckets & BucketKinds.Bigram) != 0)
-                {
-                    AddBigramTokens(recordId, record.LowerName);
-                }
-
-                if ((_builtBuckets & BucketKinds.Trigram) != 0)
-                {
-                    AddTrigramTokens(recordId, record.LowerName);
-                }
-            }
-
-            private void RemoveRecord(RecordKey key)
-            {
-                int recordId;
-                if (!_recordIdsByKey.TryGetValue(key, out recordId)
-                    || recordId <= 0
-                    || recordId >= _recordsById.Count)
-                {
-                    return;
-                }
-
-                var record = _recordsById[recordId];
-                if (record == null)
-                {
-                    return;
-                }
-
-                _recordIdsByKey.Remove(key);
-                _recordsById[recordId] = null;
-
-                if ((_builtBuckets & BucketKinds.Char) != 0)
-                {
-                    RemoveCharTokens(recordId, record.LowerName);
-                }
-
-                if ((_builtBuckets & BucketKinds.Bigram) != 0)
-                {
-                    RemoveBigramTokens(recordId, record.LowerName);
-                }
-
-                if ((_builtBuckets & BucketKinds.Trigram) != 0)
-                {
-                    RemoveTrigramTokens(recordId, record.LowerName);
-                }
-            }
-
-            private void AddCharTokens(int recordId, string lowerName)
-            {
-                if (string.IsNullOrEmpty(lowerName))
-                {
-                    return;
-                }
-
-                var seen = new HashSet<char>();
-                for (var i = 0; i < lowerName.Length; i++)
-                {
-                    var token = lowerName[i];
-                    if (!seen.Add(token))
-                    {
-                        continue;
-                    }
-
-                    _charBuckets.Insert(token, recordId, CompareRecordIds);
-                }
-            }
-
-            private void AddBigramTokens(int recordId, string lowerName)
-            {
-                if (string.IsNullOrEmpty(lowerName) || lowerName.Length < 2)
-                {
-                    return;
-                }
-
-                var seen = new HashSet<uint>();
-                for (var i = 0; i < lowerName.Length - 1; i++)
-                {
-                    var token = PackBigram(lowerName[i], lowerName[i + 1]);
-                    if (!seen.Add(token))
-                    {
-                        continue;
-                    }
-
-                    _bigramBuckets.Insert(token, recordId, CompareRecordIds);
-                }
-            }
-
-            private void AddTrigramTokens(int recordId, string lowerName)
-            {
-                if (string.IsNullOrEmpty(lowerName) || lowerName.Length < 3)
-                {
-                    return;
-                }
-
-                var seen = new HashSet<ulong>();
-                for (var i = 0; i < lowerName.Length - 2; i++)
-                {
-                    var token = PackTrigram(lowerName[i], lowerName[i + 1], lowerName[i + 2]);
-                    if (!seen.Add(token))
-                    {
-                        continue;
-                    }
-
-                    _trigramBuckets.Insert(token, recordId, CompareRecordIds);
-                }
-            }
-
-            private void RemoveCharTokens(int recordId, string lowerName)
-            {
-                if (string.IsNullOrEmpty(lowerName))
-                {
-                    return;
-                }
-
-                var seen = new HashSet<char>();
-                for (var i = 0; i < lowerName.Length; i++)
-                {
-                    var token = lowerName[i];
-                    if (!seen.Add(token))
-                    {
-                        continue;
-                    }
-
-                    _charBuckets.Remove(token, recordId);
-                }
-            }
-
-            private void RemoveBigramTokens(int recordId, string lowerName)
-            {
-                if (string.IsNullOrEmpty(lowerName) || lowerName.Length < 2)
-                {
-                    return;
-                }
-
-                var seen = new HashSet<uint>();
-                for (var i = 0; i < lowerName.Length - 1; i++)
-                {
-                    var token = PackBigram(lowerName[i], lowerName[i + 1]);
-                    if (!seen.Add(token))
-                    {
-                        continue;
-                    }
-
-                    _bigramBuckets.Remove(token, recordId);
-                }
-            }
-
-            private void RemoveTrigramTokens(int recordId, string lowerName)
-            {
-                if (string.IsNullOrEmpty(lowerName) || lowerName.Length < 3)
-                {
-                    return;
-                }
-
-                var seen = new HashSet<ulong>();
-                for (var i = 0; i < lowerName.Length - 2; i++)
-                {
-                    var token = PackTrigram(lowerName[i], lowerName[i + 1], lowerName[i + 2]);
-                    if (!seen.Add(token))
-                    {
-                        continue;
-                    }
-
-                    _trigramBuckets.Remove(token, recordId);
-                }
-            }
-
             private bool ContainsRecordId(BucketPosting posting, int recordId)
             {
                 var lo = posting.Offset;
@@ -622,13 +436,43 @@ namespace MftScanner
 
             private int CompareRecordIds(int leftRecordId, int rightRecordId)
             {
-                var compare = ByLowerName.Compare(_recordsById[leftRecordId], _recordsById[rightRecordId]);
+                var compare = ByLowerName.Compare(GetRecord(leftRecordId), GetRecord(rightRecordId));
                 if (compare == 0)
                 {
                     compare = leftRecordId.CompareTo(rightRecordId);
                 }
 
                 return compare;
+            }
+
+            private FileRecord GetRecord(int recordId)
+            {
+                var index = recordId - 1;
+                return index >= 0 && index < _records.Length
+                    ? _records[index]
+                    : null;
+            }
+
+            private static int LowerBoundByLowerName(FileRecord[] records, string lowerName)
+            {
+                var lo = 0;
+                var hi = records?.Length ?? 0;
+                while (lo < hi)
+                {
+                    var mid = lo + ((hi - lo) / 2);
+                    var record = records[mid];
+                    var compare = string.CompareOrdinal(record?.LowerName, lowerName);
+                    if (compare < 0)
+                    {
+                        lo = mid + 1;
+                    }
+                    else
+                    {
+                        hi = mid;
+                    }
+                }
+
+                return lo;
             }
 
             private static BucketStore<char> BuildBucketStore(
