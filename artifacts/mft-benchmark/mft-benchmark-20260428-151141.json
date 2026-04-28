@@ -1,0 +1,213 @@
+﻿{
+    "StartedAt":  "\/Date(1777360287976)\/",
+    "PathPrefix":  "C:\\Users\\AustinYanyh\\Desktop",
+    "Configuration":  "Debug",
+    "MaxResults":  500,
+    "Repeat":  1,
+    "Backend":  "InProcess",
+    "HostProcessId":  null,
+    "LogPath":  "C:\\Users\\AustinYanyh\\AppData\\Local\\PackageManager\\logs\\index-service-diagnostics\\20260428.log",
+    "Rows":  [
+                 {
+                     "Name":  "PathContainsSingleChar",
+                     "Iteration":  1,
+                     "Keyword":  "C:\\Users\\AustinYanyh\\Desktop d",
+                     "Filter":  "All",
+                     "ClientMs":  52,
+                     "HostSearchMs":  41,
+                     "TotalIndexedCount":  3817149,
+                     "TotalMatchedCount":  14115,
+                     "ReturnedCount":  500,
+                     "IsTruncated":  true,
+                     "CharBucketReady":  false,
+                     "BigramBucketReady":  false,
+                     "TrigramBucketReady":  false
+                 },
+                 {
+                     "Name":  "PathContainsTwoChars",
+                     "Iteration":  1,
+                     "Keyword":  "C:\\Users\\AustinYanyh\\Desktop ve",
+                     "Filter":  "All",
+                     "ClientMs":  29,
+                     "HostSearchMs":  28,
+                     "TotalIndexedCount":  3817149,
+                     "TotalMatchedCount":  968,
+                     "ReturnedCount":  500,
+                     "IsTruncated":  true,
+                     "CharBucketReady":  false,
+                     "BigramBucketReady":  false,
+                     "TrigramBucketReady":  false
+                 },
+                 {
+                     "Name":  "PathWildcardExe",
+                     "Iteration":  1,
+                     "Keyword":  "C:\\Users\\AustinYanyh\\Desktop *.exe",
+                     "Filter":  "All",
+                     "ClientMs":  26,
+                     "HostSearchMs":  26,
+                     "TotalIndexedCount":  3817149,
+                     "TotalMatchedCount":  94,
+                     "ReturnedCount":  94,
+                     "IsTruncated":  false,
+                     "CharBucketReady":  false,
+                     "BigramBucketReady":  false,
+                     "TrigramBucketReady":  false
+                 },
+                 {
+                     "Name":  "PathLaunchableContains",
+                     "Iteration":  1,
+                     "Keyword":  "C:\\Users\\AustinYanyh\\Desktop ve",
+                     "Filter":  "Launchable",
+                     "ClientMs":  10,
+                     "HostSearchMs":  10,
+                     "TotalIndexedCount":  3817149,
+                     "TotalMatchedCount":  10,
+                     "ReturnedCount":  10,
+                     "IsTruncated":  false,
+                     "CharBucketReady":  false,
+                     "BigramBucketReady":  false,
+                     "TrigramBucketReady":  false
+                 },
+                 {
+                     "Name":  "GlobalLaunchableContains",
+                     "Iteration":  1,
+                     "Keyword":  "workbench",
+                     "Filter":  "Launchable",
+                     "ClientMs":  4,
+                     "HostSearchMs":  3,
+                     "TotalIndexedCount":  3817149,
+                     "TotalMatchedCount":  56,
+                     "ReturnedCount":  56,
+                     "IsTruncated":  false,
+                     "CharBucketReady":  false,
+                     "BigramBucketReady":  false,
+                     "TrigramBucketReady":  false
+                 }
+             ],
+    "PathPrefilterEvents":  [
+                                {
+                                    "Time":  "\/Date(1777360301433)\/",
+                                    "Outcome":  "success",
+                                    "ElapsedMs":  29,
+                                    "CandidateCount":  38133,
+                                    "DirectoryCount":  3286,
+                                    "PathPrefix":  "C:\\Users\\AustinYanyh\\Desktop",
+                                    "Raw":  "2026-04-28 15:11:41.433 [INDEX] [PATH PREFILTER] outcome=success elapsedMs=29 drive=C rootFrn=1337644 directories=3286 candidateCount=38133 filter=All pathPrefix=C:\\Users\\AustinYanyh\\Desktop"
+                                },
+                                {
+                                    "Time":  "\/Date(1777360301482)\/",
+                                    "Outcome":  "success",
+                                    "ElapsedMs":  22,
+                                    "CandidateCount":  38133,
+                                    "DirectoryCount":  3286,
+                                    "PathPrefix":  "C:\\Users\\AustinYanyh\\Desktop",
+                                    "Raw":  "2026-04-28 15:11:41.482 [INDEX] [PATH PREFILTER] outcome=success elapsedMs=22 drive=C rootFrn=1337644 directories=3286 candidateCount=38133 filter=All pathPrefix=C:\\Users\\AustinYanyh\\Desktop"
+                                },
+                                {
+                                    "Time":  "\/Date(1777360301514)\/",
+                                    "Outcome":  "success",
+                                    "ElapsedMs":  23,
+                                    "CandidateCount":  38133,
+                                    "DirectoryCount":  3286,
+                                    "PathPrefix":  "C:\\Users\\AustinYanyh\\Desktop",
+                                    "Raw":  "2026-04-28 15:11:41.514 [INDEX] [PATH PREFILTER] outcome=success elapsedMs=23 drive=C rootFrn=1337644 directories=3286 candidateCount=38133 filter=All pathPrefix=C:\\Users\\AustinYanyh\\Desktop"
+                                },
+                                {
+                                    "Time":  "\/Date(1777360301526)\/",
+                                    "Outcome":  "success",
+                                    "ElapsedMs":  8,
+                                    "CandidateCount":  143,
+                                    "DirectoryCount":  3286,
+                                    "PathPrefix":  "C:\\Users\\AustinYanyh\\Desktop",
+                                    "Raw":  "2026-04-28 15:11:41.526 [INDEX] [PATH PREFILTER] outcome=success elapsedMs=8 drive=C rootFrn=1337644 directories=3286 candidateCount=143 filter=Launchable pathPrefix=C:\\Users\\AustinYanyh\\Desktop"
+                                }
+                            ],
+    "MemoryBefore":  [
+                         {
+                             "Id":  7060,
+                             "ProcessName":  "Everything",
+                             "Path":  null,
+                             "WorkingSetMB":  8.2,
+                             "PrivateMB":  1.8
+                         },
+                         {
+                             "Id":  9268,
+                             "ProcessName":  "Everything",
+                             "Path":  null,
+                             "WorkingSetMB":  370.9,
+                             "PrivateMB":  361.4
+                         },
+                         {
+                             "Id":  23724,
+                             "ProcessName":  "Everything",
+                             "Path":  "D:\\应用程序\\Everything\\Everything.exe",
+                             "WorkingSetMB":  20.9,
+                             "PrivateMB":  3
+                         },
+                         {
+                             "Id":  47268,
+                             "ProcessName":  "MftScanner",
+                             "Path":  null,
+                             "WorkingSetMB":  70.4,
+                             "PrivateMB":  126.4
+                         },
+                         {
+                             "Id":  50084,
+                             "ProcessName":  "MftScanner",
+                             "Path":  null,
+                             "WorkingSetMB":  6611.9,
+                             "PrivateMB":  7572.5
+                         },
+                         {
+                             "Id":  26028,
+                             "ProcessName":  "WindowsPackageManagerServer",
+                             "Path":  "C:\\Program Files\\WindowsApps\\Microsoft.DesktopAppInstaller_1.28.240.0_x64__8wekyb3d8bbwe\\WindowsPackageManagerServer.exe",
+                             "WorkingSetMB":  34.1,
+                             "PrivateMB":  9.5
+                         }
+                     ],
+    "MemoryAfter":  [
+                        {
+                            "Id":  7060,
+                            "ProcessName":  "Everything",
+                            "Path":  null,
+                            "WorkingSetMB":  8.2,
+                            "PrivateMB":  1.8
+                        },
+                        {
+                            "Id":  9268,
+                            "ProcessName":  "Everything",
+                            "Path":  null,
+                            "WorkingSetMB":  370.9,
+                            "PrivateMB":  361.4
+                        },
+                        {
+                            "Id":  23724,
+                            "ProcessName":  "Everything",
+                            "Path":  "D:\\应用程序\\Everything\\Everything.exe",
+                            "WorkingSetMB":  20.9,
+                            "PrivateMB":  3
+                        },
+                        {
+                            "Id":  47268,
+                            "ProcessName":  "MftScanner",
+                            "Path":  null,
+                            "WorkingSetMB":  70.5,
+                            "PrivateMB":  126.5
+                        },
+                        {
+                            "Id":  50084,
+                            "ProcessName":  "MftScanner",
+                            "Path":  null,
+                            "WorkingSetMB":  3616.9,
+                            "PrivateMB":  4682.4
+                        },
+                        {
+                            "Id":  26028,
+                            "ProcessName":  "WindowsPackageManagerServer",
+                            "Path":  "C:\\Program Files\\WindowsApps\\Microsoft.DesktopAppInstaller_1.28.240.0_x64__8wekyb3d8bbwe\\WindowsPackageManagerServer.exe",
+                            "WorkingSetMB":  34.1,
+                            "PrivateMB":  9.5
+                        }
+                    ]
+}

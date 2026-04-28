@@ -1,0 +1,449 @@
+﻿{
+    "StartedAt":  "\/Date(1777369459501)\/",
+    "PathPrefix":  "C:\\Users\\AustinYanyh\\Desktop",
+    "Configuration":  "Debug",
+    "MaxResults":  500,
+    "Repeat":  1,
+    "Backend":  "SharedHost",
+    "HostProcessId":  39352,
+    "LogPath":  "C:\\Users\\AustinYanyh\\AppData\\Local\\PackageManager\\logs\\index-service-diagnostics\\20260428.log",
+    "Rows":  [
+                 {
+                     "Name":  "PathContainsSingleChar",
+                     "Iteration":  1,
+                     "Keyword":  "C:\\Users\\AustinYanyh\\Desktop d",
+                     "Filter":  "All",
+                     "ClientMs":  6159,
+                     "HostSearchMs":  6108,
+                     "TotalIndexedCount":  3810501,
+                     "TotalMatchedCount":  14115,
+                     "ReturnedCount":  500,
+                     "IsTruncated":  true,
+                     "CharBucketReady":  false,
+                     "BigramBucketReady":  false,
+                     "TrigramBucketReady":  false
+                 },
+                 {
+                     "Name":  "PathContainsTwoChars",
+                     "Iteration":  1,
+                     "Keyword":  "C:\\Users\\AustinYanyh\\Desktop ve",
+                     "Filter":  "All",
+                     "ClientMs":  944,
+                     "HostSearchMs":  939,
+                     "TotalIndexedCount":  3810501,
+                     "TotalMatchedCount":  968,
+                     "ReturnedCount":  500,
+                     "IsTruncated":  true,
+                     "CharBucketReady":  false,
+                     "BigramBucketReady":  false,
+                     "TrigramBucketReady":  false
+                 },
+                 {
+                     "Name":  "PathIncrementalV",
+                     "Iteration":  1,
+                     "Keyword":  "C:\\Users\\AustinYanyh\\Desktop v",
+                     "Filter":  "All",
+                     "ClientMs":  1358,
+                     "HostSearchMs":  1355,
+                     "TotalIndexedCount":  3810502,
+                     "TotalMatchedCount":  2274,
+                     "ReturnedCount":  500,
+                     "IsTruncated":  true,
+                     "CharBucketReady":  false,
+                     "BigramBucketReady":  false,
+                     "TrigramBucketReady":  false
+                 },
+                 {
+                     "Name":  "PathIncrementalVe",
+                     "Iteration":  1,
+                     "Keyword":  "C:\\Users\\AustinYanyh\\Desktop ve",
+                     "Filter":  "All",
+                     "ClientMs":  7,
+                     "HostSearchMs":  4,
+                     "TotalIndexedCount":  3810502,
+                     "TotalMatchedCount":  968,
+                     "ReturnedCount":  500,
+                     "IsTruncated":  true,
+                     "CharBucketReady":  false,
+                     "BigramBucketReady":  false,
+                     "TrigramBucketReady":  false
+                 },
+                 {
+                     "Name":  "PathIncrementalVer",
+                     "Iteration":  1,
+                     "Keyword":  "C:\\Users\\AustinYanyh\\Desktop ver",
+                     "Filter":  "All",
+                     "ClientMs":  6,
+                     "HostSearchMs":  3,
+                     "TotalIndexedCount":  3810502,
+                     "TotalMatchedCount":  476,
+                     "ReturnedCount":  476,
+                     "IsTruncated":  false,
+                     "CharBucketReady":  false,
+                     "BigramBucketReady":  false,
+                     "TrigramBucketReady":  false
+                 },
+                 {
+                     "Name":  "PathWildcardExe",
+                     "Iteration":  1,
+                     "Keyword":  "C:\\Users\\AustinYanyh\\Desktop *.exe",
+                     "Filter":  "All",
+                     "ClientMs":  6,
+                     "HostSearchMs":  5,
+                     "TotalIndexedCount":  3810502,
+                     "TotalMatchedCount":  94,
+                     "ReturnedCount":  94,
+                     "IsTruncated":  false,
+                     "CharBucketReady":  false,
+                     "BigramBucketReady":  false,
+                     "TrigramBucketReady":  false
+                 },
+                 {
+                     "Name":  "PathLaunchableContains",
+                     "Iteration":  1,
+                     "Keyword":  "C:\\Users\\AustinYanyh\\Desktop ve",
+                     "Filter":  "Launchable",
+                     "ClientMs":  164,
+                     "HostSearchMs":  163,
+                     "TotalIndexedCount":  3810502,
+                     "TotalMatchedCount":  10,
+                     "ReturnedCount":  10,
+                     "IsTruncated":  false,
+                     "CharBucketReady":  false,
+                     "BigramBucketReady":  false,
+                     "TrigramBucketReady":  false
+                 },
+                 {
+                     "Name":  "GlobalAllSingleChar",
+                     "Iteration":  1,
+                     "Keyword":  "d",
+                     "Filter":  "All",
+                     "ClientMs":  404,
+                     "HostSearchMs":  401,
+                     "TotalIndexedCount":  3810502,
+                     "TotalMatchedCount":  2310820,
+                     "ReturnedCount":  500,
+                     "IsTruncated":  true,
+                     "CharBucketReady":  false,
+                     "BigramBucketReady":  false,
+                     "TrigramBucketReady":  false
+                 },
+                 {
+                     "Name":  "GlobalAllTwoChars",
+                     "Iteration":  1,
+                     "Keyword":  "ve",
+                     "Filter":  "All",
+                     "ClientMs":  197,
+                     "HostSearchMs":  194,
+                     "TotalIndexedCount":  3810502,
+                     "TotalMatchedCount":  232665,
+                     "ReturnedCount":  500,
+                     "IsTruncated":  true,
+                     "CharBucketReady":  false,
+                     "BigramBucketReady":  false,
+                     "TrigramBucketReady":  false
+                 },
+                 {
+                     "Name":  "GlobalIncrementalV",
+                     "Iteration":  1,
+                     "Keyword":  "v",
+                     "Filter":  "All",
+                     "ClientMs":  152,
+                     "HostSearchMs":  148,
+                     "TotalIndexedCount":  3810502,
+                     "TotalMatchedCount":  802787,
+                     "ReturnedCount":  500,
+                     "IsTruncated":  true,
+                     "CharBucketReady":  false,
+                     "BigramBucketReady":  false,
+                     "TrigramBucketReady":  false
+                 },
+                 {
+                     "Name":  "GlobalIncrementalVe",
+                     "Iteration":  1,
+                     "Keyword":  "ve",
+                     "Filter":  "All",
+                     "ClientMs":  140,
+                     "HostSearchMs":  138,
+                     "TotalIndexedCount":  3810502,
+                     "TotalMatchedCount":  232665,
+                     "ReturnedCount":  500,
+                     "IsTruncated":  true,
+                     "CharBucketReady":  false,
+                     "BigramBucketReady":  false,
+                     "TrigramBucketReady":  false
+                 },
+                 {
+                     "Name":  "GlobalIncrementalVer",
+                     "Iteration":  1,
+                     "Keyword":  "ver",
+                     "Filter":  "All",
+                     "ClientMs":  114,
+                     "HostSearchMs":  111,
+                     "TotalIndexedCount":  3810502,
+                     "TotalMatchedCount":  126681,
+                     "ReturnedCount":  500,
+                     "IsTruncated":  true,
+                     "CharBucketReady":  false,
+                     "BigramBucketReady":  false,
+                     "TrigramBucketReady":  false
+                 },
+                 {
+                     "Name":  "GlobalLaunchableContains",
+                     "Iteration":  1,
+                     "Keyword":  "workbench",
+                     "Filter":  "Launchable",
+                     "ClientMs":  7,
+                     "HostSearchMs":  6,
+                     "TotalIndexedCount":  3810502,
+                     "TotalMatchedCount":  56,
+                     "ReturnedCount":  56,
+                     "IsTruncated":  false,
+                     "CharBucketReady":  false,
+                     "BigramBucketReady":  false,
+                     "TrigramBucketReady":  false
+                 }
+             ],
+    "PathPrefilterEvents":  [
+                                {
+                                    "Time":  "\/Date(1777369476432)\/",
+                                    "Outcome":  "success",
+                                    "ElapsedMs":  5765,
+                                    "CandidateCount":  38133,
+                                    "DirectoryCount":  3286,
+                                    "PathPrefix":  "C:\\Users\\AustinYanyh\\Desktop",
+                                    "Raw":  "2026-04-28 17:44:36.432 [INDEX] [PATH PREFILTER] outcome=success elapsedMs=5765 drive=C rootFrn=1337644 directories=3286 candidateCount=38133 filter=All cache=miss pathPrefix=C:\\Users\\AustinYanyh\\Desktop"
+                                },
+                                {
+                                    "Time":  "\/Date(1777369477779)\/",
+                                    "Outcome":  "success",
+                                    "ElapsedMs":  0,
+                                    "CandidateCount":  38133,
+                                    "DirectoryCount":  3286,
+                                    "PathPrefix":  "C:\\Users\\AustinYanyh\\Desktop",
+                                    "Raw":  "2026-04-28 17:44:37.779 [INDEX] [PATH PREFILTER] outcome=success elapsedMs=0 drive=C rootFrn=1337644 directories=3286 candidateCount=38133 filter=All cache=hit pathPrefix=C:\\Users\\AustinYanyh\\Desktop"
+                                },
+                                {
+                                    "Time":  "\/Date(1777369479145)\/",
+                                    "Outcome":  "success",
+                                    "ElapsedMs":  0,
+                                    "CandidateCount":  38133,
+                                    "DirectoryCount":  3286,
+                                    "PathPrefix":  "C:\\Users\\AustinYanyh\\Desktop",
+                                    "Raw":  "2026-04-28 17:44:39.145 [INDEX] [PATH PREFILTER] outcome=success elapsedMs=0 drive=C rootFrn=1337644 directories=3286 candidateCount=38133 filter=All cache=hit pathPrefix=C:\\Users\\AustinYanyh\\Desktop"
+                                },
+                                {
+                                    "Time":  "\/Date(1777369479162)\/",
+                                    "Outcome":  "success",
+                                    "ElapsedMs":  0,
+                                    "CandidateCount":  38133,
+                                    "DirectoryCount":  3286,
+                                    "PathPrefix":  "C:\\Users\\AustinYanyh\\Desktop",
+                                    "Raw":  "2026-04-28 17:44:39.162 [INDEX] [PATH PREFILTER] outcome=success elapsedMs=0 drive=C rootFrn=1337644 directories=3286 candidateCount=38133 filter=All cache=hit pathPrefix=C:\\Users\\AustinYanyh\\Desktop"
+                                },
+                                {
+                                    "Time":  "\/Date(1777369479169)\/",
+                                    "Outcome":  "success",
+                                    "ElapsedMs":  0,
+                                    "CandidateCount":  38133,
+                                    "DirectoryCount":  3286,
+                                    "PathPrefix":  "C:\\Users\\AustinYanyh\\Desktop",
+                                    "Raw":  "2026-04-28 17:44:39.169 [INDEX] [PATH PREFILTER] outcome=success elapsedMs=0 drive=C rootFrn=1337644 directories=3286 candidateCount=38133 filter=All cache=hit pathPrefix=C:\\Users\\AustinYanyh\\Desktop"
+                                },
+                                {
+                                    "Time":  "\/Date(1777369479176)\/",
+                                    "Outcome":  "success",
+                                    "ElapsedMs":  0,
+                                    "CandidateCount":  38133,
+                                    "DirectoryCount":  3286,
+                                    "PathPrefix":  "C:\\Users\\AustinYanyh\\Desktop",
+                                    "Raw":  "2026-04-28 17:44:39.176 [INDEX] [PATH PREFILTER] outcome=success elapsedMs=0 drive=C rootFrn=1337644 directories=3286 candidateCount=38133 filter=All cache=hit pathPrefix=C:\\Users\\AustinYanyh\\Desktop"
+                                },
+                                {
+                                    "Time":  "\/Date(1777369479343)\/",
+                                    "Outcome":  "success",
+                                    "ElapsedMs":  159,
+                                    "CandidateCount":  143,
+                                    "DirectoryCount":  3286,
+                                    "PathPrefix":  "C:\\Users\\AustinYanyh\\Desktop",
+                                    "Raw":  "2026-04-28 17:44:39.343 [INDEX] [PATH PREFILTER] outcome=success elapsedMs=159 drive=C rootFrn=1337644 directories=3286 candidateCount=143 filter=Launchable cache=miss pathPrefix=C:\\Users\\AustinYanyh\\Desktop"
+                                }
+                            ],
+    "ContainsCacheEvents":  [
+                                {
+                                    "Time":  "\/Date(1777369476442)\/",
+                                    "Outcome":  "miss",
+                                    "ElapsedMs":  8,
+                                    "SourceCount":  38133,
+                                    "Matched":  14115,
+                                    "Query":  "d",
+                                    "Raw":  "2026-04-28 17:44:36.442 [INDEX] [CONTAINS CACHE] outcome=miss scope=C:\\Users\\AustinYanyh\\Desktop|All|Contains query=d sourceCount=38133 matched=14115 elapsedMs=8"
+                                },
+                                {
+                                    "Time":  "\/Date(1777369477789)\/",
+                                    "Outcome":  "miss",
+                                    "ElapsedMs":  9,
+                                    "SourceCount":  38133,
+                                    "Matched":  968,
+                                    "Query":  "ve",
+                                    "Raw":  "2026-04-28 17:44:37.789 [INDEX] [CONTAINS CACHE] outcome=miss scope=C:\\Users\\AustinYanyh\\Desktop|All|Contains query=ve sourceCount=38133 matched=968 elapsedMs=9"
+                                },
+                                {
+                                    "Time":  "\/Date(1777369479156)\/",
+                                    "Outcome":  "miss",
+                                    "ElapsedMs":  9,
+                                    "SourceCount":  38133,
+                                    "Matched":  2274,
+                                    "Query":  "v",
+                                    "Raw":  "2026-04-28 17:44:39.156 [INDEX] [CONTAINS CACHE] outcome=miss scope=C:\\Users\\AustinYanyh\\Desktop|All|Contains query=v sourceCount=38133 matched=2274 elapsedMs=9"
+                                },
+                                {
+                                    "Time":  "\/Date(1777369479164)\/",
+                                    "Outcome":  "hit",
+                                    "ElapsedMs":  1,
+                                    "SourceCount":  2274,
+                                    "Matched":  968,
+                                    "Query":  "ve",
+                                    "Raw":  "2026-04-28 17:44:39.164 [INDEX] [CONTAINS CACHE] outcome=hit scope=C:\\Users\\AustinYanyh\\Desktop|All|Contains query=ve sourceCount=2274 matched=968 elapsedMs=1"
+                                },
+                                {
+                                    "Time":  "\/Date(1777369479170)\/",
+                                    "Outcome":  "hit",
+                                    "ElapsedMs":  1,
+                                    "SourceCount":  968,
+                                    "Matched":  476,
+                                    "Query":  "ver",
+                                    "Raw":  "2026-04-28 17:44:39.170 [INDEX] [CONTAINS CACHE] outcome=hit scope=C:\\Users\\AustinYanyh\\Desktop|All|Contains query=ver sourceCount=968 matched=476 elapsedMs=1"
+                                },
+                                {
+                                    "Time":  "\/Date(1777369479345)\/",
+                                    "Outcome":  "miss",
+                                    "ElapsedMs":  1,
+                                    "SourceCount":  143,
+                                    "Matched":  10,
+                                    "Query":  "ve",
+                                    "Raw":  "2026-04-28 17:44:39.345 [INDEX] [CONTAINS CACHE] outcome=miss scope=C:\\Users\\AustinYanyh\\Desktop|Launchable|Contains query=ve sourceCount=143 matched=10 elapsedMs=1"
+                                },
+                                {
+                                    "Time":  "\/Date(1777369479748)\/",
+                                    "Outcome":  "miss",
+                                    "ElapsedMs":  398,
+                                    "SourceCount":  3810502,
+                                    "Matched":  2310820,
+                                    "Query":  "d",
+                                    "Raw":  "2026-04-28 17:44:39.748 [INDEX] [CONTAINS CACHE] outcome=miss scope=\u003cglobal\u003e|All|Contains query=d sourceCount=3810502 matched=2310820 elapsedMs=398"
+                                },
+                                {
+                                    "Time":  "\/Date(1777369479946)\/",
+                                    "Outcome":  "miss",
+                                    "ElapsedMs":  191,
+                                    "SourceCount":  3810502,
+                                    "Matched":  232665,
+                                    "Query":  "ve",
+                                    "Raw":  "2026-04-28 17:44:39.946 [INDEX] [CONTAINS CACHE] outcome=miss scope=\u003cglobal\u003e|All|Contains query=ve sourceCount=3810502 matched=232665 elapsedMs=191"
+                                },
+                                {
+                                    "Time":  "\/Date(1777369480099)\/",
+                                    "Outcome":  "miss",
+                                    "ElapsedMs":  145,
+                                    "SourceCount":  3810502,
+                                    "Matched":  802787,
+                                    "Query":  "v",
+                                    "Raw":  "2026-04-28 17:44:40.099 [INDEX] [CONTAINS CACHE] outcome=miss scope=\u003cglobal\u003e|All|Contains query=v sourceCount=3810502 matched=802787 elapsedMs=145"
+                                },
+                                {
+                                    "Time":  "\/Date(1777369480241)\/",
+                                    "Outcome":  "miss",
+                                    "ElapsedMs":  135,
+                                    "SourceCount":  3810502,
+                                    "Matched":  232665,
+                                    "Query":  "ve",
+                                    "Raw":  "2026-04-28 17:44:40.241 [INDEX] [CONTAINS CACHE] outcome=miss scope=\u003cglobal\u003e|All|Contains query=ve sourceCount=3810502 matched=232665 elapsedMs=135"
+                                },
+                                {
+                                    "Time":  "\/Date(1777369480355)\/",
+                                    "Outcome":  "miss",
+                                    "ElapsedMs":  108,
+                                    "SourceCount":  3810502,
+                                    "Matched":  126681,
+                                    "Query":  "ver",
+                                    "Raw":  "2026-04-28 17:44:40.355 [INDEX] [CONTAINS CACHE] outcome=miss scope=\u003cglobal\u003e|All|Contains query=ver sourceCount=3810502 matched=126681 elapsedMs=108"
+                                },
+                                {
+                                    "Time":  "\/Date(1777369480366)\/",
+                                    "Outcome":  "miss",
+                                    "ElapsedMs":  4,
+                                    "SourceCount":  20715,
+                                    "Matched":  56,
+                                    "Query":  "workbench",
+                                    "Raw":  "2026-04-28 17:44:40.366 [INDEX] [CONTAINS CACHE] outcome=miss scope=\u003cglobal\u003e|Launchable|Contains query=workbench sourceCount=20715 matched=56 elapsedMs=4"
+                                }
+                            ],
+    "MemoryBefore":  [
+                         {
+                             "Id":  7060,
+                             "ProcessName":  "Everything",
+                             "Path":  null,
+                             "WorkingSetMB":  8.2,
+                             "PrivateMB":  1.8
+                         },
+                         {
+                             "Id":  9268,
+                             "ProcessName":  "Everything",
+                             "Path":  null,
+                             "WorkingSetMB":  370.9,
+                             "PrivateMB":  361.4
+                         },
+                         {
+                             "Id":  23724,
+                             "ProcessName":  "Everything",
+                             "Path":  "D:\\应用程序\\Everything\\Everything.exe",
+                             "WorkingSetMB":  20.9,
+                             "PrivateMB":  3
+                         },
+                         {
+                             "Id":  26028,
+                             "ProcessName":  "WindowsPackageManagerServer",
+                             "Path":  "C:\\Program Files\\WindowsApps\\Microsoft.DesktopAppInstaller_1.28.240.0_x64__8wekyb3d8bbwe\\WindowsPackageManagerServer.exe",
+                             "WorkingSetMB":  34.1,
+                             "PrivateMB":  9.4
+                         }
+                     ],
+    "MemoryAfter":  [
+                        {
+                            "Id":  7060,
+                            "ProcessName":  "Everything",
+                            "Path":  null,
+                            "WorkingSetMB":  8.2,
+                            "PrivateMB":  1.8
+                        },
+                        {
+                            "Id":  9268,
+                            "ProcessName":  "Everything",
+                            "Path":  null,
+                            "WorkingSetMB":  370.9,
+                            "PrivateMB":  361.4
+                        },
+                        {
+                            "Id":  23724,
+                            "ProcessName":  "Everything",
+                            "Path":  "D:\\应用程序\\Everything\\Everything.exe",
+                            "WorkingSetMB":  20.9,
+                            "PrivateMB":  3
+                        },
+                        {
+                            "Id":  39352,
+                            "ProcessName":  "MftScanner",
+                            "Path":  null,
+                            "WorkingSetMB":  2311.1,
+                            "PrivateMB":  2337.6
+                        },
+                        {
+                            "Id":  26028,
+                            "ProcessName":  "WindowsPackageManagerServer",
+                            "Path":  "C:\\Program Files\\WindowsApps\\Microsoft.DesktopAppInstaller_1.28.240.0_x64__8wekyb3d8bbwe\\WindowsPackageManagerServer.exe",
+                            "WorkingSetMB":  34.1,
+                            "PrivateMB":  9.4
+                        }
+                    ]
+}
