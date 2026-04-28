@@ -1147,6 +1147,7 @@ namespace MftScanner
                 TotalIndexedCount = queryResult?.TotalIndexedCount ?? indexService.Index.TotalCount,
                 TotalMatchedCount = queryResult?.TotalMatchedCount ?? 0,
                 IsTruncated = queryResult?.IsTruncated ?? false,
+                ContainsBucketStatus = queryResult?.ContainsBucketStatus ?? indexService.ContainsBucketStatus,
                 Results = (queryResult?.Results ?? new List<ScannedFileInfo>())
                     .Select(r => new SearchExportItem
                     {
@@ -1237,6 +1238,7 @@ namespace MftScanner
             public int TotalIndexedCount { get; set; }
             public int TotalMatchedCount { get; set; }
             public bool IsTruncated { get; set; }
+            public ContainsBucketStatus ContainsBucketStatus { get; set; }
             public List<SearchExportItem> Results { get; set; } = new List<SearchExportItem>();
         }
 
@@ -1269,6 +1271,7 @@ namespace MftScanner
             public int TotalIndexedCount { get; set; }
             public int TotalMatchedCount { get; set; }
             public bool IsTruncated { get; set; }
+            public ContainsBucketStatus ContainsBucketStatus { get; set; }
             public List<SearchExportItem> Results { get; set; } = new List<SearchExportItem>();
         }
     }

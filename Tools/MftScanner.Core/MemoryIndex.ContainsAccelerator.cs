@@ -35,6 +35,9 @@ namespace MftScanner
 
             public bool IsEmpty => _recordIdsByKey.Count == 0;
             public bool IsComplete => _builtBuckets == BucketKinds.All;
+            public bool HasCharBucket => (_builtBuckets & BucketKinds.Char) != 0;
+            public bool HasBigramBucket => (_builtBuckets & BucketKinds.Bigram) != 0;
+            public bool HasTrigramBucket => (_builtBuckets & BucketKinds.Trigram) != 0;
 
             private ContainsAccelerator()
             {

@@ -166,37 +166,77 @@ namespace PackageManager.Services
         /// <returns>提取后的文件路径；失败时返回 <c>null</c>。</returns>
         public static string ExtractEmbeddedTool(string resourceSuffix, string outputFileName)
         {
+            string targetPath = null;
+            string tempPath = null;
             try
             {
                 var asm = typeof(AdminElevationService).Assembly;
                 var name = asm.GetManifestResourceNames().FirstOrDefault(n => n.EndsWith(resourceSuffix, StringComparison.OrdinalIgnoreCase));
                 if (string.IsNullOrEmpty(name))
                 {
+                    LoggingService.LogWarning($"嵌入工具资源未找到：ResourceSuffix={resourceSuffix}，OutputFileName={outputFileName}");
                     return null;
                 }
                 var targetDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PackageManager", "tools");
                 Directory.CreateDirectory(targetDir);
-                var targetPath = Path.Combine(targetDir, outputFileName);
-                try { File.Delete(targetPath); } catch { }
+                targetPath = Path.Combine(targetDir, outputFileName);
+                tempPath = Path.Combine(targetDir, outputFileName + "." + Guid.NewGuid().ToString("N") + ".tmp");
+
                 using (var stream = asm.GetManifestResourceStream(name))
                 {
-                    if (stream == null) return null;
-                    using (var fs = new FileStream(targetPath, FileMode.Create, FileAccess.Write, FileShare.Read))
+                    if (stream == null)
+                    {
+                        LoggingService.LogWarning($"嵌入工具资源流为空：ResourceName={name}，TargetPath={targetPath}");
+                        return null;
+                    }
+
+                    using (var fs = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.Read))
                     {
                         stream.CopyTo(fs);
                     }
                 }
 
-                foreach (var sidecarSuffix in GetEmbeddedToolSidecars(outputFileName))
+                if (File.Exists(targetPath))
                 {
-                    ExtractEmbeddedSidecar(asm, targetDir, sidecarSuffix);
+                    var backupPath = Path.Combine(targetDir, outputFileName + "." + Guid.NewGuid().ToString("N") + ".bak");
+                    File.Replace(tempPath, targetPath, backupPath, true);
+                    try { File.Delete(backupPath); } catch { }
+                }
+                else
+                {
+                    File.Move(tempPath, targetPath);
                 }
 
+                foreach (var sidecarSuffix in GetEmbeddedToolSidecars(outputFileName))
+                {
+                    try
+                    {
+                        ExtractEmbeddedSidecar(asm, targetDir, sidecarSuffix);
+                    }
+                    catch (Exception sidecarEx)
+                    {
+                        LoggingService.LogWarning($"嵌入工具 sidecar 提取失败，已继续使用主工具：OutputFileName={outputFileName}，Sidecar={sidecarSuffix}，{sidecarEx.Message}");
+                    }
+                }
+
+                LoggingService.LogInfo($"嵌入工具提取完成：ResourceName={name}，TargetPath={targetPath}");
                 return targetPath;
             }
-            catch
+            catch (Exception ex)
             {
-                var existingPath = GetExtractedToolPath(outputFileName);
+                LoggingService.LogError(ex, $"提取嵌入工具失败：ResourceSuffix={resourceSuffix}，OutputFileName={outputFileName}，TargetPath={targetPath ?? "<null>"}");
+                try
+                {
+                    if (!string.IsNullOrWhiteSpace(tempPath) && File.Exists(tempPath))
+                    {
+                        File.Delete(tempPath);
+                    }
+                }
+                catch
+                {
+                }
+
+                var existingPath = targetPath ?? GetExtractedToolPath(outputFileName);
                 return File.Exists(existingPath) ? existingPath : null;
             }
         }
@@ -254,6 +294,12 @@ namespace PackageManager.Services
                 return;
             }
 
+            var targetPath = Path.Combine(targetDir, Path.GetFileName(resourceSuffix));
+            if (IsEmbeddedToolFileCurrent(asm, resourceSuffix, targetPath))
+            {
+                return;
+            }
+
             var resourceName = asm.GetManifestResourceNames()
                 .FirstOrDefault(n => n.EndsWith(resourceSuffix, StringComparison.OrdinalIgnoreCase));
             if (string.IsNullOrEmpty(resourceName))
@@ -261,7 +307,6 @@ namespace PackageManager.Services
                 return;
             }
 
-            var targetPath = Path.Combine(targetDir, Path.GetFileName(resourceSuffix));
             using (var stream = asm.GetManifestResourceStream(resourceName))
             {
                 if (stream == null)

@@ -119,12 +119,16 @@ namespace PackageManager.Services
                 return true;
             }
 
-            if (!TryRunRegisteredTaskSilently())
+            if (TryRunRegisteredTaskSilently()
+                && SharedIndexServiceClient.TryWaitForHostAvailability(HostAvailabilityWaitMilliseconds))
             {
-                return SharedIndexServiceClient.TryWaitForHostAvailability(HostAvailabilityWaitMilliseconds);
+                return true;
             }
 
-            return SharedIndexServiceClient.TryWaitForHostAvailability(HostAvailabilityWaitMilliseconds);
+            LoggingService.LogWarning("后台索引宿主启动后仍未就绪，准备停止旧宿主并重新同步。");
+            return AdminElevationService.IsRunningAsAdministrator()
+                ? RunAdminEnsureHost() == 0
+                : RunElevatedEnsureHost();
         }
 
         private static bool TaskExists()

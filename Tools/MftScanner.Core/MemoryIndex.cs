@@ -5,6 +5,19 @@ using System.Threading;
 
 namespace MftScanner
 {
+    public sealed class ContainsBucketStatus
+    {
+        public static readonly ContainsBucketStatus Empty = new ContainsBucketStatus();
+
+        public bool CharReady { get; set; }
+        public bool BigramReady { get; set; }
+        public bool TrigramReady { get; set; }
+        public bool IsOverlayOverflowed { get; set; }
+        public long Epoch { get; set; }
+
+        public bool IsFullReady => CharReady && BigramReady && TrigramReady && !IsOverlayOverflowed;
+    }
+
     public sealed partial class MemoryIndex
     {
         private readonly ReaderWriterLockSlim _lock = new ReaderWriterLockSlim();
@@ -46,6 +59,25 @@ namespace MftScanner
                        && accelerator != null
                        && !accelerator.IsEmpty;
             }
+        }
+
+        public ContainsBucketStatus GetContainsBucketStatus()
+        {
+            var accelerator = Volatile.Read(ref _containsAccelerator);
+            var overlay = Volatile.Read(ref _containsOverlay) ?? ContainsOverlay.Empty;
+            var ready = Volatile.Read(ref _containsAcceleratorReady)
+                        && !overlay.IsOverflowed
+                        && accelerator != null
+                        && !accelerator.IsEmpty;
+
+            return new ContainsBucketStatus
+            {
+                CharReady = ready && accelerator.HasCharBucket,
+                BigramReady = ready && accelerator.HasBigramBucket,
+                TrigramReady = ready && accelerator.HasTrigramBucket,
+                IsOverlayOverflowed = overlay.IsOverflowed,
+                Epoch = Interlocked.Read(ref _containsAcceleratorEpoch)
+            };
         }
 
         public sealed class ContainsSearchResult

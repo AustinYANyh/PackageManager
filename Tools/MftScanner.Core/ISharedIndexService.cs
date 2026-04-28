@@ -9,6 +9,7 @@ namespace MftScanner
         int IndexedCount { get; }
         bool IsBackgroundCatchUpInProgress { get; }
         string CurrentStatusMessage { get; }
+        ContainsBucketStatus ContainsBucketStatus { get; }
 
         event EventHandler<IndexChangedEventArgs> IndexChanged;
         event EventHandler<IndexStatusChangedEventArgs> IndexStatusChanged;

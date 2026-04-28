@@ -63,6 +63,7 @@ namespace MftScanner
         public int TotalMatchedCount { get; set; }
         public bool IsTruncated { get; set; }
         public long HostSearchMs { get; set; }
+        public ContainsBucketStatus ContainsBucketStatus { get; set; } = ContainsBucketStatus.Empty;
         public List<ScannedFileInfo> Results { get; set; }
     }
 
@@ -78,6 +79,7 @@ namespace MftScanner
         public SharedIndexBuildState BuildState { get; set; }
         public long LastCommittedChangeSequence { get; set; }
         public long RefreshSequence { get; set; }
+        public ContainsBucketStatus ContainsBucketStatus { get; set; } = ContainsBucketStatus.Empty;
     }
 
     public sealed class SharedIndexChangeRecord
@@ -151,7 +153,7 @@ namespace MftScanner
 
     public static class SharedIndexMemoryProtocol
     {
-        public const int ProtocolVersion = 2;
+        public const int ProtocolVersion = 3;
         public const int RequestCapacityBytes = 64 * 1024;
         public const int ResponseCapacityBytes = 32 * 1024 * 1024;
         public const int StateCapacityBytes = 64 * 1024;
@@ -473,6 +475,7 @@ namespace MftScanner
                 writer.Write((int)snapshot.BuildState);
                 writer.Write(snapshot.LastCommittedChangeSequence);
                 writer.Write(snapshot.RefreshSequence);
+                WriteContainsBucketStatus(writer, snapshot.ContainsBucketStatus);
                 WriteSizedString(writer, snapshot.StatusMessage);
 
                 var remaining = StateCapacityBytes - (int)stream.Position;
@@ -511,6 +514,7 @@ namespace MftScanner
                     BuildState = (SharedIndexBuildState)reader.ReadInt32(),
                     LastCommittedChangeSequence = reader.ReadInt64(),
                     RefreshSequence = reader.ReadInt64(),
+                    ContainsBucketStatus = ReadContainsBucketStatus(reader),
                     StatusMessage = ReadSizedString(reader)
                 };
             }
@@ -652,6 +656,7 @@ namespace MftScanner
                 writer.Write(response.TotalMatchedCount);
                 writer.Write(response.IsTruncated ? 1 : 0);
                 writer.Write(response.HostSearchMs);
+                WriteContainsBucketStatus(writer, response.ContainsBucketStatus);
                 WriteSizedString(writer, response.CurrentStatusMessage);
                 WriteSizedString(writer, response.ErrorMessage);
 
@@ -706,6 +711,7 @@ namespace MftScanner
                     TotalMatchedCount = reader.ReadInt32(),
                     IsTruncated = reader.ReadInt32() != 0,
                     HostSearchMs = reader.ReadInt64(),
+                    ContainsBucketStatus = ReadContainsBucketStatus(reader),
                     CurrentStatusMessage = ReadSizedString(reader),
                     ErrorMessage = ReadSizedString(reader),
                     Results = new List<ScannedFileInfo>()
@@ -785,6 +791,16 @@ namespace MftScanner
             writer.Write(bytes);
         }
 
+        private static void WriteContainsBucketStatus(BinaryWriter writer, ContainsBucketStatus status)
+        {
+            var value = status ?? ContainsBucketStatus.Empty;
+            writer.Write(value.CharReady ? 1 : 0);
+            writer.Write(value.BigramReady ? 1 : 0);
+            writer.Write(value.TrigramReady ? 1 : 0);
+            writer.Write(value.IsOverlayOverflowed ? 1 : 0);
+            writer.Write(value.Epoch);
+        }
+
         private static string ReadSizedString(BinaryReader reader)
         {
             var byteLength = reader.ReadInt32();
@@ -794,6 +810,18 @@ namespace MftScanner
             }
 
             return Encoding.Unicode.GetString(reader.ReadBytes(byteLength));
+        }
+
+        private static ContainsBucketStatus ReadContainsBucketStatus(BinaryReader reader)
+        {
+            return new ContainsBucketStatus
+            {
+                CharReady = reader.ReadInt32() != 0,
+                BigramReady = reader.ReadInt32() != 0,
+                TrigramReady = reader.ReadInt32() != 0,
+                IsOverlayOverflowed = reader.ReadInt32() != 0,
+                Epoch = reader.ReadInt64()
+            };
         }
     }
 }

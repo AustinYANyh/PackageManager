@@ -40,6 +40,8 @@
     <Reference Include="PresentationCore" />
     <Reference Include="PresentationFramework" />
     <Reference Include="System.Security" />
+    <Reference Include="UIAutomationClient" />
+    <Reference Include="UIAutomationTypes" />
     <Reference Include="Newtonsoft.Json">
       <HintPath>..\..\packages\Newtonsoft.Json.13.0.4\lib\net45\Newtonsoft.Json.dll</HintPath>
     </Reference>
@@ -78,6 +80,9 @@
     </Resource>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="..\MftScanner.Shared\MftScannerToolAssemblyInfo.cs">
+      <Link>Properties\MftScannerToolAssemblyInfo.cs</Link>
+    </Compile>
     <Compile Include="..\..\Function\StartupTool\CommonStartupWindow.xaml.cs">
       <Link>Function\StartupTool\CommonStartupWindow.xaml.cs</Link>
       <DependentUpon>CommonStartupWindow.xaml</DependentUpon>

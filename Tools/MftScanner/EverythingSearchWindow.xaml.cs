@@ -59,6 +59,7 @@ namespace MftScanner
         private bool _pendingRefresh;
         private bool _forcePendingRefresh;
         private string _latestIndexStatusMessage = string.Empty;
+        private ContainsBucketStatus _latestContainsBucketStatus = ContainsBucketStatus.Empty;
         private string _cachedKeyword;
         private Regex _cachedRegex;
         private bool _suppressControlEvents;
@@ -578,7 +579,8 @@ namespace MftScanner
             }
             else if (string.IsNullOrWhiteSpace(_activeKeyword))
             {
-                StatusText.Text = string.IsNullOrWhiteSpace(_latestIndexStatusMessage) ? (_indexedCount + " 个对象") : _latestIndexStatusMessage;
+                var status = string.IsNullOrWhiteSpace(_latestIndexStatusMessage) ? (_indexedCount + " 个对象") : _latestIndexStatusMessage;
+                StatusText.Text = status + "；" + FormatBucketStatusText(_latestContainsBucketStatus);
             }
             else if (_totalMatchedCount <= 0)
             {
@@ -594,6 +596,44 @@ namespace MftScanner
             {
                 StatusText.Text = string.Format("已显示 {0} 个对象（共 {1} 个）", _loadedResultCount, _totalMatchedCount);
             }
+        }
+
+        private void UpdateIndexStateBadge(bool isCatchingUp)
+        {
+            IndexStateBadgeText.Text = isCatchingUp ? "后台追平中" : "索引已就绪";
+            UpdateBucketBadgeTexts();
+        }
+
+        private void UpdateBucketBadgeTexts()
+        {
+            var value = _latestContainsBucketStatus ?? ContainsBucketStatus.Empty;
+            CharBucketBadgeText.Text = "单字符: " + FormatReadyText(value.CharReady);
+            BigramBucketBadgeText.Text = "双字符: " + FormatReadyText(value.BigramReady);
+            TrigramBucketBadgeText.Text = "多字符: " + FormatReadyText(value.TrigramReady);
+
+            var tip = FormatBucketStatusText(value);
+            CharBucketBadgeText.ToolTip = tip;
+            BigramBucketBadgeText.ToolTip = tip;
+            TrigramBucketBadgeText.ToolTip = tip;
+            IndexStateBadgeText.ToolTip = tip;
+        }
+
+        private static string FormatBucketStatusText(ContainsBucketStatus status)
+        {
+            var value = status ?? ContainsBucketStatus.Empty;
+            if (value.IsOverlayOverflowed)
+            {
+                return "搜索桶增量溢出，包含搜索临时走全量";
+            }
+
+            return "桶状态：单字符" + FormatReadyText(value.CharReady)
+                   + "，双字符" + FormatReadyText(value.BigramReady)
+                   + "，多字符" + FormatReadyText(value.TrigramReady);
+        }
+
+        private static string FormatReadyText(bool ready)
+        {
+            return ready ? "就绪" : "未就绪";
         }
 
         private void RefreshScopeOptions()

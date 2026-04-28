@@ -900,6 +900,7 @@ namespace MftScanner
         public int TotalMatchedCount { get; set; }
         public bool IsTruncated { get; set; }
         public long HostSearchMs { get; set; }
+        public ContainsBucketStatus ContainsBucketStatus { get; set; } = ContainsBucketStatus.Empty;
         public List<ScannedFileInfo> Results { get; set; } = new List<ScannedFileInfo>();
     }
 

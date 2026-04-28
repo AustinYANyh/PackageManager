@@ -20,6 +20,7 @@ namespace MftScanner
         public string currentStatusMessage { get; set; }
         public bool isBackgroundCatchUpInProgress { get; set; }
         public bool requireSearchRefresh { get; set; }
+        public ContainsBucketStatus containsBucketStatus { get; set; }
         public int totalIndexedCount { get; set; }
         public int totalMatchedCount { get; set; }
         public bool isTruncated { get; set; }
@@ -33,6 +34,7 @@ namespace MftScanner
         public string currentStatusMessage { get; set; }
         public bool isBackgroundCatchUpInProgress { get; set; }
         public bool requireSearchRefresh { get; set; }
+        public ContainsBucketStatus containsBucketStatus { get; set; }
         public string changeType { get; set; }
         public string lowerName { get; set; }
         public string fullPath { get; set; }

@@ -10,6 +10,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
@@ -926,22 +927,32 @@ public partial class CommonStartupWindow : Window
             var activationResult = forceNewInstance ? ExistingInstanceActivationResult.NotFound : TryActivateExistingInstance(item);
             if (activationResult == ExistingInstanceActivationResult.Activated)
             {
-                RecordItemLaunch(item);
+                SelectStartupItem(item);
+                RefreshWorkbench();
                 StatusText.Text = $"已唤醒：{item.Name}";
                 return;
             }
 
-            if (activationResult == ExistingInstanceActivationResult.FoundWithoutWindow && IsKnownSingleInstanceTrayApp(item.FullPath))
+            if (activationResult == ExistingInstanceActivationResult.FoundWithoutWindow
+                && IsKnownSingleInstanceTrayApp(item.FullPath)
+                && !ShouldUseOriginalShellActivation(item.FullPath))
             {
                 StatusText.Text = $"未能唤醒：{item.Name}，已保持工作台焦点。";
                 return;
             }
 
-            var startInfo = activationResult == ExistingInstanceActivationResult.FoundWithoutWindow && ShouldUseOriginalShellActivation(item.FullPath)
+            var startInfo = ShouldUseOriginalShellActivation(item.FullPath)
                 ? CreateOriginalShellActivationStartInfo(item)
                 : CreateLaunchStartInfo(item, forceNewInstance);
 
-            Process.Start(startInfo);
+            LoggingService.LogInfo(
+                $"启动常用项：Name={item.Name}, Path={item.FullPath}, ActivationResult={activationResult}, FileName={startInfo.FileName}, Arguments={startInfo.Arguments}, UseShellExecute={startInfo.UseShellExecute}");
+            var startedProcess = Process.Start(startInfo);
+            if (ShouldUseOriginalShellActivation(item.FullPath))
+            {
+                WaitForExistingInstanceActivation(item.FullPath, new System.Windows.Interop.WindowInteropHelper(this).Handle, 5000);
+            }
+            try { startedProcess?.Dispose(); } catch { }
 
             RecordItemLaunch(item);
             StatusText.Text = activationResult == ExistingInstanceActivationResult.FoundWithoutWindow
@@ -1011,12 +1022,54 @@ public partial class CommonStartupWindow : Window
 
     private static ProcessStartInfo CreateOriginalShellActivationStartInfo(StartupItemVm item)
     {
+        var launchPath = ResolveOriginalShellLaunchPath(item);
+        var arguments = item.Arguments ?? string.Empty;
+        if (IsWeChatPath(launchPath)
+            && string.Equals(System.IO.Path.GetExtension(launchPath), ".lnk", StringComparison.OrdinalIgnoreCase))
+        {
+            return new ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = QuoteArgument(launchPath),
+                UseShellExecute = false
+            };
+        }
+
+        if (IsWeChatPath(launchPath)
+            && string.Equals(System.IO.Path.GetExtension(launchPath), ".exe", StringComparison.OrdinalIgnoreCase)
+            && string.IsNullOrWhiteSpace(arguments))
+        {
+            arguments = "--scene=desktop";
+        }
+
         return new ProcessStartInfo
         {
-            FileName = item.FullPath,
-            Arguments = item.Arguments ?? string.Empty,
+            FileName = launchPath,
+            Arguments = arguments,
             UseShellExecute = true
         };
+    }
+
+    private static string ResolveOriginalShellLaunchPath(StartupItemVm item)
+    {
+        var fullPath = item?.FullPath;
+        if (string.IsNullOrWhiteSpace(fullPath))
+        {
+            return fullPath;
+        }
+
+        if (string.Equals(System.IO.Path.GetExtension(fullPath), ".lnk", StringComparison.OrdinalIgnoreCase))
+        {
+            return fullPath;
+        }
+
+        if (!IsWeChatPath(fullPath))
+        {
+            return fullPath;
+        }
+
+        var shortcut = FindShortcutForTarget(fullPath);
+        return string.IsNullOrWhiteSpace(shortcut) ? fullPath : shortcut;
     }
 
     private static ProcessStartInfo NormalizeForceNewProcessStartInfo(ProcessStartInfo startInfo, bool forceNewInstance)
@@ -1048,6 +1101,41 @@ public partial class CommonStartupWindow : Window
         return TryResolveShortcut(fullPath)?.TargetPath ?? fullPath;
     }
 
+    private static string FindShortcutForTarget(string targetPath)
+    {
+        if (string.IsNullOrWhiteSpace(targetPath))
+        {
+            return null;
+        }
+
+        var normalizedTarget = NormalizeFilePath(targetPath);
+        var desktopDirectories = new[]
+        {
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonDesktopDirectory),
+            Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory)
+        };
+
+        foreach (var directory in desktopDirectories.Where(Directory.Exists).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            foreach (var shortcutPath in Directory.EnumerateFiles(directory, "*.lnk", SearchOption.TopDirectoryOnly))
+            {
+                var shortcut = TryResolveShortcut(shortcutPath);
+                if (shortcut == null)
+                {
+                    continue;
+                }
+
+                if (string.Equals(NormalizeFilePath(shortcut.TargetPath), normalizedTarget, StringComparison.OrdinalIgnoreCase)
+                    && IsWeChatPath(shortcut.TargetPath))
+                {
+                    return shortcutPath;
+                }
+            }
+        }
+
+        return null;
+    }
+
     private static string CombineArguments(string shortcutArguments, string itemArguments)
     {
         if (string.IsNullOrWhiteSpace(itemArguments))
@@ -1061,6 +1149,16 @@ public partial class CommonStartupWindow : Window
         }
 
         return shortcutArguments + " " + itemArguments;
+    }
+
+    private static string QuoteArgument(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "\"\"";
+        }
+
+        return "\"" + value.Replace("\"", "\\\"") + "\"";
     }
 
     private static ShortcutTarget TryResolveShortcut(string fullPath)
@@ -1186,34 +1284,38 @@ public partial class CommonStartupWindow : Window
         var normalizedPath = NormalizeFilePath(activationPath);
         var exactMatches = new List<Process>();
         var fallbackMatches = new List<Process>();
-        foreach (var process in Process.GetProcessesByName(processName))
+        foreach (var relatedProcessName in GetRelatedProcessNames(processName))
         {
-            var shouldDispose = true;
-            try
+            foreach (var process in Process.GetProcessesByName(relatedProcessName))
             {
-                var processPath = TryGetProcessPath(process);
-                if (!string.IsNullOrWhiteSpace(processPath))
+                var shouldDispose = true;
+                try
                 {
-                    if (string.Equals(NormalizeFilePath(processPath), normalizedPath, StringComparison.OrdinalIgnoreCase))
+                    var processPath = TryGetProcessPath(process);
+                    if (!string.IsNullOrWhiteSpace(processPath))
                     {
-                        exactMatches.Add(process);
+                        if (string.Equals(NormalizeFilePath(processPath), normalizedPath, StringComparison.OrdinalIgnoreCase)
+                            || IsRelatedWeChatProcessPath(processName, processPath))
+                        {
+                            exactMatches.Add(process);
+                            shouldDispose = false;
+                        }
+                    }
+                    else
+                    {
+                        fallbackMatches.Add(process);
                         shouldDispose = false;
                     }
                 }
-                else
+                catch
                 {
-                    fallbackMatches.Add(process);
-                    shouldDispose = false;
                 }
-            }
-            catch
-            {
-            }
-            finally
-            {
-                if (shouldDispose)
+                finally
                 {
-                    process.Dispose();
+                    if (shouldDispose)
+                    {
+                        process.Dispose();
+                    }
                 }
             }
         }
@@ -1222,6 +1324,30 @@ public partial class CommonStartupWindow : Window
         fallbackMatches.Sort(CompareProcessesByWindowPriority);
         exactMatches.AddRange(fallbackMatches);
         return exactMatches;
+    }
+
+    private static IEnumerable<string> GetRelatedProcessNames(string processName)
+    {
+        if (IsWeChatProcessName(processName))
+        {
+            yield return "Weixin";
+            yield return "WeChat";
+            yield return "WeChatAppEx";
+            yield break;
+        }
+
+        yield return processName;
+    }
+
+    private static bool IsRelatedWeChatProcessPath(string activationProcessName, string processPath)
+    {
+        if (!IsWeChatProcessName(activationProcessName))
+        {
+            return false;
+        }
+
+        var processName = System.IO.Path.GetFileNameWithoutExtension(processPath ?? string.Empty) ?? string.Empty;
+        return IsWeChatProcessName(processName);
     }
 
     private static string TryGetProcessPath(Process process)
@@ -1326,7 +1452,6 @@ public partial class CommonStartupWindow : Window
         BringWindowToTop(handle);
         SetWindowPos(handle, HwndTopMost, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpShowWindow);
         SetWindowPos(handle, HwndNoTopMost, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpShowWindow);
-        SwitchToThisWindow(handle, true);
         if (SetForegroundWindow(handle))
         {
             return true;
@@ -1344,9 +1469,6 @@ public partial class CommonStartupWindow : Window
         try
         {
             BringWindowToTop(handle);
-            SetActiveWindow(handle);
-            SetFocus(handle);
-            SwitchToThisWindow(handle, true);
             return SetForegroundWindow(handle);
         }
         finally
@@ -1365,24 +1487,26 @@ public partial class CommonStartupWindow : Window
 
     private static bool ShouldUseShellActivationForHiddenMainWindow(string processName, WindowActivationCandidate candidate)
     {
-        return !candidate.IsVisible
-            && (processName.Equals("Weixin", StringComparison.OrdinalIgnoreCase)
-                || processName.Equals("WeChat", StringComparison.OrdinalIgnoreCase));
+        return !candidate.IsVisible && IsWeChatProcessName(processName);
     }
 
     private static bool ShouldUseAggressiveForeground(string processName)
     {
         return processName.Equals("QQ", StringComparison.OrdinalIgnoreCase)
-            || processName.Equals("Weixin", StringComparison.OrdinalIgnoreCase)
-            || processName.Equals("WeChat", StringComparison.OrdinalIgnoreCase);
+            || IsWeChatProcessName(processName);
     }
 
     private static bool ShouldUseOriginalShellActivation(string fullPath)
     {
         var activationPath = ResolveActivationPath(fullPath);
         var processName = System.IO.Path.GetFileNameWithoutExtension(activationPath ?? fullPath) ?? string.Empty;
-        return processName.Equals("Weixin", StringComparison.OrdinalIgnoreCase)
-               || processName.Equals("WeChat", StringComparison.OrdinalIgnoreCase);
+        return IsWeChatProcessName(processName);
+    }
+
+    private static bool IsWeChatPath(string path)
+    {
+        var processName = System.IO.Path.GetFileNameWithoutExtension(ResolveActivationPath(path) ?? path) ?? string.Empty;
+        return IsWeChatProcessName(processName);
     }
 
     private bool TryActivateFromTrayOrShell(StartupItemVm item, IntPtr ownerHandle)
@@ -1393,7 +1517,7 @@ public partial class CommonStartupWindow : Window
         }
 
         var terms = GetTrayActivationTerms(item.FullPath);
-        if (TryClickTrayIcon(terms) && WaitForExistingInstanceActivation(item.FullPath, ownerHandle, 2000))
+        if (TryClickTrayIcon(terms) && WaitForExistingInstanceActivation(item.FullPath, ownerHandle, 3000))
         {
             return true;
         }
@@ -1403,7 +1527,7 @@ public partial class CommonStartupWindow : Window
             try
             {
                 Process.Start(CreateOriginalShellActivationStartInfo(item));
-                return WaitForExistingInstanceActivation(item.FullPath, ownerHandle, 3000);
+                return WaitForExistingInstanceActivation(item.FullPath, ownerHandle, 5000);
             }
             catch
             {
@@ -1442,8 +1566,7 @@ public partial class CommonStartupWindow : Window
         var activationPath = ResolveActivationPath(fullPath);
         var processName = System.IO.Path.GetFileNameWithoutExtension(activationPath ?? fullPath) ?? string.Empty;
         return processName.Equals("QQ", StringComparison.OrdinalIgnoreCase)
-               || processName.Equals("Weixin", StringComparison.OrdinalIgnoreCase)
-               || processName.Equals("WeChat", StringComparison.OrdinalIgnoreCase)
+               || IsWeChatProcessName(processName)
                || processName.Equals("cc-switch", StringComparison.OrdinalIgnoreCase)
                || processName.Equals("clash-verge", StringComparison.OrdinalIgnoreCase);
     }
@@ -1453,10 +1576,17 @@ public partial class CommonStartupWindow : Window
         var activationPath = ResolveActivationPath(fullPath);
         var processName = System.IO.Path.GetFileNameWithoutExtension(activationPath ?? fullPath) ?? string.Empty;
         if (processName.Equals("QQ", StringComparison.OrdinalIgnoreCase)) return new[] { "QQ" };
-        if (processName.Equals("Weixin", StringComparison.OrdinalIgnoreCase) || processName.Equals("WeChat", StringComparison.OrdinalIgnoreCase)) return new[] { "微信", "Weixin", "WeChat" };
+        if (IsWeChatProcessName(processName)) return new[] { "微信", "Weixin", "WeChat", "WeChatAppEx" };
         if (processName.Equals("cc-switch", StringComparison.OrdinalIgnoreCase)) return new[] { "CC Switch", "cc-switch", "ccswitch" };
         if (processName.Equals("clash-verge", StringComparison.OrdinalIgnoreCase)) return new[] { "Clash Verge", "clash-verge", "Verge" };
         return Array.Empty<string>();
+    }
+
+    private static bool IsWeChatProcessName(string processName)
+    {
+        return processName.Equals("Weixin", StringComparison.OrdinalIgnoreCase)
+               || processName.Equals("WeChat", StringComparison.OrdinalIgnoreCase)
+               || processName.Equals("WeChatAppEx", StringComparison.OrdinalIgnoreCase);
     }
 
     private static void RestoreOwnerFocus(IntPtr ownerHandle)
@@ -1478,6 +1608,11 @@ public partial class CommonStartupWindow : Window
             return false;
         }
 
+        if (TryClickTrayIconWithAutomation(terms))
+        {
+            return true;
+        }
+
         foreach (var toolbarHandle in EnumerateTrayToolbarWindows())
         {
             if (TryClickToolbarButton(toolbarHandle, terms))
@@ -1489,7 +1624,56 @@ public partial class CommonStartupWindow : Window
         return false;
     }
 
-    private static IEnumerable<IntPtr> EnumerateTrayToolbarWindows()
+    private static bool TryClickTrayIconWithAutomation(string[] terms)
+    {
+        foreach (var rootHandle in EnumerateTrayRootWindows())
+        {
+            try
+            {
+                var root = AutomationElement.FromHandle(rootHandle);
+                if (root == null)
+                {
+                    continue;
+                }
+
+                var buttons = root.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button));
+                for (var i = 0; i < buttons.Count; i++)
+                {
+                    var button = buttons[i];
+                    var name = button.Current.Name ?? string.Empty;
+                    if (!terms.Any(term => name.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0))
+                    {
+                        continue;
+                    }
+
+                    object pattern;
+                    if (button.TryGetCurrentPattern(InvokePattern.Pattern, out pattern))
+                    {
+                        ((InvokePattern)pattern).Invoke();
+                    }
+                    else
+                    {
+                        Point clickablePoint;
+                        if (!button.TryGetClickablePoint(out clickablePoint))
+                        {
+                            continue;
+                        }
+
+                        DoubleClickScreenPoint((int)clickablePoint.X, (int)clickablePoint.Y);
+                    }
+
+                    return true;
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        return false;
+    }
+
+    private static IEnumerable<IntPtr> EnumerateTrayRootWindows()
     {
         var roots = new[]
         {
@@ -1498,6 +1682,14 @@ public partial class CommonStartupWindow : Window
         };
 
         foreach (var root in roots.Where(handle => handle != IntPtr.Zero))
+        {
+            yield return root;
+        }
+    }
+
+    private static IEnumerable<IntPtr> EnumerateTrayToolbarWindows()
+    {
+        foreach (var root in EnumerateTrayRootWindows())
         {
             var handles = new List<IntPtr>();
             EnumChildWindows(root, (handle, _) =>
@@ -1648,8 +1840,7 @@ public partial class CommonStartupWindow : Window
         if (TitleContainsProcessName(title, processName)) score += 80;
 
         var preferAggressive = processName.Equals("QQ", StringComparison.OrdinalIgnoreCase)
-                               || processName.Equals("Weixin", StringComparison.OrdinalIgnoreCase)
-                               || processName.Equals("WeChat", StringComparison.OrdinalIgnoreCase);
+                               || IsWeChatProcessName(processName);
         return score > 0
             ? new WindowActivationCandidate(handle, score, preferAggressive, visible, iconic, title, className)
             : WindowActivationCandidate.Empty;
@@ -1973,6 +2164,15 @@ public partial class CommonStartupWindow : Window
                 Close();
             }
 
+            e.Handled = true;
+            return;
+        }
+
+        if (_selectedItem != null
+            && e.Key == Key.Delete
+            && Keyboard.Modifiers == ModifierKeys.None)
+        {
+            RemoveItem(_selectedItem);
             e.Handled = true;
             return;
         }

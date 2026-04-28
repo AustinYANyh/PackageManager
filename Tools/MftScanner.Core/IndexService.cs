@@ -49,6 +49,7 @@ namespace MftScanner
         public int IndexedCount => _index.TotalCount;
         public bool IsBackgroundCatchUpInProgress => _isBackgroundCatchUpInProgress;
         public string CurrentStatusMessage => _currentStatusMessage;
+        public ContainsBucketStatus ContainsBucketStatus => _index?.GetContainsBucketStatus() ?? ContainsBucketStatus.Empty;
 
         /// <summary>文件系统增量变更事件，携带变更类型和文件信息，供 UI 直接更新列表。</summary>
         public event EventHandler<IndexChangedEventArgs> IndexChanged;
@@ -1045,6 +1046,7 @@ namespace MftScanner
             if (result != null)
             {
                 result.HostSearchMs = totalStopwatch.ElapsedMilliseconds;
+                result.ContainsBucketStatus = ContainsBucketStatus;
             }
             UsnDiagLog.Write(
                 $"[SEARCH] outcome={outcome} totalMs={totalStopwatch.ElapsedMilliseconds} matchMs={matchElapsedMilliseconds} " +
@@ -1512,11 +1514,13 @@ namespace MftScanner
                 UsnDiagLog.Write(
                     $"[CONTAINS WARMUP] outcome=stage reason={IndexPerfLog.FormatValue(reason)} " +
                     $"stage=trigram-ready elapsedMs={stopwatch.ElapsedMilliseconds} records={index.TotalCount}");
+                PublishIndexStatus("索引已就绪；多字符桶已就绪，单字符/双字符桶构建中...", false);
                 index.TryEnsureContainsAccelerator(MemoryIndex.ContainsWarmupScope.Full, ct);
                 stopwatch.Stop();
                 UsnDiagLog.Write(
                     $"[CONTAINS WARMUP] outcome=success reason={IndexPerfLog.FormatValue(reason)} " +
                     $"elapsedMs={stopwatch.ElapsedMilliseconds} records={index.TotalCount}");
+                PublishIndexStatus("索引和全部搜索桶已就绪", false);
             }
             catch (OperationCanceledException)
             {
@@ -1593,7 +1597,8 @@ namespace MftScanner
                 _currentStatusMessage,
                 _index.TotalCount,
                 isBackgroundCatchUpInProgress,
-                requireSearchRefresh));
+                requireSearchRefresh,
+                ContainsBucketStatus));
         }
 
         private List<IndexChangedEventArgs> BuildBatchIndexChangedArgs(IReadOnlyList<UsnChangeEntry> changes)
@@ -1885,18 +1890,20 @@ namespace MftScanner
 
     public sealed class IndexStatusChangedEventArgs : EventArgs
     {
-        public IndexStatusChangedEventArgs(string message, int indexedCount, bool isBackgroundCatchUpInProgress, bool requireSearchRefresh)
+        public IndexStatusChangedEventArgs(string message, int indexedCount, bool isBackgroundCatchUpInProgress, bool requireSearchRefresh, ContainsBucketStatus containsBucketStatus = null)
         {
             Message = message;
             IndexedCount = indexedCount;
             IsBackgroundCatchUpInProgress = isBackgroundCatchUpInProgress;
             RequireSearchRefresh = requireSearchRefresh;
+            ContainsBucketStatus = containsBucketStatus ?? ContainsBucketStatus.Empty;
         }
 
         public string Message { get; }
         public int IndexedCount { get; }
         public bool IsBackgroundCatchUpInProgress { get; }
         public bool RequireSearchRefresh { get; }
+        public ContainsBucketStatus ContainsBucketStatus { get; }
     }
 
     public sealed class IndexChangedEventArgs : EventArgs

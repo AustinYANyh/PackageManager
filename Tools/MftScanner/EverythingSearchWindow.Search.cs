@@ -32,8 +32,10 @@ namespace MftScanner
             _indexCts = new CancellationTokenSource();
             var ct = _indexCts.Token;
             _indexReady = false;
+            _latestContainsBucketStatus = ContainsBucketStatus.Empty;
             IndexingProgress.Visibility = Visibility.Visible;
             IndexStateBadgeText.Text = forceRescan ? "正在重建共享索引" : "正在连接共享索引";
+            UpdateBucketBadgeTexts();
             StatusText.Text = forceRescan ? "正在请求共享索引重建..." : "正在连接共享索引宿主...";
             EmptyStateTitleText.Text = forceRescan ? "正在重建共享索引" : "正在连接共享索引";
             EmptyStateDescriptionText.Text = "共享索引就绪后即可直接搜索，不再回退到本地索引。";
@@ -55,8 +57,9 @@ namespace MftScanner
                     : await _indexService.BuildIndexAsync(progress, ct).ConfigureAwait(true);
 
                 _indexReady = true;
+                _latestContainsBucketStatus = _indexService.ContainsBucketStatus;
                 IndexingProgress.Visibility = Visibility.Collapsed;
-                IndexStateBadgeText.Text = "索引已就绪";
+                UpdateIndexStateBadge(false);
                 UpdateSummaryStatus();
                 if (!string.IsNullOrWhiteSpace(SearchBox.Text))
                     await ApplyFilterAsync(SearchBox.Text, false).ConfigureAwait(true);
@@ -67,12 +70,14 @@ namespace MftScanner
             {
                 IndexingProgress.Visibility = Visibility.Collapsed;
                 IndexStateBadgeText.Text = "索引已取消";
+                UpdateBucketBadgeTexts();
                 StatusText.Text = "索引已取消";
             }
             catch (Exception ex)
             {
                 IndexingProgress.Visibility = Visibility.Collapsed;
                 IndexStateBadgeText.Text = "索引失败";
+                UpdateBucketBadgeTexts();
                 StatusText.Text = "索引失败：" + ex.Message;
             }
         }
@@ -254,7 +259,8 @@ namespace MftScanner
         {
             _indexedCount = e.IndexedCount;
             _latestIndexStatusMessage = e.Message;
-            IndexStateBadgeText.Text = e.IsBackgroundCatchUpInProgress ? "后台追平中" : "索引已就绪";
+            _latestContainsBucketStatus = e.ContainsBucketStatus ?? ContainsBucketStatus.Empty;
+            UpdateIndexStateBadge(e.IsBackgroundCatchUpInProgress);
             if (e.IsBackgroundCatchUpInProgress)
                 IndexingProgress.Visibility = Visibility.Visible;
             else if (!_isSearchInProgress)
@@ -572,6 +578,11 @@ namespace MftScanner
                 HostSearchMs = result == null ? queryElapsedMs : Math.Max(result.HostSearchMs, 0),
                 LoadedRawResultCount = currentRawOffset + (result?.Results == null ? 0 : result.Results.Count)
             };
+            if (result?.ContainsBucketStatus != null)
+            {
+                _latestContainsBucketStatus = result.ContainsBucketStatus;
+                UpdateIndexStateBadge(_indexService.IsBackgroundCatchUpInProgress);
+            }
 
             var projectionStopwatch = Stopwatch.StartNew();
             var pathSet = existingPaths ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);

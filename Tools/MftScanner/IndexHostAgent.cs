@@ -317,6 +317,7 @@ namespace MftScanner
                 RequireSearchRefresh = false,
                 RefreshSequence = Interlocked.Read(ref _refreshSequence),
                 TotalIndexedCount = _indexService.IndexedCount,
+                ContainsBucketStatus = _indexService.ContainsBucketStatus,
                 TotalMatchedCount = 0,
                 IsTruncated = false,
                 Results = new List<ScannedFileInfo>()
@@ -372,7 +373,8 @@ namespace MftScanner
                     StatusMessage = _indexService.CurrentStatusMessage ?? string.Empty,
                     BuildState = _buildState,
                     LastCommittedChangeSequence = Interlocked.Read(ref _lastCommittedChangeSequence),
-                    RefreshSequence = Interlocked.Read(ref _refreshSequence)
+                    RefreshSequence = Interlocked.Read(ref _refreshSequence),
+                    ContainsBucketStatus = _indexService.ContainsBucketStatus
                 };
 
                 SharedIndexMemoryProtocol.WriteState(_stateMap, snapshot);
@@ -511,6 +513,7 @@ namespace MftScanner
                         indexedCount = _indexService.IndexedCount,
                         currentStatusMessage = _indexService.CurrentStatusMessage,
                         isBackgroundCatchUpInProgress = _indexService.IsBackgroundCatchUpInProgress,
+                        containsBucketStatus = _indexService.ContainsBucketStatus,
                         totalIndexedCount = _indexService.IndexedCount,
                         results = new List<ScannedFileInfo>()
                     };
@@ -534,6 +537,7 @@ namespace MftScanner
                 indexedCount = _indexService.IndexedCount,
                 currentStatusMessage = _indexService.CurrentStatusMessage,
                 isBackgroundCatchUpInProgress = _indexService.IsBackgroundCatchUpInProgress,
+                containsBucketStatus = _indexService.ContainsBucketStatus,
                 totalIndexedCount = _indexService.IndexedCount,
                 totalMatchedCount = 0,
                 isTruncated = false,

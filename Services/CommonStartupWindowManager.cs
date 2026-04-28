@@ -26,6 +26,11 @@ namespace PackageManager.Services
 
         public void ShowOrActivate()
         {
+            if (TryRestartCurrentToolIfOutdated())
+            {
+                return;
+            }
+
             if (TrySignalShowRequest())
             {
                 return;
@@ -53,6 +58,61 @@ namespace PackageManager.Services
             }
 
             StartNewToolProcess();
+        }
+
+        private bool TryRestartCurrentToolIfOutdated()
+        {
+            if (!_currentToolProcessId.HasValue || !TryGetCurrentToolProcess(out var process))
+            {
+                return false;
+            }
+
+            try
+            {
+                if (AdminElevationService.IsEmbeddedToolUpToDate("CommonStartupTool.exe", "CommonStartupTool.exe"))
+                {
+                    return false;
+                }
+
+                LoggingService.LogInfo($"检测到常用启动项工具版本已变化，准备重启。SessionId={_sessionId}，PID={process.Id}");
+                TerminateToolProcessForUpgrade(process);
+                _currentToolProcessId = null;
+                StartNewToolProcess();
+                return true;
+            }
+            finally
+            {
+                process.Dispose();
+            }
+        }
+
+        private static void TerminateToolProcessForUpgrade(Process process)
+        {
+            if (process == null)
+            {
+                return;
+            }
+
+            try
+            {
+                process.Refresh();
+                var handle = process.MainWindowHandle;
+                if (handle != IntPtr.Zero)
+                {
+                    PostMessage(handle, WmClose, IntPtr.Zero, IntPtr.Zero);
+                    if (process.WaitForExit(1000))
+                    {
+                        return;
+                    }
+                }
+
+                process.Kill();
+                process.WaitForExit(3000);
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogWarning($"重启常用启动项工具时结束旧进程失败：PID={process.Id}，{ex.Message}");
+            }
         }
 
         public void Shutdown()
