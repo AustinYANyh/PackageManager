@@ -23,10 +23,6 @@ namespace MftScanner
         private readonly ReaderWriterLockSlim _lock = new ReaderWriterLockSlim();
         private long _contentVersion;
 
-        /// <summary>精确匹配：文件名小写 → FileRecord 列表。</summary>
-        public Dictionary<string, List<FileRecord>> ExactHashMap { get; private set; }
-            = new Dictionary<string, List<FileRecord>>();
-
         /// <summary>扩展名匹配：扩展名小写（如 ".log"）→ FileRecord 列表。</summary>
         public Dictionary<string, List<FileRecord>> ExtensionHashMap { get; private set; }
             = new Dictionary<string, List<FileRecord>>();
@@ -143,6 +139,53 @@ namespace MftScanner
             return true;
         }
 
+        internal ContainsPostingsSnapshot ExportContainsPostingsSnapshot()
+        {
+            var accelerator = Volatile.Read(ref _containsAccelerator);
+            var overlay = Volatile.Read(ref _containsOverlay) ?? ContainsOverlay.Empty;
+            if (!Volatile.Read(ref _containsAcceleratorReady)
+                || overlay.IsOverflowed
+                || accelerator == null
+                || accelerator.IsEmpty
+                || !accelerator.HasTrigramBucket)
+            {
+                return null;
+            }
+
+            return accelerator.ExportTrigramSnapshot();
+        }
+
+        internal bool TryLoadContainsPostingsSnapshot(ContainsPostingsSnapshot snapshot)
+        {
+            if (snapshot == null)
+                return false;
+
+            _lock.EnterWriteLock();
+            try
+            {
+                if (snapshot.RecordCount != (SortedArray?.Length ?? 0))
+                    return false;
+
+                var accelerator = ContainsAccelerator.FromTrigramSnapshot(SortedArray, snapshot);
+                if (accelerator == null || accelerator.IsEmpty || !accelerator.HasTrigramBucket)
+                    return false;
+
+                _containsAccelerator = accelerator;
+                _containsOverlay = ContainsOverlay.Empty;
+                _containsAcceleratorReady = true;
+                _containsAcceleratorEpoch++;
+                _pendingContainsMutations.Clear();
+                _pendingContainsMutationsOverflowed = false;
+                IndexPerfLog.Write("INDEX",
+                    $"[CONTAINS SNAPSHOT LOAD] outcome=success records={SortedArray.Length} buckets={snapshot.Keys.Length} bytes={snapshot.Bytes.Length}");
+                return true;
+            }
+            finally
+            {
+                _lock.ExitWriteLock();
+            }
+        }
+
         public FileRecord[] GetSubtreeCandidates(
             char driveLetter,
             IReadOnlyList<ulong> directoryFrns,
@@ -197,7 +240,6 @@ namespace MftScanner
             var arr = CopyRecords(sortedRecords);
             BuildDerivedStructures(
                 arr,
-                out var exactMap,
                 out var extensionMap,
                 out var parentArr,
                 out var directoryArr,
@@ -207,7 +249,6 @@ namespace MftScanner
                 out var configArr);
             Publish(
                 arr,
-                exactMap,
                 extensionMap,
                 parentArr,
                 directoryArr,
@@ -226,7 +267,6 @@ namespace MftScanner
                 Publish(
                     Array.Empty<FileRecord>(),
                     new Dictionary<string, List<FileRecord>>(),
-                    new Dictionary<string, List<FileRecord>>(),
                     Array.Empty<FileRecord>(),
                     Array.Empty<FileRecord>(),
                     Array.Empty<FileRecord>(),
@@ -242,7 +282,6 @@ namespace MftScanner
             Array.Sort(arr, ByLowerName);
             BuildDerivedStructures(
                 arr,
-                out var exactMap,
                 out var extensionMap,
                 out var parentArr,
                 out var directoryArr,
@@ -252,7 +291,6 @@ namespace MftScanner
                 out var configArr);
             Publish(
                 arr,
-                exactMap,
                 extensionMap,
                 parentArr,
                 directoryArr,
@@ -269,10 +307,6 @@ namespace MftScanner
             _lock.EnterWriteLock();
             try
             {
-                if (!ExactHashMap.TryGetValue(record.LowerName, out var bucket))
-                    ExactHashMap[record.LowerName] = bucket = new List<FileRecord>();
-                bucket.Add(record);
-
                 if (TryGetIndexedExtension(record.LowerName, out var extension))
                 {
                     if (!ExtensionHashMap.TryGetValue(extension, out var extensionBucket))
@@ -312,17 +346,6 @@ namespace MftScanner
             _lock.EnterWriteLock();
             try
             {
-                if (ExactHashMap.TryGetValue(lowerName, out var bucket))
-                {
-                    if (frn != 0)
-                        bucket.RemoveAll(r => r.Frn == frn && r.DriveLetter == driveLetter);
-                    else if (parentFrn != 0)
-                        bucket.RemoveAll(r => r.ParentFrn == parentFrn && r.DriveLetter == driveLetter);
-                    else
-                        bucket.RemoveAll(r => r.DriveLetter == driveLetter);
-                    if (bucket.Count == 0) ExactHashMap.Remove(lowerName);
-                }
-
                 if (TryGetIndexedExtension(lowerName, out var extension)
                     && ExtensionHashMap.TryGetValue(extension, out var extensionBucket))
                 {
@@ -367,15 +390,6 @@ namespace MftScanner
             _lock.EnterWriteLock();
             try
             {
-                if (ExactHashMap.TryGetValue(oldLowerName, out var bucket))
-                {
-                    if (frn != 0)
-                        bucket.RemoveAll(r => r.Frn == frn && r.DriveLetter == driveLetter);
-                    else
-                        bucket.RemoveAll(r => r.ParentFrn == oldParentFrn && r.DriveLetter == driveLetter);
-                    if (bucket.Count == 0) ExactHashMap.Remove(oldLowerName);
-                }
-
                 if (TryGetIndexedExtension(oldLowerName, out var oldExtension)
                     && ExtensionHashMap.TryGetValue(oldExtension, out var oldExtensionBucket))
                 {
@@ -403,10 +417,6 @@ namespace MftScanner
                         break;
                     }
                 }
-
-                if (!ExactHashMap.TryGetValue(newRecord.LowerName, out var nb))
-                    ExactHashMap[newRecord.LowerName] = nb = new List<FileRecord>();
-                nb.Add(newRecord);
 
                 if (TryGetIndexedExtension(newRecord.LowerName, out var newExtension))
                 {
@@ -547,19 +557,6 @@ namespace MftScanner
                    && record.ParentFrn == parentFrn;
         }
 
-        private static Dictionary<string, List<FileRecord>> BuildExactHashMap(FileRecord[] arr)
-        {
-            var map = new Dictionary<string, List<FileRecord>>(arr.Length);
-            foreach (var r in arr)
-            {
-                if (!map.TryGetValue(r.LowerName, out var bucket))
-                    map[r.LowerName] = bucket = new List<FileRecord>(1);
-                bucket.Add(r);
-            }
-
-            return map;
-        }
-
         private static Dictionary<string, List<FileRecord>> BuildExtensionHashMap(FileRecord[] arr)
         {
             var map = new Dictionary<string, List<FileRecord>>();
@@ -578,7 +575,6 @@ namespace MftScanner
 
         private static void BuildDerivedStructures(
             FileRecord[] arr,
-            out Dictionary<string, List<FileRecord>> exactMap,
             out Dictionary<string, List<FileRecord>> extensionMap,
             out FileRecord[] parentArr,
             out FileRecord[] directoryArr,
@@ -589,7 +585,6 @@ namespace MftScanner
         {
             if (arr == null || arr.Length == 0)
             {
-                exactMap = new Dictionary<string, List<FileRecord>>();
                 extensionMap = new Dictionary<string, List<FileRecord>>();
                 parentArr = Array.Empty<FileRecord>();
                 directoryArr = Array.Empty<FileRecord>();
@@ -600,7 +595,6 @@ namespace MftScanner
                 return;
             }
 
-            exactMap = new Dictionary<string, List<FileRecord>>(arr.Length);
             extensionMap = new Dictionary<string, List<FileRecord>>();
             var directories = new List<FileRecord>();
             var launchables = new List<FileRecord>();
@@ -614,14 +608,6 @@ namespace MftScanner
             for (var i = 0; i < arr.Length; i++)
             {
                 var record = arr[i];
-                if (!exactMap.TryGetValue(record.LowerName, out var exactBucket))
-                {
-                    exactBucket = new List<FileRecord>(1);
-                    exactMap[record.LowerName] = exactBucket;
-                }
-
-                exactBucket.Add(record);
-
                 if (TryGetIndexedExtension(record.LowerName, out var extension))
                 {
                     if (!extensionMap.TryGetValue(extension, out var extensionBucket))
@@ -687,7 +673,6 @@ namespace MftScanner
 
         private void Publish(
             FileRecord[] arr,
-            Dictionary<string, List<FileRecord>> exactMap,
             Dictionary<string, List<FileRecord>> extensionMap,
             FileRecord[] parentArr,
             FileRecord[] directoryArr,
@@ -701,7 +686,6 @@ namespace MftScanner
             _lock.EnterWriteLock();
             try
             {
-                ExactHashMap = exactMap;
                 ExtensionHashMap = extensionMap;
                 SortedArray = arr;
                 ParentSortedArray = parentArr ?? Array.Empty<FileRecord>();
@@ -780,7 +764,6 @@ namespace MftScanner
                 var arr = MergeSortedRecords(survivors, survivorCount, inserted);
                 BuildDerivedStructures(
                     arr,
-                    out var exactMap,
                     out var extensionMap,
                     out var parentArr,
                     out var directoryArr,
@@ -788,7 +771,6 @@ namespace MftScanner
                     out var scriptArr,
                     out var logArr,
                     out var configArr);
-                ExactHashMap = exactMap;
                 ExtensionHashMap = extensionMap;
                 SortedArray = arr;
                 ParentSortedArray = parentArr;

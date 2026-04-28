@@ -40,10 +40,13 @@ namespace MftScanner
         private Task _periodicSnapshotSaveTask;
         private ContainsQueryCacheEntry _containsQueryCache;
         private PathCandidateCacheEntry _pathCandidateCache;
+        private int _activeSearchCount;
+        private long _lastSearchCompletedUtcTicks;
 
         private const int SnapshotSaveDebounceMilliseconds = 5000;
         private const int SnapshotPeriodicSaveMilliseconds = 120000;
         private const int SnapshotSaveMaxDeferredMilliseconds = 30000;
+        private const int SnapshotSearchIdleDelayMilliseconds = 5000;
         private const int MaxIncrementalContainsCacheRecords = 2000000;
         private const int MaxPathCandidateCacheRecords = 500000;
         private static readonly bool BuildShortContainsBuckets = false;
@@ -171,14 +174,14 @@ namespace MftScanner
         private void OnFileCreated(object sender, UsnFileCreatedEventArgs args)
         {
             _enumerator.RegisterFrn(args.DriveLetter, args.Frn, args.FileName, args.ParentFrn, args.IsDirectory);
+            InvalidatePathCandidateCacheIfAffected(args.DriveLetter, args.ParentFrn, args.Frn);
 
             var lowerName = args.FileName.ToLowerInvariant();
 
             // 同一文件的 USN 事件可能触发多次（创建+写入+关闭），用 FRN 去重
             // 如果索引里已有相同 (lowerName, parentFrn, driveLetter) 的记录，跳过
             var idx = _index;
-            if (idx.ExactHashMap.TryGetValue(lowerName, out var existing)
-                && existing.Exists(r => r.ParentFrn == args.ParentFrn && r.DriveLetter == args.DriveLetter))
+            if (ContainsRecordByNameParentAndDrive(idx.SortedArray, lowerName, args.ParentFrn, args.DriveLetter))
                 return;
 
             var record = new FileRecord(
@@ -198,6 +201,7 @@ namespace MftScanner
         /// <summary>文件删除：从索引中移除记录。需求 6.3</summary>
         private void OnFileDeleted(object sender, UsnFileDeletedEventArgs args)
         {
+            InvalidatePathCandidateCacheIfAffected(args.DriveLetter, args.ParentFrn, args.Frn);
             // 删除前先解析路径（FRN 字典此时还未清除），供 UI 精确匹配
             var fullPath = _enumerator.ResolveFullPath(args.DriveLetter, args.ParentFrn, args.LowerName);
             _index.Remove(args.Frn, args.LowerName, args.ParentFrn, args.DriveLetter);
@@ -210,6 +214,8 @@ namespace MftScanner
         /// <summary>文件重命名：更新 FRN 字典，先移除旧记录再插入新记录。需求 6.4</summary>
         private void OnFileRenamed(object sender, UsnFileRenamedEventArgs args)
         {
+            InvalidatePathCandidateCacheIfAffected(args.DriveLetter, args.OldParentFrn, args.NewFrn);
+            InvalidatePathCandidateCacheIfAffected(args.DriveLetter, args.NewRecord.ParentFrn, args.NewFrn);
             var oldFullPath = _enumerator.ResolveFullPath(
                 args.DriveLetter, args.OldParentFrn, args.OldLowerName);
             _enumerator.RegisterFrn(args.DriveLetter, args.NewFrn,
@@ -529,12 +535,11 @@ namespace MftScanner
         }
 
         /// <summary>
-        /// 包含匹配：先查 ExactHashMap（精确命中），再对 SortedArray 执行二分定位后线性扫描。
+        /// 包含匹配：先用 SortedArray 二分定位精确同名命中，再对候选数组线性扫描。
         /// 需求 3.1、3.3、7.1
         /// </summary>
         private static (List<FileRecord> page, int total) ContainsMatch(
             string query,
-            Dictionary<string, List<FileRecord>> exactHashMap,
             FileRecord[] sortedArray,
             int offset,
             int maxResults,
@@ -542,7 +547,6 @@ namespace MftScanner
         {
             var result = ContainsMatchDetailed(
                 query,
-                exactHashMap,
                 sortedArray,
                 offset,
                 maxResults,
@@ -553,7 +557,6 @@ namespace MftScanner
 
         private static (List<FileRecord> page, int total, FileRecord[] allMatches) ContainsMatchDetailed(
             string query,
-            Dictionary<string, List<FileRecord>> exactHashMap,
             FileRecord[] sortedArray,
             int offset,
             int maxResults,
@@ -568,7 +571,6 @@ namespace MftScanner
             {
                 return ContainsMatchDetailedParallelFirstPage(
                     query,
-                    exactHashMap,
                     sortedArray,
                     maxResults,
                     ct);
@@ -578,16 +580,18 @@ namespace MftScanner
             var page = new List<FileRecord>(Math.Min(maxResults, 64));
             var allMatches = collectAllMatches ? new List<FileRecord>() : null;
             var total = 0;
-            var hasExactBucket = false;
+            var exactStart = 0;
+            var exactEnd = 0;
+            var hasExactRange = TryGetExactNameRange(sortedArray, query, out exactStart, out exactEnd);
             var candidateCount = sortedArray?.Length ?? 0;
             IndexPerfLog.Write("INDEX",
                 $"[CONTAINS FALLBACK] outcome=start candidateCount={candidateCount} offset={offset} maxResults={maxResults} query={IndexPerfLog.FormatValue(query)}");
 
-            if (exactHashMap != null && exactHashMap.TryGetValue(query, out var exactBucket))
+            if (hasExactRange)
             {
-                hasExactBucket = true;
-                foreach (var r in exactBucket)
+                for (var exactIndex = exactStart; exactIndex < exactEnd; exactIndex++)
                 {
+                    var r = sortedArray[exactIndex];
                     total++;
                     allMatches?.Add(r);
                     if (total > offset && page.Count < maxResults)
@@ -612,7 +616,7 @@ namespace MftScanner
                             $"[CONTAINS FALLBACK] outcome=progress scanned={i} candidateCount={candidateCount} matched={total} returned={page.Count} elapsedMs={stopwatch.ElapsedMilliseconds} query={IndexPerfLog.FormatValue(query)}");
                     }
 
-                    if (hasExactBucket && record.LowerName == query) continue;
+                    if (hasExactRange && i - 1 >= exactStart && i - 1 < exactEnd) continue;
                     if (record.LowerName.Contains(query))
                     {
                         total++;
@@ -638,7 +642,6 @@ namespace MftScanner
 
         private static (List<FileRecord> page, int total, FileRecord[] allMatches) ContainsMatchDetailedParallelFirstPage(
             string query,
-            Dictionary<string, List<FileRecord>> exactHashMap,
             FileRecord[] sortedArray,
             int maxResults,
             CancellationToken ct)
@@ -646,16 +649,18 @@ namespace MftScanner
             var stopwatch = Stopwatch.StartNew();
             var page = new List<FileRecord>(Math.Min(maxResults, 64));
             var total = 0;
-            var hasExactBucket = false;
+            var exactStart = 0;
+            var exactEnd = 0;
+            var hasExactRange = TryGetExactNameRange(sortedArray, query, out exactStart, out exactEnd);
             var candidateCount = sortedArray?.Length ?? 0;
             IndexPerfLog.Write("INDEX",
                 $"[CONTAINS FALLBACK] outcome=start candidateCount={candidateCount} offset=0 maxResults={maxResults} parallel=true query={IndexPerfLog.FormatValue(query)}");
 
-            if (exactHashMap != null && exactHashMap.TryGetValue(query, out var exactBucket))
+            if (hasExactRange)
             {
-                hasExactBucket = true;
-                foreach (var r in exactBucket)
+                for (var exactIndex = exactStart; exactIndex < exactEnd; exactIndex++)
                 {
+                    var r = sortedArray[exactIndex];
                     total++;
                     if (page.Count < maxResults)
                         page.Add(r);
@@ -672,7 +677,7 @@ namespace MftScanner
                 if (record == null)
                     continue;
 
-                if (hasExactBucket && record.LowerName == query)
+                if (hasExactRange && scanIndex >= exactStart && scanIndex < exactEnd)
                     continue;
 
                 if (!record.LowerName.Contains(query))
@@ -703,7 +708,7 @@ namespace MftScanner
                         if (record == null)
                             return local;
 
-                        if (hasExactBucket && record.LowerName == query)
+                        if (hasExactRange && i >= exactStart && i < exactEnd)
                             return local;
 
                         return record.LowerName.Contains(query)
@@ -725,6 +730,64 @@ namespace MftScanner
             IndexPerfLog.Write("INDEX",
                 $"[CONTAINS FALLBACK] outcome=success scanned={sortedArray.Length} candidateCount={candidateCount} matched={total} returned={page.Count} elapsedMs={stopwatch.ElapsedMilliseconds} parallel=true query={IndexPerfLog.FormatValue(query)}");
             return (page, total, Array.Empty<FileRecord>());
+        }
+
+        private static bool TryGetExactNameRange(FileRecord[] sortedArray, string lowerName, out int start, out int end)
+        {
+            start = 0;
+            end = 0;
+            if (sortedArray == null || sortedArray.Length == 0 || string.IsNullOrEmpty(lowerName))
+                return false;
+
+            var lo = 0;
+            var hi = sortedArray.Length;
+            while (lo < hi)
+            {
+                var mid = lo + ((hi - lo) / 2);
+                var compare = string.CompareOrdinal(sortedArray[mid]?.LowerName, lowerName);
+                if (compare < 0)
+                    lo = mid + 1;
+                else
+                    hi = mid;
+            }
+
+            start = lo;
+            hi = sortedArray.Length;
+            while (lo < hi)
+            {
+                var mid = lo + ((hi - lo) / 2);
+                var compare = string.CompareOrdinal(sortedArray[mid]?.LowerName, lowerName);
+                if (compare <= 0)
+                    lo = mid + 1;
+                else
+                    hi = mid;
+            }
+
+            end = lo;
+            return start < end;
+        }
+
+        private static bool ContainsRecordByNameParentAndDrive(
+            FileRecord[] sortedArray,
+            string lowerName,
+            ulong parentFrn,
+            char driveLetter)
+        {
+            if (!TryGetExactNameRange(sortedArray, lowerName, out var start, out var end))
+                return false;
+
+            for (var i = start; i < end; i++)
+            {
+                var record = sortedArray[i];
+                if (record != null
+                    && record.ParentFrn == parentFrn
+                    && record.DriveLetter == driveLetter)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private static FileRecord[] GetCandidateSource(MemoryIndex index, SearchTypeFilter filter)
@@ -777,6 +840,7 @@ namespace MftScanner
         {
             return Task.Run(() =>
             {
+                Interlocked.Increment(ref _activeSearchCount);
                 var idx = _index;
                 var totalStopwatch = Stopwatch.StartNew();
                 long matchElapsedMilliseconds = 0;
@@ -855,7 +919,7 @@ namespace MftScanner
                             var pathCandidateCacheHit = TryGetPathCandidateCache(
                                 pathPrefix,
                                 filter,
-                                indexContentVersion,
+                                pathScope,
                                 out candidateSource);
                             if (!pathCandidateCacheHit)
                             {
@@ -867,7 +931,7 @@ namespace MftScanner
                                 UpdatePathCandidateCache(
                                     pathPrefix,
                                     filter,
-                                    indexContentVersion,
+                                    pathScope,
                                     candidateSource);
                             }
 
@@ -978,7 +1042,6 @@ namespace MftScanner
                                                 containsCacheScopeKey,
                                                 indexContentVersion,
                                                 simplifiedQuery,
-                                                !pathPrefilterApplied && filter == SearchTypeFilter.All ? idx.ExactHashMap : null,
                                                 candidateSource,
                                                 filter,
                                                 pathPostFilterRequired,
@@ -1021,7 +1084,6 @@ namespace MftScanner
                                     containsCacheScopeKey,
                                     indexContentVersion,
                                     normalizedQuery,
-                                    !pathPrefilterApplied && filter == SearchTypeFilter.All ? idx.ExactHashMap : null,
                                     candidateSource,
                                     filter,
                                     pathPostFilterRequired,
@@ -1085,11 +1147,21 @@ namespace MftScanner
                     }
                     else
                     {
+                        var directoryKeys = new HashSet<MftEnumerator.DirectoryPathKey>();
+                        foreach (var record in matched)
+                        {
+                            if (record != null)
+                                directoryKeys.Add(new MftEnumerator.DirectoryPathKey(record.DriveLetter, record.ParentFrn));
+                        }
+
+                        var directoryPaths = _enumerator.ResolveDirectoryPaths(directoryKeys);
                         foreach (var record in matched)
                         {
                             ct.ThrowIfCancellationRequested();
-                            var fullPath = _enumerator.ResolveFullPath(record.DriveLetter, record.ParentFrn, record.OriginalName)
-                                           ?? (record.DriveLetter + ":\\" + record.OriginalName);
+                            var key = new MftEnumerator.DirectoryPathKey(record.DriveLetter, record.ParentFrn);
+                            if (!directoryPaths.TryGetValue(key, out var dirPath) || string.IsNullOrEmpty(dirPath))
+                                dirPath = record.DriveLetter + ":";
+                            var fullPath = dirPath + "\\" + record.OriginalName;
                             results.Add(new ScannedFileInfo
                             {
                                 FullPath = fullPath,
@@ -1211,6 +1283,11 @@ namespace MftScanner
                         ex);
                     throw;
                 }
+                finally
+                {
+                    Interlocked.Decrement(ref _activeSearchCount);
+                    Interlocked.Exchange(ref _lastSearchCompletedUtcTicks, DateTime.UtcNow.Ticks);
+                }
             }, ct);
         }
 
@@ -1234,7 +1311,6 @@ namespace MftScanner
             string scopeKey,
             long contentVersion,
             string query,
-            Dictionary<string, List<FileRecord>> exactHashMap,
             FileRecord[] candidateSource,
             SearchTypeFilter filter,
             bool pathPostFilterRequired,
@@ -1253,7 +1329,6 @@ namespace MftScanner
                                     && source.Length <= MaxIncrementalContainsCacheRecords;
             var result = ContainsMatchDetailed(
                 query,
-                cacheHit ? null : exactHashMap,
                 source,
                 offset,
                 maxResults,
@@ -1356,7 +1431,7 @@ namespace MftScanner
         private bool TryGetPathCandidateCache(
             string pathPrefix,
             SearchTypeFilter filter,
-            long contentVersion,
+            MftEnumerator.DirectorySubtreeScope scope,
             out FileRecord[] candidates)
         {
             candidates = null;
@@ -1364,8 +1439,10 @@ namespace MftScanner
             {
                 var cache = _pathCandidateCache;
                 if (cache == null
-                    || cache.ContentVersion != contentVersion
                     || cache.Filter != filter
+                    || scope == null
+                    || cache.DriveLetter != scope.DriveLetter
+                    || cache.RootFrn != scope.RootFrn
                     || !string.Equals(cache.PathPrefix, pathPrefix, StringComparison.OrdinalIgnoreCase)
                     || cache.Candidates == null)
                 {
@@ -1380,10 +1457,11 @@ namespace MftScanner
         private void UpdatePathCandidateCache(
             string pathPrefix,
             SearchTypeFilter filter,
-            long contentVersion,
+            MftEnumerator.DirectorySubtreeScope scope,
             FileRecord[] candidates)
         {
             if (string.IsNullOrWhiteSpace(pathPrefix)
+                || scope == null
                 || candidates == null
                 || candidates.Length > MaxPathCandidateCacheRecords)
             {
@@ -1396,9 +1474,58 @@ namespace MftScanner
                 {
                     PathPrefix = pathPrefix,
                     Filter = filter,
-                    ContentVersion = contentVersion,
+                    DriveLetter = scope.DriveLetter,
+                    RootFrn = scope.RootFrn,
+                    DirectoryFrns = scope.DirectoryFrns,
                     Candidates = candidates
                 };
+            }
+        }
+
+        private void InvalidatePathCandidateCacheIfAffected(char driveLetter, ulong parentFrn, ulong frn)
+        {
+            lock (_pathCandidateCacheLock)
+            {
+                var cache = _pathCandidateCache;
+                if (cache == null
+                    || cache.DirectoryFrns == null
+                    || char.ToUpperInvariant(driveLetter) != char.ToUpperInvariant(cache.DriveLetter))
+                {
+                    return;
+                }
+
+                if (cache.ContainsDirectory(parentFrn) || cache.ContainsDirectory(frn))
+                {
+                    _pathCandidateCache = null;
+                }
+            }
+        }
+
+        private void InvalidatePathCandidateCacheIfAffected(IReadOnlyList<UsnChangeEntry> changes)
+        {
+            if (changes == null || changes.Count == 0)
+                return;
+
+            lock (_pathCandidateCacheLock)
+            {
+                var cache = _pathCandidateCache;
+                if (cache == null || cache.DirectoryFrns == null)
+                    return;
+
+                for (var i = 0; i < changes.Count; i++)
+                {
+                    var change = changes[i];
+                    if (char.ToUpperInvariant(change.DriveLetter) != char.ToUpperInvariant(cache.DriveLetter))
+                        continue;
+
+                    if (cache.ContainsDirectory(change.ParentFrn)
+                        || cache.ContainsDirectory(change.OldParentFrn)
+                        || cache.ContainsDirectory(change.Frn))
+                    {
+                        _pathCandidateCache = null;
+                        return;
+                    }
+                }
             }
         }
 
@@ -1535,8 +1662,11 @@ namespace MftScanner
             var restoreStopwatch = Stopwatch.StartNew();
             _enumerator.LoadVolumeSnapshots(snapshot.Volumes);
             _index.LoadSortedRecords(snapshot.Records, buildContainsAccelerator: false);
+            var containsPostingsLoaded = _index.TryLoadContainsPostingsSnapshot(snapshot.ContainsPostings);
             restoreStopwatch.Stop();
-            UsnDiagLog.Write($"[SNAPSHOT RESTORE] elapsedMs={restoreStopwatch.ElapsedMilliseconds} records={snapshot.Records.Length} volumes={snapshot.Volumes.Length}");
+            UsnDiagLog.Write(
+                $"[SNAPSHOT RESTORE] elapsedMs={restoreStopwatch.ElapsedMilliseconds} records={snapshot.Records.Length} " +
+                $"volumes={snapshot.Volumes.Length} containsPostingsLoaded={containsPostingsLoaded}");
 
             restoredCount = _index.TotalCount;
             totalStopwatch.Stop();
@@ -1801,6 +1931,7 @@ namespace MftScanner
                     }
 
                     var indexChangedArgs = BuildBatchIndexChangedArgs(allChanges);
+                    InvalidatePathCandidateCacheIfAffected(allChanges);
                     _enumerator.ApplyUsnChanges(allChanges);
                     _index.ApplyBatch(allChanges, rebuildContainsAccelerator: false);
                     PublishBatchIndexChanges(indexChangedArgs);
@@ -2095,7 +2226,10 @@ namespace MftScanner
                     lock (_snapshotWriteLock)
                     {
                         var saveStopwatch = Stopwatch.StartNew();
-                        metrics = _snapshotStore.Save(new IndexSnapshot(recordCopy, volumeCopy));
+                        metrics = _snapshotStore.Save(new IndexSnapshot(
+                            recordCopy,
+                            volumeCopy,
+                            containsPostings: _index.ExportContainsPostingsSnapshot()));
                         saveStopwatch.Stop();
                         elapsedMilliseconds = saveStopwatch.ElapsedMilliseconds;
                     }
@@ -2195,6 +2329,12 @@ namespace MftScanner
                         break;
                     }
 
+                    if (ShouldDeferSnapshotSave())
+                    {
+                        UsnDiagLog.Write("[SNAPSHOT PERIODIC SKIP] reason=search-active");
+                        continue;
+                    }
+
                     SaveCurrentSnapshot("periodic");
                 }
             }
@@ -2262,6 +2402,14 @@ namespace MftScanner
         {
             try
             {
+                if (!string.Equals(reason, "shutdown", StringComparison.OrdinalIgnoreCase)
+                    && ShouldDeferSnapshotSave())
+                {
+                    UsnDiagLog.Write($"[SNAPSHOT SAVE DEFER] reason={reason} searchActive={Volatile.Read(ref _activeSearchCount)}");
+                    ScheduleSnapshotSave();
+                    return;
+                }
+
                 var totalStopwatch = Stopwatch.StartNew();
                 var checkpoints = _usnWatcher.GetVolumeCheckpoints();
                 if (checkpoints == null || checkpoints.Length == 0)
@@ -2285,7 +2433,10 @@ namespace MftScanner
                 lock (_snapshotWriteLock)
                 {
                     var saveStopwatch = Stopwatch.StartNew();
-                    metrics = _snapshotStore.Save(new IndexSnapshot(recordCopy, volumeSnapshots));
+                    metrics = _snapshotStore.Save(new IndexSnapshot(
+                        recordCopy,
+                        volumeSnapshots,
+                        containsPostings: _index.ExportContainsPostingsSnapshot()));
                     saveStopwatch.Stop();
                     elapsedMilliseconds = saveStopwatch.ElapsedMilliseconds;
                 }
@@ -2307,6 +2458,19 @@ namespace MftScanner
             }
         }
 
+        private bool ShouldDeferSnapshotSave()
+        {
+            if (Volatile.Read(ref _activeSearchCount) > 0)
+                return true;
+
+            var ticks = Interlocked.Read(ref _lastSearchCompletedUtcTicks);
+            if (ticks <= 0)
+                return false;
+
+            return (DateTime.UtcNow - new DateTime(ticks, DateTimeKind.Utc)).TotalMilliseconds
+                   < SnapshotSearchIdleDelayMilliseconds;
+        }
+
         private sealed class ContainsQueryCacheEntry
         {
             public string ScopeKey { get; set; }
@@ -2319,9 +2483,23 @@ namespace MftScanner
         private sealed class PathCandidateCacheEntry
         {
             public string PathPrefix { get; set; }
-            public long ContentVersion { get; set; }
+            public char DriveLetter { get; set; }
+            public ulong RootFrn { get; set; }
             public SearchTypeFilter Filter { get; set; }
+            public ulong[] DirectoryFrns { get; set; }
             public FileRecord[] Candidates { get; set; }
+            private HashSet<ulong> _directorySet;
+
+            public bool ContainsDirectory(ulong frn)
+            {
+                if (frn == 0 || DirectoryFrns == null || DirectoryFrns.Length == 0)
+                    return false;
+
+                if (_directorySet == null)
+                    _directorySet = new HashSet<ulong>(DirectoryFrns);
+
+                return _directorySet.Contains(frn);
+            }
         }
 
     }

@@ -469,6 +469,11 @@ namespace MftScanner
             long readMs = 0;
             var requestBytes = 0;
             await EnsureResourcesAvailableAsync(ct).ConfigureAwait(false);
+            if (request != null && request.CommandType == SharedIndexCommandType.Search)
+            {
+                SignalInFlightSearchCancellation();
+            }
+
             await _requestGate.WaitAsync(ct).ConfigureAwait(false);
             try
             {
@@ -552,6 +557,18 @@ namespace MftScanner
             finally
             {
                 _requestGate.Release();
+            }
+        }
+
+        private void SignalInFlightSearchCancellation()
+        {
+            try
+            {
+                var slotResources = GetSlotResources();
+                slotResources?.CancelEvent.Set();
+            }
+            catch
+            {
             }
         }
 

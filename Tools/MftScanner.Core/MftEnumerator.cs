@@ -92,8 +92,8 @@ namespace MftScanner
             public ulong AllocationDelta;
         }
 
-        // ── FRN 字典（按卷存储，供路径解析使用）──────────────────────────────────
-        // key = driveLetter(upper), value = FRN → (name, parentFrn)
+        // ── 目录 FRN 字典（按卷存储，供路径解析使用）──────────────────────────────
+        // key = driveLetter(upper), value = directory FRN → (name, parentFrn, isDirectory=true)
         private readonly Dictionary<char, Dictionary<ulong, (string name, ulong parentFrn, bool isDirectory)>> _frnMaps
             = new Dictionary<char, Dictionary<ulong, (string name, ulong parentFrn, bool isDirectory)>>();
 
@@ -221,11 +221,13 @@ namespace MftScanner
                     frn:          kv.Key));
             }
 
+            var directoryMap = BuildDirectoryOnlyMap(frnMap);
+
             _mapsLock.EnterWriteLock();
             try
             {
-                _frnMaps[dl] = frnMap;
-                _childDirectoryFrnsByParent[dl] = BuildChildDirectoryMap(frnMap);
+                _frnMaps[dl] = directoryMap;
+                _childDirectoryFrnsByParent[dl] = BuildChildDirectoryMap(directoryMap);
                 _pathCaches[dl] = new Dictionary<ulong, string>();
                 _directorySubtreeCache.Clear();
             }
@@ -339,7 +341,8 @@ namespace MftScanner
                         for (var j = 0; j < snapshot.FrnEntries.Length; j++)
                         {
                             var entry = snapshot.FrnEntries[j];
-                            map[entry.Frn] = (entry.Name, entry.ParentFrn, entry.IsDirectory);
+                            if (entry.IsDirectory)
+                                map[entry.Frn] = (entry.Name, entry.ParentFrn, true);
                         }
                     }
 
@@ -355,8 +358,8 @@ namespace MftScanner
         }
 
         /// <summary>
-        /// USN 事件新增文件时调用，将 frn→(name, parentFrn) 写入字典，
-        /// 确保后续 ResolveFullPath 能正确解析该文件及其子文件的路径。
+        /// USN 事件新增目录时调用，将目录 frn→(name, parentFrn) 写入字典。
+        /// 普通文件不进入路径 FRN 字典，完整路径由父目录链和 FileRecord 文件名组合得到。
         /// </summary>
         public void RegisterFrn(char driveLetter, ulong frn, string fileName, ulong parentFrn, bool isDirectory)
         {
@@ -369,14 +372,16 @@ namespace MftScanner
                 if (!_childDirectoryFrnsByParent.TryGetValue(dl, out var childDirs))
                     childDirs = _childDirectoryFrnsByParent[dl] = new Dictionary<ulong, List<ulong>>();
 
-                var affectsDirectoryCache = isDirectory;
-                if (frnMap.TryGetValue(frn, out var existing) && existing.isDirectory)
+                if (!isDirectory)
+                    return;
+
+                var affectsDirectoryCache = true;
+                if (frnMap.TryGetValue(frn, out var existing))
                 {
                     RemoveChildDirectory(childDirs, existing.parentFrn, frn);
-                    affectsDirectoryCache = true;
                 }
 
-                frnMap[frn] = (fileName, parentFrn, isDirectory);
+                frnMap[frn] = (fileName, parentFrn, true);
                 if (_pathCaches.TryGetValue(dl, out var pathCache))
                 {
                     if (affectsDirectoryCache)
@@ -387,10 +392,7 @@ namespace MftScanner
                 if (affectsDirectoryCache)
                     _directorySubtreeCache.Clear();
 
-                if (isDirectory)
-                {
-                    AddChildDirectory(childDirs, parentFrn, frn);
-                }
+                AddChildDirectory(childDirs, parentFrn, frn);
             }
             finally
             {
@@ -412,9 +414,8 @@ namespace MftScanner
                 {
                     if (frnMap.TryGetValue(frn, out var existing))
                     {
-                        removedDirectory = existing.isDirectory;
-                        if (removedDirectory
-                            && _childDirectoryFrnsByParent.TryGetValue(dl, out var childDirs))
+                        removedDirectory = true;
+                        if (_childDirectoryFrnsByParent.TryGetValue(dl, out var childDirs))
                         {
                             RemoveChildDirectory(childDirs, existing.parentFrn, frn);
                             childDirs.Remove(frn);
@@ -463,16 +464,20 @@ namespace MftScanner
                     {
                         case UsnChangeKind.Create:
                         case UsnChangeKind.Rename:
-                            var affectsDirectoryCache = change.IsDirectory;
-                            if (frnMap.TryGetValue(change.Frn, out var existing) && existing.isDirectory)
+                            if (!change.IsDirectory)
                             {
-                                RemoveChildDirectory(childDirs, existing.parentFrn, change.Frn);
-                                affectsDirectoryCache = true;
+                                pathCache.Remove(change.Frn);
+                                break;
                             }
 
-                            frnMap[change.Frn] = (change.OriginalName, change.ParentFrn, change.IsDirectory);
-                            if (change.IsDirectory)
-                                AddChildDirectory(childDirs, change.ParentFrn, change.Frn);
+                            var affectsDirectoryCache = true;
+                            if (frnMap.TryGetValue(change.Frn, out var existing))
+                            {
+                                RemoveChildDirectory(childDirs, existing.parentFrn, change.Frn);
+                            }
+
+                            frnMap[change.Frn] = (change.OriginalName, change.ParentFrn, true);
+                            AddChildDirectory(childDirs, change.ParentFrn, change.Frn);
 
                             if (affectsDirectoryCache)
                             {
@@ -485,7 +490,7 @@ namespace MftScanner
                             }
                             break;
                         case UsnChangeKind.Delete:
-                            if (frnMap.TryGetValue(change.Frn, out var deleted) && deleted.isDirectory)
+                            if (frnMap.TryGetValue(change.Frn, out var deleted))
                             {
                                 RemoveChildDirectory(childDirs, deleted.parentFrn, change.Frn);
                                 childDirs.Remove(change.Frn);
@@ -594,7 +599,7 @@ namespace MftScanner
         public string ResolveFullPath(char driveLetter, ulong parentFrn, string fileName)
         {
             var dl = char.ToUpperInvariant(driveLetter);
-            _mapsLock.EnterReadLock();
+            _mapsLock.EnterWriteLock();
             try
             {
                 if (!_frnMaps.TryGetValue(dl, out var frnMap))
@@ -608,8 +613,44 @@ namespace MftScanner
             }
             finally
             {
-                _mapsLock.ExitReadLock();
+                _mapsLock.ExitWriteLock();
             }
+        }
+
+        public Dictionary<DirectoryPathKey, string> ResolveDirectoryPaths(IEnumerable<DirectoryPathKey> directories)
+        {
+            var result = new Dictionary<DirectoryPathKey, string>();
+            if (directories == null)
+                return result;
+
+            _mapsLock.EnterWriteLock();
+            try
+            {
+                foreach (var key in directories)
+                {
+                    var dl = char.ToUpperInvariant(key.DriveLetter);
+                    var normalizedKey = new DirectoryPathKey(dl, key.ParentFrn);
+                    if (result.ContainsKey(normalizedKey))
+                        continue;
+
+                    if (!_frnMaps.TryGetValue(dl, out var frnMap))
+                    {
+                        result[normalizedKey] = dl + ":";
+                        continue;
+                    }
+
+                    if (!_pathCaches.TryGetValue(dl, out var pathCache))
+                        pathCache = _pathCaches[dl] = new Dictionary<ulong, string>();
+
+                    result[normalizedKey] = ResolveDir(key.ParentFrn, dl, frnMap, pathCache);
+                }
+            }
+            finally
+            {
+                _mapsLock.ExitWriteLock();
+            }
+
+            return result;
         }
 
         private static string ResolveDir(ulong dirFrn,
@@ -699,6 +740,22 @@ namespace MftScanner
             }
 
             return childDirs;
+        }
+
+        private static Dictionary<ulong, (string name, ulong parentFrn, bool isDirectory)> BuildDirectoryOnlyMap(
+            Dictionary<ulong, (string name, ulong parentFrn, bool isDirectory)> frnMap)
+        {
+            var directories = new Dictionary<ulong, (string name, ulong parentFrn, bool isDirectory)>();
+            if (frnMap == null || frnMap.Count == 0)
+                return directories;
+
+            foreach (var entry in frnMap)
+            {
+                if (entry.Value.isDirectory)
+                    directories[entry.Key] = (entry.Value.name, entry.Value.parentFrn, true);
+            }
+
+            return directories;
         }
 
         private static void AddChildDirectory(Dictionary<ulong, List<ulong>> childDirs, ulong parentFrn, ulong childFrn)
@@ -837,6 +894,33 @@ namespace MftScanner
 
             /// <summary>是否为目录。</summary>
             public bool IsDirectory;
+        }
+
+        public struct DirectoryPathKey : IEquatable<DirectoryPathKey>
+        {
+            public DirectoryPathKey(char driveLetter, ulong parentFrn)
+            {
+                DriveLetter = char.ToUpperInvariant(driveLetter);
+                ParentFrn = parentFrn;
+            }
+
+            public char DriveLetter { get; }
+            public ulong ParentFrn { get; }
+
+            public bool Equals(DirectoryPathKey other)
+            {
+                return DriveLetter == other.DriveLetter && ParentFrn == other.ParentFrn;
+            }
+
+            public override bool Equals(object obj)
+            {
+                return obj is DirectoryPathKey other && Equals(other);
+            }
+
+            public override int GetHashCode()
+            {
+                return (DriveLetter.GetHashCode() * 397) ^ ParentFrn.GetHashCode();
+            }
         }
     }
 }

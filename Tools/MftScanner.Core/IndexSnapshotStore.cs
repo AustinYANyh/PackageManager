@@ -12,6 +12,7 @@ namespace MftScanner
         private const int SnapshotVersion1 = 1;
         private const int SnapshotVersion2 = 2;
         private const int SnapshotVersion3 = 3;
+        private const int SnapshotVersion4 = 4;
         private const string SnapshotWriteMutexName = "PackageManager.MftScannerIndex.WriteLock";
         private const int SnapshotWriteLockTimeoutMilliseconds = 200;
 
@@ -49,6 +50,9 @@ namespace MftScanner
                             break;
                         case SnapshotVersion3:
                             snapshot = ReadVersion3(reader);
+                            break;
+                        case SnapshotVersion4:
+                            snapshot = ReadVersion4(reader);
                             break;
                         default:
                             return false;
@@ -104,7 +108,7 @@ namespace MftScanner
                 using (var stream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
                 using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: false))
                 {
-                    WriteVersion3(writer, snapshot);
+                    WriteVersion4(writer, snapshot);
                 }
 
                 if (File.Exists(_snapshotFilePath))
@@ -118,7 +122,7 @@ namespace MftScanner
 
                 var fileInfo = new FileInfo(_snapshotFilePath);
                 return new IndexSnapshotSaveMetrics(
-                    SnapshotVersion3,
+                    SnapshotVersion4,
                     fileInfo.Exists ? fileInfo.Length : 0,
                     snapshot.Records?.Length ?? 0,
                     snapshot.Volumes?.Length ?? 0,
@@ -251,6 +255,16 @@ namespace MftScanner
 
         private static IndexSnapshot ReadVersion3(BinaryReader reader)
         {
+            return ReadVersion3Body(reader, readContainsPostings: false);
+        }
+
+        private static IndexSnapshot ReadVersion4(BinaryReader reader)
+        {
+            return ReadVersion3Body(reader, readContainsPostings: true);
+        }
+
+        private static IndexSnapshot ReadVersion3Body(BinaryReader reader, bool readContainsPostings)
+        {
             var stringPoolCount = reader.ReadInt32();
             if (stringPoolCount < 0)
                 return null;
@@ -314,7 +328,11 @@ namespace MftScanner
                 volumes[i] = new VolumeSnapshot(driveLetter, nextUsn, journalId, frnEntries);
             }
 
-            return new IndexSnapshot(records, volumes, stringPool.Length);
+            var containsPostings = readContainsPostings
+                ? ReadContainsPostings(reader)
+                : null;
+
+            return new IndexSnapshot(records, volumes, stringPool.Length, containsPostings);
         }
 
         private static VolumeSnapshot[] ReadVolumesV1(BinaryReader reader)
@@ -352,6 +370,17 @@ namespace MftScanner
         private static void WriteVersion3(BinaryWriter writer, IndexSnapshot snapshot)
         {
             writer.Write(SnapshotVersion3);
+            WriteVersion3Body(writer, snapshot);
+        }
+
+        private static void WriteVersion4(BinaryWriter writer, IndexSnapshot snapshot)
+        {
+            writer.Write(SnapshotVersion4);
+            WriteVersion3Body(writer, snapshot);
+        }
+
+        private static void WriteVersion3Body(BinaryWriter writer, IndexSnapshot snapshot)
+        {
 
             var records = snapshot.Records ?? Array.Empty<FileRecord>();
             var volumes = snapshot.Volumes ?? Array.Empty<VolumeSnapshot>();
@@ -394,6 +423,79 @@ namespace MftScanner
                     writer.Write(entry.IsDirectory);
                 }
             }
+
+            WriteContainsPostings(writer, snapshot.ContainsPostings);
+        }
+
+        private static ContainsPostingsSnapshot ReadContainsPostings(BinaryReader reader)
+        {
+            try
+            {
+                var hasPostings = reader.ReadBoolean();
+                if (!hasPostings)
+                    return null;
+
+                var recordCount = reader.ReadInt32();
+                var keyCount = reader.ReadInt32();
+                if (recordCount < 0 || keyCount < 0)
+                    return null;
+
+                var keys = new ulong[keyCount];
+                var offsets = new int[keyCount];
+                var counts = new int[keyCount];
+                var byteCounts = new int[keyCount];
+                for (var i = 0; i < keyCount; i++)
+                {
+                    keys[i] = reader.ReadUInt64();
+                    offsets[i] = reader.ReadInt32();
+                    counts[i] = reader.ReadInt32();
+                    byteCounts[i] = reader.ReadInt32();
+                }
+
+                var byteLength = reader.ReadInt32();
+                if (byteLength < 0)
+                    return null;
+
+                var bytes = reader.ReadBytes(byteLength);
+                return bytes.Length == byteLength
+                    ? new ContainsPostingsSnapshot(recordCount, keys, offsets, counts, byteCounts, bytes)
+                    : null;
+            }
+            catch (EndOfStreamException)
+            {
+                return null;
+            }
+        }
+
+        private static void WriteContainsPostings(BinaryWriter writer, ContainsPostingsSnapshot snapshot)
+        {
+            if (snapshot == null
+                || snapshot.Keys == null
+                || snapshot.Offsets == null
+                || snapshot.Counts == null
+                || snapshot.ByteCounts == null
+                || snapshot.Bytes == null
+                || snapshot.Keys.Length != snapshot.Offsets.Length
+                || snapshot.Keys.Length != snapshot.Counts.Length
+                || snapshot.Keys.Length != snapshot.ByteCounts.Length)
+            {
+                writer.Write(false);
+                return;
+            }
+
+            writer.Write(true);
+            writer.Write(snapshot.RecordCount);
+            writer.Write(snapshot.Keys.Length);
+            for (var i = 0; i < snapshot.Keys.Length; i++)
+            {
+                writer.Write(snapshot.Keys[i]);
+                writer.Write(snapshot.Offsets[i]);
+                writer.Write(snapshot.Counts[i]);
+                writer.Write(snapshot.ByteCounts[i]);
+            }
+
+            writer.Write(snapshot.Bytes.Length);
+            writer.Write(snapshot.Bytes);
         }
 
         private static string[] BuildStringPool(FileRecord[] records, VolumeSnapshot[] volumes)
@@ -514,11 +616,16 @@ namespace MftScanner
 
     internal sealed class IndexSnapshot
     {
-        public IndexSnapshot(FileRecord[] records, VolumeSnapshot[] volumes, int stringPoolCount = 0)
+        public IndexSnapshot(
+            FileRecord[] records,
+            VolumeSnapshot[] volumes,
+            int stringPoolCount = 0,
+            ContainsPostingsSnapshot containsPostings = null)
         {
             Records = records ?? Array.Empty<FileRecord>();
             Volumes = volumes ?? Array.Empty<VolumeSnapshot>();
             StringPoolCount = stringPoolCount;
+            ContainsPostings = containsPostings;
         }
 
         public FileRecord[] Records { get; }
@@ -526,6 +633,33 @@ namespace MftScanner
         public VolumeSnapshot[] Volumes { get; }
 
         public int StringPoolCount { get; }
+        public ContainsPostingsSnapshot ContainsPostings { get; }
+    }
+
+    internal sealed class ContainsPostingsSnapshot
+    {
+        public ContainsPostingsSnapshot(
+            int recordCount,
+            ulong[] keys,
+            int[] offsets,
+            int[] counts,
+            int[] byteCounts,
+            byte[] bytes)
+        {
+            RecordCount = recordCount;
+            Keys = keys ?? Array.Empty<ulong>();
+            Offsets = offsets ?? Array.Empty<int>();
+            Counts = counts ?? Array.Empty<int>();
+            ByteCounts = byteCounts ?? Array.Empty<int>();
+            Bytes = bytes ?? Array.Empty<byte>();
+        }
+
+        public int RecordCount { get; }
+        public ulong[] Keys { get; }
+        public int[] Offsets { get; }
+        public int[] Counts { get; }
+        public int[] ByteCounts { get; }
+        public byte[] Bytes { get; }
     }
 
     public sealed class VolumeSnapshot

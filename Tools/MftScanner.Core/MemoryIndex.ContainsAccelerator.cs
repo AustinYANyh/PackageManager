@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -143,6 +144,42 @@ namespace MftScanner
                 IndexPerfLog.Write("INDEX",
                     $"[CONTAINS BUILD] outcome=success buckets={builtBuckets} records={records.Length} elapsedMs={totalStopwatch.ElapsedMilliseconds}");
                 return new ContainsAccelerator(records, builtBuckets, charBuckets, bigramBuckets, trigramBuckets);
+            }
+
+            public static ContainsAccelerator FromTrigramSnapshot(FileRecord[] records, ContainsPostingsSnapshot snapshot)
+            {
+                if (records == null
+                    || snapshot == null
+                    || snapshot.RecordCount != records.Length
+                    || snapshot.Keys == null
+                    || snapshot.Offsets == null
+                    || snapshot.Counts == null
+                    || snapshot.ByteCounts == null
+                    || snapshot.Bytes == null
+                    || snapshot.Keys.Length != snapshot.Offsets.Length
+                    || snapshot.Keys.Length != snapshot.Counts.Length
+                    || snapshot.Keys.Length != snapshot.ByteCounts.Length)
+                {
+                    return null;
+                }
+
+                var trigramBuckets = BucketStore<ulong>.FromSnapshot(
+                    snapshot.Keys,
+                    snapshot.Offsets,
+                    snapshot.Counts,
+                    snapshot.ByteCounts,
+                    snapshot.Bytes);
+                return new ContainsAccelerator(
+                    records,
+                    BucketKinds.Trigram,
+                    BucketStore<char>.Empty,
+                    BucketStore<uint>.Empty,
+                    trigramBuckets);
+            }
+
+            public ContainsPostingsSnapshot ExportTrigramSnapshot()
+            {
+                return _trigramBuckets.ExportSnapshot(_records.Length);
             }
 
             public ContainsAccelerator WithInserted(FileRecord record)
@@ -640,7 +677,12 @@ namespace MftScanner
                     IndexPerfLog.Write("INDEX",
                         $"[CONTAINS BUILD BUCKET] outcome=success bucket={IndexPerfLog.FormatValue(bucketName)} records={records.Length} workerCount={workerCount} buckets={bucketCount} postings={totalPostings} totalMs={totalStopwatch.ElapsedMilliseconds} countMs={countMs} mergeMs={mergeMs} positionMs={positionMs} fillMs={fillMs}");
 
-                    return new BucketStore<TKey>(bucketIndexes, entries, postings);
+                    var compressedPostings = BucketStore<TKey>.CompressPostings(entries, postings, out var compressedEntries);
+                    IndexPerfLog.Write("INDEX",
+                        $"[CONTAINS BUILD COMPRESS] outcome=success bucket={IndexPerfLog.FormatValue(bucketName)} postings={totalPostings} " +
+                        $"rawBytes={(long)totalPostings * sizeof(int)} compressedBytes={compressedPostings.Length}");
+
+                    return new BucketStore<TKey>(bucketIndexes, compressedEntries, compressedPostings);
                 }
                 catch (OperationCanceledException)
                 {
@@ -944,14 +986,16 @@ namespace MftScanner
 
             private struct BucketEntry
             {
-                public BucketEntry(int offset, int count)
+                public BucketEntry(int offset, int count, int byteCount = 0)
                 {
                     Offset = offset;
                     Count = count;
+                    ByteCount = byteCount;
                 }
 
                 public int Offset { get; private set; }
                 public int Count { get; private set; }
+                public int ByteCount { get; private set; }
             }
 
             private struct BucketPosting
@@ -978,15 +1022,27 @@ namespace MftScanner
                 private readonly Dictionary<TKey, int> _bucketIndexes;
                 private readonly BucketEntry[] _entries;
                 private readonly int[] _postings;
+                private readonly byte[] _compressedPostings;
                 private Dictionary<TKey, int[]> _overridePostings;
 
                 public static BucketStore<TKey> Empty => EmptyStore;
 
                 public BucketStore(Dictionary<TKey, int> bucketIndexes, BucketEntry[] entries, int[] postings)
+                    : this(bucketIndexes, entries, postings, null)
+                {
+                }
+
+                public BucketStore(Dictionary<TKey, int> bucketIndexes, BucketEntry[] entries, byte[] compressedPostings)
+                    : this(bucketIndexes, entries, null, compressedPostings)
+                {
+                }
+
+                private BucketStore(Dictionary<TKey, int> bucketIndexes, BucketEntry[] entries, int[] postings, byte[] compressedPostings)
                 {
                     _bucketIndexes = bucketIndexes ?? new Dictionary<TKey, int>();
                     _entries = entries ?? Array.Empty<BucketEntry>();
                     _postings = postings ?? Array.Empty<int>();
+                    _compressedPostings = compressedPostings ?? Array.Empty<byte>();
                 }
 
                 public bool TryGetPosting(TKey token, out BucketPosting posting)
@@ -1019,6 +1075,12 @@ namespace MftScanner
                     {
                         posting = default(BucketPosting);
                         return false;
+                    }
+
+                    if (_compressedPostings.Length > 0)
+                    {
+                        posting = new BucketPosting(DecodePosting(entry), 0, entry.Count);
+                        return true;
                     }
 
                     posting = new BucketPosting(_postings, entry.Offset, entry.Count);
@@ -1122,9 +1184,35 @@ namespace MftScanner
                         return Array.Empty<int>();
                     }
 
+                    if (_compressedPostings.Length > 0)
+                    {
+                        return DecodePosting(entry);
+                    }
+
                     var copy = new int[entry.Count];
                     Array.Copy(_postings, entry.Offset, copy, 0, entry.Count);
                     return copy;
+                }
+
+                private int[] DecodePosting(BucketEntry entry)
+                {
+                    if (entry.Count == 0)
+                        return Array.Empty<int>();
+
+                    var result = new int[entry.Count];
+                    var index = 0;
+                    var offset = entry.Offset;
+                    var end = offset + entry.ByteCount;
+                    var previous = 0;
+                    while (offset < end && index < result.Length)
+                    {
+                        var delta = ReadVarUInt32(_compressedPostings, ref offset, end);
+                        var value = checked(previous + (int)delta);
+                        result[index++] = value;
+                        previous = value;
+                    }
+
+                    return result;
                 }
 
                 private static int FindInsertIndex(int[] bucket, int recordId, Func<int, int, int> comparer)
@@ -1146,6 +1234,117 @@ namespace MftScanner
                     }
 
                     return lo;
+                }
+
+                public static byte[] CompressPostings(BucketEntry[] entries, int[] postings, out BucketEntry[] compressedEntries)
+                {
+                    compressedEntries = Array.Empty<BucketEntry>();
+                    if (entries == null || entries.Length == 0 || postings == null || postings.Length == 0)
+                        return Array.Empty<byte>();
+
+                    compressedEntries = new BucketEntry[entries.Length];
+                    using (var stream = new MemoryStream(Math.Max(1024, postings.Length * 2)))
+                    {
+                        for (var i = 0; i < entries.Length; i++)
+                        {
+                            var entry = entries[i];
+                            var byteOffset = checked((int)stream.Position);
+                            var previous = 0;
+                            for (var j = 0; j < entry.Count; j++)
+                            {
+                                var value = postings[entry.Offset + j];
+                                var delta = checked((uint)(value - previous));
+                                WriteVarUInt32(stream, delta);
+                                previous = value;
+                            }
+
+                            var byteCount = checked((int)stream.Position - byteOffset);
+                            compressedEntries[i] = new BucketEntry(byteOffset, entry.Count, byteCount);
+                        }
+
+                        return stream.ToArray();
+                    }
+                }
+
+                public static BucketStore<TKey> FromSnapshot(
+                    ulong[] keys,
+                    int[] offsets,
+                    int[] counts,
+                    int[] byteCounts,
+                    byte[] bytes)
+                {
+                    if (keys == null || offsets == null || counts == null || byteCounts == null || bytes == null)
+                        return Empty;
+
+                    var bucketIndexes = new Dictionary<TKey, int>(keys.Length);
+                    var entries = new BucketEntry[keys.Length];
+                    for (var i = 0; i < keys.Length; i++)
+                    {
+                        bucketIndexes[(TKey)(object)keys[i]] = i;
+                        entries[i] = new BucketEntry(offsets[i], counts[i], byteCounts[i]);
+                    }
+
+                    return new BucketStore<TKey>(bucketIndexes, entries, bytes);
+                }
+
+                public ContainsPostingsSnapshot ExportSnapshot(int recordCount)
+                {
+                    if (typeof(TKey) != typeof(ulong)
+                        || _bucketIndexes == null
+                        || _bucketIndexes.Count == 0
+                        || _entries == null
+                        || _compressedPostings == null
+                        || _compressedPostings.Length == 0)
+                    {
+                        return null;
+                    }
+
+                    var keys = new ulong[_bucketIndexes.Count];
+                    var offsets = new int[_bucketIndexes.Count];
+                    var counts = new int[_bucketIndexes.Count];
+                    var byteCounts = new int[_bucketIndexes.Count];
+                    foreach (var kv in _bucketIndexes)
+                    {
+                        var index = kv.Value;
+                        keys[index] = (ulong)(object)kv.Key;
+                        offsets[index] = _entries[index].Offset;
+                        counts[index] = _entries[index].Count;
+                        byteCounts[index] = _entries[index].ByteCount;
+                    }
+
+                    var bytes = new byte[_compressedPostings.Length];
+                    Array.Copy(_compressedPostings, bytes, bytes.Length);
+                    return new ContainsPostingsSnapshot(recordCount, keys, offsets, counts, byteCounts, bytes);
+                }
+
+                private static void WriteVarUInt32(Stream stream, uint value)
+                {
+                    while (value >= 0x80)
+                    {
+                        stream.WriteByte((byte)(value | 0x80));
+                        value >>= 7;
+                    }
+
+                    stream.WriteByte((byte)value);
+                }
+
+                private static uint ReadVarUInt32(byte[] buffer, ref int offset, int end)
+                {
+                    uint result = 0;
+                    var shift = 0;
+                    while (offset < end)
+                    {
+                        var b = buffer[offset++];
+                        result |= (uint)(b & 0x7F) << shift;
+                        if ((b & 0x80) == 0)
+                            return result;
+
+                        shift += 7;
+                        if (shift > 28)
+                            break;
+                    }
+
+                    return result;
                 }
             }
         }
