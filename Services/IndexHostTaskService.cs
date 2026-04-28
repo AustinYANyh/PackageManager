@@ -61,7 +61,7 @@ namespace PackageManager.Services
                 return toolPath;
             }
 
-            LoggingService.LogInfo("检测到后台索引宿主文件缺失或版本已变化，准备同步最新宿主。");
+            LoggingService.LogInfo("检测到后台索引宿主文件缺失或内容已变化，准备同步最新宿主。");
             return EnsureHostToolCurrentCore();
         }
 

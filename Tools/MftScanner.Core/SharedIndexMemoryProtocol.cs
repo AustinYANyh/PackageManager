@@ -168,9 +168,11 @@ namespace MftScanner
         private const int StateMagic = unchecked((int)0x53545850);
         private const int SearchUiStateMagic = unchecked((int)0x55535850);
         private const int ChangeMagic = unchecked((int)0x43475850);
+        private const int MaxCachedStringEncodingBufferBytes = 64 * 1024;
 
         private const int StateHeaderReservedBytes = 64;
         private const int ChangeHeaderReservedBytes = 128;
+        [ThreadStatic] private static byte[] _stringEncodingBuffer;
 
         public static long ChangeMapCapacityBytes => ChangeHeaderReservedBytes + (long)ChangeRingCapacity * ChangeRecordSizeBytes;
 
@@ -357,7 +359,6 @@ namespace MftScanner
             using (var accessor = changeMap.CreateViewAccessor(0, ChangeHeaderReservedBytes, MemoryMappedFileAccess.ReadWrite))
             {
                 accessor.Write(24, consumedSequence);
-                accessor.Flush();
             }
         }
 
@@ -374,7 +375,6 @@ namespace MftScanner
             using (var accessor = changeMap.CreateViewAccessor(0, ChangeHeaderReservedBytes, MemoryMappedFileAccess.ReadWrite))
             {
                 accessor.Write(32, heartbeatTicks);
-                accessor.Flush();
             }
         }
 
@@ -409,22 +409,12 @@ namespace MftScanner
                 WriteSizedString(writer, record.NewOriginalName);
                 WriteSizedString(writer, record.NewLowerName);
 
-                var remaining = ChangeRecordSizeBytes - (int)stream.Position;
-                if (remaining < 0)
-                {
-                    throw new InvalidOperationException("索引变更记录超过共享内存槽位大小。");
-                }
-
-                if (remaining > 0)
-                {
-                    writer.Write(new byte[remaining]);
-                }
+                EnsureWithinCapacity(stream.Position, ChangeRecordSizeBytes, "索引变更记录超过共享内存槽位大小。");
             }
 
             using (var accessor = changeMap.CreateViewAccessor(0, ChangeHeaderReservedBytes, MemoryMappedFileAccess.ReadWrite))
             {
                 accessor.Write(16, record.Sequence);
-                accessor.Flush();
             }
         }
 
@@ -478,16 +468,7 @@ namespace MftScanner
                 WriteContainsBucketStatus(writer, snapshot.ContainsBucketStatus);
                 WriteSizedString(writer, snapshot.StatusMessage);
 
-                var remaining = StateCapacityBytes - (int)stream.Position;
-                if (remaining < 0)
-                {
-                    throw new InvalidOperationException("共享索引状态块超过容量。");
-                }
-
-                if (remaining > 0)
-                {
-                    writer.Write(new byte[remaining]);
-                }
+                EnsureWithinCapacity(stream.Position, StateCapacityBytes, "共享索引状态块超过容量。");
             }
         }
 
@@ -539,16 +520,7 @@ namespace MftScanner
                 writer.Write(snapshot.ShownEpoch);
                 writer.Write(snapshot.MainWindowHandle);
 
-                var remaining = SearchUiStateCapacityBytes - (int)stream.Position;
-                if (remaining < 0)
-                {
-                    throw new InvalidOperationException("SearchUi 状态块超过容量。");
-                }
-
-                if (remaining > 0)
-                {
-                    writer.Write(new byte[remaining]);
-                }
+                EnsureWithinCapacity(stream.Position, SearchUiStateCapacityBytes, "SearchUi 状态块超过容量。");
             }
         }
 
@@ -576,7 +548,7 @@ namespace MftScanner
             }
         }
 
-        public static void WriteRequest(MemoryMappedFile requestMap, SharedIndexIpcRequest request)
+        public static int WriteRequest(MemoryMappedFile requestMap, SharedIndexIpcRequest request)
         {
             if (request == null)
             {
@@ -596,16 +568,8 @@ namespace MftScanner
                 writer.Write(request.Flags);
                 WriteSizedString(writer, request.Keyword);
 
-                var remaining = RequestCapacityBytes - (int)stream.Position;
-                if (remaining < 0)
-                {
-                    throw new InvalidOperationException("共享索引请求块超过容量。");
-                }
-
-                if (remaining > 0)
-                {
-                    writer.Write(new byte[remaining]);
-                }
+                EnsureWithinCapacity(stream.Position, RequestCapacityBytes, "共享索引请求块超过容量。");
+                return (int)stream.Position;
             }
         }
 
@@ -634,7 +598,7 @@ namespace MftScanner
             }
         }
 
-        public static void WriteResponse(MemoryMappedFile responseMap, SharedIndexIpcResponse response)
+        public static int WriteResponse(MemoryMappedFile responseMap, SharedIndexIpcResponse response)
         {
             if (response == null)
             {
@@ -674,16 +638,8 @@ namespace MftScanner
                     writer.Write(item.IsDirectory ? 1 : 0);
                 }
 
-                var remaining = ResponseCapacityBytes - (int)stream.Position;
-                if (remaining < 0)
-                {
-                    throw new InvalidOperationException("共享索引响应块超过容量。");
-                }
-
-                if (remaining > 0)
-                {
-                    writer.Write(new byte[remaining]);
-                }
+                EnsureWithinCapacity(stream.Position, ResponseCapacityBytes, "共享索引响应块超过容量。");
+                return (int)stream.Position;
             }
         }
 
@@ -718,6 +674,12 @@ namespace MftScanner
                 };
 
                 var count = reader.ReadInt32();
+                if (count < 0)
+                {
+                    throw new InvalidOperationException("共享索引响应结果数量无效。");
+                }
+
+                response.Results = new List<ScannedFileInfo>(count);
                 for (var i = 0; i < count; i++)
                 {
                     response.Results.Add(new ScannedFileInfo
@@ -786,9 +748,31 @@ namespace MftScanner
 
         private static void WriteSizedString(BinaryWriter writer, string value)
         {
-            var bytes = Encoding.Unicode.GetBytes(value ?? string.Empty);
-            writer.Write(bytes.Length);
-            writer.Write(bytes);
+            var text = value ?? string.Empty;
+            var byteLength = Encoding.Unicode.GetByteCount(text);
+            writer.Write(byteLength);
+            if (byteLength <= 0)
+            {
+                return;
+            }
+
+            if (byteLength <= MaxCachedStringEncodingBufferBytes)
+            {
+                var buffer = RentStringEncodingBuffer(byteLength);
+                Encoding.Unicode.GetBytes(text, 0, text.Length, buffer, 0);
+                writer.Write(buffer, 0, byteLength);
+                return;
+            }
+
+            writer.Write(Encoding.Unicode.GetBytes(text));
+        }
+
+        private static void EnsureWithinCapacity(long bytesWritten, long capacityBytes, string message)
+        {
+            if (bytesWritten > capacityBytes)
+            {
+                throw new InvalidOperationException(message);
+            }
         }
 
         private static void WriteContainsBucketStatus(BinaryWriter writer, ContainsBucketStatus status)
@@ -809,7 +793,52 @@ namespace MftScanner
                 return string.Empty;
             }
 
-            return Encoding.Unicode.GetString(reader.ReadBytes(byteLength));
+            if ((byteLength & 1) != 0)
+            {
+                throw new InvalidOperationException("共享索引字符串长度无效。");
+            }
+
+            if (byteLength <= MaxCachedStringEncodingBufferBytes)
+            {
+                var buffer = RentStringEncodingBuffer(byteLength);
+                ReadExact(reader, buffer, byteLength);
+                return Encoding.Unicode.GetString(buffer, 0, byteLength);
+            }
+
+            var bytes = reader.ReadBytes(byteLength);
+            if (bytes.Length != byteLength)
+            {
+                throw new EndOfStreamException("共享索引字符串数据不完整。");
+            }
+
+            return Encoding.Unicode.GetString(bytes);
+        }
+
+        private static byte[] RentStringEncodingBuffer(int requiredBytes)
+        {
+            var buffer = _stringEncodingBuffer;
+            if (buffer == null || buffer.Length < requiredBytes)
+            {
+                var capacity = Math.Max(1024, requiredBytes);
+                _stringEncodingBuffer = buffer = new byte[capacity];
+            }
+
+            return buffer;
+        }
+
+        private static void ReadExact(BinaryReader reader, byte[] buffer, int byteLength)
+        {
+            var offset = 0;
+            while (offset < byteLength)
+            {
+                var read = reader.Read(buffer, offset, byteLength - offset);
+                if (read <= 0)
+                {
+                    throw new EndOfStreamException("共享索引字符串数据不完整。");
+                }
+
+                offset += read;
+            }
         }
 
         private static ContainsBucketStatus ReadContainsBucketStatus(BinaryReader reader)

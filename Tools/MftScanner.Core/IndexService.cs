@@ -40,6 +40,7 @@ namespace MftScanner
         private const int SnapshotSaveDebounceMilliseconds = 5000;
         private const int SnapshotPeriodicSaveMilliseconds = 120000;
         private const int SnapshotSaveMaxDeferredMilliseconds = 30000;
+        private static readonly bool BuildShortContainsBuckets = false;
 
         // 保存 progress 引用，供 OnJournalOverflow 使用（需求 6.5）
         private IProgress<string> _progress;
@@ -194,6 +195,7 @@ namespace MftScanner
             // 删除前先解析路径（FRN 字典此时还未清除），供 UI 精确匹配
             var fullPath = _enumerator.ResolveFullPath(args.DriveLetter, args.ParentFrn, args.LowerName);
             _index.Remove(args.Frn, args.LowerName, args.ParentFrn, args.DriveLetter);
+            _enumerator.UnregisterFrn(args.DriveLetter, args.Frn);
             ScheduleSnapshotSave();
             IndexChanged?.Invoke(this, new IndexChangedEventArgs(
                 IndexChangeType.Deleted, args.LowerName, fullPath, isDirectory: false));
@@ -654,6 +656,8 @@ namespace MftScanner
                 var mode = MatchMode.Contains;
                 var candidateCount = 0;
                 var containsCandidateCount = 0;
+                var pathPrefilterApplied = false;
+                var pathPostFilterRequired = false;
 
                 try
                 {
@@ -703,13 +707,52 @@ namespace MftScanner
 
                     var normalizedOffset = Math.Max(offset, 0);
                     var normalizedMaxResults = Math.Max(maxResults, 0);
-                    var fetchLimit = pathPrefix != null ? int.MaxValue : normalizedMaxResults;
-                    var fetchOffset = pathPrefix != null ? 0 : normalizedOffset;
-                    var candidateSource = GetCandidateSource(idx, filter);
+                    var fetchLimit = normalizedMaxResults;
+                    var fetchOffset = normalizedOffset;
+                    FileRecord[] candidateSource;
+
+                    if (pathPrefix != null)
+                    {
+                        var pathStopwatch = Stopwatch.StartNew();
+                        if (_enumerator.TryGetDirectorySubtree(pathPrefix, out var pathScope))
+                        {
+                            candidateSource = idx.GetSubtreeCandidates(
+                                pathScope.DriveLetter,
+                                pathScope.DirectoryFrns,
+                                filter,
+                                ct);
+                            pathPrefilterApplied = true;
+                            pathStopwatch.Stop();
+                            UsnDiagLog.Write(
+                                $"[PATH PREFILTER] outcome=success elapsedMs={pathStopwatch.ElapsedMilliseconds} " +
+                                $"drive={pathScope.DriveLetter} rootFrn={pathScope.RootFrn} directories={pathScope.DirectoryFrns.Length} " +
+                                $"candidateCount={candidateSource.Length} filter={filter} pathPrefix={IndexPerfLog.FormatValue(pathPrefix)}");
+                        }
+                        else
+                        {
+                            candidateSource = GetCandidateSource(idx, filter);
+                            fetchLimit = int.MaxValue;
+                            fetchOffset = 0;
+                            pathPostFilterRequired = true;
+                            pathStopwatch.Stop();
+                            UsnDiagLog.Write(
+                                $"[PATH PREFILTER] outcome=unresolved elapsedMs={pathStopwatch.ElapsedMilliseconds} " +
+                                $"fallback=post-filter filter={filter} candidateCount={candidateSource?.Length ?? 0} " +
+                                $"pathPrefix={IndexPerfLog.FormatValue(pathPrefix)}");
+                        }
+                    }
+                    else
+                    {
+                        candidateSource = GetCandidateSource(idx, filter);
+                    }
+
                     candidateCount = candidateSource?.Length ?? 0;
 
                     if (candidateSource == null || candidateSource.Length == 0)
                     {
+                        if (pathPrefix != null)
+                            progress?.Report("指定路径下无匹配结果");
+
                         return FinalizeSearchResult(
                             totalStopwatch,
                             "no-candidates",
@@ -744,7 +787,9 @@ namespace MftScanner
                         case MatchMode.Wildcard:
                             if (filter == SearchTypeFilter.All && TryGetSimpleExtensionWildcard(normalizedQuery, out var extension))
                             {
-                                var r = ExtensionMatch(extension, idx.ExtensionHashMap, fetchOffset, fetchLimit, ct);
+                                var r = pathPrefilterApplied
+                                    ? SuffixMatch(extension, candidateSource, fetchOffset, fetchLimit, ct)
+                                    : ExtensionMatch(extension, idx.ExtensionHashMap, fetchOffset, fetchLimit, ct);
                                 matched = r.page;
                                 totalMatched = r.total;
                             }
@@ -759,7 +804,8 @@ namespace MftScanner
                                         { var r = SuffixMatch(simplifiedQuery, candidateSource, fetchOffset, fetchLimit, ct); matched = r.page; totalMatched = r.total; }
                                         break;
                                     default:
-                                        if (TryContainsAccelerated(idx, simplifiedQuery, filter, fetchOffset, fetchLimit, ct, out var wildcardContains))
+                                        if (!pathPrefilterApplied
+                                            && TryContainsAccelerated(idx, simplifiedQuery, filter, fetchOffset, fetchLimit, ct, out var wildcardContains))
                                         {
                                             matched = wildcardContains.Page;
                                             totalMatched = wildcardContains.Total;
@@ -772,7 +818,13 @@ namespace MftScanner
                                         {
                                             containsMode = "fallback";
                                             containsCandidateCount = candidateSource?.Length ?? 0;
-                                            var r = ContainsMatch(simplifiedQuery, filter == SearchTypeFilter.All ? idx.ExactHashMap : null, candidateSource, fetchOffset, fetchLimit, ct);
+                                            var r = ContainsMatch(
+                                                simplifiedQuery,
+                                                !pathPrefilterApplied && filter == SearchTypeFilter.All ? idx.ExactHashMap : null,
+                                                candidateSource,
+                                                fetchOffset,
+                                                fetchLimit,
+                                                ct);
                                             matched = r.page;
                                             totalMatched = r.total;
                                         }
@@ -787,7 +839,8 @@ namespace MftScanner
                             }
                             break;
                         default:
-                            if (TryContainsAccelerated(idx, normalizedQuery, filter, fetchOffset, fetchLimit, ct, out var containsResult))
+                            if (!pathPrefilterApplied
+                                && TryContainsAccelerated(idx, normalizedQuery, filter, fetchOffset, fetchLimit, ct, out var containsResult))
                             {
                                 matched = containsResult.Page;
                                 totalMatched = containsResult.Total;
@@ -800,7 +853,13 @@ namespace MftScanner
                             {
                                 containsMode = "fallback";
                                 containsCandidateCount = candidateSource?.Length ?? 0;
-                                var r = ContainsMatch(normalizedQuery, filter == SearchTypeFilter.All ? idx.ExactHashMap : null, candidateSource, fetchOffset, fetchLimit, ct);
+                                var r = ContainsMatch(
+                                    normalizedQuery,
+                                    !pathPrefilterApplied && filter == SearchTypeFilter.All ? idx.ExactHashMap : null,
+                                    candidateSource,
+                                    fetchOffset,
+                                    fetchLimit,
+                                    ct);
                                 matched = r.page;
                                 totalMatched = r.total;
                             }
@@ -818,7 +877,7 @@ namespace MftScanner
 
                     // 需求 10.2、10.3：路径前缀后置过滤（大小写不敏感）
                     // 确保路径前缀以 \ 结尾，避免误匹配同名前缀目录（如 C:\Users\Desktop2）
-                    if (pathPrefix != null)
+                    if (pathPostFilterRequired)
                     {
                         var normalizedPrefix = pathPrefix.EndsWith("\\")
                             ? pathPrefix
@@ -1228,6 +1287,16 @@ namespace MftScanner
 
                 mergeStopwatch.Stop();
 
+                if (successfulDrives.Count == 0 && exceptions.Count > 0 && _index.TotalCount > 0)
+                {
+                    totalStopwatch.Stop();
+                    PublishIndexStatus($"沿用现有索引 {_index.TotalCount} 个对象；MFT 枚举未获得可用卷", false);
+                    UsnDiagLog.Write(
+                        $"[MFT BUILD] outcome=preserve-existing totalMs={totalStopwatch.ElapsedMilliseconds} " +
+                        $"existingIndexedCount={_index.TotalCount} failedDrives={exceptions.Count}");
+                    return _index.TotalCount;
+                }
+
                 var buildStopwatch = Stopwatch.StartNew();
                 _index.Build(allRecords, buildContainsAccelerator: false);
                 buildStopwatch.Stop();
@@ -1514,6 +1583,16 @@ namespace MftScanner
                 UsnDiagLog.Write(
                     $"[CONTAINS WARMUP] outcome=stage reason={IndexPerfLog.FormatValue(reason)} " +
                     $"stage=trigram-ready elapsedMs={stopwatch.ElapsedMilliseconds} records={index.TotalCount}");
+                if (!BuildShortContainsBuckets)
+                {
+                    stopwatch.Stop();
+                    UsnDiagLog.Write(
+                        $"[CONTAINS WARMUP] outcome=trigram-only reason={IndexPerfLog.FormatValue(reason)} " +
+                        $"elapsedMs={stopwatch.ElapsedMilliseconds} records={index.TotalCount}");
+                    PublishIndexStatus("索引已就绪；多字符桶已就绪，短查询走低内存扫描", false);
+                    return;
+                }
+
                 PublishIndexStatus("索引已就绪；多字符桶已就绪，单字符/双字符桶构建中...", false);
                 index.TryEnsureContainsAccelerator(MemoryIndex.ContainsWarmupScope.Full, ct);
                 stopwatch.Stop();

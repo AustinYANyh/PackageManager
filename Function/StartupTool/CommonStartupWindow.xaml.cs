@@ -10,7 +10,6 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
-using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
@@ -69,20 +68,32 @@ public partial class CommonStartupWindow : Window
     private int _searchContextTrackingSuppressionCount;
     private int _ignoredWorkbenchScrollChangeCount;
     private int _workbenchRefreshVersion;
+    private int _launchInProgress;
     private WorkbenchSearchContext _searchRestoreContext;
 
     private const int SwShow = 5;
     private const int SwRestore = 9;
+    private const uint WmClose = 0x0010;
     private const uint WmSysCommand = 0x0112;
+    private const uint WmMouseMove = 0x0200;
+    private const uint WmLButtonDown = 0x0201;
+    private const uint WmLButtonUp = 0x0202;
+    private const uint WmLButtonDblClk = 0x0203;
+    private const uint WmApp = 0x8000;
+    private const uint NinSelect = 0x0400;
+    private const uint NinKeySelect = 0x0401;
+    private const uint QtTrayNotifyMessage = WmApp + 101;
+    private const uint MkLButton = 0x0001;
     private static readonly UIntPtr ScRestore = new UIntPtr(0xF120);
     private const byte VkMenu = 0x12;
     private const uint KeyEventFKeyUp = 0x0002;
+    private const uint BmClick = 0x00F5;
+    private const uint TbGetButton = 0x0417;
     private const uint TbButtonCount = 0x0418;
     private const uint TbGetButtonTextW = 0x044B;
     private const uint TbGetItemRect = 0x041D;
-    private const uint MouseEventFLeftDown = 0x0002;
-    private const uint MouseEventFLeftUp = 0x0004;
     private const uint GwOwner = 4;
+    private const int NotifyIconSuccess = 0;
     private const int GwlStyle = -16;
     private const int GwlExStyle = -20;
     private const int WsChild = 0x40000000;
@@ -90,6 +101,16 @@ public partial class CommonStartupWindow : Window
     private const int WsExToolWindow = 0x00000080;
     private const int WsExAppWindow = 0x00040000;
     private const int WsExNoActivate = 0x08000000;
+    private const int MaxTrayLogItems = 40;
+    private const uint ProcessQueryInformation = 0x0400;
+    private const uint ProcessVmOperation = 0x0008;
+    private const uint ProcessVmRead = 0x0010;
+    private const uint ProcessVmWrite = 0x0020;
+    private const uint MemCommit = 0x1000;
+    private const uint MemReserve = 0x2000;
+    private const uint MemRelease = 0x8000;
+    private const uint PageReadWrite = 0x04;
+    private static readonly IntPtr DpiAwarenessContextPerMonitorAwareV2 = new IntPtr(-4);
 
     public CommonStartupWindow(DataPersistenceService persistence)
     {
@@ -915,16 +936,26 @@ public partial class CommonStartupWindow : Window
         StatusText.Text = item.IsFavorite ? $"已收藏：{item.Name}" : $"已取消收藏：{item.Name}";
     }
 
-    private void LaunchItem(StartupItemVm item, bool forceNewInstance = false)
+    private async void LaunchItem(StartupItemVm item, bool forceNewInstance = false)
     {
         if (item == null)
         {
             return;
         }
 
+        if (Interlocked.Exchange(ref _launchInProgress, 1) == 1)
+        {
+            StatusText.Text = "正在处理上一个启动请求，请稍候。";
+            return;
+        }
+
         try
         {
-            var activationResult = forceNewInstance ? ExistingInstanceActivationResult.NotFound : TryActivateExistingInstance(item);
+            StatusText.Text = forceNewInstance ? $"正在强制启动：{item.Name}" : $"正在唤醒：{item.Name}";
+            var ownerHandle = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+            var activationResult = forceNewInstance
+                ? ExistingInstanceActivationResult.NotFound
+                : await Task.Run(() => TryActivateExistingInstance(item, ownerHandle));
             if (activationResult == ExistingInstanceActivationResult.Activated)
             {
                 SelectStartupItem(item);
@@ -934,8 +965,7 @@ public partial class CommonStartupWindow : Window
             }
 
             if (activationResult == ExistingInstanceActivationResult.FoundWithoutWindow
-                && IsKnownSingleInstanceTrayApp(item.FullPath)
-                && !ShouldUseOriginalShellActivation(item.FullPath))
+                && IsKnownSingleInstanceTrayApp(item.FullPath))
             {
                 StatusText.Text = $"未能唤醒：{item.Name}，已保持工作台焦点。";
                 return;
@@ -950,7 +980,7 @@ public partial class CommonStartupWindow : Window
             var startedProcess = Process.Start(startInfo);
             if (ShouldUseOriginalShellActivation(item.FullPath))
             {
-                WaitForExistingInstanceActivation(item.FullPath, new System.Windows.Interop.WindowInteropHelper(this).Handle, 5000);
+                await Task.Run(() => WaitForExistingInstanceActivation(item.FullPath, ownerHandle, 5000));
             }
             try { startedProcess?.Dispose(); } catch { }
 
@@ -964,6 +994,10 @@ public partial class CommonStartupWindow : Window
             UpdateItemRuntimeState(item);
             RefreshWorkbench();
             MessageBox.Show($"启动失败：{ex.Message}", "常用启动项", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _launchInProgress, 0);
         }
     }
 
@@ -1221,28 +1255,41 @@ public partial class CommonStartupWindow : Window
         }
     }
 
-    private ExistingInstanceActivationResult TryActivateExistingInstance(StartupItemVm item)
+    private ExistingInstanceActivationResult TryActivateExistingInstance(StartupItemVm item, IntPtr ownerHandle)
     {
         var fullPath = item?.FullPath;
         var processes = FindExistingProcesses(fullPath);
-        var ownerHandle = new System.Windows.Interop.WindowInteropHelper(this).Handle;
         var foundExistingProcess = processes.Count > 0;
+        LoggingService.LogDebug($"[CtrlQ Activate] start name={item?.Name} path={fullPath} processCount={processes.Count} owner=0x{ownerHandle.ToInt64():X}");
         try
         {
+            if (foundExistingProcess && ShouldPreferTrayActivationBeforeWindow(fullPath))
+            {
+                LoggingService.LogDebug($"[CtrlQ Activate] prefer-tray-first name={item?.Name} path={fullPath}");
+                if (TryActivateFromTrayOrShell(item, ownerHandle))
+                {
+                    LoggingService.LogDebug($"[CtrlQ Activate] tray-first success name={item?.Name}");
+                    return ExistingInstanceActivationResult.Activated;
+                }
+            }
+
             foreach (var process in processes)
             {
                 if (TryBringProcessToFront(process, ownerHandle))
                 {
+                    LoggingService.LogDebug($"[CtrlQ Activate] existing-window success name={item?.Name} pid={process.Id} process={process.ProcessName}");
                     return ExistingInstanceActivationResult.Activated;
                 }
             }
 
             if (foundExistingProcess && TryActivateFromTrayOrShell(item, ownerHandle))
             {
+                LoggingService.LogDebug($"[CtrlQ Activate] tray-or-shell success name={item?.Name}");
                 return ExistingInstanceActivationResult.Activated;
             }
 
             RestoreOwnerFocus(ownerHandle);
+            LoggingService.LogDebug($"[CtrlQ Activate] not-activated name={item?.Name} foundProcess={foundExistingProcess}");
             return foundExistingProcess
                 ? ExistingInstanceActivationResult.FoundWithoutWindow
                 : ExistingInstanceActivationResult.NotFound;
@@ -1267,11 +1314,13 @@ public partial class CommonStartupWindow : Window
         var activationPath = ResolveActivationPath(fullPath);
         if (string.IsNullOrWhiteSpace(activationPath) || !File.Exists(activationPath))
         {
+            LoggingService.LogDebug($"[CtrlQ FindProcess] skip invalid path={fullPath} activationPath={activationPath}");
             return new List<Process>();
         }
 
         if (!string.Equals(System.IO.Path.GetExtension(activationPath), ".exe", StringComparison.OrdinalIgnoreCase))
         {
+            LoggingService.LogDebug($"[CtrlQ FindProcess] skip non-exe path={fullPath} activationPath={activationPath}");
             return new List<Process>();
         }
 
@@ -1323,6 +1372,8 @@ public partial class CommonStartupWindow : Window
         exactMatches.Sort(CompareProcessesByWindowPriority);
         fallbackMatches.Sort(CompareProcessesByWindowPriority);
         exactMatches.AddRange(fallbackMatches);
+        LoggingService.LogDebug(
+            $"[CtrlQ FindProcess] path={fullPath} activationPath={activationPath} processName={processName} exact={exactMatches.Count - fallbackMatches.Count} fallback={fallbackMatches.Count} total={exactMatches.Count}");
         return exactMatches;
     }
 
@@ -1402,12 +1453,14 @@ public partial class CommonStartupWindow : Window
         var candidate = FindBestProcessWindow(process);
         if (candidate.Handle == IntPtr.Zero)
         {
+            LoggingService.LogDebug($"[CtrlQ BringFront] no-window pid={SafeProcessId(process)} process={SafeProcessName(process)}");
             return false;
         }
 
         var processName = process?.ProcessName ?? string.Empty;
         if (ShouldUseShellActivationForHiddenMainWindow(processName, candidate))
         {
+            LoggingService.LogDebug($"[CtrlQ BringFront] hidden-wechat-skip-direct-show pid={SafeProcessId(process)} process={processName} handle=0x{candidate.Handle.ToInt64():X} title={candidate.Title} class={candidate.ClassName}");
             return false;
         }
 
@@ -1424,6 +1477,7 @@ public partial class CommonStartupWindow : Window
 
         if (BringWindowToFrontLegacy(handle))
         {
+            LoggingService.LogDebug($"[CtrlQ BringFront] legacy-success pid={SafeProcessId(process)} process={processName} handle=0x{handle.ToInt64():X} title={candidate.Title}");
             return true;
         }
 
@@ -1431,11 +1485,13 @@ public partial class CommonStartupWindow : Window
         {
             if (ForceBringWindowToFront(handle))
             {
+                LoggingService.LogDebug($"[CtrlQ BringFront] force-success pid={SafeProcessId(process)} process={processName} handle=0x{handle.ToInt64():X} title={candidate.Title}");
                 return true;
             }
         }
 
         RestoreOwnerFocus(ownerHandle);
+        LoggingService.LogDebug($"[CtrlQ BringFront] failed pid={SafeProcessId(process)} process={processName} handle=0x{handle.ToInt64():X} title={candidate.Title}");
         return false;
     }
 
@@ -1509,6 +1565,17 @@ public partial class CommonStartupWindow : Window
         return IsWeChatProcessName(processName);
     }
 
+    private static bool IsQQPath(string path)
+    {
+        var processName = System.IO.Path.GetFileNameWithoutExtension(ResolveActivationPath(path) ?? path) ?? string.Empty;
+        return processName.Equals("QQ", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ShouldPreferTrayActivationBeforeWindow(string fullPath)
+    {
+        return IsQQPath(fullPath);
+    }
+
     private bool TryActivateFromTrayOrShell(StartupItemVm item, IntPtr ownerHandle)
     {
         if (item == null || !IsKnownSingleInstanceTrayApp(item.FullPath))
@@ -1517,38 +1584,575 @@ public partial class CommonStartupWindow : Window
         }
 
         var terms = GetTrayActivationTerms(item.FullPath);
-        if (TryClickTrayIcon(terms) && WaitForExistingInstanceActivation(item.FullPath, ownerHandle, 3000))
+        LoggingService.LogDebug($"[CtrlQ Tray] start name={item.Name} path={item.FullPath} terms={string.Join("|", terms)}");
+        var isWeChat = IsWeChatPath(item.FullPath);
+        if (isWeChat)
         {
+            if (TryInvokeTrayIconWithAutomation(terms, item.Name) && WaitForExistingInstanceActivation(item.FullPath, ownerHandle, 1600))
+            {
+                LoggingService.LogDebug($"[CtrlQ Tray] wechat-uia-success name={item.Name}");
+                return true;
+            }
+
+            if (TrySendWeChatTrayActivation(item.FullPath) && WaitForExistingInstanceActivation(item.FullPath, ownerHandle, 500))
+            {
+                LoggingService.LogDebug($"[CtrlQ Tray] wechat-callback-success name={item.Name}");
+                return true;
+            }
+
+            LoggingService.LogDebug($"[CtrlQ Tray] wechat-all-paths-failed name={item.Name}; skip generic tray scan");
+            return false;
+        }
+
+        if (TryInvokeTrayIconWithAutomation(terms, item.Name) && WaitForExistingInstanceActivation(item.FullPath, ownerHandle, 2500))
+        {
+            LoggingService.LogDebug($"[CtrlQ Tray] uia-success name={item.Name}");
             return true;
         }
 
-        if (ShouldUseOriginalShellActivation(item.FullPath) && File.Exists(item.FullPath))
+        if (TryClickTrayIcon(terms) && WaitForExistingInstanceActivation(item.FullPath, ownerHandle, 3000))
+        {
+            LoggingService.LogDebug($"[CtrlQ Tray] click-success name={item.Name}");
+            return true;
+        }
+
+        LoggingService.LogDebug($"[CtrlQ Tray] click-failed-or-no-window name={item.Name}; existing tray process will not be shell-started");
+        return false;
+    }
+
+    private static bool TrySendWeChatTrayActivation(string fullPath)
+    {
+        var activationPath = ResolveActivationPath(fullPath);
+        var processName = System.IO.Path.GetFileNameWithoutExtension(activationPath ?? fullPath) ?? string.Empty;
+        if (!IsWeChatProcessName(processName))
+        {
+            return false;
+        }
+
+        var sent = false;
+        foreach (var candidate in FindWeChatTrayWindows(fullPath))
+        {
+            LoggingService.LogDebug($"[CtrlQ WeChatTrayCallback] send pid={candidate.ProcessId} handle={FormatHandle(candidate.Handle)} class={SanitizeLogValue(candidate.ClassName)} title={SanitizeLogValue(candidate.Title)}");
+            PostQtTrayActivationMessages(candidate.Handle);
+            sent = true;
+        }
+
+        LoggingService.LogDebug($"[CtrlQ WeChatTrayCallback] sent={sent} path={fullPath}");
+        return sent;
+    }
+
+    private static bool TryInvokeTrayIconWithAutomation(string[] terms, string itemName)
+    {
+        var result = false;
+        Exception failure = null;
+        var thread = new Thread(() =>
         {
             try
             {
-                Process.Start(CreateOriginalShellActivationStartInfo(item));
-                return WaitForExistingInstanceActivation(item.FullPath, ownerHandle, 5000);
+                result = TryInvokeTrayIconWithAutomationCore(terms, itemName);
             }
-            catch
+            catch (Exception ex)
             {
+                failure = ex;
+            }
+        });
+
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.IsBackground = true;
+        thread.Start();
+        if (!thread.Join(1800))
+        {
+            LoggingService.LogDebug($"[CtrlQ TrayUIA] sta-timeout name={itemName}");
+            return false;
+        }
+
+        if (failure != null)
+        {
+            LoggingService.LogDebug($"[CtrlQ TrayUIA] sta-failed name={itemName} {failure.GetType().Name}: {failure.Message}");
+            return false;
+        }
+
+        return result;
+    }
+
+    private static bool TryInvokeTrayIconWithAutomationCore(string[] terms, string itemName)
+    {
+        System.Windows.Automation.AutomationElement overflowRoot = null;
+        var openedByUs = false;
+        var invoked = false;
+        try
+        {
+            var directTrayButton = FindTrayIconAutomationButtonInTrayRoots(terms);
+            if (directTrayButton != null)
+            {
+                LoggingService.LogDebug($"[CtrlQ TrayUIA] direct-button name={SanitizeLogValue(directTrayButton.Current.Name)} class={SanitizeLogValue(directTrayButton.Current.ClassName)} rect={FormatAutomationRect(directTrayButton.Current.BoundingRectangle)}");
+                invoked = InvokeAutomationElement(directTrayButton, "tray-direct-button");
+                return invoked;
+            }
+
+            overflowRoot = FindTrayOverflowAutomationRoot();
+            if (overflowRoot == null)
+            {
+                if (!TryOpenTrayOverflowWithAutomation())
+                {
+                    LoggingService.LogDebug($"[CtrlQ TrayUIA] overflow-open-failed name={itemName}");
+                    return false;
+                }
+
+                openedByUs = true;
+                overflowRoot = WaitForTrayOverflowAutomationRoot(650);
+            }
+
+            if (overflowRoot == null)
+            {
+                LoggingService.LogDebug($"[CtrlQ TrayUIA] overflow-root-not-found name={itemName}");
                 return false;
+            }
+
+            LoggingService.LogDebug($"[CtrlQ TrayUIA] overflow-root name={SanitizeLogValue(overflowRoot.Current.Name)} class={SanitizeLogValue(overflowRoot.Current.ClassName)} rect={FormatAutomationRect(overflowRoot.Current.BoundingRectangle)}");
+            var weChatButton = WaitForTrayIconAutomationButton(overflowRoot, terms, 650);
+            if (weChatButton == null)
+            {
+                LoggingService.LogDebug($"[CtrlQ TrayUIA] button-not-found name={itemName} terms={FormatTerms(terms)}");
+                return false;
+            }
+
+            LoggingService.LogDebug($"[CtrlQ TrayUIA] button name={SanitizeLogValue(weChatButton.Current.Name)} class={SanitizeLogValue(weChatButton.Current.ClassName)} rect={FormatAutomationRect(weChatButton.Current.BoundingRectangle)}");
+            invoked = InvokeAutomationElement(weChatButton, "tray-button");
+            return invoked;
+        }
+        catch (Exception ex)
+        {
+            LoggingService.LogDebug($"[CtrlQ TrayUIA] failed name={itemName} {ex.GetType().Name}: {ex.Message}");
+            return false;
+        }
+        finally
+        {
+            if (openedByUs)
+            {
+                TryCloseTrayOverflowAutomationRoot(overflowRoot ?? FindTrayOverflowAutomationRoot(), invoked ? "after-invoke" : "cleanup");
+            }
+        }
+    }
+
+    private static bool TryOpenTrayOverflowWithAutomation()
+    {
+        foreach (var trayRootHandle in EnumerateTrayRootWindows())
+        {
+            if (trayRootHandle == IntPtr.Zero)
+            {
+                continue;
+            }
+
+            var trayRoot = System.Windows.Automation.AutomationElement.FromHandle(trayRootHandle);
+            if (trayRoot == null)
+            {
+                continue;
+            }
+
+            var descendants = trayRoot.FindAll(
+                System.Windows.Automation.TreeScope.Descendants,
+                System.Windows.Automation.Condition.TrueCondition);
+            for (var i = 0; i < descendants.Count; i++)
+            {
+                var element = descendants[i];
+                var name = element.Current.Name ?? string.Empty;
+                if (!IsTrayOverflowButtonName(name))
+                {
+                    continue;
+                }
+
+                LoggingService.LogDebug($"[CtrlQ TrayUIA] overflow-button handle={FormatHandle(trayRootHandle)} name={SanitizeLogValue(name)} class={SanitizeLogValue(element.Current.ClassName)} rect={FormatAutomationRect(element.Current.BoundingRectangle)}");
+                return InvokeAutomationElement(element, "open-overflow");
             }
         }
 
         return false;
     }
 
+    private static System.Windows.Automation.AutomationElement FindTrayOverflowAutomationRoot()
+    {
+        var children = System.Windows.Automation.AutomationElement.RootElement.FindAll(
+            System.Windows.Automation.TreeScope.Children,
+            System.Windows.Automation.Condition.TrueCondition);
+        for (var i = 0; i < children.Count; i++)
+        {
+            var element = children[i];
+            var className = element.Current.ClassName ?? string.Empty;
+            var name = element.Current.Name ?? string.Empty;
+            if (className.IndexOf("TopLevelWindowForOverflowXamlIsland", StringComparison.OrdinalIgnoreCase) >= 0
+                || name.IndexOf("系统托盘溢出", StringComparison.OrdinalIgnoreCase) >= 0
+                || name.IndexOf("tray overflow", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return element;
+            }
+        }
+
+        return null;
+    }
+
+    private static System.Windows.Automation.AutomationElement WaitForTrayOverflowAutomationRoot(int timeoutMilliseconds)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMilliseconds);
+        var attempts = 0;
+        do
+        {
+            attempts++;
+            var root = FindTrayOverflowAutomationRoot();
+            if (root != null)
+            {
+                LoggingService.LogDebug($"[CtrlQ TrayUIA] overflow-root-ready attempts={attempts}");
+                return root;
+            }
+
+            Thread.Sleep(50);
+        }
+        while (DateTime.UtcNow < deadline);
+
+        LoggingService.LogDebug($"[CtrlQ TrayUIA] overflow-root-timeout attempts={attempts} timeoutMs={timeoutMilliseconds}");
+        return null;
+    }
+
+    private static void TryCloseTrayOverflowAutomationRoot(System.Windows.Automation.AutomationElement overflowRoot, string reason)
+    {
+        if (overflowRoot == null)
+        {
+            return;
+        }
+
+        try
+        {
+            var nativeWindowHandle = overflowRoot.Current.NativeWindowHandle;
+            if (nativeWindowHandle == 0)
+            {
+                LoggingService.LogDebug($"[CtrlQ TrayUIA] close-skip-no-hwnd reason={reason}");
+                return;
+            }
+
+            var handle = new IntPtr(nativeWindowHandle);
+            PostMessage(handle, WmClose, UIntPtr.Zero, IntPtr.Zero);
+            LoggingService.LogDebug($"[CtrlQ TrayUIA] close-overflow reason={reason} handle={FormatHandle(handle)}");
+        }
+        catch (Exception ex)
+        {
+            LoggingService.LogDebug($"[CtrlQ TrayUIA] close-failed reason={reason} {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private static System.Windows.Automation.AutomationElement FindTrayIconAutomationButton(System.Windows.Automation.AutomationElement root, string[] terms)
+    {
+        if (root == null || terms == null || terms.Length == 0)
+        {
+            return null;
+        }
+
+        var descendants = root.FindAll(
+            System.Windows.Automation.TreeScope.Descendants,
+            System.Windows.Automation.Condition.TrueCondition);
+        LoggingService.LogDebug($"[CtrlQ TrayUIA] scan-descendants count={descendants.Count} terms={FormatTerms(terms)}");
+        var logged = 0;
+        for (var i = 0; i < descendants.Count; i++)
+        {
+            var element = descendants[i];
+            var name = element.Current.Name ?? string.Empty;
+            var className = element.Current.ClassName ?? string.Empty;
+            var controlType = element.Current.ControlType;
+            if (logged < MaxTrayLogItems)
+            {
+                LoggingService.LogDebug($"[CtrlQ TrayUIA] item[{i}] name={SanitizeLogValue(name)} class={SanitizeLogValue(className)} type={controlType?.ProgrammaticName} rect={FormatAutomationRect(element.Current.BoundingRectangle)}");
+                logged++;
+            }
+
+            if (controlType != System.Windows.Automation.ControlType.Button
+                || className.IndexOf("SystemTray", StringComparison.OrdinalIgnoreCase) < 0
+                || !terms.Any(term => name.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0))
+            {
+                continue;
+            }
+
+            return element;
+        }
+
+        return null;
+    }
+
+    private static System.Windows.Automation.AutomationElement FindTrayIconAutomationButtonInTrayRoots(string[] terms)
+    {
+        if (terms == null || terms.Length == 0)
+        {
+            return null;
+        }
+
+        foreach (var trayRootHandle in EnumerateTrayRootWindows())
+        {
+            if (trayRootHandle == IntPtr.Zero)
+            {
+                continue;
+            }
+
+            var trayRoot = System.Windows.Automation.AutomationElement.FromHandle(trayRootHandle);
+            if (trayRoot == null)
+            {
+                continue;
+            }
+
+            LoggingService.LogDebug($"[CtrlQ TrayUIA] direct-scan root={DescribeWindowHandle(trayRootHandle)} terms={FormatTerms(terms)}");
+            var button = FindTrayIconAutomationButton(trayRoot, terms);
+            if (button != null)
+            {
+                return button;
+            }
+        }
+
+        return null;
+    }
+
+    private static System.Windows.Automation.AutomationElement WaitForTrayIconAutomationButton(System.Windows.Automation.AutomationElement root, string[] terms, int timeoutMilliseconds)
+    {
+        var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMilliseconds);
+        var attempts = 0;
+        var currentRoot = root;
+        do
+        {
+            attempts++;
+            currentRoot = FindTrayOverflowAutomationRoot() ?? currentRoot;
+            if (currentRoot == null)
+            {
+                LoggingService.LogDebug($"[CtrlQ TrayUIA] button-wait-root-missing attempt={attempts}");
+                Thread.Sleep(60);
+                continue;
+            }
+
+            var button = FindTrayIconAutomationButton(currentRoot, terms);
+            if (button != null)
+            {
+                LoggingService.LogDebug($"[CtrlQ TrayUIA] button-ready attempts={attempts}");
+                return button;
+            }
+
+            Thread.Sleep(60);
+        }
+        while (DateTime.UtcNow < deadline);
+
+        LoggingService.LogDebug($"[CtrlQ TrayUIA] button-timeout attempts={attempts} timeoutMs={timeoutMilliseconds} terms={FormatTerms(terms)}");
+        return null;
+    }
+
+    private static bool InvokeAutomationElement(System.Windows.Automation.AutomationElement element, string reason)
+    {
+        if (element == null)
+        {
+            return false;
+        }
+
+        object pattern;
+        if (element.TryGetCurrentPattern(System.Windows.Automation.InvokePattern.Pattern, out pattern)
+            && pattern is System.Windows.Automation.InvokePattern invokePattern)
+        {
+            invokePattern.Invoke();
+            LoggingService.LogDebug($"[CtrlQ TrayUIA] invoke-success reason={reason}");
+            return true;
+        }
+
+        var rect = element.Current.BoundingRectangle;
+        if (!rect.IsEmpty)
+        {
+            var x = (int)(rect.Left + (rect.Width / 2));
+            var y = (int)(rect.Top + (rect.Height / 2));
+            if (TryPostDoubleClickAtPhysicalPoint(x, y, reason, out var targetDescription))
+            {
+                LoggingService.LogDebug($"[CtrlQ TrayUIA] message-fallback-success reason={reason} target={targetDescription}");
+                return true;
+            }
+        }
+
+        LoggingService.LogDebug($"[CtrlQ TrayUIA] invoke-unavailable reason={reason}");
+        return false;
+    }
+
+    private static bool TryClickWeChatTrayIconByRect(string fullPath)
+    {
+        var trayWindows = FindWeChatTrayWindows(fullPath).ToList();
+        if (trayWindows.Count == 0)
+        {
+            LoggingService.LogDebug($"[CtrlQ WeChatTrayRect] no-wechat-tray-window path={fullPath}");
+            return false;
+        }
+
+        if (TryClickWeChatTrayIconByRect(trayWindows, "initial"))
+        {
+            return true;
+        }
+
+        if (TryOpenTrayOverflowWithWin32())
+        {
+            Thread.Sleep(200);
+            if (TryClickWeChatTrayIconByRect(trayWindows, "overflow-opened"))
+            {
+                return true;
+            }
+        }
+        else
+        {
+            LoggingService.LogDebug("[CtrlQ WeChatTrayRect] overflow-open-failed");
+        }
+
+        LoggingService.LogDebug($"[CtrlQ WeChatTrayRect] failed path={fullPath} candidates={trayWindows.Count}");
+        return false;
+    }
+
+    private static bool TryClickWeChatTrayIconByRect(IReadOnlyCollection<WeChatTrayWindowCandidate> trayWindows, string stage)
+    {
+        var iconIds = new uint[] { 1, 0, 2 };
+        foreach (var candidate in trayWindows)
+        {
+            foreach (var iconId in iconIds)
+            {
+                if (!TryGetNotifyIconRect(candidate.Handle, iconId, out var rect, out var hr))
+                {
+                    LoggingService.LogDebug($"[CtrlQ WeChatTrayRect] stage={stage} miss handle={FormatHandle(candidate.Handle)} iconId={iconId} hr=0x{hr:X8} class={SanitizeLogValue(candidate.ClassName)}");
+                    continue;
+                }
+
+                var x = rect.Left + ((rect.Right - rect.Left) / 2);
+                var y = rect.Top + ((rect.Bottom - rect.Top) / 2);
+                if (TryPostDoubleClickAtPhysicalPoint(x, y, "wechat-notifyicon-rect", out var targetDescription))
+                {
+                    LoggingService.LogDebug(
+                        $"[CtrlQ WeChatTrayRect] stage={stage} posted handle={FormatHandle(candidate.Handle)} iconId={iconId} rect={rect.Left},{rect.Top},{rect.Right},{rect.Bottom} target={targetDescription}");
+                    return true;
+                }
+
+                LoggingService.LogDebug(
+                    $"[CtrlQ WeChatTrayRect] stage={stage} hit-without-target handle={FormatHandle(candidate.Handle)} iconId={iconId} rect={rect.Left},{rect.Top},{rect.Right},{rect.Bottom} target={targetDescription}");
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryGetNotifyIconRect(IntPtr iconWindowHandle, uint iconId, out RECT rect, out int hresult)
+    {
+        var identifier = new NOTIFYICONIDENTIFIER
+        {
+            CbSize = (uint)Marshal.SizeOf(typeof(NOTIFYICONIDENTIFIER)),
+            HWnd = iconWindowHandle,
+            UID = iconId,
+            GuidItem = Guid.Empty
+        };
+
+        hresult = Shell_NotifyIconGetRect(ref identifier, out rect);
+        return hresult == NotifyIconSuccess
+               && rect.Right > rect.Left
+               && rect.Bottom > rect.Top;
+    }
+
+    private static IReadOnlyList<WeChatTrayWindowCandidate> FindWeChatTrayWindows(string fullPath)
+    {
+        var candidates = new List<WeChatTrayWindowCandidate>();
+        using (var processes = new ProcessListScope(FindExistingProcesses(fullPath)))
+        {
+            foreach (var process in processes.Processes)
+            {
+                foreach (var handle in EnumerateProcessWindows(process))
+                {
+                    var className = GetWindowClassName(handle);
+                    var title = GetWindowTitle(handle);
+                    if (!IsWeChatQtTrayWindow(className, title))
+                    {
+                        continue;
+                    }
+
+                    candidates.Add(new WeChatTrayWindowCandidate(
+                        handle,
+                        SafeProcessId(process),
+                        className,
+                        title));
+                }
+            }
+        }
+
+        LoggingService.LogDebug($"[CtrlQ WeChatTrayWindow] count={candidates.Count} path={fullPath} items={string.Join(";", candidates.Select(DescribeWeChatTrayCandidate))}");
+        return candidates;
+    }
+
+    private static IEnumerable<IntPtr> EnumerateProcessWindows(Process process)
+    {
+        var processId = SafeProcessId(process);
+        if (processId <= 0)
+        {
+            yield break;
+        }
+
+        var handles = new List<IntPtr>();
+        EnumWindows((handle, _) =>
+        {
+            GetWindowThreadProcessId(handle, out var windowProcessId);
+            if (windowProcessId == processId)
+            {
+                handles.Add(handle);
+            }
+
+            return true;
+        }, IntPtr.Zero);
+
+        foreach (var handle in handles)
+        {
+            yield return handle;
+        }
+    }
+
+    private static bool IsWeChatQtTrayWindow(string className, string title)
+    {
+        if (string.IsNullOrWhiteSpace(className))
+        {
+            return false;
+        }
+
+        if (className.IndexOf("WxTrayIconMessageWindowClass", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            return true;
+        }
+
+        return className.IndexOf("QWindowIcon", StringComparison.OrdinalIgnoreCase) >= 0
+               && (string.Equals(title, "Weixin", StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(title, "WeChat", StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(title, "微信", StringComparison.OrdinalIgnoreCase)
+                   || string.IsNullOrWhiteSpace(title));
+    }
+
+    private static void PostQtTrayActivationMessages(IntPtr handle)
+    {
+        var messages = new[] { WmLButtonUp, WmLButtonDblClk, NinSelect, NinKeySelect };
+        var iconIds = new[] { 0, 1 };
+        var sent = 0;
+        foreach (var iconId in iconIds)
+        {
+            foreach (var message in messages)
+            {
+                PostMessage(handle, QtTrayNotifyMessage, new UIntPtr((uint)iconId), new IntPtr((int)message));
+                PostMessage(handle, QtTrayNotifyMessage, UIntPtr.Zero, MakeLParam((int)message, iconId));
+                sent += 2;
+            }
+        }
+
+        LoggingService.LogDebug($"[CtrlQ WeChatTrayCallback] posted handle={FormatHandle(handle)} variants={sent}");
+    }
+
     private static bool WaitForExistingInstanceActivation(string fullPath, IntPtr ownerHandle, int timeoutMilliseconds)
     {
         var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMilliseconds);
+        var attempts = 0;
         while (DateTime.UtcNow < deadline)
         {
+            attempts++;
             using (var processes = new ProcessListScope(FindExistingProcesses(fullPath)))
             {
                 foreach (var process in processes.Processes)
                 {
                     if (TryBringProcessToFront(process, ownerHandle))
                     {
+                        LoggingService.LogDebug($"[CtrlQ WaitWindow] success path={fullPath} attempts={attempts} pid={process.Id}");
                         return true;
                     }
                 }
@@ -1558,6 +2162,7 @@ public partial class CommonStartupWindow : Window
         }
 
         RestoreOwnerFocus(ownerHandle);
+        LoggingService.LogDebug($"[CtrlQ WaitWindow] timeout path={fullPath} attempts={attempts} timeoutMs={timeoutMilliseconds}");
         return false;
     }
 
@@ -1575,7 +2180,7 @@ public partial class CommonStartupWindow : Window
     {
         var activationPath = ResolveActivationPath(fullPath);
         var processName = System.IO.Path.GetFileNameWithoutExtension(activationPath ?? fullPath) ?? string.Empty;
-        if (processName.Equals("QQ", StringComparison.OrdinalIgnoreCase)) return new[] { "QQ" };
+        if (processName.Equals("QQ", StringComparison.OrdinalIgnoreCase)) return new[] { "QQ", "腾讯QQ", "Tencent", "QQNT" };
         if (IsWeChatProcessName(processName)) return new[] { "微信", "Weixin", "WeChat", "WeChatAppEx" };
         if (processName.Equals("cc-switch", StringComparison.OrdinalIgnoreCase)) return new[] { "CC Switch", "cc-switch", "ccswitch" };
         if (processName.Equals("clash-verge", StringComparison.OrdinalIgnoreCase)) return new[] { "Clash Verge", "clash-verge", "Verge" };
@@ -1605,18 +2210,42 @@ public partial class CommonStartupWindow : Window
     {
         if (terms == null || terms.Length == 0)
         {
+            LoggingService.LogDebug("[CtrlQ TrayClick] skipped because no match terms were provided");
             return false;
         }
 
-        if (TryClickTrayIconWithAutomation(terms))
+        LoggingService.LogDebug($"[CtrlQ TrayClick] start terms={FormatTerms(terms)}");
+        if (TryClickTrayIconWithToolbar(terms, "initial"))
         {
+            LoggingService.LogDebug($"[CtrlQ TrayClick] toolbar-success stage=initial terms={FormatTerms(terms)}");
             return true;
         }
 
-        foreach (var toolbarHandle in EnumerateTrayToolbarWindows())
+        if (TryOpenTrayOverflowWithWin32())
+        {
+            Thread.Sleep(200);
+            if (TryClickTrayIconWithToolbar(terms, "overflow-opened"))
+            {
+                LoggingService.LogDebug($"[CtrlQ TrayClick] toolbar-success stage=overflow-opened terms={FormatTerms(terms)}");
+                return true;
+            }
+        }
+        else
+        {
+            LoggingService.LogDebug("[CtrlQ TrayClick] win32 overflow-open failed or no overflow button was found");
+        }
+
+        LoggingService.LogDebug($"[CtrlQ TrayClick] failed terms={FormatTerms(terms)}");
+        return false;
+    }
+
+    private static bool TryClickTrayIconWithToolbar(string[] terms, string stage)
+    {
+        foreach (var toolbarHandle in EnumerateTrayToolbarWindows(stage))
         {
             if (TryClickToolbarButton(toolbarHandle, terms))
             {
+                LoggingService.LogDebug($"[CtrlQ TrayClick] toolbar-success stage={stage} handle={FormatHandle(toolbarHandle)} terms={FormatTerms(terms)}");
                 return true;
             }
         }
@@ -1624,72 +2253,108 @@ public partial class CommonStartupWindow : Window
         return false;
     }
 
-    private static bool TryClickTrayIconWithAutomation(string[] terms)
+    private static bool TryOpenTrayOverflowWithWin32()
     {
-        foreach (var rootHandle in EnumerateTrayRootWindows())
+        var trayHandle = FindWindow("Shell_TrayWnd", null);
+        if (trayHandle == IntPtr.Zero)
         {
-            try
+            LoggingService.LogDebug("[CtrlQ TrayOverflowWin32] Shell_TrayWnd not found");
+            return false;
+        }
+
+        var buttons = new List<IntPtr>();
+        EnumChildWindows(trayHandle, (handle, _) =>
+        {
+            var className = GetWindowClassName(handle);
+            if (string.Equals(className, "Button", StringComparison.OrdinalIgnoreCase))
             {
-                var root = AutomationElement.FromHandle(rootHandle);
-                if (root == null)
-                {
-                    continue;
-                }
-
-                var buttons = root.FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button));
-                for (var i = 0; i < buttons.Count; i++)
-                {
-                    var button = buttons[i];
-                    var name = button.Current.Name ?? string.Empty;
-                    if (!terms.Any(term => name.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0))
-                    {
-                        continue;
-                    }
-
-                    object pattern;
-                    if (button.TryGetCurrentPattern(InvokePattern.Pattern, out pattern))
-                    {
-                        ((InvokePattern)pattern).Invoke();
-                    }
-                    else
-                    {
-                        Point clickablePoint;
-                        if (!button.TryGetClickablePoint(out clickablePoint))
-                        {
-                            continue;
-                        }
-
-                        DoubleClickScreenPoint((int)clickablePoint.X, (int)clickablePoint.Y);
-                    }
-
-                    return true;
-                }
+                buttons.Add(handle);
             }
-            catch
+
+            return true;
+        }, IntPtr.Zero);
+
+        LoggingService.LogDebug($"[CtrlQ TrayOverflowWin32] tray={DescribeWindowHandle(trayHandle)} buttonCount={buttons.Count}");
+        for (var i = 0; i < buttons.Count; i++)
+        {
+            var buttonHandle = buttons[i];
+            var title = GetWindowTitle(buttonHandle);
+            LoggingService.LogDebug($"[CtrlQ TrayOverflowWin32] button[{i}] {DescribeWindowHandle(buttonHandle)}");
+            if (!IsTrayOverflowButtonName(title))
             {
+                continue;
             }
+
+            LoggingService.LogDebug($"[CtrlQ TrayOverflowWin32] match index={i} title={SanitizeLogValue(title)}");
+            return ClickTrayOverflowButton(buttonHandle, "named");
+        }
+
+        var visibleFallback = buttons.FirstOrDefault(IsWindowVisible);
+        if (visibleFallback != IntPtr.Zero)
+        {
+            LoggingService.LogDebug($"[CtrlQ TrayOverflowWin32] fallback-visible-button {DescribeWindowHandle(visibleFallback)}");
+            return ClickTrayOverflowButton(visibleFallback, "visible-fallback");
         }
 
         return false;
     }
 
+    private static bool ClickTrayOverflowButton(IntPtr buttonHandle, string reason)
+    {
+        if (buttonHandle == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        SendMessage(buttonHandle, BmClick, UIntPtr.Zero, IntPtr.Zero);
+        LoggingService.LogDebug($"[CtrlQ TrayOverflowWin32] click-by-message reason={reason} handle={FormatHandle(buttonHandle)}");
+        return true;
+    }
+
+    private static bool IsTrayOverflowButtonName(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return false;
+        }
+
+        return name.IndexOf("显示隐藏", StringComparison.OrdinalIgnoreCase) >= 0
+               || name.IndexOf("隐藏的图标", StringComparison.OrdinalIgnoreCase) >= 0
+               || name.IndexOf("Show hidden icons", StringComparison.OrdinalIgnoreCase) >= 0
+               || name.IndexOf("Hidden icons", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
     private static IEnumerable<IntPtr> EnumerateTrayRootWindows()
     {
-        var roots = new[]
+        var roots = new List<IntPtr>
         {
             FindWindow("Shell_TrayWnd", null),
             FindWindow("NotifyIconOverflowWindow", null)
         };
 
-        foreach (var root in roots.Where(handle => handle != IntPtr.Zero))
+        EnumWindows((handle, _) =>
+        {
+            var className = GetWindowClassName(handle);
+            if (string.Equals(className, "Shell_SecondaryTrayWnd", StringComparison.Ordinal)
+                || string.Equals(className, "NotifyIconOverflowWindow", StringComparison.Ordinal))
+            {
+                roots.Add(handle);
+            }
+
+            return true;
+        }, IntPtr.Zero);
+
+        foreach (var root in roots.Where(handle => handle != IntPtr.Zero).Distinct())
         {
             yield return root;
         }
     }
 
-    private static IEnumerable<IntPtr> EnumerateTrayToolbarWindows()
+    private static IEnumerable<IntPtr> EnumerateTrayToolbarWindows(string stage)
     {
-        foreach (var root in EnumerateTrayRootWindows())
+        var roots = EnumerateTrayRootWindows().ToList();
+        LoggingService.LogDebug($"[CtrlQ TrayToolbar] stage={stage} roots={string.Join(",", roots.Select(DescribeWindowHandle))}");
+        foreach (var root in roots)
         {
             var handles = new List<IntPtr>();
             EnumChildWindows(root, (handle, _) =>
@@ -1702,6 +2367,7 @@ public partial class CommonStartupWindow : Window
                 return true;
             }, IntPtr.Zero);
 
+            LoggingService.LogDebug($"[CtrlQ TrayToolbar] stage={stage} root={DescribeWindowHandle(root)} toolbarCount={handles.Count}");
             foreach (var handle in handles)
             {
                 yield return handle;
@@ -1712,54 +2378,325 @@ public partial class CommonStartupWindow : Window
     private static bool TryClickToolbarButton(IntPtr toolbarHandle, string[] terms)
     {
         var count = (int)SendMessage(toolbarHandle, TbButtonCount, UIntPtr.Zero, IntPtr.Zero);
+        LoggingService.LogDebug($"[CtrlQ TrayToolbar] inspect handle={FormatHandle(toolbarHandle)} count={count} terms={FormatTerms(terms)}");
         if (count <= 0)
         {
             return false;
         }
 
-        for (var i = 0; i < count; i++)
+        var processHandle = OpenProcessForWindow(toolbarHandle);
+        if (processHandle == IntPtr.Zero)
         {
-            var text = GetToolbarButtonText(toolbarHandle, i);
-            if (string.IsNullOrWhiteSpace(text) || !terms.Any(term => text.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0))
-            {
-                continue;
-            }
-
-            if (TryGetToolbarButtonRect(toolbarHandle, i, out var rect))
-            {
-                var point = new POINT
-                {
-                    X = rect.Left + ((rect.Right - rect.Left) / 2),
-                    Y = rect.Top + ((rect.Bottom - rect.Top) / 2)
-                };
-                ClientToScreen(toolbarHandle, ref point);
-                DoubleClickScreenPoint(point.X, point.Y);
-                return true;
-            }
+            LoggingService.LogDebug($"[CtrlQ TrayToolbar] open-process-failed handle={FormatHandle(toolbarHandle)}");
+            return false;
         }
 
+        var loggedButtons = 0;
+        try
+        {
+            for (var i = 0; i < count; i++)
+            {
+                if (!TryGetToolbarButtonCommandId(toolbarHandle, processHandle, i, out var commandId))
+                {
+                    LoggingService.LogDebug($"[CtrlQ TrayToolbar] get-button-failed handle={FormatHandle(toolbarHandle)} index={i}");
+                    continue;
+                }
+
+                var text = GetToolbarButtonText(toolbarHandle, processHandle, commandId);
+                if (!string.IsNullOrWhiteSpace(text) && loggedButtons < MaxTrayLogItems)
+                {
+                    LoggingService.LogDebug($"[CtrlQ TrayToolbar] handle={FormatHandle(toolbarHandle)} button[{i}] command={commandId} text={SanitizeLogValue(text)}");
+                    loggedButtons++;
+                }
+
+                if (string.IsNullOrWhiteSpace(text) || !terms.Any(term => text.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0))
+                {
+                    continue;
+                }
+
+                if (TryGetToolbarButtonRect(toolbarHandle, processHandle, i, out var rect))
+                {
+                    LoggingService.LogDebug(
+                        $"[CtrlQ TrayToolbar] match handle={FormatHandle(toolbarHandle)} index={i} command={commandId} text={SanitizeLogValue(text)} rect={rect.Left},{rect.Top},{rect.Right},{rect.Bottom}");
+                    var x = rect.Left + ((rect.Right - rect.Left) / 2);
+                    var y = rect.Top + ((rect.Bottom - rect.Top) / 2);
+                    DoubleClickClientPoint(toolbarHandle, x, y);
+                    return true;
+                }
+
+                LoggingService.LogDebug($"[CtrlQ TrayToolbar] match-without-rect handle={FormatHandle(toolbarHandle)} index={i} command={commandId} text={SanitizeLogValue(text)}");
+            }
+        }
+        finally
+        {
+            CloseHandle(processHandle);
+        }
+
+        LoggingService.LogDebug($"[CtrlQ TrayToolbar] no-match handle={FormatHandle(toolbarHandle)} count={count} loggedButtons={loggedButtons}");
         return false;
     }
 
-    private static string GetToolbarButtonText(IntPtr toolbarHandle, int index)
+    private static IntPtr OpenProcessForWindow(IntPtr windowHandle)
     {
-        var buffer = new StringBuilder(512);
-        SendMessage(toolbarHandle, TbGetButtonTextW, new UIntPtr((uint)index), buffer);
-        return buffer.ToString();
+        GetWindowThreadProcessId(windowHandle, out var processId);
+        return processId <= 0
+            ? IntPtr.Zero
+            : OpenProcess(ProcessQueryInformation | ProcessVmOperation | ProcessVmRead | ProcessVmWrite, false, processId);
     }
 
-    private static bool TryGetToolbarButtonRect(IntPtr toolbarHandle, int index, out RECT rect)
+    private static bool TryGetToolbarButtonCommandId(IntPtr toolbarHandle, IntPtr processHandle, int index, out int commandId)
+    {
+        commandId = 0;
+        var buttonSize = IntPtr.Size == 8 ? 32 : 20;
+        var remoteBuffer = VirtualAllocEx(processHandle, IntPtr.Zero, new UIntPtr((uint)buttonSize), MemCommit | MemReserve, PageReadWrite);
+        if (remoteBuffer == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        try
+        {
+            if (SendMessage(toolbarHandle, TbGetButton, new UIntPtr((uint)index), remoteBuffer) == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            var bytes = ReadRemoteBytes(processHandle, remoteBuffer, buttonSize);
+            if (bytes == null || bytes.Length < 8)
+            {
+                return false;
+            }
+
+            commandId = BitConverter.ToInt32(bytes, 4);
+            return commandId != 0;
+        }
+        finally
+        {
+            VirtualFreeEx(processHandle, remoteBuffer, UIntPtr.Zero, MemRelease);
+        }
+    }
+
+    private static string GetToolbarButtonText(IntPtr toolbarHandle, IntPtr processHandle, int commandId)
+    {
+        const int bufferBytes = 1024;
+        var remoteBuffer = VirtualAllocEx(processHandle, IntPtr.Zero, new UIntPtr((uint)bufferBytes), MemCommit | MemReserve, PageReadWrite);
+        if (remoteBuffer == IntPtr.Zero)
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            var length = SendMessage(toolbarHandle, TbGetButtonTextW, new UIntPtr((uint)commandId), remoteBuffer).ToInt64();
+            if (length <= 0)
+            {
+                return string.Empty;
+            }
+
+            var bytesToRead = (int)Math.Min(bufferBytes, (length + 1) * 2);
+            var bytes = ReadRemoteBytes(processHandle, remoteBuffer, bytesToRead);
+            if (bytes == null || bytes.Length == 0)
+            {
+                return string.Empty;
+            }
+
+            var text = Encoding.Unicode.GetString(bytes);
+            var nullIndex = text.IndexOf('\0');
+            return nullIndex >= 0 ? text.Substring(0, nullIndex) : text;
+        }
+        finally
+        {
+            VirtualFreeEx(processHandle, remoteBuffer, UIntPtr.Zero, MemRelease);
+        }
+    }
+
+    private static bool TryGetToolbarButtonRect(IntPtr toolbarHandle, IntPtr processHandle, int index, out RECT rect)
     {
         rect = default;
-        return SendMessage(toolbarHandle, TbGetItemRect, new UIntPtr((uint)index), ref rect) != IntPtr.Zero;
+        var rectSize = Marshal.SizeOf(typeof(RECT));
+        var remoteBuffer = VirtualAllocEx(processHandle, IntPtr.Zero, new UIntPtr((uint)rectSize), MemCommit | MemReserve, PageReadWrite);
+        if (remoteBuffer == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        try
+        {
+            if (SendMessage(toolbarHandle, TbGetItemRect, new UIntPtr((uint)index), remoteBuffer) == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            var bytes = ReadRemoteBytes(processHandle, remoteBuffer, rectSize);
+            if (bytes == null || bytes.Length < rectSize)
+            {
+                return false;
+            }
+
+            rect = new RECT
+            {
+                Left = BitConverter.ToInt32(bytes, 0),
+                Top = BitConverter.ToInt32(bytes, 4),
+                Right = BitConverter.ToInt32(bytes, 8),
+                Bottom = BitConverter.ToInt32(bytes, 12)
+            };
+            return true;
+        }
+        finally
+        {
+            VirtualFreeEx(processHandle, remoteBuffer, UIntPtr.Zero, MemRelease);
+        }
     }
 
-    private static void DoubleClickScreenPoint(int x, int y)
+    private static byte[] ReadRemoteBytes(IntPtr processHandle, IntPtr address, int bytesToRead)
     {
-        SetCursorPos(x, y);
-        mouse_event(MouseEventFLeftDown | MouseEventFLeftUp, 0, 0, 0, UIntPtr.Zero);
-        Thread.Sleep(80);
-        mouse_event(MouseEventFLeftDown | MouseEventFLeftUp, 0, 0, 0, UIntPtr.Zero);
+        var buffer = new byte[bytesToRead];
+        return ReadProcessMemory(processHandle, address, buffer, bytesToRead, out var bytesRead) && bytesRead.ToInt64() > 0
+            ? buffer
+            : null;
+    }
+
+    private static void DoubleClickClientPoint(IntPtr handle, int x, int y)
+    {
+        var lParam = MakeLParam(x, y);
+        LoggingService.LogDebug($"[CtrlQ WindowMessage] double-click handle={FormatHandle(handle)} x={x} y={y}");
+        PostMessage(handle, WmMouseMove, UIntPtr.Zero, lParam);
+        PostMessage(handle, WmLButtonDown, new UIntPtr(MkLButton), lParam);
+        PostMessage(handle, WmLButtonUp, UIntPtr.Zero, lParam);
+        PostMessage(handle, WmLButtonDblClk, new UIntPtr(MkLButton), lParam);
+        PostMessage(handle, WmLButtonUp, UIntPtr.Zero, lParam);
+    }
+
+    private static bool PostDoubleClickToWindowChain(IntPtr startHandle, int screenX, int screenY, string reason)
+    {
+        if (startHandle == IntPtr.Zero)
+        {
+            LoggingService.LogDebug($"[CtrlQ WindowMessage] skip-empty-target reason={reason} screen={screenX},{screenY}");
+            return false;
+        }
+
+        var handle = startHandle;
+        var posted = false;
+        var visited = new HashSet<IntPtr>();
+        for (var i = 0; i < 6 && handle != IntPtr.Zero && visited.Add(handle); i++)
+        {
+            var point = new POINT { X = screenX, Y = screenY };
+            if (ScreenToClient(handle, ref point))
+            {
+                LoggingService.LogDebug($"[CtrlQ WindowMessage] double-click-screen reason={reason} target={DescribeWindowHandle(handle)} screen={screenX},{screenY} client={point.X},{point.Y}");
+                DoubleClickClientPoint(handle, point.X, point.Y);
+                posted = true;
+            }
+
+            handle = GetParent(handle);
+        }
+
+        return posted;
+    }
+
+    private static bool TryPostDoubleClickAtPhysicalPoint(int screenX, int screenY, string reason, out string targetDescription)
+    {
+        var previousDpiContext = TrySetThreadDpiAwarenessContext(DpiAwarenessContextPerMonitorAwareV2);
+        try
+        {
+            var target = WindowFromPoint(new POINT { X = screenX, Y = screenY });
+            targetDescription = DescribeWindowHandle(target);
+            return PostDoubleClickToWindowChain(target, screenX, screenY, reason);
+        }
+        finally
+        {
+            if (previousDpiContext != IntPtr.Zero)
+            {
+                TrySetThreadDpiAwarenessContext(previousDpiContext);
+            }
+        }
+    }
+
+    private static IntPtr TrySetThreadDpiAwarenessContext(IntPtr dpiContext)
+    {
+        try
+        {
+            return SetThreadDpiAwarenessContext(dpiContext);
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return IntPtr.Zero;
+        }
+        catch
+        {
+            return IntPtr.Zero;
+        }
+    }
+
+    private static IntPtr MakeLParam(int lowWord, int highWord)
+    {
+        return new IntPtr((highWord << 16) | (lowWord & 0xFFFF));
+    }
+
+    private static int SafeProcessId(Process process)
+    {
+        try
+        {
+            return process?.Id ?? 0;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private static string SafeProcessName(Process process)
+    {
+        try
+        {
+            return process?.ProcessName ?? string.Empty;
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    private static string FormatTerms(IEnumerable<string> terms)
+    {
+        return string.Join("|", (terms ?? Array.Empty<string>()).Select(SanitizeLogValue));
+    }
+
+    private static string FormatHandle(IntPtr handle)
+    {
+        return $"0x{handle.ToInt64():X}";
+    }
+
+    private static string FormatAutomationRect(Rect rect)
+    {
+        return rect.IsEmpty
+            ? "Empty"
+            : $"{rect.Left:0},{rect.Top:0},{rect.Width:0},{rect.Height:0}";
+    }
+
+    private static string DescribeWindowHandle(IntPtr handle)
+    {
+        if (handle == IntPtr.Zero)
+        {
+            return "0x0";
+        }
+
+        return $"{FormatHandle(handle)} class={SanitizeLogValue(GetWindowClassName(handle))} title={SanitizeLogValue(GetWindowTitle(handle))} visible={IsWindowVisible(handle)}";
+    }
+
+    private static string DescribeWeChatTrayCandidate(WeChatTrayWindowCandidate candidate)
+    {
+        return $"{FormatHandle(candidate.Handle)} pid={candidate.ProcessId} class={SanitizeLogValue(candidate.ClassName)} title={SanitizeLogValue(candidate.Title)}";
+    }
+
+    private static string SanitizeLogValue(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+        {
+            return string.Empty;
+        }
+
+        return value.Replace("\r", " ").Replace("\n", " ").Trim();
     }
 
     private static WindowActivationCandidate FindBestProcessWindow(Process process)
@@ -1863,6 +2800,7 @@ public partial class CommonStartupWindow : Window
                || className.Equals("Electron_NotifyIconHostWindow", StringComparison.Ordinal)
                || className.Equals("com.ccswitch.desktop-sic", StringComparison.Ordinal)
                || className.IndexOf("CandidateWindow", StringComparison.OrdinalIgnoreCase) >= 0
+               || (!string.IsNullOrWhiteSpace(title) && title.StartsWith("GDI+ Window", StringComparison.OrdinalIgnoreCase))
                || string.Equals(title, "Default IME", StringComparison.OrdinalIgnoreCase)
                || string.Equals(title, "Mode Indicator", StringComparison.OrdinalIgnoreCase);
     }
@@ -2962,6 +3900,9 @@ public partial class CommonStartupWindow : Window
     private static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
 
     [DllImport("user32.dll")]
+    private static extern IntPtr GetParent(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
     private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
 
     [DllImport("user32.dll")]
@@ -2983,6 +3924,9 @@ public partial class CommonStartupWindow : Window
     private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);
 
     [DllImport("user32.dll")]
+    private static extern bool PostMessage(IntPtr hWnd, uint msg, UIntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
     private static extern IntPtr SendMessage(IntPtr hWnd, uint msg, UIntPtr wParam, IntPtr lParam);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
@@ -2996,15 +3940,6 @@ public partial class CommonStartupWindow : Window
 
     [DllImport("user32.dll")]
     private static extern void SwitchToThisWindow(IntPtr hWnd, bool fAltTab);
-
-    [DllImport("user32.dll")]
-    private static extern bool ClientToScreen(IntPtr hWnd, ref POINT lpPoint);
-
-    [DllImport("user32.dll")]
-    private static extern bool SetCursorPos(int x, int y);
-
-    [DllImport("user32.dll")]
-    private static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, UIntPtr dwExtraInfo);
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int count);
@@ -3024,11 +3959,38 @@ public partial class CommonStartupWindow : Window
     [DllImport("user32.dll")]
     private static extern IntPtr SetFocus(IntPtr hWnd);
 
+    [DllImport("user32.dll")]
+    private static extern IntPtr WindowFromPoint(POINT point);
+
+    [DllImport("user32.dll")]
+    private static extern bool ScreenToClient(IntPtr hWnd, ref POINT lpPoint);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SetThreadDpiAwarenessContext(IntPtr dpiContext);
+
     [DllImport("kernel32.dll")]
     private static extern uint GetCurrentThreadId();
 
     [DllImport("user32.dll")]
     private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out int lpdwProcessId);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr OpenProcess(uint dwDesiredAccess, bool bInheritHandle, int dwProcessId);
+
+    [DllImport("kernel32.dll")]
+    private static extern bool CloseHandle(IntPtr hObject);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr VirtualAllocEx(IntPtr hProcess, IntPtr lpAddress, UIntPtr dwSize, uint flAllocationType, uint flProtect);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool VirtualFreeEx(IntPtr hProcess, IntPtr lpAddress, UIntPtr dwSize, uint dwFreeType);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool ReadProcessMemory(IntPtr hProcess, IntPtr lpBaseAddress, byte[] lpBuffer, int dwSize, out IntPtr lpNumberOfBytesRead);
+
+    [DllImport("shell32.dll", SetLastError = false)]
+    private static extern int Shell_NotifyIconGetRect(ref NOTIFYICONIDENTIFIER identifier, out RECT iconLocation);
 
     private void CandidateList_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
@@ -4062,6 +5024,25 @@ internal readonly struct WindowActivationCandidate
     public string ClassName { get; }
 }
 
+internal readonly struct WeChatTrayWindowCandidate
+{
+    public WeChatTrayWindowCandidate(IntPtr handle, int processId, string className, string title)
+    {
+        Handle = handle;
+        ProcessId = processId;
+        ClassName = className ?? string.Empty;
+        Title = title ?? string.Empty;
+    }
+
+    public IntPtr Handle { get; }
+
+    public int ProcessId { get; }
+
+    public string ClassName { get; }
+
+    public string Title { get; }
+}
+
 internal sealed class ProcessListScope : IDisposable
 {
     public ProcessListScope(List<Process> processes)
@@ -4100,6 +5081,15 @@ internal struct POINT
 {
     public int X;
     public int Y;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal struct NOTIFYICONIDENTIFIER
+{
+    public uint CbSize;
+    public IntPtr HWnd;
+    public uint UID;
+    public Guid GuidItem;
 }
 
 internal class ShortcutTarget

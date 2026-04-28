@@ -159,10 +159,21 @@ namespace MftScanner
 
                 SharedIndexIpcRequest request = null;
                 SharedIndexIpcResponse response;
+                long readRequestMs = 0;
+                long executeMs = 0;
+                long writeResponseMs = 0;
+                var responseBytes = 0;
                 try
                 {
+                    var stageStopwatch = Stopwatch.StartNew();
                     request = SharedIndexMemoryProtocol.ReadRequest(slotResources.RequestMap);
+                    stageStopwatch.Stop();
+                    readRequestMs = stageStopwatch.ElapsedMilliseconds;
+
+                    stageStopwatch.Restart();
                     response = ExecuteRequestAsync(request, slotResources, ct).GetAwaiter().GetResult();
+                    stageStopwatch.Stop();
+                    executeMs = stageStopwatch.ElapsedMilliseconds;
                     response.Status = SharedIndexResponseStatus.Success;
                 }
                 catch (OperationCanceledException)
@@ -181,8 +192,17 @@ namespace MftScanner
 
                 try
                 {
-                    SharedIndexMemoryProtocol.WriteResponse(slotResources.ResponseMap, response);
+                    var stageStopwatch = Stopwatch.StartNew();
+                    responseBytes = SharedIndexMemoryProtocol.WriteResponse(slotResources.ResponseMap, response);
+                    stageStopwatch.Stop();
+                    writeResponseMs = stageStopwatch.ElapsedMilliseconds;
                     slotResources.ResponseReadyEvent.Set();
+                    var outcome = response != null && response.Status == SharedIndexResponseStatus.Success ? "success" : "error";
+                    LoggingService.LogIndexPerf("IPC",
+                        $"[MMF HOST] outcome={outcome} slot={slotResources.SlotId} command={request?.CommandType ?? SharedIndexCommandType.None} " +
+                        $"requestId={request?.RequestId ?? 0} keyword={LoggingService.FormatPerfValue(request?.Keyword)} filter={request?.Filter ?? SearchTypeFilter.All} " +
+                        $"hostSearchMs={response?.HostSearchMs ?? 0} resultCount={(response?.Results == null ? 0 : response.Results.Count)} " +
+                        $"responseBytes={responseBytes} readRequestMs={readRequestMs} executeMs={executeMs} writeResponseMs={writeResponseMs}");
                 }
                 catch (Exception ex)
                 {

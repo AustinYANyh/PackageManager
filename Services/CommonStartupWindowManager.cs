@@ -74,7 +74,7 @@ namespace PackageManager.Services
                     return false;
                 }
 
-                LoggingService.LogInfo($"检测到常用启动项工具版本已变化，准备重启。SessionId={_sessionId}，PID={process.Id}");
+                LoggingService.LogInfo($"检测到常用启动项工具内容已变化，准备重启。SessionId={_sessionId}，PID={process.Id}");
                 TerminateToolProcessForUpgrade(process);
                 _currentToolProcessId = null;
                 StartNewToolProcess();

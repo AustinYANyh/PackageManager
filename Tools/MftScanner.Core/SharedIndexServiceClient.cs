@@ -467,6 +467,7 @@ namespace MftScanner
             long writeMs = 0;
             long waitMs = 0;
             long readMs = 0;
+            var requestBytes = 0;
             await EnsureResourcesAvailableAsync(ct).ConfigureAwait(false);
             await _requestGate.WaitAsync(ct).ConfigureAwait(false);
             try
@@ -486,7 +487,7 @@ namespace MftScanner
                 slotResources.ResponseReadyEvent.Reset();
 
                 stageStopwatch.Restart();
-                SharedIndexMemoryProtocol.WriteRequest(slotResources.RequestMap, request);
+                requestBytes = SharedIndexMemoryProtocol.WriteRequest(slotResources.RequestMap, request);
                 slotResources.RequestReadyEvent.Set();
                 writeMs = stageStopwatch.ElapsedMilliseconds;
 
@@ -533,7 +534,8 @@ namespace MftScanner
                 IndexPerfLog.Write("IPC",
                     $"[MMF] outcome=success command={request.CommandType} consumer={IndexPerfLog.FormatValue(_consumerName)} " +
                     $"keyword={IndexPerfLog.FormatValue(request.Keyword)} filter={request.Filter} " +
-                    $"hostSearchMs={response.HostSearchMs} openMs={openMs} writeMs={writeMs} waitMs={waitMs} readMs={readMs} totalMs={totalStopwatch.ElapsedMilliseconds}");
+                    $"hostSearchMs={response.HostSearchMs} requestBytes={requestBytes} resultCount={(response.Results == null ? 0 : response.Results.Count)} " +
+                    $"openMs={openMs} writeMs={writeMs} waitMs={waitMs} readMs={readMs} totalMs={totalStopwatch.ElapsedMilliseconds}");
                 return response;
             }
             catch (Exception ex) when (!(ex is OperationCanceledException))
@@ -553,26 +555,61 @@ namespace MftScanner
             }
         }
 
-        private static Task WaitForResponseAsync(SharedIndexClientSlotResources slotResources, CancellationToken ct)
+        private static async Task WaitForResponseAsync(SharedIndexClientSlotResources slotResources, CancellationToken ct)
         {
-            return Task.Run(() =>
+            if (slotResources.ResponseReadyEvent.WaitOne(0))
             {
-                var waitHandles = new WaitHandle[] { slotResources.ResponseReadyEvent, ct.WaitHandle };
-                var waitIndex = WaitHandle.WaitAny(waitHandles);
-                if (waitIndex != 0)
-                {
-                    try
-                    {
-                        slotResources.CancelEvent.Set();
-                    }
-                    catch
-                    {
-                    }
+                return;
+            }
 
-                    IndexPerfLog.Write("IPC", "[MMF] outcome=cancel-signal-sent drain=false");
-                    ct.ThrowIfCancellationRequested();
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            RegisteredWaitHandle responseRegistration = null;
+            CancellationTokenRegistration cancellationRegistration = default(CancellationTokenRegistration);
+
+            try
+            {
+                responseRegistration = ThreadPool.RegisterWaitForSingleObject(
+                    slotResources.ResponseReadyEvent,
+                    (state, timedOut) =>
+                    {
+                        if (!timedOut)
+                        {
+                            ((TaskCompletionSource<bool>)state).TrySetResult(true);
+                        }
+                    },
+                    tcs,
+                    Timeout.Infinite,
+                    executeOnlyOnce: true);
+
+                cancellationRegistration = ct.Register(() => tcs.TrySetCanceled());
+                await tcs.Task.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                try
+                {
+                    slotResources.CancelEvent.Set();
                 }
-            }, CancellationToken.None);
+                catch
+                {
+                }
+
+                IndexPerfLog.Write("IPC", "[MMF] outcome=cancel-signal-sent drain=false");
+                ct.ThrowIfCancellationRequested();
+                throw;
+            }
+            finally
+            {
+                try
+                {
+                    responseRegistration?.Unregister(null);
+                }
+                catch
+                {
+                }
+
+                cancellationRegistration.Dispose();
+            }
         }
 
         private async Task EnsureResourcesAvailableAsync(CancellationToken ct)

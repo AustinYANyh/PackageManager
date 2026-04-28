@@ -33,6 +33,7 @@ namespace MftScanner
 
         /// <summary>有序数组：按 LowerName 字典序排列。</summary>
         public FileRecord[] SortedArray { get; private set; } = Array.Empty<FileRecord>();
+        public FileRecord[] ParentSortedArray { get; private set; } = Array.Empty<FileRecord>();
         public FileRecord[] DirectorySortedArray { get; private set; } = Array.Empty<FileRecord>();
         public FileRecord[] LaunchableSortedArray { get; private set; } = Array.Empty<FileRecord>();
         public FileRecord[] ScriptSortedArray { get; private set; } = Array.Empty<FileRecord>();
@@ -99,6 +100,9 @@ namespace MftScanner
         private static readonly IComparer<FileRecord> ByLowerName =
             Comparer<FileRecord>.Create((a, b) => string.CompareOrdinal(a.LowerName, b.LowerName));
 
+        private static readonly IComparer<FileRecord> ByParentThenLowerName =
+            Comparer<FileRecord>.Create(CompareByParentThenLowerName);
+
         public bool TryContainsSearch(
             string query,
             SearchTypeFilter filter,
@@ -137,6 +141,55 @@ namespace MftScanner
             return true;
         }
 
+        public FileRecord[] GetSubtreeCandidates(
+            char driveLetter,
+            IReadOnlyList<ulong> directoryFrns,
+            SearchTypeFilter filter,
+            CancellationToken ct)
+        {
+            if (directoryFrns == null || directoryFrns.Count == 0)
+                return Array.Empty<FileRecord>();
+
+            var dl = char.ToUpperInvariant(driveLetter);
+            var candidates = new List<FileRecord>();
+            _lock.EnterReadLock();
+            try
+            {
+                var parentArr = ParentSortedArray;
+                if (parentArr == null || parentArr.Length == 0)
+                    return Array.Empty<FileRecord>();
+
+                for (var i = 0; i < directoryFrns.Count; i++)
+                {
+                    if (((i + 1) & 0x3FF) == 0)
+                        ct.ThrowIfCancellationRequested();
+
+                    var parentFrn = directoryFrns[i];
+                    var start = LowerBoundByParent(parentArr, dl, parentFrn);
+                    for (var j = start; j < parentArr.Length; j++)
+                    {
+                        var record = parentArr[j];
+                        if (!IsSameParent(record, dl, parentFrn))
+                            break;
+
+                        if (MatchesFilter(record, filter))
+                            candidates.Add(record);
+                    }
+                }
+            }
+            finally
+            {
+                _lock.ExitReadLock();
+            }
+
+            if (candidates.Count == 0)
+                return Array.Empty<FileRecord>();
+
+            var result = candidates.ToArray();
+            Array.Sort(result, ByLowerName);
+            return result;
+        }
+
         public void LoadSortedRecords(IReadOnlyList<FileRecord> sortedRecords, bool buildContainsAccelerator = true)
         {
             var arr = CopyRecords(sortedRecords);
@@ -144,6 +197,7 @@ namespace MftScanner
                 arr,
                 out var exactMap,
                 out var extensionMap,
+                out var parentArr,
                 out var directoryArr,
                 out var launchableArr,
                 out var scriptArr,
@@ -153,6 +207,7 @@ namespace MftScanner
                 arr,
                 exactMap,
                 extensionMap,
+                parentArr,
                 directoryArr,
                 launchableArr,
                 scriptArr,
@@ -175,6 +230,7 @@ namespace MftScanner
                     Array.Empty<FileRecord>(),
                     Array.Empty<FileRecord>(),
                     Array.Empty<FileRecord>(),
+                    Array.Empty<FileRecord>(),
                     ContainsAccelerator.Empty,
                     true);
                 return;
@@ -186,6 +242,7 @@ namespace MftScanner
                 arr,
                 out var exactMap,
                 out var extensionMap,
+                out var parentArr,
                 out var directoryArr,
                 out var launchableArr,
                 out var scriptArr,
@@ -195,6 +252,7 @@ namespace MftScanner
                 arr,
                 exactMap,
                 extensionMap,
+                parentArr,
                 directoryArr,
                 launchableArr,
                 scriptArr,
@@ -238,6 +296,7 @@ namespace MftScanner
                 newArr[idx] = record;
                 Array.Copy(arr, idx, newArr, idx + 1, arr.Length - idx);
                 SortedArray = newArr;
+                ParentSortedArray = InsertIntoSortedArray(ParentSortedArray, record, ByParentThenLowerName);
                 _contentVersion++;
             }
             finally { _lock.ExitWriteLock(); }
@@ -292,6 +351,7 @@ namespace MftScanner
                         Array.Copy(arr, 0, newArr, 0, i);
                         Array.Copy(arr, i + 1, newArr, i, arr.Length - i - 1);
                         SortedArray = newArr;
+                        ParentSortedArray = RemoveFromSortedArray(ParentSortedArray, frn, lowerName, parentFrn, driveLetter);
                         _contentVersion++;
                         break;
                     }
@@ -322,6 +382,7 @@ namespace MftScanner
                 }
 
                 RemoveFromFilterBuckets(frn, oldLowerName, oldParentFrn, driveLetter);
+                ParentSortedArray = RemoveFromSortedArray(ParentSortedArray, frn, oldLowerName, oldParentFrn, driveLetter);
 
                 var arr = SortedArray;
                 for (var i = 0; i < arr.Length; i++)
@@ -371,6 +432,7 @@ namespace MftScanner
                 newArr[insertIdx] = newRecord;
                 Array.Copy(arr, insertIdx, newArr, insertIdx + 1, arr.Length - insertIdx);
                 SortedArray = newArr;
+                ParentSortedArray = InsertIntoSortedArray(ParentSortedArray, newRecord, ByParentThenLowerName);
                 _contentVersion++;
             }
             finally { _lock.ExitWriteLock(); }
@@ -389,6 +451,68 @@ namespace MftScanner
             for (var i = 0; i < records.Count; i++)
                 arr[i] = records[i];
             return arr;
+        }
+
+        private static int CompareByParentThenLowerName(FileRecord a, FileRecord b)
+        {
+            if (ReferenceEquals(a, b))
+                return 0;
+            if (a == null)
+                return -1;
+            if (b == null)
+                return 1;
+
+            var driveCompare = char.ToUpperInvariant(a.DriveLetter)
+                .CompareTo(char.ToUpperInvariant(b.DriveLetter));
+            if (driveCompare != 0)
+                return driveCompare;
+
+            var parentCompare = a.ParentFrn.CompareTo(b.ParentFrn);
+            if (parentCompare != 0)
+                return parentCompare;
+
+            var nameCompare = string.CompareOrdinal(a.LowerName, b.LowerName);
+            if (nameCompare != 0)
+                return nameCompare;
+
+            return a.Frn.CompareTo(b.Frn);
+        }
+
+        private static int LowerBoundByParent(FileRecord[] parentArr, char driveLetter, ulong parentFrn)
+        {
+            var lo = 0;
+            var hi = parentArr?.Length ?? 0;
+            while (lo < hi)
+            {
+                var mid = lo + ((hi - lo) / 2);
+                var record = parentArr[mid];
+                var compare = CompareParentToKey(record, driveLetter, parentFrn);
+                if (compare < 0)
+                    lo = mid + 1;
+                else
+                    hi = mid;
+            }
+
+            return lo;
+        }
+
+        private static int CompareParentToKey(FileRecord record, char driveLetter, ulong parentFrn)
+        {
+            if (record == null)
+                return -1;
+
+            var driveCompare = char.ToUpperInvariant(record.DriveLetter).CompareTo(driveLetter);
+            if (driveCompare != 0)
+                return driveCompare;
+
+            return record.ParentFrn.CompareTo(parentFrn);
+        }
+
+        private static bool IsSameParent(FileRecord record, char driveLetter, ulong parentFrn)
+        {
+            return record != null
+                   && char.ToUpperInvariant(record.DriveLetter) == driveLetter
+                   && record.ParentFrn == parentFrn;
         }
 
         private static Dictionary<string, List<FileRecord>> BuildExactHashMap(FileRecord[] arr)
@@ -424,6 +548,7 @@ namespace MftScanner
             FileRecord[] arr,
             out Dictionary<string, List<FileRecord>> exactMap,
             out Dictionary<string, List<FileRecord>> extensionMap,
+            out FileRecord[] parentArr,
             out FileRecord[] directoryArr,
             out FileRecord[] launchableArr,
             out FileRecord[] scriptArr,
@@ -434,6 +559,7 @@ namespace MftScanner
             {
                 exactMap = new Dictionary<string, List<FileRecord>>();
                 extensionMap = new Dictionary<string, List<FileRecord>>();
+                parentArr = Array.Empty<FileRecord>();
                 directoryArr = Array.Empty<FileRecord>();
                 launchableArr = Array.Empty<FileRecord>();
                 scriptArr = Array.Empty<FileRecord>();
@@ -449,6 +575,9 @@ namespace MftScanner
             var scripts = new List<FileRecord>();
             var logs = new List<FileRecord>();
             var configs = new List<FileRecord>();
+            parentArr = new FileRecord[arr.Length];
+            Array.Copy(arr, parentArr, arr.Length);
+            Array.Sort(parentArr, ByParentThenLowerName);
 
             for (var i = 0; i < arr.Length; i++)
             {
@@ -528,6 +657,7 @@ namespace MftScanner
             FileRecord[] arr,
             Dictionary<string, List<FileRecord>> exactMap,
             Dictionary<string, List<FileRecord>> extensionMap,
+            FileRecord[] parentArr,
             FileRecord[] directoryArr,
             FileRecord[] launchableArr,
             FileRecord[] scriptArr,
@@ -542,6 +672,7 @@ namespace MftScanner
                 ExactHashMap = exactMap;
                 ExtensionHashMap = extensionMap;
                 SortedArray = arr;
+                ParentSortedArray = parentArr ?? Array.Empty<FileRecord>();
                 DirectorySortedArray = directoryArr;
                 LaunchableSortedArray = launchableArr;
                 ScriptSortedArray = scriptArr;
@@ -619,6 +750,7 @@ namespace MftScanner
                     arr,
                     out var exactMap,
                     out var extensionMap,
+                    out var parentArr,
                     out var directoryArr,
                     out var launchableArr,
                     out var scriptArr,
@@ -627,6 +759,7 @@ namespace MftScanner
                 ExactHashMap = exactMap;
                 ExtensionHashMap = extensionMap;
                 SortedArray = arr;
+                ParentSortedArray = parentArr;
                 DirectorySortedArray = directoryArr;
                 LaunchableSortedArray = launchableArr;
                 ScriptSortedArray = scriptArr;
@@ -803,8 +936,13 @@ namespace MftScanner
 
         private static FileRecord[] InsertIntoSortedArray(FileRecord[] target, FileRecord record)
         {
+            return InsertIntoSortedArray(target, record, ByLowerName);
+        }
+
+        private static FileRecord[] InsertIntoSortedArray(FileRecord[] target, FileRecord record, IComparer<FileRecord> comparer)
+        {
             var arr = target ?? Array.Empty<FileRecord>();
-            var idx = Array.BinarySearch(arr, record, ByLowerName);
+            var idx = Array.BinarySearch(arr, record, comparer ?? ByLowerName);
             if (idx < 0)
                 idx = ~idx;
 
