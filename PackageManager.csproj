@@ -351,6 +351,7 @@
         <EmbeddedResource Include="Assets\kiro-rs\kiro_stats.json" />
         <Content Include="Assets\Tools\UnlockProcessAdmin.exe" />
         <Content Include="Models\json.txt" />
+        <Content Include="scripts\Test-MftScannerSearchCorrectness.ps1" />
         <Content Include="Views\WorkItemKanban.html">
             <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
         </Content>
