@@ -21,7 +21,8 @@ namespace MftScanner
         Build = 1,
         Rebuild = 2,
         State = 3,
-        Search = 4
+        Search = 4,
+        MarkDeleted = 5
     }
 
     public enum SharedIndexResponseStatus
@@ -157,7 +158,7 @@ namespace MftScanner
 
     public static class SharedIndexMemoryProtocol
     {
-        public const int ProtocolVersion = 4;
+        public const int ProtocolVersion = 5;
         public const int RequestCapacityBytes = 64 * 1024;
         public const int ResponseCapacityBytes = 32 * 1024 * 1024;
         public const int StateCapacityBytes = 64 * 1024;

@@ -119,6 +119,8 @@ namespace MftScanner
         private const bool LogUsnRecords = false;
         private static readonly TimeSpan WatcherPollLogInterval = TimeSpan.FromSeconds(30);
         private const int ReadUsnBufferSize = 4 * 1024 * 1024;
+        private const int MaxWatcherReadRecordsPerSlice = 20000;
+        private const int MaxWatcherReadSliceMilliseconds = 200;
 
         // ── Win32 常量 ──────────────────────────────────────────────────────────
         private const uint GENERIC_READ              = 0x80000000;
@@ -207,6 +209,7 @@ namespace MftScanner
             public DateTime LastPollLogUtc = DateTime.MinValue;
             public long LastLoggedNextUsn = long.MinValue;
             public long LastLoggedJournalNextUsn = long.MinValue;
+            public bool HasBacklog;
             public Dictionary<ulong, (string oldName, ulong oldParentFrn)> PendingRenameOldByFrn
                 = new Dictionary<ulong, (string oldName, ulong oldParentFrn)>();
         }
@@ -432,7 +435,8 @@ namespace MftScanner
             {
                 while (!ct.IsCancellationRequested)
                 {
-                    try { Task.Delay(1000, ct).Wait(ct); }
+                    var delayMilliseconds = state.HasBacklog ? 10 : 1000;
+                    try { Task.Delay(delayMilliseconds, ct).Wait(ct); }
                     catch (OperationCanceledException) { break; }
 
                     if (ct.IsCancellationRequested) break;
@@ -474,6 +478,7 @@ namespace MftScanner
                         LogWatcherPollIfNeeded(state, journalData.NextUsn);
                         ReadUsnBatch(state, handle, ref journalData, buffer, bufferSize, ct,
                             raiseOverflowEvent: true, collectedChanges: null);
+                        state.HasBacklog = state.NextUsn < journalData.NextUsn;
                     }
                     finally { CloseHandle(handle); }
                 }
@@ -530,6 +535,8 @@ namespace MftScanner
                 UsnJournalID      = state.JournalId,
             };
 
+            var sliceStopwatch = System.Diagnostics.Stopwatch.StartNew();
+            var recordsRead = 0;
             while (!ct.IsCancellationRequested)
             {
                 if (!DeviceIoControlReadUsn(handle, FSCTL_READ_USN_JOURNAL,
@@ -567,6 +574,7 @@ namespace MftScanner
 
                     if (fileNameLength > 0 && offset + fileNameOffset + fileNameLength <= bytesReturned)
                     {
+                        recordsRead++;
                         var fileName = Marshal.PtrToStringUni(
                             IntPtr.Add(buffer, offset + fileNameOffset), fileNameLength / 2);
 
@@ -676,10 +684,26 @@ namespace MftScanner
                     offset += recordLength;
                 }
 
+                if (recordsRead >= MaxWatcherReadRecordsPerSlice
+                    || sliceStopwatch.ElapsedMilliseconds >= MaxWatcherReadSliceMilliseconds)
+                {
+                    state.NextUsn = readData.StartUsn;
+                    UsnDiagLog.Write(
+                        $"[WATCHER READ SLICE] drive={state.DriveLetter} records={recordsRead} elapsedMs={sliceStopwatch.ElapsedMilliseconds} " +
+                        $"nextUsn={state.NextUsn} journalNextUsn={journalData.NextUsn} yielded=true");
+                    return true;
+                }
+
                 if (readData.StartUsn >= journalData.NextUsn) break;
             }
 
             state.NextUsn = readData.StartUsn;
+            if (recordsRead > 0 && sliceStopwatch.ElapsedMilliseconds >= 50)
+            {
+                UsnDiagLog.Write(
+                    $"[WATCHER READ SLICE] drive={state.DriveLetter} records={recordsRead} elapsedMs={sliceStopwatch.ElapsedMilliseconds} " +
+                    $"nextUsn={state.NextUsn} journalNextUsn={journalData.NextUsn} yielded=false");
+            }
             return true;
         }
 

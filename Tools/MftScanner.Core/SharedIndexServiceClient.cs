@@ -118,6 +118,28 @@ namespace MftScanner
             return await SearchAsyncCore(keyword, maxResults, offset, filter, progress, ct, allowHostWarmupRetry: true).ConfigureAwait(false);
         }
 
+        public async Task NotifyDeletedAsync(string fullPath, bool isDirectory, CancellationToken ct)
+        {
+            try
+            {
+                var response = await SendRequestAsync(new SharedIndexIpcRequest
+                {
+                    CommandType = SharedIndexCommandType.MarkDeleted,
+                    Filter = SearchTypeFilter.All,
+                    MaxResults = 0,
+                    Offset = 0,
+                    Flags = isDirectory ? 1 : 0,
+                    Keyword = fullPath ?? string.Empty
+                }, ct).ConfigureAwait(false);
+
+                ApplyResponseState(response);
+            }
+            catch (Exception ex) when (!(ex is OperationCanceledException))
+            {
+                throw BuildHostUnavailableException("mark-deleted", ex);
+            }
+        }
+
         public void Shutdown()
         {
             try
@@ -471,6 +493,7 @@ namespace MftScanner
             long writeMs = 0;
             long waitMs = 0;
             long readMs = 0;
+            long queuedMs = 0;
             var requestBytes = 0;
             await EnsureResourcesAvailableAsync(ct).ConfigureAwait(false);
             if (request != null && request.CommandType == SharedIndexCommandType.Search)
@@ -478,7 +501,10 @@ namespace MftScanner
                 SignalInFlightSearchCancellation();
             }
 
+            var queueStopwatch = Stopwatch.StartNew();
             await _requestGate.WaitAsync(ct).ConfigureAwait(false);
+            queueStopwatch.Stop();
+            queuedMs = queueStopwatch.ElapsedMilliseconds;
             try
             {
                 var slotResources = GetSlotResources();
@@ -544,7 +570,7 @@ namespace MftScanner
                     $"[MMF] outcome=success command={request.CommandType} consumer={IndexPerfLog.FormatValue(_consumerName)} " +
                     $"keyword={IndexPerfLog.FormatValue(request.Keyword)} filter={request.Filter} " +
                     $"hostSearchMs={response.HostSearchMs} requestBytes={requestBytes} resultCount={(response.Results == null ? 0 : response.Results.Count)} " +
-                    $"openMs={openMs} writeMs={writeMs} waitMs={waitMs} readMs={readMs} totalMs={totalStopwatch.ElapsedMilliseconds}");
+                    $"queuedMs={queuedMs} openMs={openMs} writeMs={writeMs} waitMs={waitMs} readMs={readMs} totalMs={totalStopwatch.ElapsedMilliseconds}");
                 return response;
             }
             catch (Exception ex) when (!(ex is OperationCanceledException))
@@ -554,7 +580,7 @@ namespace MftScanner
                 IndexPerfLog.Write("IPC",
                     $"[MMF] outcome=failed command={request?.CommandType} consumer={IndexPerfLog.FormatValue(_consumerName)} " +
                     $"keyword={IndexPerfLog.FormatValue(request?.Keyword)} filter={(request == null ? SearchTypeFilter.All.ToString() : request.Filter.ToString())} " +
-                    $"openMs={openMs} writeMs={writeMs} waitMs={waitMs} readMs={readMs} totalMs={totalStopwatch.ElapsedMilliseconds} " +
+                    $"queuedMs={queuedMs} openMs={openMs} writeMs={writeMs} waitMs={waitMs} readMs={readMs} totalMs={totalStopwatch.ElapsedMilliseconds} " +
                     $"error={ex.GetType().Name}:{IndexPerfLog.FormatValue(ex.Message)}");
                 throw;
             }

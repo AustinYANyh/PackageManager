@@ -18,6 +18,7 @@ namespace MftScanner
         Task<int> RebuildIndexAsync(IProgress<string> progress, CancellationToken ct);
         Task<SearchQueryResult> SearchAsync(string keyword, int maxResults, int offset, IProgress<string> progress, CancellationToken ct);
         Task<SearchQueryResult> SearchAsync(string keyword, int maxResults, int offset, SearchTypeFilter filter, IProgress<string> progress, CancellationToken ct);
+        Task NotifyDeletedAsync(string fullPath, bool isDirectory, CancellationToken ct);
         void Shutdown();
     }
 

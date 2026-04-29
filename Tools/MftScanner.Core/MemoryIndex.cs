@@ -38,6 +38,7 @@ namespace MftScanner
         private bool _derivedStructuresReady = true;
         private ContainsAccelerator _containsAccelerator = ContainsAccelerator.Empty;
         private ContainsOverlay _containsOverlay = ContainsOverlay.Empty;
+        private HashSet<RecordKey> _deletedOverlayKeys = new HashSet<RecordKey>();
         private bool _containsAcceleratorReady = true;
         private long _containsAcceleratorEpoch;
         private readonly object _shortContainsHotBucketLock = new object();
@@ -54,6 +55,26 @@ namespace MftScanner
         public long ContentVersion => Interlocked.Read(ref _contentVersion);
 
         public bool AreDerivedStructuresReady => Volatile.Read(ref _derivedStructuresReady);
+
+        public bool HasDeletedOverlay
+        {
+            get
+            {
+                var keys = Volatile.Read(ref _deletedOverlayKeys);
+                return keys != null && keys.Count > 0;
+            }
+        }
+
+        public bool IsDeleted(FileRecord record)
+        {
+            if (record == null)
+                return false;
+
+            var keys = Volatile.Read(ref _deletedOverlayKeys);
+            return keys != null
+                   && keys.Count > 0
+                   && keys.Contains(RecordKey.FromRecord(record));
+        }
 
         public bool HasContainsAccelerator
         {
@@ -302,6 +323,7 @@ namespace MftScanner
                         if (record == null
                             || char.ToUpperInvariant(record.DriveLetter) != dl
                             || !directorySet.Contains(record.ParentFrn)
+                            || IsDeleted(record)
                             || !MatchesFilter(record, filter))
                         {
                             continue;
@@ -326,7 +348,7 @@ namespace MftScanner
                         if (!IsSameParent(record, dl, parentFrn))
                             break;
 
-                        if (MatchesFilter(record, filter))
+                        if (!IsDeleted(record) && MatchesFilter(record, filter))
                             candidates.Add(record);
                     }
                 }
@@ -342,6 +364,42 @@ namespace MftScanner
             var result = candidates.ToArray();
             Array.Sort(result, ByLowerName);
             return result;
+        }
+
+        public FileRecord[] GetDriveCandidates(
+            char driveLetter,
+            SearchTypeFilter filter,
+            CancellationToken ct)
+        {
+            var dl = char.ToUpperInvariant(driveLetter);
+            var candidates = new List<FileRecord>();
+            _lock.EnterReadLock();
+            try
+            {
+                var sorted = SortedArray;
+                for (var i = 0; i < sorted.Length; i++)
+                {
+                    if (((i + 1) & 0x3FFF) == 0)
+                        ct.ThrowIfCancellationRequested();
+
+                    var record = sorted[i];
+                    if (record == null
+                        || char.ToUpperInvariant(record.DriveLetter) != dl
+                        || IsDeleted(record)
+                        || !MatchesFilter(record, filter))
+                    {
+                        continue;
+                    }
+
+                    candidates.Add(record);
+                }
+            }
+            finally
+            {
+                _lock.ExitReadLock();
+            }
+
+            return candidates.Count == 0 ? Array.Empty<FileRecord>() : candidates.ToArray();
         }
 
         public void LoadSortedRecords(
@@ -524,7 +582,7 @@ namespace MftScanner
                 }
 
                 var record = records[index];
-                if (!NameContains(record, query) || !MatchesFilter(record, filter))
+                if (IsDeleted(record) || !NameContains(record, query) || !MatchesFilter(record, filter))
                 {
                     continue;
                 }
@@ -685,6 +743,7 @@ namespace MftScanner
                 Array.Copy(arr, idx, newArr, idx + 1, arr.Length - idx);
                 SortedArray = newArr;
                 ParentSortedArray = InsertIntoSortedArray(ParentSortedArray, record, ByParentThenLowerName);
+                RemoveDeletedOverlayKey(RecordKey.FromRecord(record));
                 _contentVersion++;
                 ClearShortContainsHotBuckets();
             }
@@ -699,41 +758,87 @@ namespace MftScanner
             _lock.EnterWriteLock();
             try
             {
-                if (TryGetIndexedExtension(lowerName, out var extension)
-                    && ExtensionHashMap.TryGetValue(extension, out var extensionBucket))
-                {
-                    RemoveFromBucket(extensionBucket, frn, lowerName, parentFrn, driveLetter);
-                    if (extensionBucket.Count == 0) ExtensionHashMap.Remove(extension);
-                }
-
-                RemoveFromFilterBuckets(frn, lowerName, parentFrn, driveLetter);
+                var key = new RecordKey(frn, lowerName, parentFrn, driveLetter);
+                var addedToOverlay = AddDeletedOverlayKey(key);
                 if (_containsAcceleratorReady)
                 {
-                    AppendContainsOverlay(PendingContainsMutation.ForRemove(new RecordKey(frn, lowerName, parentFrn, driveLetter)));
+                    AppendContainsOverlay(PendingContainsMutation.ForRemove(key));
                 }
                 else
                 {
-                    EnqueuePendingContainsRemove(new RecordKey(frn, lowerName, parentFrn, driveLetter));
+                    EnqueuePendingContainsRemove(key);
                 }
 
-                var arr = SortedArray;
-                for (var i = 0; i < arr.Length; i++)
-                {
-                    var match = IsRecordIdentityMatch(arr[i], frn, lowerName, parentFrn, driveLetter);
-                    if (match)
-                    {
-                        var newArr = new FileRecord[arr.Length - 1];
-                        Array.Copy(arr, 0, newArr, 0, i);
-                        Array.Copy(arr, i + 1, newArr, i, arr.Length - i - 1);
-                        SortedArray = newArr;
-                        ParentSortedArray = RemoveFromSortedArray(ParentSortedArray, frn, lowerName, parentFrn, driveLetter);
-                        _contentVersion++;
-                        ClearShortContainsHotBuckets();
-                        break;
-                    }
-                }
+                if (addedToOverlay)
+                    _contentVersion++;
+                ClearShortContainsHotBuckets();
+                IndexPerfLog.Write("INDEX",
+                    $"[DELETE OVERLAY] source=remove added={addedToOverlay} overlayCount={DeletedOverlayCount} " +
+                    $"drive={char.ToUpperInvariant(driveLetter)} frn={frn} parentFrn={parentFrn} lowerName={IndexPerfLog.FormatValue(lowerName)}");
             }
             finally { _lock.ExitWriteLock(); }
+        }
+
+        public bool MarkDeleted(FileRecord record, string source)
+        {
+            if (record == null)
+                return false;
+
+            return MarkDeleted(record.Frn, record.LowerName, record.ParentFrn, record.DriveLetter, source);
+        }
+
+        public bool MarkDeleted(ulong frn, string lowerName, ulong parentFrn, char driveLetter, string source)
+        {
+            _lock.EnterWriteLock();
+            try
+            {
+                var key = new RecordKey(frn, lowerName, parentFrn, driveLetter);
+                var addedToOverlay = AddDeletedOverlayKey(key);
+                if (!addedToOverlay)
+                {
+                    IndexPerfLog.Write("INDEX",
+                        $"[DELETE OVERLAY] source={IndexPerfLog.FormatValue(source)} added=false overlayCount={DeletedOverlayCount} " +
+                        $"drive={char.ToUpperInvariant(driveLetter)} frn={frn} parentFrn={parentFrn} lowerName={IndexPerfLog.FormatValue(lowerName)}");
+                    return false;
+                }
+
+                if (_containsAcceleratorReady)
+                    AppendContainsOverlay(PendingContainsMutation.ForRemove(key));
+                else
+                    EnqueuePendingContainsRemove(key);
+
+                _contentVersion++;
+                ClearShortContainsHotBuckets();
+                IndexPerfLog.Write("INDEX",
+                    $"[DELETE OVERLAY] source={IndexPerfLog.FormatValue(source)} added=true overlayCount={DeletedOverlayCount} " +
+                    $"drive={char.ToUpperInvariant(driveLetter)} frn={frn} parentFrn={parentFrn} lowerName={IndexPerfLog.FormatValue(lowerName)}");
+                return true;
+            }
+            finally { _lock.ExitWriteLock(); }
+        }
+
+        public FileRecord[] FindByLowerName(string lowerName)
+        {
+            if (string.IsNullOrEmpty(lowerName))
+                return Array.Empty<FileRecord>();
+
+            _lock.EnterReadLock();
+            try
+            {
+                var arr = SortedArray;
+                var start = LowerBoundByLowerName(arr, lowerName);
+                var end = start;
+                while (end < arr.Length && string.CompareOrdinal(arr[end]?.LowerName, lowerName) == 0)
+                    end++;
+
+                if (end <= start)
+                    return Array.Empty<FileRecord>();
+
+                var result = new FileRecord[end - start];
+                Array.Copy(arr, start, result, 0, result.Length);
+                return result;
+            }
+            finally { _lock.ExitReadLock(); }
         }
 
         public void Rename(ulong frn, string oldLowerName, ulong oldParentFrn, char driveLetter, FileRecord newRecord)
@@ -1048,6 +1153,7 @@ namespace MftScanner
                     ? (containsAccelerator ?? ContainsAccelerator.Empty)
                     : ContainsAccelerator.Empty;
                 _containsOverlay = ContainsOverlay.Empty;
+                Volatile.Write(ref _deletedOverlayKeys, new HashSet<RecordKey>());
                 _containsAcceleratorReady = containsAcceleratorReady;
                 _containsAcceleratorEpoch++;
                 _pendingContainsMutations.Clear();
@@ -1510,6 +1616,62 @@ namespace MftScanner
 
             return string.Equals(record.LowerName, lowerName, StringComparison.Ordinal)
                    && (parentFrn == 0 || record.ParentFrn == parentFrn);
+        }
+
+        private int DeletedOverlayCount
+        {
+            get
+            {
+                var keys = Volatile.Read(ref _deletedOverlayKeys);
+                return keys == null ? 0 : keys.Count;
+            }
+        }
+
+        private bool AddDeletedOverlayKey(RecordKey key)
+        {
+            if (!key.IsValid)
+                return false;
+
+            var current = Volatile.Read(ref _deletedOverlayKeys) ?? new HashSet<RecordKey>();
+            if (current.Contains(key))
+                return false;
+
+            var next = new HashSet<RecordKey>(current);
+            next.Add(key);
+            Volatile.Write(ref _deletedOverlayKeys, next);
+            return true;
+        }
+
+        private bool RemoveDeletedOverlayKey(RecordKey key)
+        {
+            if (!key.IsValid)
+                return false;
+
+            var current = Volatile.Read(ref _deletedOverlayKeys);
+            if (current == null || current.Count == 0 || !current.Contains(key))
+                return false;
+
+            var next = new HashSet<RecordKey>(current);
+            next.Remove(key);
+            Volatile.Write(ref _deletedOverlayKeys, next);
+            return true;
+        }
+
+        private static int LowerBoundByLowerName(FileRecord[] records, string lowerName)
+        {
+            var lo = 0;
+            var hi = records?.Length ?? 0;
+            while (lo < hi)
+            {
+                var mid = lo + ((hi - lo) / 2);
+                var compare = string.CompareOrdinal(records[mid]?.LowerName, lowerName);
+                if (compare < 0)
+                    lo = mid + 1;
+                else
+                    hi = mid;
+            }
+
+            return lo;
         }
 
         private void EnqueuePendingContainsInsert(FileRecord record)
@@ -2424,6 +2586,10 @@ namespace MftScanner
             public string LowerName { get; }
             public ulong ParentFrn { get; }
             public char DriveLetter { get; }
+
+            public bool IsValid => DriveLetter != '\0'
+                                   && !string.IsNullOrEmpty(LowerName)
+                                   && (Frn != 0 || ParentFrn != 0);
 
             public static RecordKey FromRecord(FileRecord record)
             {

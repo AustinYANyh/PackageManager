@@ -567,7 +567,8 @@ namespace MftScanner
             try
             {
                 if (item.IsDirectory) Directory.Delete(item.FullPath, true); else File.Delete(item.FullPath);
-                _ = ApplyFilterAsync(SearchBox.Text, false);
+                ApplyLocalDeletedItem(item);
+                _ = NotifyIndexDeletedAsync(item.FullPath, item.IsDirectory);
                 StatusText.Text = "已删除：" + item.FileName;
             }
             catch (Exception ex)
@@ -607,6 +608,39 @@ namespace MftScanner
         {
             if (cts == null) return;
             try { cts.Cancel(); cts.Dispose(); } catch { } finally { cts = null; }
+        }
+
+        private void ApplyLocalDeletedItem(EverythingSearchResultItem item)
+        {
+            if (item == null)
+                return;
+
+            if (!string.IsNullOrWhiteSpace(item.FullPath))
+                _locallyDeletedPathSet.Add(item.FullPath);
+
+            var lowerName = (item.FileName ?? Path.GetFileName(item.FullPath) ?? string.Empty).ToLowerInvariant();
+            if (MatchesCurrentQueryAndType(lowerName, item.FullPath, item.IsDirectory) && _totalMatchedCount > 0)
+                _totalMatchedCount--;
+
+            if (RemoveDisplayedResult(item.FullPath, lowerName))
+            {
+                ApplyCurrentSort((ResultsGrid.SelectedItem as EverythingSearchResultItem)?.FullPath, false);
+                _loadedResultCount = _displayedResults.Count;
+            }
+
+            UpdateSummaryStatus();
+            UpdateEmptyState();
+        }
+
+        private async Task NotifyIndexDeletedAsync(string fullPath, bool isDirectory)
+        {
+            try
+            {
+                await _indexService.NotifyDeletedAsync(fullPath, isDirectory, CancellationToken.None).ConfigureAwait(true);
+            }
+            catch
+            {
+            }
         }
 
         private void CancelSearchToken()

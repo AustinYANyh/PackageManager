@@ -37,6 +37,7 @@ namespace MftScanner
         private readonly SearchWindowStateStore _stateStore = new SearchWindowStateStore();
         private readonly Dictionary<string, FileMetadata> _metadataCache = new Dictionary<string, FileMetadata>(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> _displayedPathSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _locallyDeletedPathSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly ObservableCollection<ComboOption> _scopeOptions = new ObservableCollection<ComboOption>();
         private readonly ConcurrentQueue<IndexChangedEventArgs> _pendingIndexChanges = new ConcurrentQueue<IndexChangedEventArgs>();
 

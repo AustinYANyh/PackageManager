@@ -317,6 +317,9 @@ namespace MftScanner
             switch (e.Type)
             {
                 case IndexChangeType.Deleted:
+                    if (!string.IsNullOrWhiteSpace(e.FullPath) && _locallyDeletedPathSet.Remove(e.FullPath))
+                        return false;
+
                     oldMatches = MatchesCurrentQueryAndType(e.LowerName, e.FullPath, e.IsDirectory);
                     if (oldMatches && _totalMatchedCount > 0)
                         _totalMatchedCount--;

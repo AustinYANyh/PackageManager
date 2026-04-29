@@ -86,6 +86,7 @@ function Parse-PathPrefilterEvents {
         }
 
         $outcome = if ($line -match "outcome=(?<v>\S+)") { $Matches.v } else { "" }
+        $strategy = if ($line -match "strategy=(?<v>\S+)") { $Matches.v } else { "" }
         $elapsed = if ($line -match "elapsedMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
         $candidate = if ($line -match "candidateCount=(?<v>\d+)") { [int]$Matches.v } else { 0 }
         $directories = if ($line -match "directories=(?<v>\d+)") { [int]$Matches.v } else { 0 }
@@ -94,6 +95,7 @@ function Parse-PathPrefilterEvents {
         $events.Add([pscustomobject]@{
             Time = $time
             Outcome = $outcome
+            Strategy = $strategy
             ElapsedMs = $elapsed
             CandidateCount = $candidate
             DirectoryCount = $directories
@@ -289,10 +291,10 @@ function New-MarkdownReport {
         }
     }
 
-    $prefilterSummary = $PrefilterEvents | Group-Object Outcome | ForEach-Object {
+    $prefilterSummary = $PrefilterEvents | Group-Object Strategy | ForEach-Object {
         $items = @($_.Group)
         [pscustomobject]@{
-            Outcome = $_.Name
+            Strategy = $_.Name
             Count = $items.Count
             AvgElapsedMs = [math]::Round(($items | Measure-Object ElapsedMs -Average).Average, 1)
             AvgCandidateCount = [math]::Round(($items | Measure-Object CandidateCount -Average).Average, 0)
@@ -343,11 +345,11 @@ function New-MarkdownReport {
     $lines.Add("")
     $lines.Add("## 路径前置过滤")
     $lines.Add("")
-    $lines.Add("| 结果 | 次数 | 平均耗时(ms) | 平均候选数 | 平均目录数 |")
+    $lines.Add("| 策略 | 次数 | 平均耗时(ms) | 平均候选数 | 平均目录数 |")
     $lines.Add("| --- | ---: | ---: | ---: | ---: |")
     foreach ($item in $prefilterSummary) {
-        $outcome = Convert-OutcomeToChinese $item.Outcome
-        $lines.Add("| $outcome | $($item.Count) | $($item.AvgElapsedMs) | $($item.AvgCandidateCount) | $($item.AvgDirectoryCount) |")
+        $strategy = if ([string]::IsNullOrWhiteSpace($item.Strategy)) { "未记录" } else { $item.Strategy }
+        $lines.Add("| $strategy | $($item.Count) | $($item.AvgElapsedMs) | $($item.AvgCandidateCount) | $($item.AvgDirectoryCount) |")
     }
 
     $lines.Add("")
@@ -514,11 +516,13 @@ try {
         [pscustomobject]@{ Name = "PathIncrementalVer"; Keyword = "$PathPrefix ver"; Filter = [MftScanner.SearchTypeFilter]::All },
         [pscustomobject]@{ Name = "PathWildcardExe"; Keyword = "$PathPrefix *.exe"; Filter = [MftScanner.SearchTypeFilter]::All },
         [pscustomobject]@{ Name = "PathLaunchableContains"; Keyword = "$PathPrefix ve"; Filter = [MftScanner.SearchTypeFilter]::Launchable },
+        [pscustomobject]@{ Name = "PathConfigCalsupport"; Keyword = "$PathPrefix calsupport"; Filter = [MftScanner.SearchTypeFilter]::Config },
         [pscustomobject]@{ Name = "GlobalAllSingleChar"; Keyword = "d"; Filter = [MftScanner.SearchTypeFilter]::All },
         [pscustomobject]@{ Name = "GlobalAllTwoChars"; Keyword = "ve"; Filter = [MftScanner.SearchTypeFilter]::All },
         [pscustomobject]@{ Name = "GlobalIncrementalV"; Keyword = "v"; Filter = [MftScanner.SearchTypeFilter]::All },
         [pscustomobject]@{ Name = "GlobalIncrementalVe"; Keyword = "ve"; Filter = [MftScanner.SearchTypeFilter]::All },
         [pscustomobject]@{ Name = "GlobalIncrementalVer"; Keyword = "ver"; Filter = [MftScanner.SearchTypeFilter]::All },
+        [pscustomobject]@{ Name = "GlobalConfigCalsupport"; Keyword = "calsupport"; Filter = [MftScanner.SearchTypeFilter]::Config },
         [pscustomobject]@{ Name = "GlobalLaunchableContains"; Keyword = "workbench"; Filter = [MftScanner.SearchTypeFilter]::Launchable }
     )
 
