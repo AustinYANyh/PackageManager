@@ -1883,7 +1883,10 @@ namespace MftScanner
         private void QueueContainsPostingsSnapshotLoad(ulong contentFingerprint, int recordCount)
         {
             if (contentFingerprint == 0 || recordCount <= 0)
+            {
+                QueueContainsAcceleratorWarmup("snapshot-postings-miss");
                 return;
+            }
 
             Task.Run(() =>
             {
@@ -1895,12 +1898,15 @@ namespace MftScanner
                     stopwatch.Stop();
                     UsnDiagLog.Write(
                         $"[POSTINGS SNAPSHOT RESTORE] outcome={(loaded ? "success" : "miss")} elapsedMs={stopwatch.ElapsedMilliseconds} records={recordCount}");
+                    if (!loaded)
+                        QueueContainsAcceleratorWarmup("snapshot-postings-miss");
                 }
                 catch (Exception ex)
                 {
                     stopwatch.Stop();
                     UsnDiagLog.Write(
                         $"[POSTINGS SNAPSHOT RESTORE] outcome=failed elapsedMs={stopwatch.ElapsedMilliseconds} error={ex.GetType().Name}:{IndexPerfLog.FormatValue(ex.Message)}");
+                    QueueContainsAcceleratorWarmup("snapshot-postings-miss");
                 }
             });
         }
@@ -2330,6 +2336,7 @@ namespace MftScanner
         {
             var ct = warmupCts.Token;
             var stopwatch = Stopwatch.StartNew();
+            var contentVersion = index?.ContentVersion ?? 0;
             try
             {
                 if (index == null || index.TotalCount == 0 || index.HasContainsAccelerator)
@@ -2351,7 +2358,7 @@ namespace MftScanner
                         $"[CONTAINS WARMUP] outcome=trigram-only reason={IndexPerfLog.FormatValue(reason)} " +
                         $"elapsedMs={stopwatch.ElapsedMilliseconds} records={index.TotalCount}");
                     PublishIndexStatus("索引已就绪；多字符桶已就绪，短查询走低内存扫描", false);
-                    SaveCurrentSnapshot("contains-warmup");
+                    SaveCurrentContainsPostings(index, contentVersion, reason);
                     return;
                 }
 
@@ -2362,7 +2369,7 @@ namespace MftScanner
                     $"[CONTAINS WARMUP] outcome=success reason={IndexPerfLog.FormatValue(reason)} " +
                     $"elapsedMs={stopwatch.ElapsedMilliseconds} records={index.TotalCount}");
                 PublishIndexStatus("索引和全部搜索桶已就绪", false);
-                SaveCurrentSnapshot("contains-warmup");
+                SaveCurrentContainsPostings(index, contentVersion, reason);
             }
             catch (OperationCanceledException)
             {
@@ -2396,6 +2403,31 @@ namespace MftScanner
                 catch
                 {
                 }
+            }
+        }
+
+        private void SaveCurrentContainsPostings(MemoryIndex index, long expectedContentVersion, string reason)
+        {
+            if (index == null || index.ContentVersion != expectedContentVersion)
+            {
+                UsnDiagLog.Write(
+                    $"[POSTINGS SNAPSHOT SAVE] outcome=skip-stale reason={IndexPerfLog.FormatValue(reason)}");
+                return;
+            }
+
+            var postings = index.ExportContainsPostingsSnapshot();
+            if (postings == null || postings.RecordCount <= 0)
+            {
+                UsnDiagLog.Write(
+                    $"[POSTINGS SNAPSHOT SAVE] outcome=skip-empty reason={IndexPerfLog.FormatValue(reason)}");
+                return;
+            }
+
+            var records = index.SortedArray;
+            var fingerprint = IndexSnapshotFingerprint.Compute(records);
+            lock (_snapshotWriteLock)
+            {
+                _snapshotStore.SaveContainsPostingsSnapshot(fingerprint, postings);
             }
         }
 

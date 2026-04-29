@@ -758,7 +758,7 @@ namespace MftScanner
                 if (!entry.Value.isDirectory || entry.Key == entry.Value.parentFrn)
                     continue;
 
-                AddChildDirectory(childDirs, entry.Value.parentFrn, entry.Key);
+                AddChildDirectoryUnchecked(childDirs, entry.Value.parentFrn, entry.Key);
             }
 
             return childDirs;
@@ -793,6 +793,20 @@ namespace MftScanner
 
             if (!list.Contains(childFrn))
                 list.Add(childFrn);
+        }
+
+        private static void AddChildDirectoryUnchecked(Dictionary<ulong, List<ulong>> childDirs, ulong parentFrn, ulong childFrn)
+        {
+            if (parentFrn == childFrn)
+                return;
+
+            if (!childDirs.TryGetValue(parentFrn, out var list))
+            {
+                list = new List<ulong>();
+                childDirs[parentFrn] = list;
+            }
+
+            list.Add(childFrn);
         }
 
         private static void RemoveChildDirectory(Dictionary<ulong, List<ulong>> childDirs, ulong parentFrn, ulong childFrn)
