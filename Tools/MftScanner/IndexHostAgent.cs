@@ -46,6 +46,9 @@ namespace MftScanner
 
         public void Start()
         {
+            LoggingService.LogIndexPerf("INDEX",
+                $"[INDEX HOST START] processId={Process.GetCurrentProcess().Id} isElevated={IsProcessElevated()} " +
+                $"identity={LoggingService.FormatPerfValue(TryGetIdentityName())} process={LoggingService.FormatPerfValue(TryGetProcessPath())}");
             InitializeSharedMemory();
             Task.Run(() => RunControlCommandServerLoop(_cts.Token));
             Task.Run(() => RunHeartbeatLoop(_cts.Token));
@@ -339,6 +342,9 @@ namespace MftScanner
                 TotalIndexedCount = _indexService.IndexedCount,
                 ContainsBucketStatus = _indexService.ContainsBucketStatus,
                 TotalMatchedCount = 0,
+                PhysicalMatchedCount = 0,
+                UniqueMatchedCount = 0,
+                DuplicatePathCount = 0,
                 IsTruncated = false,
                 Results = new List<ScannedFileInfo>()
             };
@@ -349,6 +355,9 @@ namespace MftScanner
             var response = BuildStateResponse(requestId);
             response.TotalIndexedCount = result?.TotalIndexedCount ?? _indexService.IndexedCount;
             response.TotalMatchedCount = result?.TotalMatchedCount ?? 0;
+            response.PhysicalMatchedCount = result?.PhysicalMatchedCount ?? response.TotalMatchedCount;
+            response.UniqueMatchedCount = result?.UniqueMatchedCount ?? response.TotalMatchedCount;
+            response.DuplicatePathCount = result?.DuplicatePathCount ?? Math.Max(0, response.PhysicalMatchedCount - response.UniqueMatchedCount);
             response.IsTruncated = result != null && result.IsTruncated;
             response.HostSearchMs = result == null ? hostSearchMs : Math.Max(result.HostSearchMs, hostSearchMs);
             response.IsSnapshotStale = result != null && result.IsSnapshotStale;
@@ -536,6 +545,9 @@ namespace MftScanner
                         isBackgroundCatchUpInProgress = _indexService.IsBackgroundCatchUpInProgress,
                         containsBucketStatus = _indexService.ContainsBucketStatus,
                         totalIndexedCount = _indexService.IndexedCount,
+                        physicalMatchedCount = 0,
+                        uniqueMatchedCount = 0,
+                        duplicatePathCount = 0,
                         results = new List<ScannedFileInfo>()
                     };
                 }
@@ -561,6 +573,9 @@ namespace MftScanner
                 containsBucketStatus = _indexService.ContainsBucketStatus,
                 totalIndexedCount = _indexService.IndexedCount,
                 totalMatchedCount = 0,
+                physicalMatchedCount = 0,
+                uniqueMatchedCount = 0,
+                duplicatePathCount = 0,
                 isTruncated = false,
                 results = new List<ScannedFileInfo>()
             });
@@ -589,6 +604,45 @@ namespace MftScanner
                 }
 
                 RestartSearchUi(sessionId, state);
+            }
+        }
+
+        private static bool IsProcessElevated()
+        {
+            try
+            {
+                using (var identity = WindowsIdentity.GetCurrent())
+                {
+                    return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static string TryGetIdentityName()
+        {
+            try
+            {
+                return WindowsIdentity.GetCurrent()?.Name ?? string.Empty;
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        private static string TryGetProcessPath()
+        {
+            try
+            {
+                return Process.GetCurrentProcess().MainModule?.FileName ?? string.Empty;
+            }
+            catch
+            {
+                return string.Empty;
             }
         }
 

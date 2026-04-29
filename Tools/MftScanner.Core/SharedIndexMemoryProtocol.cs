@@ -61,6 +61,9 @@ namespace MftScanner
         public long RefreshSequence { get; set; }
         public int TotalIndexedCount { get; set; }
         public int TotalMatchedCount { get; set; }
+        public int PhysicalMatchedCount { get; set; }
+        public int UniqueMatchedCount { get; set; }
+        public int DuplicatePathCount { get; set; }
         public bool IsTruncated { get; set; }
         public long HostSearchMs { get; set; }
         public bool IsSnapshotStale { get; set; }
@@ -154,7 +157,7 @@ namespace MftScanner
 
     public static class SharedIndexMemoryProtocol
     {
-        public const int ProtocolVersion = 3;
+        public const int ProtocolVersion = 4;
         public const int RequestCapacityBytes = 64 * 1024;
         public const int ResponseCapacityBytes = 32 * 1024 * 1024;
         public const int StateCapacityBytes = 64 * 1024;
@@ -619,6 +622,9 @@ namespace MftScanner
                 writer.Write(response.RefreshSequence);
                 writer.Write(response.TotalIndexedCount);
                 writer.Write(response.TotalMatchedCount);
+                writer.Write(response.PhysicalMatchedCount);
+                writer.Write(response.UniqueMatchedCount);
+                writer.Write(response.DuplicatePathCount);
                 writer.Write(response.IsTruncated ? 1 : 0);
                 writer.Write(response.HostSearchMs);
                 writer.Write(response.IsSnapshotStale ? 1 : 0);
@@ -667,6 +673,9 @@ namespace MftScanner
                     RefreshSequence = reader.ReadInt64(),
                     TotalIndexedCount = reader.ReadInt32(),
                     TotalMatchedCount = reader.ReadInt32(),
+                    PhysicalMatchedCount = reader.ReadInt32(),
+                    UniqueMatchedCount = reader.ReadInt32(),
+                    DuplicatePathCount = reader.ReadInt32(),
                     IsTruncated = reader.ReadInt32() != 0,
                     HostSearchMs = reader.ReadInt64(),
                     IsSnapshotStale = reader.ReadInt32() != 0,

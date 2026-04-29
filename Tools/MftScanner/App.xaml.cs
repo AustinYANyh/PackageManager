@@ -887,6 +887,9 @@ namespace MftScanner
                     Success = true,
                     TotalIndexedCount = queryResult?.TotalIndexedCount ?? 0,
                     TotalMatchedCount = queryResult?.TotalMatchedCount ?? 0,
+                    PhysicalMatchedCount = queryResult?.PhysicalMatchedCount ?? queryResult?.TotalMatchedCount ?? 0,
+                    UniqueMatchedCount = queryResult?.UniqueMatchedCount ?? queryResult?.TotalMatchedCount ?? 0,
+                    DuplicatePathCount = queryResult?.DuplicatePathCount ?? 0,
                     IsTruncated = queryResult?.IsTruncated ?? false,
                     Results = (queryResult?.Results ?? new List<ScannedFileInfo>())
                         .Select(r => new SearchExportItem
@@ -1146,6 +1149,9 @@ namespace MftScanner
                 IsFinal = isFinal,
                 TotalIndexedCount = queryResult?.TotalIndexedCount ?? indexService.Index.TotalCount,
                 TotalMatchedCount = queryResult?.TotalMatchedCount ?? 0,
+                PhysicalMatchedCount = queryResult?.PhysicalMatchedCount ?? queryResult?.TotalMatchedCount ?? 0,
+                UniqueMatchedCount = queryResult?.UniqueMatchedCount ?? queryResult?.TotalMatchedCount ?? 0,
+                DuplicatePathCount = queryResult?.DuplicatePathCount ?? 0,
                 IsTruncated = queryResult?.IsTruncated ?? false,
                 ContainsBucketStatus = queryResult?.ContainsBucketStatus ?? indexService.ContainsBucketStatus,
                 Results = (queryResult?.Results ?? new List<ScannedFileInfo>())
@@ -1237,6 +1243,9 @@ namespace MftScanner
             public string ErrorMessage { get; set; }
             public int TotalIndexedCount { get; set; }
             public int TotalMatchedCount { get; set; }
+            public int PhysicalMatchedCount { get; set; }
+            public int UniqueMatchedCount { get; set; }
+            public int DuplicatePathCount { get; set; }
             public bool IsTruncated { get; set; }
             public ContainsBucketStatus ContainsBucketStatus { get; set; }
             public List<SearchExportItem> Results { get; set; } = new List<SearchExportItem>();
@@ -1270,6 +1279,9 @@ namespace MftScanner
             public bool IsFinal { get; set; }
             public int TotalIndexedCount { get; set; }
             public int TotalMatchedCount { get; set; }
+            public int PhysicalMatchedCount { get; set; }
+            public int UniqueMatchedCount { get; set; }
+            public int DuplicatePathCount { get; set; }
             public bool IsTruncated { get; set; }
             public ContainsBucketStatus ContainsBucketStatus { get; set; }
             public List<SearchExportItem> Results { get; set; } = new List<SearchExportItem>();

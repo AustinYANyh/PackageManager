@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using System.Security.Principal;
 using System.Threading;
 
 namespace MftScanner
@@ -126,7 +127,18 @@ namespace MftScanner
                                     IntPtr.Zero);
 
             if (handle == INVALID_HANDLE_VALUE)
-                throw new InvalidOperationException($"无法打开卷 {volumePath}，错误码={Marshal.GetLastWin32Error()}");
+            {
+                var error = Marshal.GetLastWin32Error();
+                UsnDiagLog.Write(
+                    $"[MFT VOLUME OPEN] outcome=failed drive={dl} path={volumePath} error={error} " +
+                    $"isElevated={IsProcessElevated()} processId={System.Diagnostics.Process.GetCurrentProcess().Id} " +
+                    $"process={IndexPerfLog.FormatValue(TryGetProcessPath())}");
+                throw new InvalidOperationException($"无法打开卷 {volumePath}，错误码={error}");
+            }
+
+            UsnDiagLog.Write(
+                $"[MFT VOLUME OPEN] outcome=success drive={dl} path={volumePath} " +
+                $"isElevated={IsProcessElevated()} processId={System.Diagnostics.Process.GetCurrentProcess().Id}");
 
             const int bufferSize = 1024 * 1024; // 1MB，进一步减少 DeviceIoControl 调用次数
             var buffer  = Marshal.AllocHGlobal(bufferSize);
@@ -920,6 +932,33 @@ namespace MftScanner
             public override int GetHashCode()
             {
                 return (DriveLetter.GetHashCode() * 397) ^ ParentFrn.GetHashCode();
+            }
+        }
+
+        private static bool IsProcessElevated()
+        {
+            try
+            {
+                using (var identity = WindowsIdentity.GetCurrent())
+                {
+                    return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator);
+                }
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static string TryGetProcessPath()
+        {
+            try
+            {
+                return System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName ?? string.Empty;
+            }
+            catch
+            {
+                return string.Empty;
             }
         }
     }

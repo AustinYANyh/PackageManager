@@ -288,6 +288,9 @@ namespace MftScanner
                 {
                     TotalIndexedCount = totalIndexedCount,
                     TotalMatchedCount = totalMatchedCount,
+                    PhysicalMatchedCount = totalMatchedCount,
+                    UniqueMatchedCount = totalMatchedCount,
+                    DuplicatePathCount = 0,
                     IsTruncated = totalMatchedCount > results.Count,
                     Results = results
                 };
@@ -898,6 +901,9 @@ namespace MftScanner
     {
         public int TotalIndexedCount { get; set; }
         public int TotalMatchedCount { get; set; }
+        public int PhysicalMatchedCount { get; set; }
+        public int UniqueMatchedCount { get; set; }
+        public int DuplicatePathCount { get; set; }
         public bool IsTruncated { get; set; }
         public long HostSearchMs { get; set; }
         public bool IsSnapshotStale { get; set; }

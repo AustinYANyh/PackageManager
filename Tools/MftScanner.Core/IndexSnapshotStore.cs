@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Text;
 using System.Threading;
@@ -13,8 +14,11 @@ namespace MftScanner
         private const int SnapshotVersion2 = 2;
         private const int SnapshotVersion3 = 3;
         private const int SnapshotVersion4 = 4;
+        private const int SnapshotVersion5 = 5;
+        private const int SnapshotCompressionDeflate = 1;
         private const string SnapshotWriteMutexName = "PackageManager.MftScannerIndex.WriteLock";
         private const int SnapshotWriteLockTimeoutMilliseconds = 200;
+        private static readonly TimeSpan SnapshotTempMaxAge = TimeSpan.FromHours(1);
 
         private readonly string _snapshotDirectoryPath;
         private readonly string _snapshotFilePath;
@@ -53,6 +57,9 @@ namespace MftScanner
                             break;
                         case SnapshotVersion4:
                             snapshot = ReadVersion4(reader);
+                            break;
+                        case SnapshotVersion5:
+                            snapshot = ReadVersion5(reader);
                             break;
                         default:
                             return false;
@@ -105,10 +112,11 @@ namespace MftScanner
                     return null;
                 }
 
+                CleanupStaleTempSnapshots();
                 using (var stream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
                 using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: false))
                 {
-                    WriteVersion4(writer, snapshot);
+                    WriteVersion5(writer, snapshot);
                 }
 
                 if (File.Exists(_snapshotFilePath))
@@ -122,7 +130,7 @@ namespace MftScanner
 
                 var fileInfo = new FileInfo(_snapshotFilePath);
                 return new IndexSnapshotSaveMetrics(
-                    SnapshotVersion4,
+                    SnapshotVersion5,
                     fileInfo.Exists ? fileInfo.Length : 0,
                     snapshot.Records?.Length ?? 0,
                     snapshot.Volumes?.Length ?? 0,
@@ -260,10 +268,29 @@ namespace MftScanner
 
         private static IndexSnapshot ReadVersion4(BinaryReader reader)
         {
-            return ReadVersion3Body(reader, readContainsPostings: false);
+            return ReadVersion3Body(reader, readContainsPostings: true, contentFingerprint: 0);
+        }
+
+        private static IndexSnapshot ReadVersion5(BinaryReader reader)
+        {
+            var compression = reader.ReadInt32();
+            if (compression != SnapshotCompressionDeflate)
+                return null;
+
+            using (var compressed = new DeflateStream(reader.BaseStream, CompressionMode.Decompress, leaveOpen: true))
+            using (var bodyReader = new BinaryReader(compressed, Encoding.UTF8, leaveOpen: false))
+            {
+                var contentFingerprint = bodyReader.ReadUInt64();
+                return ReadVersion3Body(bodyReader, readContainsPostings: true, contentFingerprint: contentFingerprint);
+            }
         }
 
         private static IndexSnapshot ReadVersion3Body(BinaryReader reader, bool readContainsPostings)
+        {
+            return ReadVersion3Body(reader, readContainsPostings, contentFingerprint: 0);
+        }
+
+        private static IndexSnapshot ReadVersion3Body(BinaryReader reader, bool readContainsPostings, ulong contentFingerprint)
         {
             var stringPoolCount = reader.ReadInt32();
             if (stringPoolCount < 0)
@@ -332,7 +359,7 @@ namespace MftScanner
                 ? ReadContainsPostings(reader)
                 : null;
 
-            return new IndexSnapshot(records, volumes, stringPool.Length, containsPostings);
+            return new IndexSnapshot(records, volumes, stringPool.Length, containsPostings, contentFingerprint);
         }
 
         private static VolumeSnapshot[] ReadVolumesV1(BinaryReader reader)
@@ -377,6 +404,21 @@ namespace MftScanner
         {
             writer.Write(SnapshotVersion4);
             WriteVersion3Body(writer, snapshot);
+        }
+
+        private static void WriteVersion5(BinaryWriter writer, IndexSnapshot snapshot)
+        {
+            writer.Write(SnapshotVersion5);
+            writer.Write(SnapshotCompressionDeflate);
+            using (var compressed = new DeflateStream(writer.BaseStream, CompressionLevel.Fastest, leaveOpen: true))
+            using (var bodyWriter = new BinaryWriter(compressed, Encoding.UTF8, leaveOpen: false))
+            {
+                var fingerprint = snapshot.ContentFingerprint != 0
+                    ? snapshot.ContentFingerprint
+                    : IndexSnapshotFingerprint.Compute(snapshot.Records);
+                bodyWriter.Write(fingerprint);
+                WriteVersion3Body(bodyWriter, snapshot);
+            }
         }
 
         private static void WriteVersion3Body(BinaryWriter writer, IndexSnapshot snapshot)
@@ -496,6 +538,34 @@ namespace MftScanner
 
             writer.Write(snapshot.Bytes.Length);
             writer.Write(snapshot.Bytes);
+        }
+
+        private void CleanupStaleTempSnapshots()
+        {
+            try
+            {
+                var directory = new DirectoryInfo(_snapshotDirectoryPath);
+                if (!directory.Exists)
+                    return;
+
+                var cutoffUtc = DateTime.UtcNow - SnapshotTempMaxAge;
+                foreach (var file in directory.EnumerateFiles("index.bin.*.tmp"))
+                {
+                    try
+                    {
+                        if (file.LastWriteTimeUtc < cutoffUtc)
+                        {
+                            file.Delete();
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+            catch
+            {
+            }
         }
 
         private static string[] BuildStringPool(FileRecord[] records, VolumeSnapshot[] volumes)
@@ -620,12 +690,16 @@ namespace MftScanner
             FileRecord[] records,
             VolumeSnapshot[] volumes,
             int stringPoolCount = 0,
-            ContainsPostingsSnapshot containsPostings = null)
+            ContainsPostingsSnapshot containsPostings = null,
+            ulong contentFingerprint = 0)
         {
             Records = records ?? Array.Empty<FileRecord>();
             Volumes = volumes ?? Array.Empty<VolumeSnapshot>();
             StringPoolCount = stringPoolCount;
             ContainsPostings = containsPostings;
+            ContentFingerprint = contentFingerprint == 0
+                ? IndexSnapshotFingerprint.Compute(Records)
+                : contentFingerprint;
         }
 
         public FileRecord[] Records { get; }
@@ -634,6 +708,7 @@ namespace MftScanner
 
         public int StringPoolCount { get; }
         public ContainsPostingsSnapshot ContainsPostings { get; }
+        public ulong ContentFingerprint { get; }
     }
 
     internal sealed class ContainsPostingsSnapshot
@@ -660,6 +735,72 @@ namespace MftScanner
         public int[] Counts { get; }
         public int[] ByteCounts { get; }
         public byte[] Bytes { get; }
+    }
+
+    internal static class IndexSnapshotFingerprint
+    {
+        private const ulong OffsetBasis = 14695981039346656037UL;
+        private const ulong Prime = 1099511628211UL;
+
+        public static ulong Compute(IReadOnlyList<FileRecord> records)
+        {
+            unchecked
+            {
+                var hash = OffsetBasis;
+                var count = records?.Count ?? 0;
+                hash = Add(hash, count);
+                for (var i = 0; i < count; i++)
+                {
+                    var record = records[i];
+                    if (record == null)
+                    {
+                        hash = Add(hash, 0);
+                        continue;
+                    }
+
+                    hash = Add(hash, record.Frn);
+                    hash = Add(hash, record.ParentFrn);
+                    hash = Add(hash, char.ToUpperInvariant(record.DriveLetter));
+                    hash = Add(hash, record.IsDirectory ? 1 : 0);
+                    hash = Add(hash, record.OriginalName);
+                }
+
+                return hash == 0 ? OffsetBasis : hash;
+            }
+        }
+
+        private static ulong Add(ulong hash, string value)
+        {
+            if (string.IsNullOrEmpty(value))
+                return Add(hash, 0);
+
+            unchecked
+            {
+                for (var i = 0; i < value.Length; i++)
+                    hash = Add(hash, value[i]);
+
+                return Add(hash, 0);
+            }
+        }
+
+        private static ulong Add(ulong hash, int value)
+        {
+            return Add(hash, unchecked((ulong)value));
+        }
+
+        private static ulong Add(ulong hash, ulong value)
+        {
+            unchecked
+            {
+                for (var i = 0; i < 8; i++)
+                {
+                    hash ^= (byte)(value >> (i * 8));
+                    hash *= Prime;
+                }
+
+                return hash;
+            }
+        }
     }
 
     public sealed class VolumeSnapshot

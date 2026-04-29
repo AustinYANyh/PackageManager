@@ -276,6 +276,9 @@ function New-MarkdownReport {
             AvgClientMs = [math]::Round(($items | Measure-Object ClientMs -Average).Average, 1)
             AvgHostMs = [math]::Round(($items | Measure-Object HostSearchMs -Average).Average, 1)
             AvgMatched = [math]::Round(($items | Measure-Object TotalMatchedCount -Average).Average, 1)
+            AvgPhysicalMatched = [math]::Round(($items | Measure-Object PhysicalMatchedCount -Average).Average, 1)
+            AvgUniqueMatched = [math]::Round(($items | Measure-Object UniqueMatchedCount -Average).Average, 1)
+            AvgDuplicatePaths = [math]::Round(($items | Measure-Object DuplicatePathCount -Average).Average, 1)
             AvgReturned = [math]::Round(($items | Measure-Object ReturnedCount -Average).Average, 1)
         }
     }
@@ -325,10 +328,10 @@ function New-MarkdownReport {
     $lines.Add("")
     $lines.Add("## 查询汇总")
     $lines.Add("")
-    $lines.Add("| 用例 | 次数 | 平均客户端耗时(ms) | 平均宿主耗时(ms) | 平均命中数 | 平均返回数 |")
-    $lines.Add("| --- | ---: | ---: | ---: | ---: | ---: |")
+    $lines.Add("| 用例 | 次数 | 平均客户端耗时(ms) | 平均宿主耗时(ms) | UI命中数 | 物理命中数 | 唯一路径数 | 重复路径数 | 平均返回数 |")
+    $lines.Add("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
     foreach ($item in $summary) {
-        $lines.Add("| $($item.Name) | $($item.Count) | $($item.AvgClientMs) | $($item.AvgHostMs) | $($item.AvgMatched) | $($item.AvgReturned) |")
+        $lines.Add("| $($item.Name) | $($item.Count) | $($item.AvgClientMs) | $($item.AvgHostMs) | $($item.AvgMatched) | $($item.AvgPhysicalMatched) | $($item.AvgUniqueMatched) | $($item.AvgDuplicatePaths) | $($item.AvgReturned) |")
     }
 
     $lines.Add("")
@@ -372,13 +375,13 @@ function New-MarkdownReport {
     $lines.Add("")
     $lines.Add("## 查询明细")
     $lines.Add("")
-    $lines.Add("| 用例 | 类型过滤 | 关键词 | 客户端耗时(ms) | 宿主耗时(ms) | 命中数 | 返回数 | 错配返回 | stale | 是否截断 |")
-    $lines.Add("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |")
+    $lines.Add("| 用例 | 类型过滤 | 关键词 | 客户端耗时(ms) | 宿主耗时(ms) | UI命中数 | 物理命中数 | 唯一路径数 | 重复路径数 | 返回数 | 错配返回 | stale | 是否截断 |")
+    $lines.Add("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |")
     foreach ($row in $Rows) {
         $keyword = ($row.Keyword -replace "\|", "\|")
         $truncated = Convert-BoolToChinese $row.IsTruncated
         $stale = Convert-BoolToChinese $row.IsSnapshotStale
-        $lines.Add("| $($row.Name) | $($row.Filter) | ``$keyword`` | $($row.ClientMs) | $($row.HostSearchMs) | $($row.TotalMatchedCount) | $($row.ReturnedCount) | $($row.BadReturnedCount) | $stale | $truncated |")
+        $lines.Add("| $($row.Name) | $($row.Filter) | ``$keyword`` | $($row.ClientMs) | $($row.HostSearchMs) | $($row.TotalMatchedCount) | $($row.PhysicalMatchedCount) | $($row.UniqueMatchedCount) | $($row.DuplicatePathCount) | $($row.ReturnedCount) | $($row.BadReturnedCount) | $stale | $truncated |")
     }
 
     $lines.Add("")
@@ -528,6 +531,9 @@ try {
                 HostSearchMs = $result.HostSearchMs
                 TotalIndexedCount = $result.TotalIndexedCount
                 TotalMatchedCount = $result.TotalMatchedCount
+                PhysicalMatchedCount = $result.PhysicalMatchedCount
+                UniqueMatchedCount = $result.UniqueMatchedCount
+                DuplicatePathCount = $result.DuplicatePathCount
                 ReturnedCount = @($result.Results).Count
                 BadReturnedCount = Get-BadReturnedCount -Keyword $case.Keyword -PathPrefix $PathPrefix -Result $result
                 IsTruncated = $result.IsTruncated

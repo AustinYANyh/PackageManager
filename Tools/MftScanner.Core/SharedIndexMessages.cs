@@ -23,6 +23,9 @@ namespace MftScanner
         public ContainsBucketStatus containsBucketStatus { get; set; }
         public int totalIndexedCount { get; set; }
         public int totalMatchedCount { get; set; }
+        public int physicalMatchedCount { get; set; }
+        public int uniqueMatchedCount { get; set; }
+        public int duplicatePathCount { get; set; }
         public bool isTruncated { get; set; }
         public List<ScannedFileInfo> results { get; set; }
     }

@@ -189,6 +189,9 @@ namespace MftScanner
                 {
                     TotalIndexedCount = response.TotalIndexedCount,
                     TotalMatchedCount = response.TotalMatchedCount,
+                    PhysicalMatchedCount = response.PhysicalMatchedCount,
+                    UniqueMatchedCount = response.UniqueMatchedCount,
+                    DuplicatePathCount = response.DuplicatePathCount,
                     IsTruncated = response.IsTruncated,
                     HostSearchMs = response.HostSearchMs,
                     IsSnapshotStale = response.IsSnapshotStale,

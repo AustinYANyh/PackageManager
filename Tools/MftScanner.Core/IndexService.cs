@@ -40,6 +40,7 @@ namespace MftScanner
         private readonly object _periodicSnapshotSaveLock = new object();
         private CancellationTokenSource _periodicSnapshotSaveCts;
         private Task _periodicSnapshotSaveTask;
+        private volatile VolumeSnapshot[] _lastVolumeSnapshots = Array.Empty<VolumeSnapshot>();
         private ContainsQueryCacheEntry _containsQueryCache;
         private PathCandidateCacheEntry _pathCandidateCache;
         private int _activeSearchCount;
@@ -709,6 +710,35 @@ namespace MftScanner
                    && record.LowerName.IndexOf(query, StringComparison.Ordinal) >= 0;
         }
 
+        private static int DeduplicateResultsByFullPath(List<ScannedFileInfo> results)
+        {
+            if (results == null || results.Count <= 1)
+                return 0;
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var writeIndex = 0;
+            var duplicateCount = 0;
+            for (var i = 0; i < results.Count; i++)
+            {
+                var item = results[i];
+                var fullPath = item?.FullPath ?? string.Empty;
+                if (!seen.Add(fullPath))
+                {
+                    duplicateCount++;
+                    continue;
+                }
+
+                results[writeIndex++] = item;
+            }
+
+            if (duplicateCount > 0)
+            {
+                results.RemoveRange(writeIndex, duplicateCount);
+            }
+
+            return duplicateCount;
+        }
+
         private static bool TryGetExactNameRange(FileRecord[] sortedArray, string lowerName, out int start, out int end)
         {
             start = 0;
@@ -1160,6 +1190,16 @@ namespace MftScanner
 
                     resolveStopwatch.Stop();
                     resolveElapsedMilliseconds = resolveStopwatch.ElapsedMilliseconds;
+                    var physicalMatchedCount = totalMatched;
+                    var rawReturnedCount = results.Count;
+                    var duplicatePathCount = DeduplicateResultsByFullPath(results);
+                    var physicalTruncated = physicalMatchedCount > normalizedOffset + rawReturnedCount;
+                    var uniqueMatchedCount = physicalTruncated
+                        ? Math.Max(results.Count, physicalMatchedCount - duplicatePathCount)
+                        : (normalizedOffset == 0
+                            ? results.Count
+                            : Math.Max(results.Count, physicalMatchedCount - duplicatePathCount));
+                    totalMatched = uniqueMatchedCount;
 
                     if (mode == MatchMode.Contains || (mode == MatchMode.Wildcard && !string.IsNullOrEmpty(containsMode)))
                     {
@@ -1194,7 +1234,10 @@ namespace MftScanner
                         {
                             TotalIndexedCount = idx.TotalCount,
                             TotalMatchedCount = totalMatched,
-                            IsTruncated = totalMatched > normalizedOffset + results.Count,
+                            PhysicalMatchedCount = physicalMatchedCount,
+                            UniqueMatchedCount = uniqueMatchedCount,
+                            DuplicatePathCount = Math.Max(0, physicalMatchedCount - uniqueMatchedCount),
+                            IsTruncated = physicalTruncated,
                             IsSnapshotStale = _isSnapshotStale,
                             Results = results
                         });
@@ -1611,6 +1654,9 @@ namespace MftScanner
             {
                 TotalIndexedCount = totalIndexedCount,
                 TotalMatchedCount = 0,
+                PhysicalMatchedCount = 0,
+                UniqueMatchedCount = 0,
+                DuplicatePathCount = 0,
                 IsTruncated = false,
                 IsSnapshotStale = _isSnapshotStale,
                 HostSearchMs = 0,
@@ -1640,11 +1686,18 @@ namespace MftScanner
                 result.HostSearchMs = totalStopwatch.ElapsedMilliseconds;
                 result.ContainsBucketStatus = ContainsBucketStatus;
                 result.IsSnapshotStale = _isSnapshotStale;
+                if (result.PhysicalMatchedCount == 0 && result.TotalMatchedCount > 0)
+                    result.PhysicalMatchedCount = result.TotalMatchedCount;
+                if (result.UniqueMatchedCount == 0 && result.TotalMatchedCount > 0)
+                    result.UniqueMatchedCount = result.TotalMatchedCount;
+                if (result.DuplicatePathCount == 0 && result.PhysicalMatchedCount > result.UniqueMatchedCount)
+                    result.DuplicatePathCount = result.PhysicalMatchedCount - result.UniqueMatchedCount;
             }
             UsnDiagLog.Write(
                 $"[SEARCH] outcome={outcome} totalMs={totalStopwatch.ElapsedMilliseconds} matchMs={matchElapsedMilliseconds} " +
                 $"resolveMs={resolveElapsedMilliseconds} filter={filter} mode={mode} offset={offset} maxResults={maxResults} " +
-                $"candidateCount={candidateCount} matched={result.TotalMatchedCount} returned={result.Results?.Count ?? 0} " +
+                $"candidateCount={candidateCount} matched={result.TotalMatchedCount} physicalMatched={result.PhysicalMatchedCount} " +
+                $"uniqueMatched={result.UniqueMatchedCount} duplicatePaths={result.DuplicatePathCount} returned={result.Results?.Count ?? 0} " +
                 $"truncated={result.IsTruncated} indexed={result.TotalIndexedCount} pathScoped={pathPrefix != null} " +
                 $"stale={_isSnapshotStale} " +
                 $"keyword={IndexPerfLog.FormatValue(keyword)} searchTerm={IndexPerfLog.FormatValue(searchTerm)} " +
@@ -1725,8 +1778,13 @@ namespace MftScanner
             progress?.Report("正在恢复内存索引...");
             var restoreStopwatch = Stopwatch.StartNew();
             _enumerator.LoadVolumeSnapshots(snapshot.Volumes);
+            _lastVolumeSnapshots = CopyVolumeSnapshots(snapshot.Volumes);
             _index.LoadSortedRecords(snapshot.Records, buildContainsAccelerator: false);
             var containsPostingsLoaded = _index.TryLoadContainsPostingsSnapshot(snapshot.ContainsPostings);
+            if (snapshotMetrics.Version < 5)
+            {
+                QueueSnapshotSave(snapshot.Records, snapshot.Volumes);
+            }
             _isSnapshotStale = false;
             restoreStopwatch.Stop();
             UsnDiagLog.Write(
@@ -1844,6 +1902,7 @@ namespace MftScanner
 
                 var watcherStartStopwatch = Stopwatch.StartNew();
                 var volumeSnapshots = _enumerator.CreateVolumeSnapshots(successfulDrives.ToArray());
+                _lastVolumeSnapshots = CopyVolumeSnapshots(volumeSnapshots);
 
                 foreach (var (letter, nextUsn, journalId) in successfulDrives)
                     _usnWatcher.StartWatching(letter, nextUsn, journalId, ct);
@@ -2021,6 +2080,7 @@ namespace MftScanner
                 }
 
                 var volumeSnapshots = _enumerator.CreateVolumeSnapshots(checkpoints);
+                _lastVolumeSnapshots = CopyVolumeSnapshots(volumeSnapshots);
 
                 for (var i = 0; i < checkpoints.Length; i++)
                 {
@@ -2188,6 +2248,7 @@ namespace MftScanner
                         $"[CONTAINS WARMUP] outcome=trigram-only reason={IndexPerfLog.FormatValue(reason)} " +
                         $"elapsedMs={stopwatch.ElapsedMilliseconds} records={index.TotalCount}");
                     PublishIndexStatus("索引已就绪；多字符桶已就绪，短查询走低内存扫描", false);
+                    SaveCurrentSnapshot("contains-warmup");
                     return;
                 }
 
@@ -2198,6 +2259,7 @@ namespace MftScanner
                     $"[CONTAINS WARMUP] outcome=success reason={IndexPerfLog.FormatValue(reason)} " +
                     $"elapsedMs={stopwatch.ElapsedMilliseconds} records={index.TotalCount}");
                 PublishIndexStatus("索引和全部搜索桶已就绪", false);
+                SaveCurrentSnapshot("contains-warmup");
             }
             catch (OperationCanceledException)
             {
@@ -2349,9 +2411,11 @@ namespace MftScanner
                     lock (_snapshotWriteLock)
                     {
                         var saveStopwatch = Stopwatch.StartNew();
+                        var containsPostings = _index.ExportContainsPostingsSnapshot();
                         metrics = _snapshotStore.Save(new IndexSnapshot(
                             recordCopy,
-                            volumeCopy));
+                            volumeCopy,
+                            containsPostings: containsPostings));
                         saveStopwatch.Stop();
                         elapsedMilliseconds = saveStopwatch.ElapsedMilliseconds;
                     }
@@ -2534,8 +2598,24 @@ namespace MftScanner
 
                 var totalStopwatch = Stopwatch.StartNew();
                 var checkpoints = _usnWatcher.GetVolumeCheckpoints();
+                VolumeSnapshot[] volumeSnapshots;
+                long volumeSnapshotMilliseconds;
                 if (checkpoints == null || checkpoints.Length == 0)
-                    return;
+                {
+                    volumeSnapshots = CopyVolumeSnapshots(_lastVolumeSnapshots);
+                    if (volumeSnapshots == null || volumeSnapshots.Length == 0)
+                        return;
+                    volumeSnapshotMilliseconds = 0;
+                }
+                else
+                {
+                    var volumeStopwatch = Stopwatch.StartNew();
+                    volumeSnapshots = _enumerator.CreateVolumeSnapshots(checkpoints);
+                    volumeSnapshotMilliseconds = volumeStopwatch.ElapsedMilliseconds;
+                    _lastVolumeSnapshots = CopyVolumeSnapshots(volumeSnapshots);
+                    UsnDiagLog.Write(
+                        $"[SNAPSHOT SAVE VOLUMES] reason={reason} source=checkpoints elapsedMs={volumeSnapshotMilliseconds} volumes={volumeSnapshots.Length}");
+                }
 
                 var records = _index.SortedArray;
                 if (records == null || records.Length == 0)
@@ -2546,18 +2626,16 @@ namespace MftScanner
                 Array.Copy(records, recordCopy, records.Length);
                 var recordCopyMilliseconds = prepStopwatch.ElapsedMilliseconds;
 
-                prepStopwatch.Restart();
-                var volumeSnapshots = _enumerator.CreateVolumeSnapshots(checkpoints);
-                var volumeSnapshotMilliseconds = prepStopwatch.ElapsedMilliseconds;
-
                 IndexSnapshotSaveMetrics metrics;
                 long elapsedMilliseconds;
                 lock (_snapshotWriteLock)
                 {
                     var saveStopwatch = Stopwatch.StartNew();
+                    var containsPostings = _index.ExportContainsPostingsSnapshot();
                     metrics = _snapshotStore.Save(new IndexSnapshot(
                         recordCopy,
-                        volumeSnapshots));
+                        volumeSnapshots,
+                        containsPostings: containsPostings));
                     saveStopwatch.Stop();
                     elapsedMilliseconds = saveStopwatch.ElapsedMilliseconds;
                 }
@@ -2590,6 +2668,16 @@ namespace MftScanner
 
             return (DateTime.UtcNow - new DateTime(ticks, DateTimeKind.Utc)).TotalMilliseconds
                    < SnapshotSearchIdleDelayMilliseconds;
+        }
+
+        private static VolumeSnapshot[] CopyVolumeSnapshots(VolumeSnapshot[] volumes)
+        {
+            if (volumes == null || volumes.Length == 0)
+                return Array.Empty<VolumeSnapshot>();
+
+            var copy = new VolumeSnapshot[volumes.Length];
+            Array.Copy(volumes, copy, volumes.Length);
+            return copy;
         }
 
         private sealed class ContainsQueryCacheEntry
