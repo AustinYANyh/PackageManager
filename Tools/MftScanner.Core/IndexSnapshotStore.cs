@@ -1044,8 +1044,9 @@ namespace MftScanner
                 || fingerprint == 0
                 || postings.RecordCount != expectedRecordCount)
             {
-                if (TryLoadPostingsSnapshot(fingerprint, expectedRecordCount) == null)
-                    TryDeletePostingsSnapshot();
+                UsnDiagLog.Write(
+                    $"[POSTINGS SNAPSHOT SAVE] outcome=preserve-existing reason=no-current-postings " +
+                    $"fingerprint={fingerprint} expectedRecords={expectedRecordCount} postingsRecords={(postings == null ? 0 : postings.RecordCount)}");
                 return;
             }
 

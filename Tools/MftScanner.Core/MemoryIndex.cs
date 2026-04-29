@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace MftScanner
 {
@@ -44,8 +45,13 @@ namespace MftScanner
         private readonly object _shortContainsHotBucketLock = new object();
         private Dictionary<string, ShortContainsHotBucket> _shortContainsHotBuckets = new Dictionary<string, ShortContainsHotBucket>(StringComparer.Ordinal);
         private readonly LinkedList<string> _shortContainsHotBucketLru = new LinkedList<string>();
+        private int[][] _singleCharAsciiBitsets;
+        private int[] _singleCharAsciiCounts;
+        private int[][] _singleCharAsciiDriveCounts;
+        private int _singleCharAsciiRecordCount;
         private const int MaxShortContainsHotBuckets = 12;
         private const int MaxShortContainsHotBucketPostings = 12000000;
+        private const int SingleCharAsciiLimit = 128;
         private readonly List<PendingContainsMutation> _pendingContainsMutations = new List<PendingContainsMutation>();
         private bool _pendingContainsMutationsOverflowed;
         private const int MaxPendingContainsMutations = 65536;
@@ -118,6 +124,14 @@ namespace MftScanner
             public long VerifyMs { get; set; }
         }
 
+        public sealed class MatchSearchResult
+        {
+            public List<FileRecord> Page { get; set; } = new List<FileRecord>();
+            public int Total { get; set; }
+            public int CandidateCount { get; set; }
+            public long VerifyMs { get; set; }
+        }
+
         private sealed class ShortContainsHotBucket
         {
             public ShortContainsHotBucket(string query, long contentVersion, int[] postings)
@@ -165,6 +179,11 @@ namespace MftScanner
                 || accelerator == null
                 || accelerator.IsEmpty)
             {
+                if (TrySingleCharBitmapSearch(query, filter, offset, maxResults, null, ct, out result))
+                {
+                    return true;
+                }
+
                 if (TryShortContainsHotSearch(query, filter, offset, maxResults, ct, out result))
                 {
                     return true;
@@ -180,6 +199,11 @@ namespace MftScanner
 
             if (!accelerator.Supports(query))
             {
+                if (TrySingleCharBitmapSearch(query, filter, offset, maxResults, null, ct, out result))
+                {
+                    return true;
+                }
+
                 return TryShortContainsHotSearch(query, filter, offset, maxResults, ct, out result);
             }
 
@@ -376,13 +400,13 @@ namespace MftScanner
             _lock.EnterReadLock();
             try
             {
-                var sorted = SortedArray;
-                for (var i = 0; i < sorted.Length; i++)
+                var source = GetCandidateArrayForFilter(filter);
+                for (var i = 0; i < source.Length; i++)
                 {
                     if (((i + 1) & 0x3FFF) == 0)
                         ct.ThrowIfCancellationRequested();
 
-                    var record = sorted[i];
+                    var record = source[i];
                     if (record == null
                         || char.ToUpperInvariant(record.DriveLetter) != dl
                         || IsDeleted(record)
@@ -400,6 +424,243 @@ namespace MftScanner
             }
 
             return candidates.Count == 0 ? Array.Empty<FileRecord>() : candidates.ToArray();
+        }
+
+        private FileRecord[] GetCandidateArrayForFilter(SearchTypeFilter filter)
+        {
+            if (!_derivedStructuresReady)
+                return SortedArray;
+
+            switch (filter)
+            {
+                case SearchTypeFilter.Folder:
+                    return DirectorySortedArray ?? Array.Empty<FileRecord>();
+                case SearchTypeFilter.Launchable:
+                    return LaunchableSortedArray ?? Array.Empty<FileRecord>();
+                case SearchTypeFilter.Script:
+                    return ScriptSortedArray ?? Array.Empty<FileRecord>();
+                case SearchTypeFilter.Log:
+                    return LogSortedArray ?? Array.Empty<FileRecord>();
+                case SearchTypeFilter.Config:
+                    return ConfigSortedArray ?? Array.Empty<FileRecord>();
+                default:
+                    return SortedArray;
+            }
+        }
+
+        public bool TrySearchDriveExtension(
+            char driveLetter,
+            string extension,
+            int offset,
+            int maxResults,
+            CancellationToken ct,
+            out MatchSearchResult result)
+        {
+            result = null;
+            if (string.IsNullOrEmpty(extension))
+                return false;
+
+            var stopwatch = Stopwatch.StartNew();
+            var page = new List<FileRecord>(Math.Min(Math.Max(maxResults, 0), 64));
+            var total = 0;
+            var dl = char.ToUpperInvariant(driveLetter);
+            var normalizedOffset = Math.Max(offset, 0);
+            var normalizedMaxResults = Math.Max(maxResults, 0);
+            var hasDeletedOverlay = HasDeletedOverlay;
+
+            _lock.EnterReadLock();
+            try
+            {
+                if (!_derivedStructuresReady
+                    || ExtensionHashMap == null
+                    || !ExtensionHashMap.TryGetValue(extension, out var bucket)
+                    || bucket == null)
+                {
+                    return false;
+                }
+
+                for (var i = 0; i < bucket.Count; i++)
+                {
+                    if (((i + 1) & 0xFFF) == 0)
+                        ct.ThrowIfCancellationRequested();
+
+                    var record = bucket[i];
+                    if (record == null
+                        || char.ToUpperInvariant(record.DriveLetter) != dl
+                        || (hasDeletedOverlay && IsDeleted(record)))
+                    {
+                        continue;
+                    }
+
+                    total++;
+                    if (total > normalizedOffset && page.Count < normalizedMaxResults)
+                        page.Add(record);
+                }
+
+                stopwatch.Stop();
+                result = new MatchSearchResult
+                {
+                    CandidateCount = bucket.Count,
+                    Total = total,
+                    Page = page,
+                    VerifyMs = stopwatch.ElapsedMilliseconds
+                };
+                return true;
+            }
+            finally
+            {
+                if (stopwatch.IsRunning)
+                    stopwatch.Stop();
+                _lock.ExitReadLock();
+            }
+        }
+
+        public ContainsSearchResult SearchDriveFilteredContains(
+            char driveLetter,
+            string query,
+            SearchTypeFilter filter,
+            int offset,
+            int maxResults,
+            CancellationToken ct)
+        {
+            var stopwatch = Stopwatch.StartNew();
+            var page = new List<FileRecord>(Math.Min(Math.Max(maxResults, 0), 64));
+            var total = 0;
+            var candidateCount = 0;
+            var dl = char.ToUpperInvariant(driveLetter);
+            var normalizedOffset = Math.Max(offset, 0);
+            var normalizedMaxResults = Math.Max(maxResults, 0);
+            var hasDeletedOverlay = HasDeletedOverlay;
+            var filterAll = filter == SearchTypeFilter.All;
+
+            _lock.EnterReadLock();
+            try
+            {
+                var source = GetCandidateArrayForFilter(filter);
+                if (source == null || source.Length == 0)
+                {
+                    return new ContainsSearchResult
+                    {
+                        Mode = "drive-filtered-scan",
+                        CandidateCount = 0,
+                        Total = 0,
+                        Page = page,
+                        VerifyMs = stopwatch.ElapsedMilliseconds
+                    };
+                }
+
+                if (source.Length >= 250000 && normalizedOffset == 0 && normalizedMaxResults > 0)
+                {
+                    var scanIndex = 0;
+                    var sequentialPageScanLimit = Math.Min(source.Length, 262144);
+                    for (; scanIndex < sequentialPageScanLimit && page.Count < normalizedMaxResults; scanIndex++)
+                    {
+                        if (((scanIndex + 1) & 0x3FFF) == 0)
+                            ct.ThrowIfCancellationRequested();
+
+                        var record = source[scanIndex];
+                        if (record == null
+                            || char.ToUpperInvariant(record.DriveLetter) != dl
+                            || (hasDeletedOverlay && IsDeleted(record))
+                            || (!filterAll && !MatchesFilter(record, filter)))
+                        {
+                            continue;
+                        }
+
+                        candidateCount++;
+                        if (!NameContains(record, query))
+                            continue;
+
+                        total++;
+                        page.Add(record);
+                    }
+
+                    long remainingTotal = 0;
+                    long remainingCandidates = 0;
+                    Parallel.For<long[]>(
+                        scanIndex,
+                        source.Length,
+                        new ParallelOptions
+                        {
+                            CancellationToken = ct,
+                            MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 1)
+                        },
+                        () => new long[2],
+                        (i, state, local) =>
+                        {
+                            if (((i + 1) & 0x3FFF) == 0)
+                                ct.ThrowIfCancellationRequested();
+
+                            var record = source[i];
+                            if (record == null
+                                || char.ToUpperInvariant(record.DriveLetter) != dl
+                                || (hasDeletedOverlay && IsDeleted(record))
+                                || (!filterAll && !MatchesFilter(record, filter)))
+                            {
+                                return local;
+                            }
+
+                            local[0]++;
+                            if (NameContains(record, query))
+                                local[1]++;
+                            return local;
+                        },
+                        local =>
+                        {
+                            Interlocked.Add(ref remainingCandidates, local[0]);
+                            Interlocked.Add(ref remainingTotal, local[1]);
+                        });
+
+                    candidateCount += checked((int)remainingCandidates);
+                    total += checked((int)remainingTotal);
+                    stopwatch.Stop();
+                    return new ContainsSearchResult
+                    {
+                        Mode = "drive-filtered-scan-parallel",
+                        CandidateCount = candidateCount,
+                        Total = total,
+                        Page = page,
+                        VerifyMs = stopwatch.ElapsedMilliseconds
+                    };
+                }
+
+                for (var i = 0; i < source.Length; i++)
+                {
+                    if (((i + 1) & 0x3FFF) == 0)
+                        ct.ThrowIfCancellationRequested();
+
+                    var record = source[i];
+                    if (record == null
+                        || char.ToUpperInvariant(record.DriveLetter) != dl
+                        || (hasDeletedOverlay && IsDeleted(record))
+                        || (!filterAll && !MatchesFilter(record, filter)))
+                    {
+                        continue;
+                    }
+
+                    candidateCount++;
+                    if (!NameContains(record, query))
+                        continue;
+
+                    total++;
+                    if (total > normalizedOffset && page.Count < normalizedMaxResults)
+                        page.Add(record);
+                }
+            }
+            finally
+            {
+                _lock.ExitReadLock();
+            }
+
+            stopwatch.Stop();
+            return new ContainsSearchResult
+            {
+                Mode = "drive-filtered-scan",
+                CandidateCount = candidateCount,
+                Total = total,
+                Page = page,
+                VerifyMs = stopwatch.ElapsedMilliseconds
+            };
         }
 
         public void LoadSortedRecords(
@@ -551,6 +812,8 @@ namespace MftScanner
             var total = 0;
             var normalizedOffset = Math.Max(offset, 0);
             var normalizedMaxResults = Math.Max(maxResults, 0);
+            var hasDeletedOverlay = HasDeletedOverlay;
+            var filterAll = filter == SearchTypeFilter.All;
             FileRecord[] records;
             _lock.EnterReadLock();
             try
@@ -582,7 +845,9 @@ namespace MftScanner
                 }
 
                 var record = records[index];
-                if (IsDeleted(record) || !NameContains(record, query) || !MatchesFilter(record, filter))
+                if (record == null
+                    || (hasDeletedOverlay && IsDeleted(record))
+                    || (!filterAll && !MatchesFilter(record, filter)))
                 {
                     continue;
                 }
@@ -606,9 +871,379 @@ namespace MftScanner
             return true;
         }
 
+        public bool TryShortContainsHotDriveSearch(
+            string query,
+            char driveLetter,
+            SearchTypeFilter filter,
+            int offset,
+            int maxResults,
+            CancellationToken ct,
+            out ContainsSearchResult result)
+        {
+            result = null;
+            if (!IsShortContainsQuery(query))
+            {
+                return false;
+            }
+
+            if (TrySingleCharBitmapSearch(query, filter, offset, maxResults, char.ToUpperInvariant(driveLetter), ct, out result))
+            {
+                return true;
+            }
+
+            ShortContainsHotBucket bucket;
+            var contentVersion = ContentVersion;
+            lock (_shortContainsHotBucketLock)
+            {
+                if (!_shortContainsHotBuckets.TryGetValue(query, out bucket)
+                    || bucket == null
+                    || bucket.ContentVersion != contentVersion)
+                {
+                    return false;
+                }
+
+                TouchShortContainsHotBucket(query);
+            }
+
+            var verifyStopwatch = Stopwatch.StartNew();
+            var postings = bucket.Postings ?? Array.Empty<int>();
+            var page = new List<FileRecord>(Math.Min(Math.Max(maxResults, 0), 64));
+            var total = 0;
+            var candidateCount = 0;
+            var normalizedOffset = Math.Max(offset, 0);
+            var normalizedMaxResults = Math.Max(maxResults, 0);
+            var dl = char.ToUpperInvariant(driveLetter);
+            var hasDeletedOverlay = HasDeletedOverlay;
+            var filterAll = filter == SearchTypeFilter.All;
+            FileRecord[] records;
+            _lock.EnterReadLock();
+            try
+            {
+                if (ContentVersion != bucket.ContentVersion)
+                {
+                    return false;
+                }
+
+                records = SortedArray;
+            }
+            finally
+            {
+                _lock.ExitReadLock();
+            }
+
+            for (var i = 0; i < postings.Length; i++)
+            {
+                if (((i + 1) & 0xFFF) == 0)
+                {
+                    ct.ThrowIfCancellationRequested();
+                }
+
+                var recordId = postings[i];
+                var index = recordId - 1;
+                if (index < 0 || index >= records.Length)
+                {
+                    continue;
+                }
+
+                var record = records[index];
+                if (record == null
+                    || char.ToUpperInvariant(record.DriveLetter) != dl
+                    || (hasDeletedOverlay && IsDeleted(record))
+                    || (!filterAll && !MatchesFilter(record, filter)))
+                {
+                    continue;
+                }
+
+                candidateCount++;
+                total++;
+                if (total > normalizedOffset && page.Count < normalizedMaxResults)
+                {
+                    page.Add(record);
+                }
+            }
+
+            verifyStopwatch.Stop();
+            result = new ContainsSearchResult
+            {
+                Mode = query.Length == 1 ? "short-hot-char+drive" : "short-hot-bigram+drive",
+                CandidateCount = candidateCount,
+                Total = total,
+                Page = page,
+                VerifyMs = verifyStopwatch.ElapsedMilliseconds
+            };
+            return true;
+        }
+
         private static bool IsShortContainsQuery(string query)
         {
             return query != null && (query.Length == 1 || query.Length == 2);
+        }
+
+        private bool TrySingleCharBitmapSearch(
+            string query,
+            SearchTypeFilter filter,
+            int offset,
+            int maxResults,
+            char? driveLetter,
+            CancellationToken ct,
+            out ContainsSearchResult result)
+        {
+            result = null;
+            if (string.IsNullOrEmpty(query) || query.Length != 1)
+            {
+                return false;
+            }
+
+            var ch = query[0];
+            if (ch >= SingleCharAsciiLimit)
+            {
+                return false;
+            }
+
+            int[] bitset = null;
+            FileRecord[] records;
+            int recordCount;
+            _lock.EnterReadLock();
+            try
+            {
+                records = SortedArray;
+                recordCount = records?.Length ?? 0;
+                var bitsets = Volatile.Read(ref _singleCharAsciiBitsets);
+                var counts = Volatile.Read(ref _singleCharAsciiCounts);
+                if (counts == null
+                    || _singleCharAsciiRecordCount != recordCount
+                    || recordCount == 0)
+                {
+                    return false;
+                }
+
+                if (bitsets != null)
+                {
+                    bitset = bitsets[ch];
+                }
+
+                if ((bitset == null || bitset.Length == 0) && counts[ch] == 0)
+                {
+                    result = new ContainsSearchResult
+                    {
+                        Mode = driveLetter.HasValue ? "single-char-count+drive" : "single-char-count",
+                        CandidateCount = 0,
+                        Total = 0,
+                        Page = new List<FileRecord>(),
+                        VerifyMs = 0
+                    };
+                    return true;
+                }
+            }
+            finally
+            {
+                _lock.ExitReadLock();
+            }
+
+            var stopwatch = Stopwatch.StartNew();
+            var page = new List<FileRecord>(Math.Min(Math.Max(maxResults, 0), 64));
+            var candidateCount = 0;
+            var normalizedOffset = Math.Max(offset, 0);
+            var normalizedMaxResults = Math.Max(maxResults, 0);
+            var hasDeletedOverlay = HasDeletedOverlay;
+            var filterAll = filter == SearchTypeFilter.All;
+            var hasDrive = driveLetter.HasValue;
+            var dl = hasDrive ? char.ToUpperInvariant(driveLetter.Value) : '\0';
+            var total = TryGetPrecomputedSingleCharTotal(ch, dl, hasDrive, filter, out var precomputedTotal)
+                ? precomputedTotal
+                : -1;
+            if (total >= 0 && hasDeletedOverlay)
+            {
+                total -= CountDeletedSingleCharMatches(ch, hasDrive ? dl : (char?)null, filter);
+                if (total < 0)
+                {
+                    total = 0;
+                }
+            }
+
+            var pageMatched = 0;
+            if (bitset != null && bitset.Length > 0)
+            {
+                for (var wordIndex = 0; wordIndex < bitset.Length; wordIndex++)
+                {
+                    if (((wordIndex + 1) & 0x3FF) == 0)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                    }
+
+                    var bits = unchecked((uint)bitset[wordIndex]);
+                    while (bits != 0)
+                    {
+                        var bit = GetLowestSetBitIndex(bits);
+                        bits &= bits - 1;
+                        var index = (wordIndex << 5) + bit;
+                        if ((uint)index >= (uint)recordCount)
+                        {
+                            continue;
+                        }
+
+                        var record = records[index];
+                        if (record == null
+                            || (hasDrive && char.ToUpperInvariant(record.DriveLetter) != dl)
+                            || (hasDeletedOverlay && IsDeleted(record))
+                            || (!filterAll && !MatchesFilter(record, filter)))
+                        {
+                            continue;
+                        }
+
+                        candidateCount++;
+                        pageMatched++;
+
+                        if (pageMatched > normalizedOffset && page.Count < normalizedMaxResults)
+                        {
+                            page.Add(record);
+                        }
+
+                        if (total >= 0 && page.Count >= normalizedMaxResults)
+                        {
+                            break;
+                        }
+                    }
+
+                    if (total >= 0 && page.Count >= normalizedMaxResults)
+                    {
+                        break;
+                    }
+                }
+            }
+            else
+            {
+                for (var index = 0; index < recordCount; index++)
+                {
+                    if (((index + 1) & 0x3FFF) == 0)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                    }
+
+                    var record = records[index];
+                    if (record == null
+                        || (hasDrive && char.ToUpperInvariant(record.DriveLetter) != dl)
+                        || (hasDeletedOverlay && IsDeleted(record))
+                        || (!filterAll && !MatchesFilter(record, filter))
+                        || !NameContains(record, query))
+                    {
+                        continue;
+                    }
+
+                    candidateCount++;
+                    pageMatched++;
+                    if (pageMatched > normalizedOffset && page.Count < normalizedMaxResults)
+                    {
+                        page.Add(record);
+                    }
+
+                    if (total >= 0 && page.Count >= normalizedMaxResults)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            stopwatch.Stop();
+            if (total < 0)
+            {
+                total = pageMatched;
+            }
+
+            result = new ContainsSearchResult
+            {
+                Mode = bitset != null && bitset.Length > 0
+                    ? (driveLetter.HasValue ? "single-char-bitmap+drive" : "single-char-bitmap")
+                    : (driveLetter.HasValue ? "single-char-count+drive" : "single-char-count"),
+                CandidateCount = total >= 0 ? total : candidateCount,
+                Total = total,
+                Page = page,
+                VerifyMs = stopwatch.ElapsedMilliseconds
+            };
+            return true;
+        }
+
+        private bool TryGetPrecomputedSingleCharTotal(
+            char ch,
+            char driveLetter,
+            bool hasDrive,
+            SearchTypeFilter filter,
+            out int total)
+        {
+            total = 0;
+            if (filter != SearchTypeFilter.All || ch >= SingleCharAsciiLimit)
+            {
+                return false;
+            }
+
+            if (hasDrive)
+            {
+                var driveCounts = Volatile.Read(ref _singleCharAsciiDriveCounts);
+                var driveIndex = char.ToUpperInvariant(driveLetter) - 'A';
+                if (driveCounts == null
+                    || driveIndex < 0
+                    || driveIndex >= driveCounts.Length
+                    || driveCounts[driveIndex] == null)
+                {
+                    return false;
+                }
+
+                total = driveCounts[driveIndex][ch];
+                return true;
+            }
+
+            var counts = Volatile.Read(ref _singleCharAsciiCounts);
+            if (counts == null || ch >= counts.Length)
+            {
+                return false;
+            }
+
+            total = counts[ch];
+            return true;
+        }
+
+        private int CountDeletedSingleCharMatches(char ch, char? driveLetter, SearchTypeFilter filter)
+        {
+            var keys = Volatile.Read(ref _deletedOverlayKeys);
+            if (keys == null || keys.Count == 0)
+            {
+                return 0;
+            }
+
+            var total = 0;
+            var filterAll = filter == SearchTypeFilter.All;
+            var hasDrive = driveLetter.HasValue;
+            var dl = hasDrive ? char.ToUpperInvariant(driveLetter.Value) : '\0';
+            foreach (var key in keys)
+            {
+                if (key.LowerName == null
+                    || key.LowerName.IndexOf(ch) < 0
+                    || (hasDrive && char.ToUpperInvariant(key.DriveLetter) != dl))
+                {
+                    continue;
+                }
+
+                if (!filterAll)
+                {
+                    continue;
+                }
+
+                total++;
+            }
+
+            return total;
+        }
+
+        private static int GetLowestSetBitIndex(uint value)
+        {
+            var index = 0;
+            while ((value & 1u) == 0u)
+            {
+                value >>= 1;
+                index++;
+            }
+
+            return index;
         }
 
         private static int[] BuildShortContainsPostings(FileRecord[] records, string query, CancellationToken ct)
@@ -712,6 +1347,14 @@ namespace MftScanner
             }
         }
 
+        private void ClearSingleCharAsciiBitsets()
+        {
+            _singleCharAsciiBitsets = null;
+            _singleCharAsciiCounts = null;
+            _singleCharAsciiDriveCounts = null;
+            _singleCharAsciiRecordCount = 0;
+        }
+
         public void Insert(FileRecord record)
         {
             _lock.EnterWriteLock();
@@ -746,6 +1389,7 @@ namespace MftScanner
                 RemoveDeletedOverlayKey(RecordKey.FromRecord(record));
                 _contentVersion++;
                 ClearShortContainsHotBuckets();
+                ClearSingleCharAsciiBitsets();
             }
             finally { _lock.ExitWriteLock(); }
         }
@@ -899,6 +1543,7 @@ namespace MftScanner
                 ParentSortedArray = InsertIntoSortedArray(ParentSortedArray, newRecord, ByParentThenLowerName);
                 _contentVersion++;
                 ClearShortContainsHotBuckets();
+                ClearSingleCharAsciiBitsets();
             }
             finally { _lock.ExitWriteLock(); }
         }
@@ -1124,6 +1769,151 @@ namespace MftScanner
             return filtered.Count == 0 ? Array.Empty<FileRecord>() : filtered.ToArray();
         }
 
+        private sealed class SingleCharAsciiIndex
+        {
+            public int[][] Bitsets { get; set; }
+            public int[] Counts { get; set; }
+            public int[][] DriveCounts { get; set; }
+        }
+
+        private sealed class SingleCharAsciiCountLocal
+        {
+            public SingleCharAsciiCountLocal()
+            {
+                Counts = new int[SingleCharAsciiLimit];
+                DriveCounts = new int[26][];
+                for (var i = 0; i < DriveCounts.Length; i++)
+                {
+                    DriveCounts[i] = new int[SingleCharAsciiLimit];
+                }
+            }
+
+            public int[] Counts { get; }
+            public int[][] DriveCounts { get; }
+        }
+
+        private static SingleCharAsciiIndex BuildSingleCharAsciiIndex(FileRecord[] arr)
+        {
+            if (arr == null || arr.Length == 0)
+            {
+                return new SingleCharAsciiIndex
+                {
+                    Bitsets = null,
+                    Counts = null,
+                    DriveCounts = null
+                };
+            }
+
+            var stopwatch = Stopwatch.StartNew();
+            var counts = new int[SingleCharAsciiLimit];
+            var driveCounts = new int[26][];
+            for (var i = 0; i < driveCounts.Length; i++)
+            {
+                driveCounts[i] = new int[SingleCharAsciiLimit];
+            }
+            var mergeLock = new object();
+
+            Parallel.For(
+                0,
+                arr.Length,
+                new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 1) },
+                () => new SingleCharAsciiCountLocal(),
+                (recordIndex, state, local) =>
+                {
+                    var record = arr[recordIndex];
+                    var lowerName = record?.LowerName;
+                    if (string.IsNullOrEmpty(lowerName))
+                    {
+                        return local;
+                    }
+
+                    ulong maskLow = 0;
+                    ulong maskHigh = 0;
+                    for (var j = 0; j < lowerName.Length; j++)
+                    {
+                        var ch = lowerName[j];
+                        if (ch >= SingleCharAsciiLimit)
+                        {
+                            continue;
+                        }
+
+                        if (ch < 64)
+                        {
+                            maskLow |= 1UL << ch;
+                        }
+                        else
+                        {
+                            maskHigh |= 1UL << (ch - 64);
+                        }
+                    }
+
+                    var driveIndex = char.ToUpperInvariant(record.DriveLetter) - 'A';
+                    CountSingleCharMaskBits(local.Counts, local.DriveCounts, driveIndex, maskLow, 0);
+                    CountSingleCharMaskBits(local.Counts, local.DriveCounts, driveIndex, maskHigh, 64);
+                    return local;
+                },
+                local =>
+                {
+                    lock (mergeLock)
+                    {
+                        for (var i = 0; i < SingleCharAsciiLimit; i++)
+                        {
+                            counts[i] += local.Counts[i];
+                        }
+
+                        for (var drive = 0; drive < driveCounts.Length; drive++)
+                        {
+                            for (var i = 0; i < SingleCharAsciiLimit; i++)
+                            {
+                                driveCounts[drive][i] += local.DriveCounts[drive][i];
+                            }
+                        }
+                    }
+                });
+
+            stopwatch.Stop();
+            IndexPerfLog.Write("INDEX",
+                $"[CONTAINS SINGLE CHAR COUNT BUILD] outcome=success records={arr.Length} chars={SingleCharAsciiLimit} elapsedMs={stopwatch.ElapsedMilliseconds}");
+            return new SingleCharAsciiIndex
+            {
+                Bitsets = null,
+                Counts = counts,
+                DriveCounts = driveCounts
+            };
+        }
+
+        private static void CountSingleCharMaskBits(
+            int[] counts,
+            int[][] driveCounts,
+            int driveIndex,
+            ulong mask,
+            int offset)
+        {
+            while (mask != 0)
+            {
+                var charOffset = GetLowestSetBitIndex(mask);
+                mask &= mask - 1;
+                var ch = offset + charOffset;
+                counts[ch]++;
+                if (driveIndex >= 0 && driveIndex < driveCounts.Length)
+                {
+                    driveCounts[driveIndex][ch]++;
+                }
+            }
+        }
+
+        private static int GetLowestSetBitIndex(ulong value)
+        {
+            var index = 0;
+            while ((value & 1UL) == 0UL)
+            {
+                value >>= 1;
+                index++;
+            }
+
+            return index;
+        }
+
         private void Publish(
             FileRecord[] arr,
             Dictionary<string, List<FileRecord>> extensionMap,
@@ -1137,6 +1927,7 @@ namespace MftScanner
             bool containsAcceleratorReady,
             bool derivedStructuresReady)
         {
+            var singleCharAsciiIndex = BuildSingleCharAsciiIndex(arr);
             _lock.EnterWriteLock();
             try
             {
@@ -1160,6 +1951,10 @@ namespace MftScanner
                 _pendingContainsMutationsOverflowed = false;
                 _contentVersion++;
                 ClearShortContainsHotBuckets();
+                _singleCharAsciiBitsets = singleCharAsciiIndex.Bitsets;
+                _singleCharAsciiCounts = singleCharAsciiIndex.Counts;
+                _singleCharAsciiDriveCounts = singleCharAsciiIndex.DriveCounts;
+                _singleCharAsciiRecordCount = arr?.Length ?? 0;
             }
             finally { _lock.ExitWriteLock(); }
         }
@@ -1219,6 +2014,7 @@ namespace MftScanner
                 }
 
                 var arr = MergeSortedRecords(survivors, survivorCount, inserted);
+                var singleCharAsciiIndex = BuildSingleCharAsciiIndex(arr);
                 BuildDerivedStructures(
                     arr,
                     out var extensionMap,
@@ -1256,6 +2052,10 @@ namespace MftScanner
                 }
                 _contentVersion++;
                 ClearShortContainsHotBuckets();
+                _singleCharAsciiBitsets = singleCharAsciiIndex.Bitsets;
+                _singleCharAsciiCounts = singleCharAsciiIndex.Counts;
+                _singleCharAsciiDriveCounts = singleCharAsciiIndex.DriveCounts;
+                _singleCharAsciiRecordCount = arr?.Length ?? 0;
             }
             finally { _lock.ExitWriteLock(); }
         }
