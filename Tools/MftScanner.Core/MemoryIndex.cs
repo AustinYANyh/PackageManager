@@ -39,6 +39,11 @@ namespace MftScanner
         private ContainsOverlay _containsOverlay = ContainsOverlay.Empty;
         private bool _containsAcceleratorReady = true;
         private long _containsAcceleratorEpoch;
+        private readonly object _shortContainsHotBucketLock = new object();
+        private Dictionary<string, ShortContainsHotBucket> _shortContainsHotBuckets = new Dictionary<string, ShortContainsHotBucket>(StringComparer.Ordinal);
+        private readonly LinkedList<string> _shortContainsHotBucketLru = new LinkedList<string>();
+        private const int MaxShortContainsHotBuckets = 12;
+        private const int MaxShortContainsHotBucketPostings = 12000000;
         private readonly List<PendingContainsMutation> _pendingContainsMutations = new List<PendingContainsMutation>();
         private bool _pendingContainsMutationsOverflowed;
         private const int MaxPendingContainsMutations = 65536;
@@ -89,6 +94,20 @@ namespace MftScanner
             public long VerifyMs { get; set; }
         }
 
+        private sealed class ShortContainsHotBucket
+        {
+            public ShortContainsHotBucket(string query, long contentVersion, int[] postings)
+            {
+                Query = query ?? string.Empty;
+                ContentVersion = contentVersion;
+                Postings = postings ?? Array.Empty<int>();
+            }
+
+            public string Query { get; }
+            public long ContentVersion { get; }
+            public int[] Postings { get; }
+        }
+
         public enum ContainsWarmupScope
         {
             TrigramOnly,
@@ -122,6 +141,11 @@ namespace MftScanner
                 || accelerator == null
                 || accelerator.IsEmpty)
             {
+                if (TryShortContainsHotSearch(query, filter, offset, maxResults, ct, out result))
+                {
+                    return true;
+                }
+
                 if (overlay.IsOverflowed)
                 {
                     IndexPerfLog.Write("INDEX",
@@ -132,10 +156,71 @@ namespace MftScanner
 
             if (!accelerator.Supports(query))
             {
-                return false;
+                return TryShortContainsHotSearch(query, filter, offset, maxResults, ct, out result);
             }
 
             result = accelerator.Search(query, filter, offset, maxResults, ct, overlay);
+            return true;
+        }
+
+        public bool TryEnsureShortContainsHotBucket(string query, CancellationToken ct)
+        {
+            if (!IsShortContainsQuery(query))
+            {
+                return false;
+            }
+
+            var contentVersion = ContentVersion;
+            ShortContainsHotBucket existing;
+            lock (_shortContainsHotBucketLock)
+            {
+                if (_shortContainsHotBuckets.TryGetValue(query, out existing)
+                    && existing != null
+                    && existing.ContentVersion == contentVersion)
+                {
+                    TouchShortContainsHotBucket(query);
+                    return true;
+                }
+            }
+
+            FileRecord[] snapshot;
+            _lock.EnterReadLock();
+            try
+            {
+                if (ContentVersion != contentVersion)
+                {
+                    return false;
+                }
+
+                snapshot = SortedArray;
+            }
+            finally
+            {
+                _lock.ExitReadLock();
+            }
+
+            var stopwatch = Stopwatch.StartNew();
+            var postings = BuildShortContainsPostings(snapshot, query, ct);
+            stopwatch.Stop();
+
+            if (ContentVersion != contentVersion)
+            {
+                IndexPerfLog.Write("INDEX",
+                    $"[CONTAINS SHORT HOT BUILD] outcome=stale query={IndexPerfLog.FormatValue(query)} elapsedMs={stopwatch.ElapsedMilliseconds}");
+                return false;
+            }
+
+            var bucket = new ShortContainsHotBucket(query, contentVersion, postings);
+            lock (_shortContainsHotBucketLock)
+            {
+                _shortContainsHotBuckets[query] = bucket;
+                TouchShortContainsHotBucket(query);
+                TrimShortContainsHotBuckets();
+            }
+
+            IndexPerfLog.Write("INDEX",
+                $"[CONTAINS SHORT HOT BUILD] outcome=success query={IndexPerfLog.FormatValue(query)} " +
+                $"records={(snapshot == null ? 0 : snapshot.Length)} postings={postings.Length} elapsedMs={stopwatch.ElapsedMilliseconds}");
             return true;
         }
 
@@ -237,7 +322,20 @@ namespace MftScanner
 
         public void LoadSortedRecords(IReadOnlyList<FileRecord> sortedRecords, bool buildContainsAccelerator = true)
         {
+            var totalStopwatch = Stopwatch.StartNew();
             var arr = CopyRecords(sortedRecords);
+            var verifyStopwatch = Stopwatch.StartNew();
+            var sortedAlready = IsSortedByLowerName(arr);
+            verifyStopwatch.Stop();
+            long sortMilliseconds = 0;
+            if (!sortedAlready)
+            {
+                var sortStopwatch = Stopwatch.StartNew();
+                Array.Sort(arr, ByLowerName);
+                sortStopwatch.Stop();
+                sortMilliseconds = sortStopwatch.ElapsedMilliseconds;
+            }
+
             BuildDerivedStructures(
                 arr,
                 out var extensionMap,
@@ -258,6 +356,10 @@ namespace MftScanner
                 configArr,
                 buildContainsAccelerator ? ContainsAccelerator.Build(arr, ContainsAcceleratorBucketKinds.All) : null,
                 buildContainsAccelerator);
+            totalStopwatch.Stop();
+            IndexPerfLog.Write("INDEX",
+                $"[LOAD SORTED RECORDS] records={arr.Length} sortedAlready={sortedAlready} " +
+                $"verifyMs={verifyStopwatch.ElapsedMilliseconds} sortMs={sortMilliseconds} totalMs={totalStopwatch.ElapsedMilliseconds}");
         }
 
         public void Build(IReadOnlyList<FileRecord> records, bool buildContainsAccelerator = true)
@@ -302,6 +404,201 @@ namespace MftScanner
                 buildContainsAccelerator);
         }
 
+        private bool TryShortContainsHotSearch(
+            string query,
+            SearchTypeFilter filter,
+            int offset,
+            int maxResults,
+            CancellationToken ct,
+            out ContainsSearchResult result)
+        {
+            result = null;
+            if (!IsShortContainsQuery(query))
+            {
+                return false;
+            }
+
+            ShortContainsHotBucket bucket;
+            var contentVersion = ContentVersion;
+            lock (_shortContainsHotBucketLock)
+            {
+                if (!_shortContainsHotBuckets.TryGetValue(query, out bucket)
+                    || bucket == null
+                    || bucket.ContentVersion != contentVersion)
+                {
+                    return false;
+                }
+
+                TouchShortContainsHotBucket(query);
+            }
+
+            var verifyStopwatch = Stopwatch.StartNew();
+            var postings = bucket.Postings ?? Array.Empty<int>();
+            var page = new List<FileRecord>(Math.Min(Math.Max(maxResults, 0), 64));
+            var total = 0;
+            var normalizedOffset = Math.Max(offset, 0);
+            var normalizedMaxResults = Math.Max(maxResults, 0);
+            FileRecord[] records;
+            _lock.EnterReadLock();
+            try
+            {
+                if (ContentVersion != bucket.ContentVersion)
+                {
+                    return false;
+                }
+
+                records = SortedArray;
+            }
+            finally
+            {
+                _lock.ExitReadLock();
+            }
+
+            for (var i = 0; i < postings.Length; i++)
+            {
+                if (((i + 1) & 0xFFF) == 0)
+                {
+                    ct.ThrowIfCancellationRequested();
+                }
+
+                var recordId = postings[i];
+                var index = recordId - 1;
+                if (index < 0 || index >= records.Length)
+                {
+                    continue;
+                }
+
+                var record = records[index];
+                if (!NameContains(record, query) || !MatchesFilter(record, filter))
+                {
+                    continue;
+                }
+
+                total++;
+                if (total > normalizedOffset && page.Count < normalizedMaxResults)
+                {
+                    page.Add(record);
+                }
+            }
+
+            verifyStopwatch.Stop();
+            result = new ContainsSearchResult
+            {
+                Mode = query.Length == 1 ? "short-hot-char" : "short-hot-bigram",
+                CandidateCount = postings.Length,
+                Total = total,
+                Page = page,
+                VerifyMs = verifyStopwatch.ElapsedMilliseconds
+            };
+            return true;
+        }
+
+        private static bool IsShortContainsQuery(string query)
+        {
+            return query != null && (query.Length == 1 || query.Length == 2);
+        }
+
+        private static int[] BuildShortContainsPostings(FileRecord[] records, string query, CancellationToken ct)
+        {
+            if (records == null || records.Length == 0 || string.IsNullOrEmpty(query))
+            {
+                return Array.Empty<int>();
+            }
+
+            var postings = new List<int>(Math.Min(records.Length, 262144));
+            for (var i = 0; i < records.Length; i++)
+            {
+                if (((i + 1) & 0xFFF) == 0)
+                {
+                    ct.ThrowIfCancellationRequested();
+                }
+
+                if (NameContains(records[i], query))
+                {
+                    postings.Add(i + 1);
+                }
+            }
+
+            return postings.Count == 0 ? Array.Empty<int>() : postings.ToArray();
+        }
+
+        private static bool NameContains(FileRecord record, string query)
+        {
+            return record != null
+                   && !string.IsNullOrEmpty(record.LowerName)
+                   && !string.IsNullOrEmpty(query)
+                   && record.LowerName.IndexOf(query, StringComparison.Ordinal) >= 0;
+        }
+
+        private static bool IsSortedByLowerName(FileRecord[] records)
+        {
+            if (records == null || records.Length < 2)
+            {
+                return true;
+            }
+
+            for (var i = 1; i < records.Length; i++)
+            {
+                if (ByLowerName.Compare(records[i - 1], records[i]) > 0)
+                {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        private void TouchShortContainsHotBucket(string query)
+        {
+            var node = _shortContainsHotBucketLru.Find(query);
+            if (node != null)
+            {
+                _shortContainsHotBucketLru.Remove(node);
+            }
+
+            _shortContainsHotBucketLru.AddFirst(query);
+        }
+
+        private void TrimShortContainsHotBuckets()
+        {
+            var totalPostings = 0;
+            foreach (var bucket in _shortContainsHotBuckets.Values)
+            {
+                totalPostings += bucket?.Postings?.Length ?? 0;
+            }
+
+            while (_shortContainsHotBuckets.Count > MaxShortContainsHotBuckets
+                   || totalPostings > MaxShortContainsHotBucketPostings)
+            {
+                var last = _shortContainsHotBucketLru.Last;
+                if (last == null)
+                {
+                    _shortContainsHotBuckets.Clear();
+                    break;
+                }
+
+                var key = last.Value;
+                _shortContainsHotBucketLru.RemoveLast();
+                ShortContainsHotBucket removed;
+                if (_shortContainsHotBuckets.TryGetValue(key, out removed))
+                {
+                    totalPostings -= removed?.Postings?.Length ?? 0;
+                    _shortContainsHotBuckets.Remove(key);
+                    IndexPerfLog.Write("INDEX",
+                        $"[CONTAINS SHORT HOT EVICT] query={IndexPerfLog.FormatValue(key)} postings={removed?.Postings?.Length ?? 0}");
+                }
+            }
+        }
+
+        private void ClearShortContainsHotBuckets()
+        {
+            lock (_shortContainsHotBucketLock)
+            {
+                _shortContainsHotBuckets.Clear();
+                _shortContainsHotBucketLru.Clear();
+            }
+        }
+
         public void Insert(FileRecord record)
         {
             _lock.EnterWriteLock();
@@ -334,6 +631,7 @@ namespace MftScanner
                 SortedArray = newArr;
                 ParentSortedArray = InsertIntoSortedArray(ParentSortedArray, record, ByParentThenLowerName);
                 _contentVersion++;
+                ClearShortContainsHotBuckets();
             }
             finally { _lock.ExitWriteLock(); }
         }
@@ -378,6 +676,7 @@ namespace MftScanner
                         SortedArray = newArr;
                         ParentSortedArray = RemoveFromSortedArray(ParentSortedArray, frn, lowerName, parentFrn, driveLetter);
                         _contentVersion++;
+                        ClearShortContainsHotBuckets();
                         break;
                     }
                 }
@@ -446,6 +745,7 @@ namespace MftScanner
                 SortedArray = newArr;
                 ParentSortedArray = InsertIntoSortedArray(ParentSortedArray, newRecord, ByParentThenLowerName);
                 _contentVersion++;
+                ClearShortContainsHotBuckets();
             }
             finally { _lock.ExitWriteLock(); }
         }
@@ -703,6 +1003,7 @@ namespace MftScanner
                 _pendingContainsMutations.Clear();
                 _pendingContainsMutationsOverflowed = false;
                 _contentVersion++;
+                ClearShortContainsHotBuckets();
             }
             finally { _lock.ExitWriteLock(); }
         }
@@ -797,6 +1098,7 @@ namespace MftScanner
                     EnqueuePendingContainsMutations(deltaByKey);
                 }
                 _contentVersion++;
+                ClearShortContainsHotBuckets();
             }
             finally { _lock.ExitWriteLock(); }
         }

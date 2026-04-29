@@ -317,7 +317,7 @@ namespace MftScanner
                     var record = GetRecord(candidates[i]);
                     if (record == null
                         || overlay.ContainsRemoved(RecordKey.FromRecord(record))
-                        || !record.LowerName.Contains(query)
+                        || !NameContains(record, query)
                         || !MatchesFilter(record, filter))
                     {
                         continue;
@@ -360,7 +360,7 @@ namespace MftScanner
                     var record = GetRecord(recordId);
                     if (record == null
                         || overlay.ContainsRemoved(RecordKey.FromRecord(record))
-                        || !record.LowerName.Contains(query)
+                        || !NameContains(record, query)
                         || !MatchesFilter(record, filter))
                     {
                         continue;
@@ -430,8 +430,7 @@ namespace MftScanner
                     var record = overlay.AddedRecords[i];
                     if (record == null
                         || overlay.ContainsRemoved(RecordKey.FromRecord(record))
-                        || string.IsNullOrEmpty(record.LowerName)
-                        || !record.LowerName.Contains(query)
+                        || !NameContains(record, query)
                         || !MatchesFilter(record, filter))
                     {
                         continue;
@@ -443,6 +442,14 @@ namespace MftScanner
                         page.Add(record);
                     }
                 }
+            }
+
+            private static bool NameContains(FileRecord record, string query)
+            {
+                return record != null
+                       && !string.IsNullOrEmpty(record.LowerName)
+                       && !string.IsNullOrEmpty(query)
+                       && record.LowerName.IndexOf(query, StringComparison.Ordinal) >= 0;
             }
 
             private bool ContainsRecordId(BucketPosting posting, int recordId)
@@ -473,13 +480,7 @@ namespace MftScanner
 
             private int CompareRecordIds(int leftRecordId, int rightRecordId)
             {
-                var compare = ByLowerName.Compare(GetRecord(leftRecordId), GetRecord(rightRecordId));
-                if (compare == 0)
-                {
-                    compare = leftRecordId.CompareTo(rightRecordId);
-                }
-
-                return compare;
+                return leftRecordId.CompareTo(rightRecordId);
             }
 
             private FileRecord GetRecord(int recordId)

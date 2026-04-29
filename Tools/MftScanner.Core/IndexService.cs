@@ -33,7 +33,9 @@ namespace MftScanner
         private Task _backgroundCatchUpTask;
         private CancellationTokenSource _containsWarmupCts;
         private Task _containsWarmupTask;
+        private readonly HashSet<string> _shortContainsWarmups = new HashSet<string>(StringComparer.Ordinal);
         private volatile bool _isBackgroundCatchUpInProgress;
+        private volatile bool _isSnapshotStale;
         private volatile string _currentStatusMessage = string.Empty;
         private readonly object _periodicSnapshotSaveLock = new object();
         private CancellationTokenSource _periodicSnapshotSaveCts;
@@ -47,6 +49,8 @@ namespace MftScanner
         private const int SnapshotPeriodicSaveMilliseconds = 120000;
         private const int SnapshotSaveMaxDeferredMilliseconds = 30000;
         private const int SnapshotSearchIdleDelayMilliseconds = 5000;
+        private const int CatchUpApplyIdleDelayMilliseconds = 1000;
+        private const int CatchUpApplyMaxDeferMilliseconds = 30000;
         private const int MaxIncrementalContainsCacheRecords = 2000000;
         private const int MaxPathCandidateCacheRecords = 500000;
         private static readonly bool BuildShortContainsBuckets = false;
@@ -58,6 +62,7 @@ namespace MftScanner
         public MemoryIndex Index => _index;
         public int IndexedCount => _index.TotalCount;
         public bool IsBackgroundCatchUpInProgress => _isBackgroundCatchUpInProgress;
+        public bool IsSnapshotStale => _isSnapshotStale;
         public string CurrentStatusMessage => _currentStatusMessage;
         public ContainsBucketStatus ContainsBucketStatus => _index?.GetContainsBucketStatus() ?? ContainsBucketStatus.Empty;
 
@@ -580,24 +585,9 @@ namespace MftScanner
             var page = new List<FileRecord>(Math.Min(maxResults, 64));
             var allMatches = collectAllMatches ? new List<FileRecord>() : null;
             var total = 0;
-            var exactStart = 0;
-            var exactEnd = 0;
-            var hasExactRange = TryGetExactNameRange(sortedArray, query, out exactStart, out exactEnd);
             var candidateCount = sortedArray?.Length ?? 0;
             IndexPerfLog.Write("INDEX",
                 $"[CONTAINS FALLBACK] outcome=start candidateCount={candidateCount} offset={offset} maxResults={maxResults} query={IndexPerfLog.FormatValue(query)}");
-
-            if (hasExactRange)
-            {
-                for (var exactIndex = exactStart; exactIndex < exactEnd; exactIndex++)
-                {
-                    var r = sortedArray[exactIndex];
-                    total++;
-                    allMatches?.Add(r);
-                    if (total > offset && page.Count < maxResults)
-                        page.Add(r);
-                }
-            }
 
             var i = 0;
             try
@@ -616,8 +606,7 @@ namespace MftScanner
                             $"[CONTAINS FALLBACK] outcome=progress scanned={i} candidateCount={candidateCount} matched={total} returned={page.Count} elapsedMs={stopwatch.ElapsedMilliseconds} query={IndexPerfLog.FormatValue(query)}");
                     }
 
-                    if (hasExactRange && i - 1 >= exactStart && i - 1 < exactEnd) continue;
-                    if (record.LowerName.Contains(query))
+                    if (NameContains(record, query))
                     {
                         total++;
                         allMatches?.Add(record);
@@ -649,23 +638,9 @@ namespace MftScanner
             var stopwatch = Stopwatch.StartNew();
             var page = new List<FileRecord>(Math.Min(maxResults, 64));
             var total = 0;
-            var exactStart = 0;
-            var exactEnd = 0;
-            var hasExactRange = TryGetExactNameRange(sortedArray, query, out exactStart, out exactEnd);
             var candidateCount = sortedArray?.Length ?? 0;
             IndexPerfLog.Write("INDEX",
                 $"[CONTAINS FALLBACK] outcome=start candidateCount={candidateCount} offset=0 maxResults={maxResults} parallel=true query={IndexPerfLog.FormatValue(query)}");
-
-            if (hasExactRange)
-            {
-                for (var exactIndex = exactStart; exactIndex < exactEnd; exactIndex++)
-                {
-                    var r = sortedArray[exactIndex];
-                    total++;
-                    if (page.Count < maxResults)
-                        page.Add(r);
-                }
-            }
 
             var scanIndex = 0;
             for (; scanIndex < sortedArray.Length && page.Count < maxResults; scanIndex++)
@@ -677,10 +652,7 @@ namespace MftScanner
                 if (record == null)
                     continue;
 
-                if (hasExactRange && scanIndex >= exactStart && scanIndex < exactEnd)
-                    continue;
-
-                if (!record.LowerName.Contains(query))
+                if (!NameContains(record, query))
                     continue;
 
                 total++;
@@ -708,10 +680,7 @@ namespace MftScanner
                         if (record == null)
                             return local;
 
-                        if (hasExactRange && i >= exactStart && i < exactEnd)
-                            return local;
-
-                        return record.LowerName.Contains(query)
+                        return NameContains(record, query)
                             ? local + 1
                             : local;
                     },
@@ -730,6 +699,14 @@ namespace MftScanner
             IndexPerfLog.Write("INDEX",
                 $"[CONTAINS FALLBACK] outcome=success scanned={sortedArray.Length} candidateCount={candidateCount} matched={total} returned={page.Count} elapsedMs={stopwatch.ElapsedMilliseconds} parallel=true query={IndexPerfLog.FormatValue(query)}");
             return (page, total, Array.Empty<FileRecord>());
+        }
+
+        private static bool NameContains(FileRecord record, string query)
+        {
+            return record != null
+                   && !string.IsNullOrEmpty(record.LowerName)
+                   && !string.IsNullOrEmpty(query)
+                   && record.LowerName.IndexOf(query, StringComparison.Ordinal) >= 0;
         }
 
         private static bool TryGetExactNameRange(FileRecord[] sortedArray, string lowerName, out int start, out int end)
@@ -851,6 +828,7 @@ namespace MftScanner
                 string searchTerm = null;
                 string normalizedQuery = null;
                 string containsMode = null;
+                string containsQueryForWarmup = null;
                 var mode = MatchMode.Contains;
                 var candidateCount = 0;
                 var containsCandidateCount = 0;
@@ -1029,6 +1007,7 @@ namespace MftScanner
                                             matched = wildcardContains.Page;
                                             totalMatched = wildcardContains.Total;
                                             containsMode = wildcardContains.Mode;
+                                            containsQueryForWarmup = simplifiedQuery;
                                             containsCandidateCount = wildcardContains.CandidateCount;
                                             containsIntersectMilliseconds = wildcardContains.IntersectMs;
                                             containsVerifyMilliseconds = wildcardContains.VerifyMs;
@@ -1051,6 +1030,7 @@ namespace MftScanner
                                             matched = r.page;
                                             totalMatched = r.total;
                                             containsMode = r.mode;
+                                            containsQueryForWarmup = simplifiedQuery;
                                             containsCandidateCount = r.candidateCount;
                                             containsVerifyMilliseconds = r.verifyMs;
                                         }
@@ -1071,6 +1051,7 @@ namespace MftScanner
                                 matched = containsResult.Page;
                                 totalMatched = containsResult.Total;
                                 containsMode = containsResult.Mode;
+                                containsQueryForWarmup = normalizedQuery;
                                 containsCandidateCount = containsResult.CandidateCount;
                                 containsIntersectMilliseconds = containsResult.IntersectMs;
                                 containsVerifyMilliseconds = containsResult.VerifyMs;
@@ -1093,11 +1074,13 @@ namespace MftScanner
                                 matched = r.page;
                                 totalMatched = r.total;
                                 containsMode = r.mode;
+                                containsQueryForWarmup = normalizedQuery;
                                 containsCandidateCount = r.candidateCount;
                                 containsVerifyMilliseconds = r.verifyMs;
                             }
                             break;
                     }
+                    QueueContainsWarmupForQuery(idx, containsQueryForWarmup, containsMode, pathPrefilterApplied);
                     matchStopwatch.Stop();
                     matchElapsedMilliseconds = matchStopwatch.ElapsedMilliseconds;
 
@@ -1212,6 +1195,7 @@ namespace MftScanner
                             TotalIndexedCount = idx.TotalCount,
                             TotalMatchedCount = totalMatched,
                             IsTruncated = totalMatched > normalizedOffset + results.Count,
+                            IsSnapshotStale = _isSnapshotStale,
                             Results = results
                         });
                 }
@@ -1304,6 +1288,83 @@ namespace MftScanner
             return index != null
                 && !string.IsNullOrEmpty(query)
                 && index.TryContainsSearch(query, filter, offset, maxResults, ct, out result);
+        }
+
+        private void QueueContainsWarmupForQuery(
+            MemoryIndex index,
+            string query,
+            string containsMode,
+            bool pathPrefilterApplied)
+        {
+            if (index == null
+                || string.IsNullOrEmpty(query)
+                || pathPrefilterApplied
+                || string.Equals(containsMode, "short-hot-char", StringComparison.Ordinal)
+                || string.Equals(containsMode, "short-hot-bigram", StringComparison.Ordinal)
+                || string.Equals(containsMode, "trigram", StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            if (query.Length == 1 || query.Length == 2)
+            {
+                QueueShortContainsHotBucketWarmup(index, query, containsMode ?? "fallback");
+                return;
+            }
+
+            if (query.Length >= 3)
+            {
+                QueueContainsAcceleratorWarmup("query-trigram-needed");
+            }
+        }
+
+        private void QueueShortContainsHotBucketWarmup(MemoryIndex index, string query, string reason)
+        {
+            if (index == null || string.IsNullOrEmpty(query) || (query.Length != 1 && query.Length != 2))
+            {
+                return;
+            }
+
+            lock (_containsWarmupLock)
+            {
+                if (_shortContainsWarmups.Contains(query))
+                {
+                    return;
+                }
+
+                _shortContainsWarmups.Add(query);
+            }
+
+            Task.Run(() =>
+            {
+                var stopwatch = Stopwatch.StartNew();
+                try
+                {
+                    UsnDiagLog.Write(
+                        $"[CONTAINS SHORT HOT WARMUP] outcome=start reason={IndexPerfLog.FormatValue(reason)} " +
+                        $"query={IndexPerfLog.FormatValue(query)} records={index.TotalCount}");
+                    index.TryEnsureShortContainsHotBucket(query, CancellationToken.None);
+                    stopwatch.Stop();
+                    UsnDiagLog.Write(
+                        $"[CONTAINS SHORT HOT WARMUP] outcome=success reason={IndexPerfLog.FormatValue(reason)} " +
+                        $"query={IndexPerfLog.FormatValue(query)} elapsedMs={stopwatch.ElapsedMilliseconds} records={index.TotalCount}");
+                }
+                catch (Exception ex)
+                {
+                    stopwatch.Stop();
+                    UsnDiagLog.Write(
+                        $"[CONTAINS SHORT HOT WARMUP] outcome=failed reason={IndexPerfLog.FormatValue(reason)} " +
+                        $"query={IndexPerfLog.FormatValue(query)} elapsedMs={stopwatch.ElapsedMilliseconds} " +
+                        $"error={ex.GetType().Name}:{IndexPerfLog.FormatValue(ex.Message)}");
+                }
+                finally
+                {
+                    lock (_containsWarmupLock)
+                    {
+                        _shortContainsWarmups.Remove(query);
+                    }
+                }
+            });
         }
 
         private (List<FileRecord> page, int total, string mode, int candidateCount, long verifyMs) ContainsMatchWithIncrementalCache(
@@ -1544,13 +1605,14 @@ namespace MftScanner
             return BuildIndexFromMft(progress, ct);
         }
 
-        private static SearchQueryResult CreateEmptySearchResult(int totalIndexedCount)
+        private SearchQueryResult CreateEmptySearchResult(int totalIndexedCount)
         {
             return new SearchQueryResult
             {
                 TotalIndexedCount = totalIndexedCount,
                 TotalMatchedCount = 0,
                 IsTruncated = false,
+                IsSnapshotStale = _isSnapshotStale,
                 HostSearchMs = 0,
                 Results = new List<ScannedFileInfo>()
             };
@@ -1577,12 +1639,14 @@ namespace MftScanner
             {
                 result.HostSearchMs = totalStopwatch.ElapsedMilliseconds;
                 result.ContainsBucketStatus = ContainsBucketStatus;
+                result.IsSnapshotStale = _isSnapshotStale;
             }
             UsnDiagLog.Write(
                 $"[SEARCH] outcome={outcome} totalMs={totalStopwatch.ElapsedMilliseconds} matchMs={matchElapsedMilliseconds} " +
                 $"resolveMs={resolveElapsedMilliseconds} filter={filter} mode={mode} offset={offset} maxResults={maxResults} " +
                 $"candidateCount={candidateCount} matched={result.TotalMatchedCount} returned={result.Results?.Count ?? 0} " +
                 $"truncated={result.IsTruncated} indexed={result.TotalIndexedCount} pathScoped={pathPrefix != null} " +
+                $"stale={_isSnapshotStale} " +
                 $"keyword={IndexPerfLog.FormatValue(keyword)} searchTerm={IndexPerfLog.FormatValue(searchTerm)} " +
                 $"normalized={IndexPerfLog.FormatValue(normalizedQuery)} pathPrefix={IndexPerfLog.FormatValue(pathPrefix)}");
             return result;
@@ -1630,7 +1694,7 @@ namespace MftScanner
             UsnDiagLog.Write(
                 $"[SEARCH] outcome={outcome} totalMs={totalStopwatch.ElapsedMilliseconds} matchMs={matchElapsedMilliseconds} " +
                 $"resolveMs={resolveElapsedMilliseconds} filter={filter} mode={mode} offset={offset} maxResults={maxResults} " +
-                $"candidateCount={candidateCount} pathScoped={pathPrefix != null} keyword={IndexPerfLog.FormatValue(keyword)} " +
+                $"candidateCount={candidateCount} pathScoped={pathPrefix != null} stale={_isSnapshotStale} keyword={IndexPerfLog.FormatValue(keyword)} " +
                 $"searchTerm={IndexPerfLog.FormatValue(searchTerm)} normalized={IndexPerfLog.FormatValue(normalizedQuery)} " +
                 $"pathPrefix={IndexPerfLog.FormatValue(pathPrefix)}{error}");
         }
@@ -1663,6 +1727,7 @@ namespace MftScanner
             _enumerator.LoadVolumeSnapshots(snapshot.Volumes);
             _index.LoadSortedRecords(snapshot.Records, buildContainsAccelerator: false);
             var containsPostingsLoaded = _index.TryLoadContainsPostingsSnapshot(snapshot.ContainsPostings);
+            _isSnapshotStale = false;
             restoreStopwatch.Stop();
             UsnDiagLog.Write(
                 $"[SNAPSHOT RESTORE] elapsedMs={restoreStopwatch.ElapsedMilliseconds} records={snapshot.Records.Length} " +
@@ -1764,10 +1829,11 @@ namespace MftScanner
                 if (successfulDrives.Count == 0 && exceptions.Count > 0 && _index.TotalCount > 0)
                 {
                     totalStopwatch.Stop();
-                    PublishIndexStatus($"沿用现有索引 {_index.TotalCount} 个对象；MFT 枚举未获得可用卷", false);
+                    _isSnapshotStale = true;
+                    PublishIndexStatus($"索引快照可能已过期：沿用现有索引 {_index.TotalCount} 个对象；MFT 枚举未获得可用卷，请以管理员身份重建索引", false);
                     UsnDiagLog.Write(
                         $"[MFT BUILD] outcome=preserve-existing totalMs={totalStopwatch.ElapsedMilliseconds} " +
-                        $"existingIndexedCount={_index.TotalCount} failedDrives={exceptions.Count}");
+                        $"existingIndexedCount={_index.TotalCount} failedDrives={exceptions.Count} stale=true");
                     return _index.TotalCount;
                 }
 
@@ -1785,6 +1851,7 @@ namespace MftScanner
                 watcherStartStopwatch.Stop();
                 QueueContainsAcceleratorWarmup("post-full-build");
                 QueueSnapshotSave(allRecords, volumeSnapshots);
+                _isSnapshotStale = false;
                 PublishIndexStatus($"已索引 {_index.TotalCount} 个对象", false, requireSearchRefresh: true);
 
                 totalStopwatch.Stop();
@@ -1903,7 +1970,12 @@ namespace MftScanner
 
                         PublishIndexStatus("索引快照已过期，后台正在重建索引...", true);
                         var rebuiltCount = BuildIndexFromMft(progress, ct);
-                        PublishIndexStatus($"已重建 {rebuiltCount} 个对象", false, requireSearchRefresh: true);
+                        PublishIndexStatus(
+                            _isSnapshotStale
+                                ? $"索引快照可能已过期：当前沿用 {rebuiltCount} 个对象；请以管理员身份重建索引"
+                                : $"已重建 {rebuiltCount} 个对象",
+                            false,
+                            requireSearchRefresh: true);
                         return;
                     }
 
@@ -1932,6 +2004,7 @@ namespace MftScanner
 
                     var indexChangedArgs = BuildBatchIndexChangedArgs(allChanges);
                     InvalidatePathCandidateCacheIfAffected(allChanges);
+                    WaitForSearchIdleBeforeCatchUpApply(ct, totalChangeCount);
                     _enumerator.ApplyUsnChanges(allChanges);
                     _index.ApplyBatch(allChanges, rebuildContainsAccelerator: false);
                     PublishBatchIndexChanges(indexChangedArgs);
@@ -1988,6 +2061,49 @@ namespace MftScanner
             }
         }
 
+        private void WaitForSearchIdleBeforeCatchUpApply(CancellationToken ct, int totalChangeCount)
+        {
+            if (totalChangeCount <= 0)
+            {
+                return;
+            }
+
+            var stopwatch = Stopwatch.StartNew();
+            var waited = false;
+            while (stopwatch.ElapsedMilliseconds < CatchUpApplyMaxDeferMilliseconds)
+            {
+                ct.ThrowIfCancellationRequested();
+
+                var activeSearches = Volatile.Read(ref _activeSearchCount);
+                var lastCompletedTicks = Interlocked.Read(ref _lastSearchCompletedUtcTicks);
+                if (activeSearches == 0)
+                {
+                    if (lastCompletedTicks > 0)
+                    {
+                        var idleMilliseconds = (DateTime.UtcNow - new DateTime(lastCompletedTicks, DateTimeKind.Utc)).TotalMilliseconds;
+                        if (idleMilliseconds >= CatchUpApplyIdleDelayMilliseconds)
+                        {
+                            break;
+                        }
+                    }
+                    else if (stopwatch.ElapsedMilliseconds >= 2000)
+                    {
+                        break;
+                    }
+                }
+
+                waited = true;
+                Thread.Sleep(100);
+            }
+
+            if (waited || stopwatch.ElapsedMilliseconds > 0)
+            {
+                UsnDiagLog.Write(
+                    $"[SNAPSHOT CATCHUP APPLY WAIT] elapsedMs={stopwatch.ElapsedMilliseconds} " +
+                    $"activeSearches={Volatile.Read(ref _activeSearchCount)} totalChanges={totalChangeCount}");
+            }
+        }
+
         private void CancelBackgroundCatchUp()
         {
             CancellationTokenSource cts;
@@ -2025,6 +2141,13 @@ namespace MftScanner
             CancellationTokenSource cts;
             lock (_containsWarmupLock)
             {
+                if (_containsWarmupTask != null && !_containsWarmupTask.IsCompleted)
+                {
+                    UsnDiagLog.Write(
+                        $"[CONTAINS WARMUP] outcome=skip-running reason={IndexPerfLog.FormatValue(reason)} records={index.TotalCount}");
+                    return;
+                }
+
                 try
                 {
                     _containsWarmupCts?.Cancel();

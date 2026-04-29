@@ -63,6 +63,7 @@ namespace MftScanner
         public int TotalMatchedCount { get; set; }
         public bool IsTruncated { get; set; }
         public long HostSearchMs { get; set; }
+        public bool IsSnapshotStale { get; set; }
         public ContainsBucketStatus ContainsBucketStatus { get; set; } = ContainsBucketStatus.Empty;
         public List<ScannedFileInfo> Results { get; set; }
     }
@@ -620,6 +621,7 @@ namespace MftScanner
                 writer.Write(response.TotalMatchedCount);
                 writer.Write(response.IsTruncated ? 1 : 0);
                 writer.Write(response.HostSearchMs);
+                writer.Write(response.IsSnapshotStale ? 1 : 0);
                 WriteContainsBucketStatus(writer, response.ContainsBucketStatus);
                 WriteSizedString(writer, response.CurrentStatusMessage);
                 WriteSizedString(writer, response.ErrorMessage);
@@ -667,6 +669,7 @@ namespace MftScanner
                     TotalMatchedCount = reader.ReadInt32(),
                     IsTruncated = reader.ReadInt32() != 0,
                     HostSearchMs = reader.ReadInt64(),
+                    IsSnapshotStale = reader.ReadInt32() != 0,
                     ContainsBucketStatus = ReadContainsBucketStatus(reader),
                     CurrentStatusMessage = ReadSizedString(reader),
                     ErrorMessage = ReadSizedString(reader),

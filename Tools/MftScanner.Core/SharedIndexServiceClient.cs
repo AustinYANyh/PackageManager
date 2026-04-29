@@ -191,6 +191,7 @@ namespace MftScanner
                     TotalMatchedCount = response.TotalMatchedCount,
                     IsTruncated = response.IsTruncated,
                     HostSearchMs = response.HostSearchMs,
+                    IsSnapshotStale = response.IsSnapshotStale,
                     ContainsBucketStatus = response.ContainsBucketStatus ?? ContainsBucketStatus.Empty,
                     Results = response.Results ?? new List<ScannedFileInfo>()
                 };

@@ -351,6 +351,7 @@ namespace MftScanner
             response.TotalMatchedCount = result?.TotalMatchedCount ?? 0;
             response.IsTruncated = result != null && result.IsTruncated;
             response.HostSearchMs = result == null ? hostSearchMs : Math.Max(result.HostSearchMs, hostSearchMs);
+            response.IsSnapshotStale = result != null && result.IsSnapshotStale;
             response.Results = result?.Results ?? new List<ScannedFileInfo>();
             return response;
         }

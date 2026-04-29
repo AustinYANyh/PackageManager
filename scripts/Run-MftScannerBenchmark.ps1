@@ -147,11 +147,119 @@ function Parse-ContainsCacheEvents {
     return $events
 }
 
+function Parse-ContainsQueryEvents {
+    param(
+        [string]$LogPath,
+        [datetime]$Since
+    )
+
+    if (!(Test-Path $LogPath)) {
+        return @()
+    }
+
+    $events = New-Object System.Collections.Generic.List[object]
+    foreach ($match in Select-String -Path $LogPath -Pattern "\[CONTAINS QUERY\]" -ErrorAction SilentlyContinue) {
+        $line = $match.Line
+        if ($line -notmatch "^(?<time>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)") {
+            continue
+        }
+
+        $time = [datetime]$Matches.time
+        if ($time -lt $Since) {
+            continue
+        }
+
+        $events.Add([pscustomobject]@{
+            Time = $time
+            Outcome = if ($line -match "outcome=(?<v>\S+)") { $Matches.v } else { "" }
+            Mode = if ($line -match "mode=(?<v>\S+)") { $Matches.v } else { "" }
+            Filter = if ($line -match "filter=(?<v>\S+)") { $Matches.v } else { "" }
+            CandidateCount = if ($line -match "candidateCount=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+            IntersectMs = if ($line -match "intersectMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+            VerifyMs = if ($line -match "verifyMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+            Matched = if ($line -match "matched=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+            Normalized = if ($line -match "normalized=(?<v>\S+)") { $Matches.v } else { "" }
+            Raw = $line
+        })
+    }
+
+    return $events
+}
+
+function Parse-IndexStageEvents {
+    param(
+        [string]$LogPath,
+        [datetime]$Since
+    )
+
+    if (!(Test-Path $LogPath)) {
+        return @()
+    }
+
+    $patterns = "\[SNAPSHOT LOAD\]|\[SNAPSHOT RESTORE\]|\[SNAPSHOT RESTORE TOTAL\]|\[SNAPSHOT CATCHUP TOTAL\]|\[SNAPSHOT CATCHUP APPLY WAIT\]|\[MFT BUILD\]|\[CONTAINS WARMUP\]|\[CONTAINS SHORT HOT WARMUP\]|\[CONTAINS SHORT HOT BUILD\]"
+    $events = New-Object System.Collections.Generic.List[object]
+    foreach ($match in Select-String -Path $LogPath -Pattern $patterns -ErrorAction SilentlyContinue) {
+        $line = $match.Line
+        if ($line -notmatch "^(?<time>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)") {
+            continue
+        }
+
+        $time = [datetime]$Matches.time
+        if ($time -lt $Since) {
+            continue
+        }
+
+        $stageMatches = [regex]::Matches($line, "\[(?<stage>[^\]]+)\]")
+        $stage = if ($stageMatches.Count -gt 0) { $stageMatches[$stageMatches.Count - 1].Groups["stage"].Value } else { "" }
+        $events.Add([pscustomobject]@{
+            Time = $time
+            Stage = $stage
+            Outcome = if ($line -match "outcome=(?<v>\S+)") { $Matches.v } else { "" }
+            ElapsedMs = if ($line -match "elapsedMs=(?<v>\d+)") { [int]$Matches.v } elseif ($line -match "totalMs=(?<v>\d+)") { [int]$Matches.v } elseif ($line -match "catchUpMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+            LoadMs = if ($line -match "loadMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+            RestoreMs = if ($line -match "restoreMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+            ApplyMs = if ($line -match "applyMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+            TotalChanges = if ($line -match "totalChanges=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+            Stale = if ($line -match "stale=(?<v>true|false)") { [bool]::Parse($Matches.v) } else { $false }
+            Raw = $line
+        })
+    }
+
+    return $events
+}
+
+function Get-BadReturnedCount {
+    param(
+        [string]$Keyword,
+        [string]$PathPrefix,
+        [object]$Result
+    )
+
+    if ($null -eq $Result -or $null -eq $Result.Results) {
+        return 0
+    }
+
+    $term = $Keyword
+    if (![string]::IsNullOrWhiteSpace($PathPrefix) -and $Keyword.StartsWith($PathPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        $term = $Keyword.Substring($PathPrefix.Length).Trim()
+    }
+
+    if ([string]::IsNullOrWhiteSpace($term) -or $term.Contains("*") -or $term.Contains("?") -or $term.StartsWith("^") -or $term.EndsWith("$") -or ($term.StartsWith("/") -and $term.EndsWith("/"))) {
+        return 0
+    }
+
+    return @($Result.Results | Where-Object {
+        $_.FileName.IndexOf($term, [StringComparison]::OrdinalIgnoreCase) -lt 0
+    }).Count
+}
+
 function New-MarkdownReport {
     param(
         [object[]]$Rows,
         [object[]]$PrefilterEvents,
         [object[]]$ContainsCacheEvents,
+        [object[]]$ContainsQueryEvents,
+        [object[]]$IndexStageEvents,
         [object[]]$MemoryBefore,
         [object[]]$MemoryAfter,
         [string]$PathPrefix,
@@ -194,6 +302,18 @@ function New-MarkdownReport {
         }
     }
 
+    $containsSummary = $ContainsQueryEvents | Group-Object Mode | ForEach-Object {
+        $items = @($_.Group)
+        [pscustomobject]@{
+            Mode = $_.Name
+            Count = $items.Count
+            AvgCandidateCount = [math]::Round(($items | Measure-Object CandidateCount -Average).Average, 0)
+            AvgIntersectMs = [math]::Round(($items | Measure-Object IntersectMs -Average).Average, 1)
+            AvgVerifyMs = [math]::Round(($items | Measure-Object VerifyMs -Average).Average, 1)
+            AvgMatched = [math]::Round(($items | Measure-Object Matched -Average).Average, 0)
+        }
+    }
+
     $lines = New-Object System.Collections.Generic.List[string]
     $lines.Add("# MftScanner 基准测试报告")
     $lines.Add("")
@@ -232,14 +352,33 @@ function New-MarkdownReport {
     }
 
     $lines.Add("")
+    $lines.Add("## Contains 执行模式")
+    $lines.Add("")
+    $lines.Add("| 模式 | 次数 | 平均候选数 | 平均求交(ms) | 平均校验(ms) | 平均命中数 |")
+    $lines.Add("| --- | ---: | ---: | ---: | ---: | ---: |")
+    foreach ($item in $containsSummary) {
+        $lines.Add("| $($item.Mode) | $($item.Count) | $($item.AvgCandidateCount) | $($item.AvgIntersectMs) | $($item.AvgVerifyMs) | $($item.AvgMatched) |")
+    }
+
+    $lines.Add("")
+    $lines.Add("## 索引加载与后台阶段")
+    $lines.Add("")
+    $lines.Add("| 时间 | 阶段 | 结果 | 耗时(ms) | load(ms) | restore(ms) | apply(ms) | 变更数 | stale |")
+    $lines.Add("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |")
+    foreach ($item in $IndexStageEvents) {
+        $lines.Add("| $($item.Time.ToString('HH:mm:ss.fff')) | $($item.Stage) | $($item.Outcome) | $($item.ElapsedMs) | $($item.LoadMs) | $($item.RestoreMs) | $($item.ApplyMs) | $($item.TotalChanges) | $(Convert-BoolToChinese $item.Stale) |")
+    }
+
+    $lines.Add("")
     $lines.Add("## 查询明细")
     $lines.Add("")
-    $lines.Add("| 用例 | 类型过滤 | 关键词 | 客户端耗时(ms) | 宿主耗时(ms) | 命中数 | 返回数 | 是否截断 |")
-    $lines.Add("| --- | --- | --- | ---: | ---: | ---: | ---: | --- |")
+    $lines.Add("| 用例 | 类型过滤 | 关键词 | 客户端耗时(ms) | 宿主耗时(ms) | 命中数 | 返回数 | 错配返回 | stale | 是否截断 |")
+    $lines.Add("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- |")
     foreach ($row in $Rows) {
         $keyword = ($row.Keyword -replace "\|", "\|")
         $truncated = Convert-BoolToChinese $row.IsTruncated
-        $lines.Add("| $($row.Name) | $($row.Filter) | ``$keyword`` | $($row.ClientMs) | $($row.HostSearchMs) | $($row.TotalMatchedCount) | $($row.ReturnedCount) | $truncated |")
+        $stale = Convert-BoolToChinese $row.IsSnapshotStale
+        $lines.Add("| $($row.Name) | $($row.Filter) | ``$keyword`` | $($row.ClientMs) | $($row.HostSearchMs) | $($row.TotalMatchedCount) | $($row.ReturnedCount) | $($row.BadReturnedCount) | $stale | $truncated |")
     }
 
     $lines.Add("")
@@ -313,6 +452,15 @@ if (!(Test-Path $hostExe)) {
     throw "Host executable not found: $hostExe"
 }
 
+$correctnessScript = Join-Path $repoRoot "scripts\Test-MftScannerSearchCorrectness.ps1"
+if (Test-Path $correctnessScript) {
+    Write-Host "Running correctness precheck..."
+    & powershell -NoProfile -ExecutionPolicy Bypass -File $correctnessScript -Configuration $Configuration -Queries codex,code,c,vs -MaxResults 100 -SkipBuild
+    if ($LASTEXITCODE -ne 0) {
+        throw "Correctness precheck failed with exit code $LASTEXITCODE."
+    }
+}
+
 $memoryBefore = @(Get-ProcessMemorySnapshot)
 if ($Backend -eq "SharedHost" -and !$NoRestartHost) {
     Write-Host "Stopping existing MftScanner.exe processes..."
@@ -381,7 +529,9 @@ try {
                 TotalIndexedCount = $result.TotalIndexedCount
                 TotalMatchedCount = $result.TotalMatchedCount
                 ReturnedCount = @($result.Results).Count
+                BadReturnedCount = Get-BadReturnedCount -Keyword $case.Keyword -PathPrefix $PathPrefix -Result $result
                 IsTruncated = $result.IsTruncated
+                IsSnapshotStale = $result.IsSnapshotStale
                 CharBucketReady = $result.ContainsBucketStatus.CharReady
                 BigramBucketReady = $result.ContainsBucketStatus.BigramReady
                 TrigramBucketReady = $result.ContainsBucketStatus.TrigramReady
@@ -402,6 +552,8 @@ Start-Sleep -Milliseconds 300
 $memoryAfter = @(Get-ProcessMemorySnapshot)
 $prefilterEvents = @(Parse-PathPrefilterEvents -LogPath $logPath -Since $startedAt.AddSeconds(-1))
 $containsCacheEvents = @(Parse-ContainsCacheEvents -LogPath $logPath -Since $startedAt.AddSeconds(-1))
+$containsQueryEvents = @(Parse-ContainsQueryEvents -LogPath $logPath -Since $startedAt.AddSeconds(-1))
+$indexStageEvents = @(Parse-IndexStageEvents -LogPath $logPath -Since $startedAt.AddSeconds(-1))
 
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $jsonPath = Join-Path $outputRoot "mft-benchmark-$timestamp.json"
@@ -419,6 +571,8 @@ $report = [ordered]@{
     Rows = @($rows.ToArray())
     PathPrefilterEvents = @($prefilterEvents)
     ContainsCacheEvents = @($containsCacheEvents)
+    ContainsQueryEvents = @($containsQueryEvents)
+    IndexStageEvents = @($indexStageEvents)
     MemoryBefore = @($memoryBefore)
     MemoryAfter = @($memoryAfter)
 }
@@ -428,6 +582,8 @@ New-MarkdownReport `
     -Rows @($rows.ToArray()) `
     -PrefilterEvents @($prefilterEvents) `
     -ContainsCacheEvents @($containsCacheEvents) `
+    -ContainsQueryEvents @($containsQueryEvents) `
+    -IndexStageEvents @($indexStageEvents) `
     -MemoryBefore @($memoryBefore) `
     -MemoryAfter @($memoryAfter) `
     -PathPrefix $PathPrefix `
@@ -442,3 +598,5 @@ Write-Host "Markdown: $mdPath"
 @($rows.ToArray()) | Format-Table Name, Filter, ClientMs, HostSearchMs, TotalMatchedCount, ReturnedCount, IsTruncated -AutoSize
 @($prefilterEvents) | Format-Table Outcome, ElapsedMs, CandidateCount, DirectoryCount, PathPrefix -AutoSize
 @($containsCacheEvents) | Format-Table Outcome, ElapsedMs, SourceCount, Matched, Query -AutoSize
+@($containsQueryEvents) | Format-Table Mode, CandidateCount, IntersectMs, VerifyMs, Matched, Normalized -AutoSize
+@($indexStageEvents) | Format-Table Stage, Outcome, ElapsedMs, LoadMs, RestoreMs, ApplyMs, TotalChanges, Stale -AutoSize
