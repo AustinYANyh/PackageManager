@@ -1412,7 +1412,7 @@ namespace MftScanner
                             {
                                 var r = pathPrefilterApplied
                                     ? SuffixMatch(idx, extension, candidateSource, fetchOffset, fetchLimit, ct)
-                                    : (idx.AreDerivedStructuresReady
+                                    : (idx.HasExtensionIndex
                                         ? ExtensionMatch(idx, extension, idx.ExtensionHashMap, fetchOffset, fetchLimit, ct)
                                         : SuffixMatch(idx, extension, candidateSource, fetchOffset, fetchLimit, ct));
                                 matched = r.page;
@@ -1838,7 +1838,8 @@ namespace MftScanner
             return !string.IsNullOrEmpty(containsMode)
                    && (containsMode.StartsWith("short-hot-char", StringComparison.Ordinal)
                        || containsMode.StartsWith("short-hot-bigram", StringComparison.Ordinal)
-                       || containsMode.StartsWith("single-char-", StringComparison.Ordinal));
+                       || containsMode.StartsWith("single-char-", StringComparison.Ordinal)
+                       || containsMode.StartsWith("bigram-count", StringComparison.Ordinal));
         }
 
         private void QueueDefaultShortContainsHotBucketWarmup(MemoryIndex index, string reason)
@@ -1848,9 +1849,10 @@ namespace MftScanner
                 return;
             }
 
-            QueueShortContainsHotBucketWarmup(index, "d", reason);
-            QueueShortContainsHotBucketWarmup(index, "ve", reason);
-            QueueShortContainsHotBucketWarmup(index, "c", reason);
+            var status = index.GetContainsBucketStatus();
+            UsnDiagLog.Write(
+                $"[CONTAINS SHORT GENERIC] reason={IndexPerfLog.FormatValue(reason)} " +
+                $"charReady={status.CharReady} bigramReady={status.BigramReady} records={index.TotalCount}");
         }
 
         private void QueueShortContainsHotBucketWarmup(MemoryIndex index, string query, string reason)

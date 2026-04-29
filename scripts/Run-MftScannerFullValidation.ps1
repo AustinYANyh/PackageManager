@@ -173,7 +173,7 @@ function Get-RecentLogLines {
     )
 
     if (!(Test-Path $LogPath)) { return @() }
-    $patterns = "\[SNAPSHOT RESTORE TOTAL\]|\[SNAPSHOT LOAD\]|\[POSTINGS SNAPSHOT RESTORE\]|\[CONTAINS WARMUP\]|\[PATH PREFILTER\]|\[CONTAINS QUERY\]|\[MMF\]|\[MMF HOST\]"
+    $patterns = "\[SNAPSHOT RESTORE TOTAL\]|\[SNAPSHOT LOAD\]|\[POSTINGS SNAPSHOT RESTORE\]|\[CONTAINS WARMUP\]|\[CONTAINS SHORT GENERIC\]|\[CONTAINS BIGRAM COUNT BUILD\]|\[APPLY BATCH\]|\[SNAPSHOT CATCHUP TOTAL\]|\[PATH PREFILTER\]|\[CONTAINS QUERY\]|\[MMF\]|\[MMF HOST\]"
     Select-String -Path $LogPath -Pattern $patterns -ErrorAction SilentlyContinue |
         Where-Object {
             $_.Line -match "^(?<time>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)" -and ([datetime]$Matches.time) -ge $Since
@@ -205,6 +205,15 @@ function Write-MarkdownReport {
     $lines.Add("- HostReuse：$($Summary.HostReuse)")
     $lines.Add("- OldHost：$($Summary.OldHost)")
     $lines.Add("- HostProcessId：$($Summary.HostProcessId)")
+    $validRows = @($Rows | Where-Object { -not $_.Error })
+    if ($validRows.Count -gt 0) {
+        $hostValues = @($validRows | ForEach-Object { [int64]$_.HostMs } | Sort-Object)
+        $clientValues = @($validRows | ForEach-Object { [int64]$_.ClientMs } | Sort-Object)
+        $hostP50 = $hostValues[[Math]::Min($hostValues.Count - 1, [Math]::Max(0, [int][Math]::Ceiling($hostValues.Count * 0.50) - 1))]
+        $hostP95 = $hostValues[[Math]::Min($hostValues.Count - 1, [Math]::Max(0, [int][Math]::Ceiling($hostValues.Count * 0.95) - 1))]
+        $clientP95 = $clientValues[[Math]::Min($clientValues.Count - 1, [Math]::Max(0, [int][Math]::Ceiling($clientValues.Count * 0.95) - 1))]
+        $lines.Add("- 查询统计：Host P50=$hostP50 ms，Host P95=$hostP95 ms，Client P95=$clientP95 ms")
+    }
     $lines.Add("")
 
     $lines.Add("## 慢查询 Top")
@@ -321,6 +330,18 @@ try {
         [pscustomobject]@{ Name = "Croot *.log"; Keyword = "C:\ *.log"; Filter = [MftScanner.SearchTypeFilter]::All },
         [pscustomobject]@{ Name = "Croot windows Folder"; Keyword = "C:\ windows"; Filter = [MftScanner.SearchTypeFilter]::Folder }
     )
+
+    $genericSingleChars = @("x", "q", "z", "1", "_")
+    foreach ($token in $genericSingleChars) {
+        $cases += [pscustomobject]@{ Name = "Generic 1char $token"; Keyword = $token; Filter = [MftScanner.SearchTypeFilter]::All }
+        $cases += [pscustomobject]@{ Name = "Croot 1char $token"; Keyword = "C:\ $token"; Filter = [MftScanner.SearchTypeFilter]::All }
+    }
+
+    $genericBigrams = @("on", "ex", "zz", "ui", "ar")
+    foreach ($token in $genericBigrams) {
+        $cases += [pscustomobject]@{ Name = "Generic 2char $token"; Keyword = $token; Filter = [MftScanner.SearchTypeFilter]::All }
+        $cases += [pscustomobject]@{ Name = "Croot 2char $token"; Keyword = "C:\ $token"; Filter = [MftScanner.SearchTypeFilter]::All }
+    }
 
     $rows = New-Object System.Collections.Generic.List[object]
     foreach ($case in $cases) {

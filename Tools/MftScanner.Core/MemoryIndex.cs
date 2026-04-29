@@ -49,9 +49,16 @@ namespace MftScanner
         private int[] _singleCharAsciiCounts;
         private int[][] _singleCharAsciiDriveCounts;
         private int _singleCharAsciiRecordCount;
+        private int[] _bigramAsciiCounts;
+        private int[][] _bigramAsciiDriveCounts;
+        private FileRecord[][] _bigramAsciiPageSamples;
+        private int _bigramAsciiRecordCount;
         private const int MaxShortContainsHotBuckets = 12;
         private const int MaxShortContainsHotBucketPostings = 12000000;
         private const int SingleCharAsciiLimit = 128;
+        private const int BigramAsciiLimit = 128;
+        private const int BigramAsciiTokenCount = BigramAsciiLimit * BigramAsciiLimit;
+        private const int BigramAsciiPageSampleLimit = 4096;
         private readonly List<PendingContainsMutation> _pendingContainsMutations = new List<PendingContainsMutation>();
         private bool _pendingContainsMutationsOverflowed;
         private const int MaxPendingContainsMutations = 65536;
@@ -61,6 +68,15 @@ namespace MftScanner
         public long ContentVersion => Interlocked.Read(ref _contentVersion);
 
         public bool AreDerivedStructuresReady => Volatile.Read(ref _derivedStructuresReady);
+
+        public bool HasExtensionIndex
+        {
+            get
+            {
+                var map = ExtensionHashMap;
+                return map != null && map.Count > 0;
+            }
+        }
 
         public bool HasDeletedOverlay
         {
@@ -99,6 +115,11 @@ namespace MftScanner
         {
             var accelerator = Volatile.Read(ref _containsAccelerator);
             var overlay = Volatile.Read(ref _containsOverlay) ?? ContainsOverlay.Empty;
+            var recordCount = SortedArray?.Length ?? 0;
+            var singleCharCountReady = Volatile.Read(ref _singleCharAsciiCounts) != null
+                                       && Volatile.Read(ref _singleCharAsciiRecordCount) == recordCount;
+            var bigramCountReady = Volatile.Read(ref _bigramAsciiCounts) != null
+                                   && Volatile.Read(ref _bigramAsciiRecordCount) == recordCount;
             var ready = Volatile.Read(ref _containsAcceleratorReady)
                         && !overlay.IsOverflowed
                         && accelerator != null
@@ -106,8 +127,8 @@ namespace MftScanner
 
             return new ContainsBucketStatus
             {
-                CharReady = ready && accelerator.HasCharBucket,
-                BigramReady = ready && accelerator.HasBigramBucket,
+                CharReady = singleCharCountReady || (ready && accelerator.HasCharBucket),
+                BigramReady = bigramCountReady || (ready && accelerator.HasBigramBucket),
                 TrigramReady = ready && accelerator.HasTrigramBucket,
                 IsOverlayOverflowed = overlay.IsOverflowed,
                 Epoch = Interlocked.Read(ref _containsAcceleratorEpoch)
@@ -184,6 +205,11 @@ namespace MftScanner
                     return true;
                 }
 
+                if (TryBigramAsciiCountSearch(query, filter, offset, maxResults, null, ct, out result))
+                {
+                    return true;
+                }
+
                 if (TryShortContainsHotSearch(query, filter, offset, maxResults, ct, out result))
                 {
                     return true;
@@ -200,6 +226,11 @@ namespace MftScanner
             if (!accelerator.Supports(query))
             {
                 if (TrySingleCharBitmapSearch(query, filter, offset, maxResults, null, ct, out result))
+                {
+                    return true;
+                }
+
+                if (TryBigramAsciiCountSearch(query, filter, offset, maxResults, null, ct, out result))
                 {
                     return true;
                 }
@@ -338,6 +369,57 @@ namespace MftScanner
                 {
                     var directorySet = new HashSet<ulong>(directoryFrns);
                     var sorted = SortedArray;
+                    if (sorted != null && sorted.Length >= 250000)
+                    {
+                        long parallelTotal = 0;
+                        var parallelCandidates = new System.Collections.Concurrent.ConcurrentBag<List<FileRecord>>();
+                        Parallel.For<List<FileRecord>>(
+                            0,
+                            sorted.Length,
+                            new ParallelOptions
+                            {
+                                CancellationToken = ct,
+                                MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 1)
+                            },
+                            () => new List<FileRecord>(),
+                            (recordIndex, state, local) =>
+                            {
+                                if (((recordIndex + 1) & 0x3FFF) == 0)
+                                    ct.ThrowIfCancellationRequested();
+
+                                var record = sorted[recordIndex];
+                                if (record != null
+                                    && char.ToUpperInvariant(record.DriveLetter) == dl
+                                    && directorySet.Contains(record.ParentFrn)
+                                    && !IsDeleted(record)
+                                    && MatchesFilter(record, filter))
+                                {
+                                    local.Add(record);
+                                    Interlocked.Increment(ref parallelTotal);
+                                }
+
+                                return local;
+                            },
+                            local =>
+                            {
+                                if (local.Count > 0)
+                                    parallelCandidates.Add(local);
+                            });
+
+                        if (parallelTotal == 0)
+                            return Array.Empty<FileRecord>();
+
+                        var merged = new List<FileRecord>(checked((int)parallelTotal));
+                        foreach (var local in parallelCandidates)
+                        {
+                            merged.AddRange(local);
+                        }
+
+                        var parallelResult = merged.ToArray();
+                        Array.Sort(parallelResult, ByLowerName);
+                        return parallelResult;
+                    }
+
                     for (var i = 0; i < sorted.Length; i++)
                     {
                         if (((i + 1) & 0x3FFF) == 0)
@@ -471,8 +553,7 @@ namespace MftScanner
             _lock.EnterReadLock();
             try
             {
-                if (!_derivedStructuresReady
-                    || ExtensionHashMap == null
+                if (ExtensionHashMap == null
                     || !ExtensionHashMap.TryGetValue(extension, out var bucket)
                     || bucket == null)
                 {
@@ -706,7 +787,7 @@ namespace MftScanner
             }
             else
             {
-                extensionMap = new Dictionary<string, List<FileRecord>>();
+                extensionMap = BuildExtensionHashMap(arr);
                 parentArr = Array.Empty<FileRecord>();
                 directoryArr = Array.Empty<FileRecord>();
                 launchableArr = Array.Empty<FileRecord>();
@@ -891,6 +972,11 @@ namespace MftScanner
                 return true;
             }
 
+            if (TryBigramAsciiCountSearch(query, filter, offset, maxResults, char.ToUpperInvariant(driveLetter), ct, out result))
+            {
+                return true;
+            }
+
             ShortContainsHotBucket bucket;
             var contentVersion = ContentVersion;
             lock (_shortContainsHotBucketLock)
@@ -972,6 +1058,159 @@ namespace MftScanner
                 VerifyMs = verifyStopwatch.ElapsedMilliseconds
             };
             return true;
+        }
+
+        private bool TryBigramAsciiCountSearch(
+            string query,
+            SearchTypeFilter filter,
+            int offset,
+            int maxResults,
+            char? driveLetter,
+            CancellationToken ct,
+            out ContainsSearchResult result)
+        {
+            result = null;
+            if (string.IsNullOrEmpty(query)
+                || query.Length != 2
+                || query[0] >= BigramAsciiLimit
+                || query[1] >= BigramAsciiLimit
+                || filter != SearchTypeFilter.All)
+            {
+                return false;
+            }
+
+            var token = PackAsciiBigram(query[0], query[1]);
+            FileRecord[] records;
+            int recordCount;
+            _lock.EnterReadLock();
+            try
+            {
+                records = SortedArray;
+                recordCount = records?.Length ?? 0;
+                var counts = Volatile.Read(ref _bigramAsciiCounts);
+                if (counts == null
+                    || Volatile.Read(ref _bigramAsciiRecordCount) != recordCount
+                    || token < 0
+                    || token >= counts.Length
+                    || recordCount == 0)
+                {
+                    return false;
+                }
+            }
+            finally
+            {
+                _lock.ExitReadLock();
+            }
+
+            var stopwatch = Stopwatch.StartNew();
+            var hasDrive = driveLetter.HasValue;
+            var dl = hasDrive ? char.ToUpperInvariant(driveLetter.Value) : '\0';
+            var total = TryGetPrecomputedBigramTotal(token, dl, hasDrive, out var precomputedTotal)
+                ? precomputedTotal
+                : -1;
+            var hasDeletedOverlay = HasDeletedOverlay;
+            if (total >= 0 && hasDeletedOverlay)
+            {
+                total -= CountDeletedBigramMatches(query, hasDrive ? dl : (char?)null);
+                if (total < 0)
+                    total = 0;
+            }
+
+            var page = new List<FileRecord>(Math.Min(Math.Max(maxResults, 0), 64));
+            var normalizedOffset = Math.Max(offset, 0);
+            var normalizedMaxResults = Math.Max(maxResults, 0);
+            var pageMatched = 0;
+            var sampleRecords = TryGetBigramPageSample(token);
+
+            if (sampleRecords != null
+                && normalizedMaxResults > 0
+                && normalizedOffset + normalizedMaxResults <= sampleRecords.Length)
+            {
+                for (var sampleIndex = 0; sampleIndex < sampleRecords.Length; sampleIndex++)
+                {
+                    if (((sampleIndex + 1) & 0x3FF) == 0)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                    }
+
+                    var record = sampleRecords[sampleIndex];
+                    if (record == null
+                        || (hasDrive && char.ToUpperInvariant(record.DriveLetter) != dl)
+                        || (hasDeletedOverlay && IsDeleted(record))
+                        || !NameContains(record, query))
+                    {
+                        continue;
+                    }
+
+                    pageMatched++;
+                    if (pageMatched > normalizedOffset && page.Count < normalizedMaxResults)
+                    {
+                        page.Add(record);
+                    }
+
+                    if (page.Count >= normalizedMaxResults)
+                    {
+                        break;
+                    }
+                }
+            }
+            else if (normalizedMaxResults > 0)
+            {
+                for (var i = 0; i < recordCount; i++)
+                {
+                    if (((i + 1) & 0x3FFF) == 0)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                    }
+
+                    var record = records[i];
+                    if (record == null
+                        || (hasDrive && char.ToUpperInvariant(record.DriveLetter) != dl)
+                        || (hasDeletedOverlay && IsDeleted(record))
+                        || !NameContains(record, query))
+                    {
+                        continue;
+                    }
+
+                    pageMatched++;
+                    if (pageMatched > normalizedOffset && page.Count < normalizedMaxResults)
+                    {
+                        page.Add(record);
+                    }
+
+                    if (total >= 0 && page.Count >= normalizedMaxResults)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            stopwatch.Stop();
+            if (total < 0)
+            {
+                total = pageMatched;
+            }
+
+            result = new ContainsSearchResult
+            {
+                Mode = driveLetter.HasValue ? "bigram-count+drive" : "bigram-count",
+                CandidateCount = total,
+                Total = total,
+                Page = page,
+                VerifyMs = stopwatch.ElapsedMilliseconds
+            };
+            return true;
+        }
+
+        private FileRecord[] TryGetBigramPageSample(int token)
+        {
+            var samples = Volatile.Read(ref _bigramAsciiPageSamples);
+            if (samples == null || (uint)token >= (uint)samples.Length)
+            {
+                return null;
+            }
+
+            return samples[token];
         }
 
         private static bool IsShortContainsQuery(string query)
@@ -1163,6 +1402,70 @@ namespace MftScanner
             return true;
         }
 
+        private bool TryGetPrecomputedBigramTotal(
+            int token,
+            char driveLetter,
+            bool hasDrive,
+            out int total)
+        {
+            total = 0;
+            if ((uint)token >= BigramAsciiTokenCount)
+            {
+                return false;
+            }
+
+            if (hasDrive)
+            {
+                var driveCounts = Volatile.Read(ref _bigramAsciiDriveCounts);
+                var driveIndex = char.ToUpperInvariant(driveLetter) - 'A';
+                if (driveCounts == null
+                    || driveIndex < 0
+                    || driveIndex >= driveCounts.Length
+                    || driveCounts[driveIndex] == null)
+                {
+                    return false;
+                }
+
+                total = driveCounts[driveIndex][token];
+                return true;
+            }
+
+            var counts = Volatile.Read(ref _bigramAsciiCounts);
+            if (counts == null || token >= counts.Length)
+            {
+                return false;
+            }
+
+            total = counts[token];
+            return true;
+        }
+
+        private int CountDeletedBigramMatches(string query, char? driveLetter)
+        {
+            var keys = Volatile.Read(ref _deletedOverlayKeys);
+            if (keys == null || keys.Count == 0 || string.IsNullOrEmpty(query) || query.Length != 2)
+            {
+                return 0;
+            }
+
+            var total = 0;
+            var hasDrive = driveLetter.HasValue;
+            var dl = hasDrive ? char.ToUpperInvariant(driveLetter.Value) : '\0';
+            foreach (var key in keys)
+            {
+                if (key.LowerName == null
+                    || key.LowerName.IndexOf(query, StringComparison.Ordinal) < 0
+                    || (hasDrive && char.ToUpperInvariant(key.DriveLetter) != dl))
+                {
+                    continue;
+                }
+
+                total++;
+            }
+
+            return total;
+        }
+
         private bool TryGetPrecomputedSingleCharTotal(
             char ch,
             char driveLetter,
@@ -1347,12 +1650,252 @@ namespace MftScanner
             }
         }
 
-        private void ClearSingleCharAsciiBitsets()
+        private void ClearShortAsciiIndexes()
         {
             _singleCharAsciiBitsets = null;
             _singleCharAsciiCounts = null;
             _singleCharAsciiDriveCounts = null;
             _singleCharAsciiRecordCount = 0;
+            _bigramAsciiCounts = null;
+            _bigramAsciiDriveCounts = null;
+            _bigramAsciiPageSamples = null;
+            _bigramAsciiRecordCount = 0;
+        }
+
+        private void AddShortAsciiIndexesRecord(FileRecord record)
+        {
+            UpdateShortAsciiIndexesRecord(record, 1);
+        }
+
+        private void RemoveShortAsciiIndexesRecord(FileRecord record)
+        {
+            UpdateShortAsciiIndexesRecord(record, -1);
+        }
+
+        private void UpdateShortAsciiIndexesRecord(FileRecord record, int delta)
+        {
+            if (record == null || string.IsNullOrEmpty(record.LowerName) || (delta != 1 && delta != -1))
+            {
+                return;
+            }
+
+            UpdateSingleCharAsciiIndexForRecord(record, delta);
+            UpdateBigramAsciiIndexForRecord(record, delta);
+        }
+
+        private void UpdateSingleCharAsciiIndexForRecord(FileRecord record, int delta)
+        {
+            var counts = _singleCharAsciiCounts;
+            var driveCounts = _singleCharAsciiDriveCounts;
+            if (counts == null || driveCounts == null)
+            {
+                return;
+            }
+
+            var lowerName = record.LowerName;
+            ulong maskLow = 0;
+            ulong maskHigh = 0;
+            for (var i = 0; i < lowerName.Length; i++)
+            {
+                var ch = lowerName[i];
+                if (ch >= SingleCharAsciiLimit)
+                {
+                    continue;
+                }
+
+                if (ch < 64)
+                {
+                    maskLow |= 1UL << ch;
+                }
+                else
+                {
+                    maskHigh |= 1UL << (ch - 64);
+                }
+            }
+
+            var driveIndex = char.ToUpperInvariant(record.DriveLetter) - 'A';
+            ApplySingleCharMaskDelta(counts, driveCounts, driveIndex, maskLow, 0, delta);
+            ApplySingleCharMaskDelta(counts, driveCounts, driveIndex, maskHigh, 64, delta);
+            _singleCharAsciiRecordCount = Math.Max(0, _singleCharAsciiRecordCount + delta);
+        }
+
+        private static void ApplySingleCharMaskDelta(int[] counts, int[][] driveCounts, int driveIndex, ulong mask, int offset, int delta)
+        {
+            while (mask != 0)
+            {
+                var bit = GetLowestSetBitIndex(mask);
+                mask &= mask - 1;
+                var ch = offset + bit;
+                counts[ch] = Math.Max(0, counts[ch] + delta);
+                if (driveIndex >= 0 && driveIndex < driveCounts.Length && driveCounts[driveIndex] != null)
+                {
+                    driveCounts[driveIndex][ch] = Math.Max(0, driveCounts[driveIndex][ch] + delta);
+                }
+            }
+        }
+
+        private void UpdateBigramAsciiIndexForRecord(FileRecord record, int delta)
+        {
+            var counts = _bigramAsciiCounts;
+            var driveCounts = _bigramAsciiDriveCounts;
+            if (counts == null || driveCounts == null)
+            {
+                return;
+            }
+
+            var tokens = GetUniqueAsciiBigrams(record.LowerName);
+            if (tokens == null || tokens.Count == 0)
+            {
+                _bigramAsciiRecordCount = Math.Max(0, _bigramAsciiRecordCount + delta);
+                return;
+            }
+
+            var driveIndex = char.ToUpperInvariant(record.DriveLetter) - 'A';
+            var samples = _bigramAsciiPageSamples;
+            foreach (var token in tokens)
+            {
+                var oldCount = counts[token];
+                var newCount = Math.Max(0, oldCount + delta);
+                counts[token] = newCount;
+                if (driveIndex >= 0 && driveIndex < driveCounts.Length && driveCounts[driveIndex] != null)
+                {
+                    driveCounts[driveIndex][token] = Math.Max(0, driveCounts[driveIndex][token] + delta);
+                }
+
+                if (samples != null)
+                {
+                    UpdateBigramAsciiPageSample(samples, token, record, delta, oldCount, newCount);
+                }
+            }
+
+            _bigramAsciiRecordCount = Math.Max(0, _bigramAsciiRecordCount + delta);
+        }
+
+        private static List<int> GetUniqueAsciiBigrams(string lowerName)
+        {
+            if (string.IsNullOrEmpty(lowerName) || lowerName.Length < 2)
+            {
+                return null;
+            }
+
+            var tokens = new List<int>(Math.Min(lowerName.Length - 1, 16));
+            var seen = new HashSet<int>();
+            for (var i = 0; i < lowerName.Length - 1; i++)
+            {
+                var first = lowerName[i];
+                var second = lowerName[i + 1];
+                if (first >= BigramAsciiLimit || second >= BigramAsciiLimit)
+                {
+                    continue;
+                }
+
+                var token = PackAsciiBigram(first, second);
+                if (seen.Add(token))
+                {
+                    tokens.Add(token);
+                }
+            }
+
+            return tokens;
+        }
+
+        private static void UpdateBigramAsciiPageSample(
+            FileRecord[][] samples,
+            int token,
+            FileRecord record,
+            int delta,
+            int oldCount,
+            int newCount)
+        {
+            if ((uint)token >= (uint)samples.Length)
+            {
+                return;
+            }
+
+            var current = samples[token];
+            if (delta > 0)
+            {
+                if (newCount > BigramAsciiPageSampleLimit)
+                {
+                    samples[token] = null;
+                    return;
+                }
+
+                if (current == null)
+                {
+                    samples[token] = new[] { record };
+                    return;
+                }
+
+                if (ContainsRecordIdentity(current, record))
+                {
+                    return;
+                }
+
+                var next = new FileRecord[current.Length + 1];
+                Array.Copy(current, next, current.Length);
+                next[next.Length - 1] = record;
+                Array.Sort(next, ByLowerName);
+                samples[token] = next;
+                return;
+            }
+
+            if (current == null || oldCount > BigramAsciiPageSampleLimit)
+            {
+                return;
+            }
+
+            var removeAt = -1;
+            for (var i = 0; i < current.Length; i++)
+            {
+                if (IsRecordIdentityMatch(current[i], record.Frn, record.LowerName, record.ParentFrn, record.DriveLetter))
+                {
+                    removeAt = i;
+                    break;
+                }
+            }
+
+            if (removeAt < 0)
+            {
+                return;
+            }
+
+            if (current.Length == 1)
+            {
+                samples[token] = null;
+                return;
+            }
+
+            var updated = new FileRecord[current.Length - 1];
+            if (removeAt > 0)
+            {
+                Array.Copy(current, 0, updated, 0, removeAt);
+            }
+
+            if (removeAt < current.Length - 1)
+            {
+                Array.Copy(current, removeAt + 1, updated, removeAt, current.Length - removeAt - 1);
+            }
+
+            samples[token] = updated;
+        }
+
+        private static bool ContainsRecordIdentity(FileRecord[] records, FileRecord record)
+        {
+            if (records == null || record == null)
+            {
+                return false;
+            }
+
+            for (var i = 0; i < records.Length; i++)
+            {
+                if (IsRecordIdentityMatch(records[i], record.Frn, record.LowerName, record.ParentFrn, record.DriveLetter))
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         public void Insert(FileRecord record)
@@ -1389,7 +1932,7 @@ namespace MftScanner
                 RemoveDeletedOverlayKey(RecordKey.FromRecord(record));
                 _contentVersion++;
                 ClearShortContainsHotBuckets();
-                ClearSingleCharAsciiBitsets();
+                AddShortAsciiIndexesRecord(record);
             }
             finally { _lock.ExitWriteLock(); }
         }
@@ -1543,7 +2086,8 @@ namespace MftScanner
                 ParentSortedArray = InsertIntoSortedArray(ParentSortedArray, newRecord, ByParentThenLowerName);
                 _contentVersion++;
                 ClearShortContainsHotBuckets();
-                ClearSingleCharAsciiBitsets();
+                RemoveShortAsciiIndexesRecord(new FileRecord(oldLowerName, oldLowerName, oldParentFrn, driveLetter, false, frn));
+                AddShortAsciiIndexesRecord(newRecord);
             }
             finally { _lock.ExitWriteLock(); }
         }
@@ -1776,6 +2320,13 @@ namespace MftScanner
             public int[][] DriveCounts { get; set; }
         }
 
+        private sealed class BigramAsciiIndex
+        {
+            public int[] Counts { get; set; }
+            public int[][] DriveCounts { get; set; }
+            public FileRecord[][] PageSamples { get; set; }
+        }
+
         private sealed class SingleCharAsciiCountLocal
         {
             public SingleCharAsciiCountLocal()
@@ -1790,6 +2341,38 @@ namespace MftScanner
 
             public int[] Counts { get; }
             public int[][] DriveCounts { get; }
+        }
+
+        private sealed class BigramAsciiCountLocal
+        {
+            private int _seenGeneration;
+
+            public BigramAsciiCountLocal()
+            {
+                Counts = new int[BigramAsciiTokenCount];
+                DriveCounts = new int[26][];
+                Seen = new int[BigramAsciiTokenCount];
+                for (var i = 0; i < DriveCounts.Length; i++)
+                {
+                    DriveCounts[i] = new int[BigramAsciiTokenCount];
+                }
+            }
+
+            public int[] Counts { get; }
+            public int[][] DriveCounts { get; }
+            public int[] Seen { get; }
+
+            public int NextSeenGeneration()
+            {
+                _seenGeneration++;
+                if (_seenGeneration == int.MaxValue)
+                {
+                    Array.Clear(Seen, 0, Seen.Length);
+                    _seenGeneration = 1;
+                }
+
+                return _seenGeneration;
+            }
         }
 
         private static SingleCharAsciiIndex BuildSingleCharAsciiIndex(FileRecord[] arr)
@@ -1882,6 +2465,235 @@ namespace MftScanner
             };
         }
 
+        private static BigramAsciiIndex BuildBigramAsciiIndex(FileRecord[] arr)
+        {
+            if (arr == null || arr.Length == 0)
+            {
+                return new BigramAsciiIndex
+                {
+                    Counts = null,
+                    DriveCounts = null,
+                    PageSamples = null
+                };
+            }
+
+            var stopwatch = Stopwatch.StartNew();
+            var counts = new int[BigramAsciiTokenCount];
+            var driveCounts = new int[26][];
+            for (var i = 0; i < driveCounts.Length; i++)
+            {
+                driveCounts[i] = new int[BigramAsciiTokenCount];
+            }
+            var mergeLock = new object();
+
+            Parallel.For(
+                0,
+                arr.Length,
+                new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, Environment.ProcessorCount - 1) },
+                () => new BigramAsciiCountLocal(),
+                (recordIndex, state, local) =>
+                {
+                    var record = arr[recordIndex];
+                    var lowerName = record?.LowerName;
+                    if (string.IsNullOrEmpty(lowerName) || lowerName.Length < 2)
+                    {
+                        return local;
+                    }
+
+                    var generation = local.NextSeenGeneration();
+                    var driveIndex = char.ToUpperInvariant(record.DriveLetter) - 'A';
+                    for (var j = 0; j < lowerName.Length - 1; j++)
+                    {
+                        var first = lowerName[j];
+                        var second = lowerName[j + 1];
+                        if (first >= BigramAsciiLimit || second >= BigramAsciiLimit)
+                        {
+                            continue;
+                        }
+
+                        var token = PackAsciiBigram(first, second);
+                        if (local.Seen[token] == generation)
+                        {
+                            continue;
+                        }
+
+                        local.Seen[token] = generation;
+                        local.Counts[token]++;
+                        if (driveIndex >= 0 && driveIndex < local.DriveCounts.Length)
+                        {
+                            local.DriveCounts[driveIndex][token]++;
+                        }
+                    }
+
+                    return local;
+                },
+                local =>
+                {
+                    lock (mergeLock)
+                    {
+                        for (var i = 0; i < BigramAsciiTokenCount; i++)
+                        {
+                            counts[i] += local.Counts[i];
+                        }
+
+                        for (var drive = 0; drive < driveCounts.Length; drive++)
+                        {
+                            for (var i = 0; i < BigramAsciiTokenCount; i++)
+                            {
+                                driveCounts[drive][i] += local.DriveCounts[drive][i];
+                            }
+                        }
+                    }
+                });
+
+            var samples = BuildBigramAsciiPageSamples(arr, counts);
+            stopwatch.Stop();
+            IndexPerfLog.Write("INDEX",
+                $"[CONTAINS BIGRAM COUNT BUILD] outcome=success records={arr.Length} tokens={BigramAsciiTokenCount} sampleLimit={BigramAsciiPageSampleLimit} elapsedMs={stopwatch.ElapsedMilliseconds}");
+            return new BigramAsciiIndex
+            {
+                Counts = counts,
+                DriveCounts = driveCounts,
+                PageSamples = samples
+            };
+        }
+
+        private static FileRecord[][] BuildBigramAsciiPageSamples(FileRecord[] arr, int[] counts)
+        {
+            if (arr == null || arr.Length == 0 || counts == null || counts.Length != BigramAsciiTokenCount)
+            {
+                return null;
+            }
+
+            var workerCount = Math.Max(1, Math.Min(Math.Max(1, Environment.ProcessorCount - 1), arr.Length / 32768));
+            if (workerCount <= 1)
+            {
+                return BuildBigramAsciiPageSamplesRange(arr, counts, 0, arr.Length);
+            }
+
+            var localSamples = new List<FileRecord>[workerCount][];
+            Parallel.For(0, workerCount, new ParallelOptions { MaxDegreeOfParallelism = workerCount }, worker =>
+            {
+                var start = (arr.Length * worker) / workerCount;
+                var end = (arr.Length * (worker + 1)) / workerCount;
+                localSamples[worker] = BuildBigramAsciiPageSampleListsRange(arr, counts, start, end);
+            });
+
+            var samples = new FileRecord[BigramAsciiTokenCount][];
+            for (var token = 0; token < BigramAsciiTokenCount; token++)
+            {
+                if (counts[token] <= 0 || counts[token] > BigramAsciiPageSampleLimit)
+                {
+                    continue;
+                }
+
+                var merged = new List<FileRecord>(Math.Min(counts[token], BigramAsciiPageSampleLimit));
+                for (var worker = 0; worker < localSamples.Length && merged.Count < BigramAsciiPageSampleLimit; worker++)
+                {
+                    var local = localSamples[worker]?[token];
+                    if (local == null || local.Count == 0)
+                    {
+                        continue;
+                    }
+
+                    var remaining = BigramAsciiPageSampleLimit - merged.Count;
+                    if (local.Count <= remaining)
+                    {
+                        merged.AddRange(local);
+                    }
+                    else
+                    {
+                        for (var i = 0; i < remaining; i++)
+                        {
+                            merged.Add(local[i]);
+                        }
+                    }
+                }
+
+                if (merged.Count > 0)
+                {
+                    samples[token] = merged.ToArray();
+                }
+            }
+
+            return samples;
+        }
+
+        private static FileRecord[][] BuildBigramAsciiPageSamplesRange(FileRecord[] arr, int[] counts, int start, int end)
+        {
+            var lists = BuildBigramAsciiPageSampleListsRange(arr, counts, start, end);
+            var samples = new FileRecord[BigramAsciiTokenCount][];
+            for (var token = 0; token < lists.Length; token++)
+            {
+                var list = lists[token];
+                if (list != null && list.Count > 0)
+                {
+                    samples[token] = list.ToArray();
+                }
+            }
+
+            return samples;
+        }
+
+        private static List<FileRecord>[] BuildBigramAsciiPageSampleListsRange(FileRecord[] arr, int[] counts, int start, int end)
+        {
+            var lists = new List<FileRecord>[BigramAsciiTokenCount];
+            var seen = new int[BigramAsciiTokenCount];
+            var generation = 0;
+            for (var recordIndex = start; recordIndex < end; recordIndex++)
+            {
+                    var record = arr[recordIndex];
+                    var lowerName = record?.LowerName;
+                if (string.IsNullOrEmpty(lowerName) || lowerName.Length < 2)
+                {
+                    continue;
+                }
+
+                generation++;
+                if (generation == int.MaxValue)
+                {
+                    Array.Clear(seen, 0, seen.Length);
+                    generation = 1;
+                }
+
+                for (var i = 0; i < lowerName.Length - 1; i++)
+                {
+                    var first = lowerName[i];
+                    var second = lowerName[i + 1];
+                    if (first >= BigramAsciiLimit || second >= BigramAsciiLimit)
+                    {
+                        continue;
+                    }
+
+                    var token = PackAsciiBigram(first, second);
+                    if (counts[token] > BigramAsciiPageSampleLimit || seen[token] == generation)
+                    {
+                        continue;
+                    }
+
+                    seen[token] = generation;
+                    var list = lists[token];
+                    if (list == null)
+                    {
+                        list = new List<FileRecord>(Math.Min(counts[token], BigramAsciiPageSampleLimit));
+                        lists[token] = list;
+                    }
+
+                    if (list.Count < BigramAsciiPageSampleLimit)
+                    {
+                        list.Add(record);
+                    }
+                }
+            }
+
+            return lists;
+        }
+
+        private static int PackAsciiBigram(char first, char second)
+        {
+            return (first * BigramAsciiLimit) + second;
+        }
+
         private static void CountSingleCharMaskBits(
             int[] counts,
             int[][] driveCounts,
@@ -1928,6 +2740,7 @@ namespace MftScanner
             bool derivedStructuresReady)
         {
             var singleCharAsciiIndex = BuildSingleCharAsciiIndex(arr);
+            var bigramAsciiIndex = BuildBigramAsciiIndex(arr);
             _lock.EnterWriteLock();
             try
             {
@@ -1955,6 +2768,10 @@ namespace MftScanner
                 _singleCharAsciiCounts = singleCharAsciiIndex.Counts;
                 _singleCharAsciiDriveCounts = singleCharAsciiIndex.DriveCounts;
                 _singleCharAsciiRecordCount = arr?.Length ?? 0;
+                _bigramAsciiCounts = bigramAsciiIndex.Counts;
+                _bigramAsciiDriveCounts = bigramAsciiIndex.DriveCounts;
+                _bigramAsciiPageSamples = bigramAsciiIndex.PageSamples;
+                _bigramAsciiRecordCount = arr?.Length ?? 0;
             }
             finally { _lock.ExitWriteLock(); }
         }
@@ -1964,66 +2781,97 @@ namespace MftScanner
             if (changes == null || changes.Count == 0)
                 return;
 
+            var deltaByKey = new Dictionary<RecordKey, FileRecord>(changes.Count * 2);
+            for (var i = 0; i < changes.Count; i++)
+            {
+                var change = changes[i];
+                switch (change.Kind)
+                {
+                    case UsnChangeKind.Create:
+                        deltaByKey[RecordKey.FromChange(change)] = change.ToRecord();
+                        break;
+                    case UsnChangeKind.Delete:
+                        deltaByKey[RecordKey.FromChange(change)] = null;
+                        break;
+                    case UsnChangeKind.Rename:
+                        deltaByKey[RecordKey.FromRenameOld(change)] = null;
+                        deltaByKey[RecordKey.FromChange(change)] = change.ToRecord();
+                        break;
+                }
+            }
+
+            if (deltaByKey.Count == 0)
+                return;
+
+            FileRecord[] baseArr;
+            long baseContentVersion;
+            _lock.EnterReadLock();
+            try
+            {
+                baseArr = SortedArray;
+                baseContentVersion = ContentVersion;
+            }
+            finally
+            {
+                _lock.ExitReadLock();
+            }
+
+            var computeStopwatch = Stopwatch.StartNew();
+            var survivors = new FileRecord[baseArr.Length];
+            var survivorCount = 0;
+            foreach (var record in baseArr)
+            {
+                if (deltaByKey.ContainsKey(RecordKey.FromRecord(record)))
+                {
+                    continue;
+                }
+
+                survivors[survivorCount++] = record;
+            }
+
+            var inserted = new List<FileRecord>(deltaByKey.Count);
+            foreach (var entry in deltaByKey)
+            {
+                if (entry.Value != null)
+                {
+                    inserted.Add(entry.Value);
+                }
+            }
+
+            if (inserted.Count > 1)
+            {
+                inserted.Sort(ByLowerName);
+            }
+
+            var arr = MergeSortedRecords(survivors, survivorCount, inserted);
+            var singleCharAsciiIndex = BuildSingleCharAsciiIndex(arr);
+            var bigramAsciiIndex = BuildBigramAsciiIndex(arr);
+            BuildDerivedStructures(
+                arr,
+                out var extensionMap,
+                out var parentArr,
+                out var directoryArr,
+                out var launchableArr,
+                out var scriptArr,
+                out var logArr,
+                out var configArr);
+            var rebuiltAccelerator = rebuildContainsAccelerator
+                ? ContainsAccelerator.Build(arr, ContainsAcceleratorBucketKinds.All)
+                : null;
+            computeStopwatch.Stop();
+
+            var publishStopwatch = Stopwatch.StartNew();
             _lock.EnterWriteLock();
             try
             {
-                var deltaByKey = new Dictionary<RecordKey, FileRecord>(changes.Count * 2);
-                for (var i = 0; i < changes.Count; i++)
+                if (ContentVersion != baseContentVersion)
                 {
-                    var change = changes[i];
-                    switch (change.Kind)
-                    {
-                        case UsnChangeKind.Create:
-                            deltaByKey[RecordKey.FromChange(change)] = change.ToRecord();
-                            break;
-                        case UsnChangeKind.Delete:
-                            deltaByKey[RecordKey.FromChange(change)] = null;
-                            break;
-                        case UsnChangeKind.Rename:
-                            deltaByKey[RecordKey.FromRenameOld(change)] = null;
-                            deltaByKey[RecordKey.FromChange(change)] = change.ToRecord();
-                            break;
-                    }
+                    IndexPerfLog.Write("INDEX",
+                        $"[APPLY BATCH] outcome=stale-retry changes={changes.Count} baseVersion={baseContentVersion} currentVersion={ContentVersion}");
+                    ApplyBatchUnderWriteLock(deltaByKey, rebuildContainsAccelerator);
+                    return;
                 }
 
-                var baseArr = SortedArray;
-                var survivors = new FileRecord[baseArr.Length];
-                var survivorCount = 0;
-                foreach (var record in baseArr)
-                {
-                    if (deltaByKey.ContainsKey(RecordKey.FromRecord(record)))
-                    {
-                        continue;
-                    }
-
-                    survivors[survivorCount++] = record;
-                }
-
-                var inserted = new List<FileRecord>(deltaByKey.Count);
-                foreach (var entry in deltaByKey)
-                {
-                    if (entry.Value != null)
-                    {
-                        inserted.Add(entry.Value);
-                    }
-                }
-
-                if (inserted.Count > 1)
-                {
-                    inserted.Sort(ByLowerName);
-                }
-
-                var arr = MergeSortedRecords(survivors, survivorCount, inserted);
-                var singleCharAsciiIndex = BuildSingleCharAsciiIndex(arr);
-                BuildDerivedStructures(
-                    arr,
-                    out var extensionMap,
-                    out var parentArr,
-                    out var directoryArr,
-                    out var launchableArr,
-                    out var scriptArr,
-                    out var logArr,
-                    out var configArr);
                 ExtensionHashMap = extensionMap;
                 SortedArray = arr;
                 ParentSortedArray = parentArr;
@@ -2035,7 +2883,7 @@ namespace MftScanner
                 _derivedStructuresReady = true;
                 if (rebuildContainsAccelerator)
                 {
-                    _containsAccelerator = ContainsAccelerator.Build(arr, ContainsAcceleratorBucketKinds.All);
+                    _containsAccelerator = rebuiltAccelerator ?? ContainsAccelerator.Empty;
                     _containsOverlay = ContainsOverlay.Empty;
                     _containsAcceleratorReady = true;
                     _containsAcceleratorEpoch++;
@@ -2056,8 +2904,98 @@ namespace MftScanner
                 _singleCharAsciiCounts = singleCharAsciiIndex.Counts;
                 _singleCharAsciiDriveCounts = singleCharAsciiIndex.DriveCounts;
                 _singleCharAsciiRecordCount = arr?.Length ?? 0;
+                _bigramAsciiCounts = bigramAsciiIndex.Counts;
+                _bigramAsciiDriveCounts = bigramAsciiIndex.DriveCounts;
+                _bigramAsciiPageSamples = bigramAsciiIndex.PageSamples;
+                _bigramAsciiRecordCount = arr?.Length ?? 0;
             }
-            finally { _lock.ExitWriteLock(); }
+            finally
+            {
+                _lock.ExitWriteLock();
+                publishStopwatch.Stop();
+            }
+
+            IndexPerfLog.Write("INDEX",
+                $"[APPLY BATCH] outcome=success changes={changes.Count} records={arr.Length} computeMs={computeStopwatch.ElapsedMilliseconds} publishMs={publishStopwatch.ElapsedMilliseconds}");
+        }
+
+        private void ApplyBatchUnderWriteLock(Dictionary<RecordKey, FileRecord> deltaByKey, bool rebuildContainsAccelerator)
+        {
+            var baseArr = SortedArray;
+            var survivors = new FileRecord[baseArr.Length];
+            var survivorCount = 0;
+            foreach (var record in baseArr)
+            {
+                if (deltaByKey.ContainsKey(RecordKey.FromRecord(record)))
+                {
+                    continue;
+                }
+
+                survivors[survivorCount++] = record;
+            }
+
+            var inserted = new List<FileRecord>(deltaByKey.Count);
+            foreach (var entry in deltaByKey)
+            {
+                if (entry.Value != null)
+                {
+                    inserted.Add(entry.Value);
+                }
+            }
+
+            if (inserted.Count > 1)
+            {
+                inserted.Sort(ByLowerName);
+            }
+
+            var arr = MergeSortedRecords(survivors, survivorCount, inserted);
+            var singleCharAsciiIndex = BuildSingleCharAsciiIndex(arr);
+            var bigramAsciiIndex = BuildBigramAsciiIndex(arr);
+            BuildDerivedStructures(
+                arr,
+                out var extensionMap,
+                out var parentArr,
+                out var directoryArr,
+                out var launchableArr,
+                out var scriptArr,
+                out var logArr,
+                out var configArr);
+            ExtensionHashMap = extensionMap;
+            SortedArray = arr;
+            ParentSortedArray = parentArr;
+            DirectorySortedArray = directoryArr;
+            LaunchableSortedArray = launchableArr;
+            ScriptSortedArray = scriptArr;
+            LogSortedArray = logArr;
+            ConfigSortedArray = configArr;
+            _derivedStructuresReady = true;
+            if (rebuildContainsAccelerator)
+            {
+                _containsAccelerator = ContainsAccelerator.Build(arr, ContainsAcceleratorBucketKinds.All);
+                _containsOverlay = ContainsOverlay.Empty;
+                _containsAcceleratorReady = true;
+                _containsAcceleratorEpoch++;
+                _pendingContainsMutations.Clear();
+                _pendingContainsMutationsOverflowed = false;
+            }
+            else if (_containsAcceleratorReady)
+            {
+                AppendContainsOverlay(deltaByKey);
+            }
+            else
+            {
+                EnqueuePendingContainsMutations(deltaByKey);
+            }
+            _contentVersion++;
+            ClearShortContainsHotBuckets();
+            _singleCharAsciiBitsets = singleCharAsciiIndex.Bitsets;
+            _singleCharAsciiCounts = singleCharAsciiIndex.Counts;
+            _singleCharAsciiDriveCounts = singleCharAsciiIndex.DriveCounts;
+            _singleCharAsciiRecordCount = arr?.Length ?? 0;
+            _bigramAsciiCounts = bigramAsciiIndex.Counts;
+            _bigramAsciiDriveCounts = bigramAsciiIndex.DriveCounts;
+            _bigramAsciiPageSamples = bigramAsciiIndex.PageSamples;
+            _bigramAsciiRecordCount = arr?.Length ?? 0;
         }
 
         private static FileRecord[] MergeSortedRecords(FileRecord[] survivors, int survivorCount, List<FileRecord> inserted)
