@@ -35,6 +35,7 @@ namespace MftScanner
         public FileRecord[] ScriptSortedArray { get; private set; } = Array.Empty<FileRecord>();
         public FileRecord[] LogSortedArray { get; private set; } = Array.Empty<FileRecord>();
         public FileRecord[] ConfigSortedArray { get; private set; } = Array.Empty<FileRecord>();
+        private bool _derivedStructuresReady = true;
         private ContainsAccelerator _containsAccelerator = ContainsAccelerator.Empty;
         private ContainsOverlay _containsOverlay = ContainsOverlay.Empty;
         private bool _containsAcceleratorReady = true;
@@ -51,6 +52,8 @@ namespace MftScanner
         public int TotalCount => SortedArray.Length;
 
         public long ContentVersion => Interlocked.Read(ref _contentVersion);
+
+        public bool AreDerivedStructuresReady => Volatile.Read(ref _derivedStructuresReady);
 
         public bool HasContainsAccelerator
         {
@@ -286,8 +289,29 @@ namespace MftScanner
             try
             {
                 var parentArr = ParentSortedArray;
-                if (parentArr == null || parentArr.Length == 0)
-                    return Array.Empty<FileRecord>();
+                if (!_derivedStructuresReady || parentArr == null || parentArr.Length == 0)
+                {
+                    var directorySet = new HashSet<ulong>(directoryFrns);
+                    var sorted = SortedArray;
+                    for (var i = 0; i < sorted.Length; i++)
+                    {
+                        if (((i + 1) & 0x3FFF) == 0)
+                            ct.ThrowIfCancellationRequested();
+
+                        var record = sorted[i];
+                        if (record == null
+                            || char.ToUpperInvariant(record.DriveLetter) != dl
+                            || !directorySet.Contains(record.ParentFrn)
+                            || !MatchesFilter(record, filter))
+                        {
+                            continue;
+                        }
+
+                        candidates.Add(record);
+                    }
+
+                    return candidates.Count == 0 ? Array.Empty<FileRecord>() : candidates.ToArray();
+                }
 
                 for (var i = 0; i < directoryFrns.Count; i++)
                 {
@@ -320,10 +344,16 @@ namespace MftScanner
             return result;
         }
 
-        public void LoadSortedRecords(IReadOnlyList<FileRecord> sortedRecords, bool buildContainsAccelerator = true)
+        public void LoadSortedRecords(
+            IReadOnlyList<FileRecord> sortedRecords,
+            bool buildContainsAccelerator = true,
+            bool takeOwnership = false,
+            bool buildDerivedStructures = true)
         {
             var totalStopwatch = Stopwatch.StartNew();
-            var arr = CopyRecords(sortedRecords);
+            var arr = takeOwnership && sortedRecords is FileRecord[] ownedRecords
+                ? ownedRecords
+                : CopyRecords(sortedRecords);
             var verifyStopwatch = Stopwatch.StartNew();
             var sortedAlready = IsSortedByLowerName(arr);
             verifyStopwatch.Stop();
@@ -336,15 +366,36 @@ namespace MftScanner
                 sortMilliseconds = sortStopwatch.ElapsedMilliseconds;
             }
 
-            BuildDerivedStructures(
-                arr,
-                out var extensionMap,
-                out var parentArr,
-                out var directoryArr,
-                out var launchableArr,
-                out var scriptArr,
-                out var logArr,
-                out var configArr);
+            Dictionary<string, List<FileRecord>> extensionMap;
+            FileRecord[] parentArr;
+            FileRecord[] directoryArr;
+            FileRecord[] launchableArr;
+            FileRecord[] scriptArr;
+            FileRecord[] logArr;
+            FileRecord[] configArr;
+            if (buildDerivedStructures)
+            {
+                BuildDerivedStructures(
+                    arr,
+                    out extensionMap,
+                    out parentArr,
+                    out directoryArr,
+                    out launchableArr,
+                    out scriptArr,
+                    out logArr,
+                    out configArr);
+            }
+            else
+            {
+                extensionMap = new Dictionary<string, List<FileRecord>>();
+                parentArr = Array.Empty<FileRecord>();
+                directoryArr = Array.Empty<FileRecord>();
+                launchableArr = Array.Empty<FileRecord>();
+                scriptArr = Array.Empty<FileRecord>();
+                logArr = Array.Empty<FileRecord>();
+                configArr = Array.Empty<FileRecord>();
+            }
+
             Publish(
                 arr,
                 extensionMap,
@@ -355,11 +406,13 @@ namespace MftScanner
                 logArr,
                 configArr,
                 buildContainsAccelerator ? ContainsAccelerator.Build(arr, ContainsAcceleratorBucketKinds.All) : null,
-                buildContainsAccelerator);
+                buildContainsAccelerator,
+                buildDerivedStructures);
             totalStopwatch.Stop();
             IndexPerfLog.Write("INDEX",
                 $"[LOAD SORTED RECORDS] records={arr.Length} sortedAlready={sortedAlready} " +
-                $"verifyMs={verifyStopwatch.ElapsedMilliseconds} sortMs={sortMilliseconds} totalMs={totalStopwatch.ElapsedMilliseconds}");
+                $"verifyMs={verifyStopwatch.ElapsedMilliseconds} sortMs={sortMilliseconds} " +
+                $"derived={buildDerivedStructures} totalMs={totalStopwatch.ElapsedMilliseconds}");
         }
 
         public void Build(IReadOnlyList<FileRecord> records, bool buildContainsAccelerator = true)
@@ -376,7 +429,8 @@ namespace MftScanner
                     Array.Empty<FileRecord>(),
                     Array.Empty<FileRecord>(),
                     ContainsAccelerator.Empty,
-                    true);
+                    true,
+                    derivedStructuresReady: true);
                 return;
             }
 
@@ -401,7 +455,8 @@ namespace MftScanner
                 logArr,
                 configArr,
                 buildContainsAccelerator ? ContainsAccelerator.Build(arr, ContainsAcceleratorBucketKinds.All) : null,
-                buildContainsAccelerator);
+                buildContainsAccelerator,
+                derivedStructuresReady: true);
         }
 
         private bool TryShortContainsHotSearch(
@@ -664,10 +719,7 @@ namespace MftScanner
                 var arr = SortedArray;
                 for (var i = 0; i < arr.Length; i++)
                 {
-                    var match = frn != 0
-                        ? arr[i].Frn == frn && arr[i].DriveLetter == driveLetter
-                        : arr[i].LowerName == lowerName && arr[i].DriveLetter == driveLetter
-                          && (parentFrn == 0 || arr[i].ParentFrn == parentFrn);
+                    var match = IsRecordIdentityMatch(arr[i], frn, lowerName, parentFrn, driveLetter);
                     if (match)
                     {
                         var newArr = new FileRecord[arr.Length - 1];
@@ -702,11 +754,7 @@ namespace MftScanner
                 var arr = SortedArray;
                 for (var i = 0; i < arr.Length; i++)
                 {
-                    var match = frn != 0
-                        ? arr[i].Frn == frn && arr[i].DriveLetter == driveLetter
-                        : arr[i].LowerName == oldLowerName &&
-                          arr[i].ParentFrn == oldParentFrn &&
-                          arr[i].DriveLetter == driveLetter;
+                    var match = IsRecordIdentityMatch(arr[i], frn, oldLowerName, oldParentFrn, driveLetter);
                     if (match)
                     {
                         var tmp = new FileRecord[arr.Length - 1];
@@ -981,7 +1029,8 @@ namespace MftScanner
             FileRecord[] logArr,
             FileRecord[] configArr,
             ContainsAccelerator containsAccelerator,
-            bool containsAcceleratorReady)
+            bool containsAcceleratorReady,
+            bool derivedStructuresReady)
         {
             _lock.EnterWriteLock();
             try
@@ -994,6 +1043,7 @@ namespace MftScanner
                 ScriptSortedArray = scriptArr;
                 LogSortedArray = logArr;
                 ConfigSortedArray = configArr;
+                _derivedStructuresReady = derivedStructuresReady;
                 _containsAccelerator = containsAcceleratorReady
                     ? (containsAccelerator ?? ContainsAccelerator.Empty)
                     : ContainsAccelerator.Empty;
@@ -1080,6 +1130,7 @@ namespace MftScanner
                 ScriptSortedArray = scriptArr;
                 LogSortedArray = logArr;
                 ConfigSortedArray = configArr;
+                _derivedStructuresReady = true;
                 if (rebuildContainsAccelerator)
                 {
                     _containsAccelerator = ContainsAccelerator.Build(arr, ContainsAcceleratorBucketKinds.All);
@@ -1250,6 +1301,84 @@ namespace MftScanner
             ConfigSortedArray = RemoveFromSortedArray(ConfigSortedArray, frn, lowerName, parentFrn, driveLetter);
         }
 
+        public void EnsureDerivedStructures(CancellationToken ct = default)
+        {
+            if (AreDerivedStructuresReady)
+                return;
+
+            FileRecord[] snapshot;
+            long contentVersion;
+            _lock.EnterReadLock();
+            try
+            {
+                if (_derivedStructuresReady)
+                    return;
+
+                snapshot = SortedArray;
+                contentVersion = ContentVersion;
+            }
+            finally
+            {
+                _lock.ExitReadLock();
+            }
+
+            ct.ThrowIfCancellationRequested();
+            var stopwatch = Stopwatch.StartNew();
+            BuildDerivedStructures(
+                snapshot,
+                out var extensionMap,
+                out var parentArr,
+                out var directoryArr,
+                out var launchableArr,
+                out var scriptArr,
+                out var logArr,
+                out var configArr);
+            stopwatch.Stop();
+
+            _lock.EnterWriteLock();
+            try
+            {
+                if (_derivedStructuresReady || ContentVersion != contentVersion)
+                    return;
+
+                ExtensionHashMap = extensionMap;
+                ParentSortedArray = parentArr;
+                DirectorySortedArray = directoryArr;
+                LaunchableSortedArray = launchableArr;
+                ScriptSortedArray = scriptArr;
+                LogSortedArray = logArr;
+                ConfigSortedArray = configArr;
+                _derivedStructuresReady = true;
+                IndexPerfLog.Write("INDEX",
+                    $"[DERIVED STRUCTURES] outcome=success records={snapshot?.Length ?? 0} elapsedMs={stopwatch.ElapsedMilliseconds}");
+            }
+            finally
+            {
+                _lock.ExitWriteLock();
+            }
+        }
+
+        public void QueueEnsureDerivedStructures(string reason)
+        {
+            if (AreDerivedStructuresReady)
+                return;
+
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try
+                {
+                    IndexPerfLog.Write("INDEX",
+                        $"[DERIVED STRUCTURES] outcome=start reason={IndexPerfLog.FormatValue(reason)} records={TotalCount}");
+                    EnsureDerivedStructures(CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    IndexPerfLog.Write("INDEX",
+                        $"[DERIVED STRUCTURES] outcome=failed reason={IndexPerfLog.FormatValue(reason)} error={ex.GetType().Name}:{IndexPerfLog.FormatValue(ex.Message)}");
+                }
+            });
+        }
+
         private static FileRecord[] InsertIntoSortedArray(FileRecord[] target, FileRecord record)
         {
             return InsertIntoSortedArray(target, record, ByLowerName);
@@ -1277,10 +1406,7 @@ namespace MftScanner
 
             for (var i = 0; i < arr.Length; i++)
             {
-                var match = frn != 0
-                    ? arr[i].Frn == frn && arr[i].DriveLetter == driveLetter
-                    : arr[i].LowerName == lowerName && arr[i].DriveLetter == driveLetter
-                      && (parentFrn == 0 || arr[i].ParentFrn == parentFrn);
+                var match = IsRecordIdentityMatch(arr[i], frn, lowerName, parentFrn, driveLetter);
                 if (!match)
                     continue;
 
@@ -1351,13 +1477,39 @@ namespace MftScanner
 
             if (frn != 0)
             {
-                bucket.RemoveAll(r => r.Frn == frn && r.DriveLetter == driveLetter);
+                bucket.RemoveAll(r => IsRecordIdentityMatch(r, frn, lowerName, parentFrn, driveLetter));
                 return;
             }
 
             bucket.RemoveAll(r => r.LowerName == lowerName
                                   && r.DriveLetter == driveLetter
                 && (parentFrn == 0 || r.ParentFrn == parentFrn));
+        }
+
+        private static bool IsRecordIdentityMatch(
+            FileRecord record,
+            ulong frn,
+            string lowerName,
+            ulong parentFrn,
+            char driveLetter)
+        {
+            if (record == null || record.DriveLetter != driveLetter)
+                return false;
+
+            if (frn != 0)
+            {
+                if (record.Frn != frn)
+                    return false;
+
+                if (parentFrn != 0 && record.ParentFrn != parentFrn)
+                    return false;
+
+                return string.IsNullOrEmpty(lowerName)
+                       || string.Equals(record.LowerName, lowerName, StringComparison.Ordinal);
+            }
+
+            return string.Equals(record.LowerName, lowerName, StringComparison.Ordinal)
+                   && (parentFrn == 0 || record.ParentFrn == parentFrn);
         }
 
         private void EnqueuePendingContainsInsert(FileRecord record)
@@ -2291,7 +2443,12 @@ namespace MftScanner
             public bool Equals(RecordKey other)
             {
                 if (Frn != 0 || other.Frn != 0)
-                    return Frn == other.Frn && DriveLetter == other.DriveLetter;
+                {
+                    return Frn == other.Frn
+                           && ParentFrn == other.ParentFrn
+                           && DriveLetter == other.DriveLetter
+                           && string.Equals(LowerName, other.LowerName, StringComparison.Ordinal);
+                }
 
                 return ParentFrn == other.ParentFrn
                        && DriveLetter == other.DriveLetter
@@ -2310,7 +2467,10 @@ namespace MftScanner
                     if (Frn != 0)
                     {
                         var frnHash = Frn.GetHashCode();
-                        return (frnHash * 397) ^ DriveLetter.GetHashCode();
+                        frnHash = (frnHash * 397) ^ ParentFrn.GetHashCode();
+                        frnHash = (frnHash * 397) ^ DriveLetter.GetHashCode();
+                        frnHash = (frnHash * 397) ^ (LowerName != null ? StringComparer.Ordinal.GetHashCode(LowerName) : 0);
+                        return frnHash;
                     }
 
                     var hash = LowerName != null ? StringComparer.Ordinal.GetHashCode(LowerName) : 0;

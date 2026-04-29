@@ -196,7 +196,7 @@ function Parse-IndexStageEvents {
         return @()
     }
 
-    $patterns = "\[SNAPSHOT LOAD\]|\[SNAPSHOT RESTORE\]|\[SNAPSHOT RESTORE TOTAL\]|\[SNAPSHOT CATCHUP TOTAL\]|\[SNAPSHOT CATCHUP APPLY WAIT\]|\[MFT BUILD\]|\[CONTAINS WARMUP\]|\[CONTAINS SHORT HOT WARMUP\]|\[CONTAINS SHORT HOT BUILD\]"
+    $patterns = "\[SNAPSHOT LOAD\]|\[SNAPSHOT RESTORE\]|\[SNAPSHOT RESTORE TOTAL\]|\[SNAPSHOT CATCHUP TOTAL\]|\[SNAPSHOT CATCHUP APPLY WAIT\]|\[MFT BUILD\]|\[CONTAINS WARMUP\]|\[CONTAINS SHORT HOT WARMUP\]|\[CONTAINS SHORT HOT BUILD\]|\[DERIVED STRUCTURES\]|\[POSTINGS SNAPSHOT LOAD\]|\[POSTINGS SNAPSHOT RESTORE\]|\[POSTINGS SNAPSHOT SAVE\]|\[CONTAINS SNAPSHOT LOAD\]"
     $events = New-Object System.Collections.Generic.List[object]
     foreach ($match in Select-String -Path $LogPath -Pattern $patterns -ErrorAction SilentlyContinue) {
         $line = $match.Line
@@ -220,6 +220,10 @@ function Parse-IndexStageEvents {
             RestoreMs = if ($line -match "restoreMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
             ApplyMs = if ($line -match "applyMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
             TotalChanges = if ($line -match "totalChanges=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+            FileBytes = if ($line -match "fileBytes=(?<v>\d+)") { [long]$Matches.v } else { 0 }
+            Records = if ($line -match "records=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+            Buckets = if ($line -match "buckets=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+            Bytes = if ($line -match "bytes=(?<v>\d+)") { [long]$Matches.v } else { 0 }
             Stale = if ($line -match "stale=(?<v>true|false)") { [bool]::Parse($Matches.v) } else { $false }
             Raw = $line
         })
@@ -366,10 +370,12 @@ function New-MarkdownReport {
     $lines.Add("")
     $lines.Add("## 索引加载与后台阶段")
     $lines.Add("")
-    $lines.Add("| 时间 | 阶段 | 结果 | 耗时(ms) | load(ms) | restore(ms) | apply(ms) | 变更数 | stale |")
-    $lines.Add("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |")
+    $lines.Add("| 时间 | 阶段 | 结果 | 耗时(ms) | load(ms) | restore(ms) | apply(ms) | 记录数 | 文件(MB) | buckets | bytes(MB) | 变更数 | stale |")
+    $lines.Add("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
     foreach ($item in $IndexStageEvents) {
-        $lines.Add("| $($item.Time.ToString('HH:mm:ss.fff')) | $($item.Stage) | $($item.Outcome) | $($item.ElapsedMs) | $($item.LoadMs) | $($item.RestoreMs) | $($item.ApplyMs) | $($item.TotalChanges) | $(Convert-BoolToChinese $item.Stale) |")
+        $fileMb = if ($item.FileBytes -gt 0) { [math]::Round($item.FileBytes / 1MB, 1) } else { 0 }
+        $bytesMb = if ($item.Bytes -gt 0) { [math]::Round($item.Bytes / 1MB, 1) } else { 0 }
+        $lines.Add("| $($item.Time.ToString('HH:mm:ss.fff')) | $($item.Stage) | $($item.Outcome) | $($item.ElapsedMs) | $($item.LoadMs) | $($item.RestoreMs) | $($item.ApplyMs) | $($item.Records) | $fileMb | $($item.Buckets) | $bytesMb | $($item.TotalChanges) | $(Convert-BoolToChinese $item.Stale) |")
     }
 
     $lines.Add("")

@@ -797,22 +797,79 @@ namespace MftScanner
             return false;
         }
 
-        private static FileRecord[] GetCandidateSource(MemoryIndex index, SearchTypeFilter filter)
+        private static FileRecord[] GetCandidateSource(MemoryIndex index, SearchTypeFilter filter, CancellationToken ct)
         {
             switch (filter)
             {
                 case SearchTypeFilter.Folder:
-                    return index.DirectorySortedArray;
+                    return index.AreDerivedStructuresReady ? index.DirectorySortedArray : BuildFilteredCandidateSource(index.SortedArray, filter, ct);
                 case SearchTypeFilter.Launchable:
-                    return index.LaunchableSortedArray;
+                    return index.AreDerivedStructuresReady ? index.LaunchableSortedArray : BuildFilteredCandidateSource(index.SortedArray, filter, ct);
                 case SearchTypeFilter.Script:
-                    return index.ScriptSortedArray;
+                    return index.AreDerivedStructuresReady ? index.ScriptSortedArray : BuildFilteredCandidateSource(index.SortedArray, filter, ct);
                 case SearchTypeFilter.Log:
-                    return index.LogSortedArray;
+                    return index.AreDerivedStructuresReady ? index.LogSortedArray : BuildFilteredCandidateSource(index.SortedArray, filter, ct);
                 case SearchTypeFilter.Config:
-                    return index.ConfigSortedArray;
+                    return index.AreDerivedStructuresReady ? index.ConfigSortedArray : BuildFilteredCandidateSource(index.SortedArray, filter, ct);
                 default:
                     return index.SortedArray;
+            }
+        }
+
+        private static FileRecord[] BuildFilteredCandidateSource(FileRecord[] sortedArray, SearchTypeFilter filter, CancellationToken ct)
+        {
+            if (sortedArray == null || sortedArray.Length == 0)
+                return Array.Empty<FileRecord>();
+
+            var result = new List<FileRecord>();
+            for (var i = 0; i < sortedArray.Length; i++)
+            {
+                if (((i + 1) & 0x3FFF) == 0)
+                    ct.ThrowIfCancellationRequested();
+
+                var record = sortedArray[i];
+                if (MatchesSearchFilter(record, filter))
+                    result.Add(record);
+            }
+
+            return result.Count == 0 ? Array.Empty<FileRecord>() : result.ToArray();
+        }
+
+        private static bool MatchesSearchFilter(FileRecord record, SearchTypeFilter filter)
+        {
+            if (record == null)
+                return false;
+
+            if (filter == SearchTypeFilter.All)
+                return true;
+
+            if (filter == SearchTypeFilter.Folder)
+                return record.IsDirectory;
+
+            if (record.IsDirectory)
+                return false;
+
+            var lowerName = record.LowerName;
+            if (string.IsNullOrEmpty(lowerName))
+                return false;
+
+            var dotIndex = lowerName.LastIndexOf('.');
+            if (dotIndex < 0 || dotIndex == lowerName.Length - 1)
+                return false;
+
+            var extension = lowerName.Substring(dotIndex);
+            switch (filter)
+            {
+                case SearchTypeFilter.Launchable:
+                    return SearchTypeFilterHelper.IsLaunchableExtension(extension);
+                case SearchTypeFilter.Script:
+                    return SearchTypeFilterHelper.IsScriptExtension(extension);
+                case SearchTypeFilter.Log:
+                    return SearchTypeFilterHelper.IsLogExtension(extension);
+                case SearchTypeFilter.Config:
+                    return SearchTypeFilterHelper.IsConfigExtension(extension);
+                default:
+                    return false;
             }
         }
 
@@ -864,6 +921,7 @@ namespace MftScanner
                 var containsCandidateCount = 0;
                 var pathPrefilterApplied = false;
                 var pathPostFilterRequired = false;
+                var candidateSourceDeferredFilter = false;
                 var containsCacheScopeKey = string.Empty;
                 var indexContentVersion = idx.ContentVersion;
 
@@ -953,7 +1011,7 @@ namespace MftScanner
                         }
                         else
                         {
-                            candidateSource = GetCandidateSource(idx, filter);
+                            candidateSource = GetCandidateSource(idx, filter, ct);
                             fetchLimit = int.MaxValue;
                             fetchOffset = 0;
                             pathPostFilterRequired = true;
@@ -966,7 +1024,12 @@ namespace MftScanner
                     }
                     else
                     {
-                        candidateSource = GetCandidateSource(idx, filter);
+                        candidateSourceDeferredFilter = filter != SearchTypeFilter.All
+                                                        && !idx.AreDerivedStructuresReady
+                                                        && mode == MatchMode.Contains;
+                        candidateSource = candidateSourceDeferredFilter
+                            ? idx.SortedArray
+                            : GetCandidateSource(idx, filter, ct);
                     }
 
                     candidateCount = candidateSource?.Length ?? 0;
@@ -1016,7 +1079,9 @@ namespace MftScanner
                             {
                                 var r = pathPrefilterApplied
                                     ? SuffixMatch(extension, candidateSource, fetchOffset, fetchLimit, ct)
-                                    : ExtensionMatch(extension, idx.ExtensionHashMap, fetchOffset, fetchLimit, ct);
+                                    : (idx.AreDerivedStructuresReady
+                                        ? ExtensionMatch(extension, idx.ExtensionHashMap, fetchOffset, fetchLimit, ct)
+                                        : SuffixMatch(extension, candidateSource, fetchOffset, fetchLimit, ct));
                                 matched = r.page;
                                 totalMatched = r.total;
                             }
@@ -1088,6 +1153,12 @@ namespace MftScanner
                             }
                             else
                             {
+                                if (candidateSourceDeferredFilter)
+                                {
+                                    candidateSource = GetCandidateSource(idx, filter, ct);
+                                    candidateSourceDeferredFilter = false;
+                                }
+
                                 containsMode = "fallback";
                                 containsCandidateCount = candidateSource?.Length ?? 0;
                                 var r = ContainsMatchWithIncrementalCache(
@@ -1779,9 +1850,13 @@ namespace MftScanner
             var restoreStopwatch = Stopwatch.StartNew();
             _enumerator.LoadVolumeSnapshots(snapshot.Volumes);
             _lastVolumeSnapshots = CopyVolumeSnapshots(snapshot.Volumes);
-            _index.LoadSortedRecords(snapshot.Records, buildContainsAccelerator: false);
+            _index.LoadSortedRecords(
+                snapshot.Records,
+                buildContainsAccelerator: false,
+                takeOwnership: true,
+                buildDerivedStructures: false);
             var containsPostingsLoaded = _index.TryLoadContainsPostingsSnapshot(snapshot.ContainsPostings);
-            if (snapshotMetrics.Version < 5)
+            if (snapshotMetrics.Version < 6)
             {
                 QueueSnapshotSave(snapshot.Records, snapshot.Volumes);
             }
@@ -1798,8 +1873,36 @@ namespace MftScanner
                 $"[SNAPSHOT RESTORE TOTAL] totalMs={totalStopwatch.ElapsedMilliseconds} loadMs={snapshotLoadStopwatch.ElapsedMilliseconds} " +
                 $"restoreMs={restoreStopwatch.ElapsedMilliseconds} restoredCount={restoredCount}");
 
+            _index.QueueEnsureDerivedStructures("snapshot-restore");
+            if (!containsPostingsLoaded)
+                QueueContainsPostingsSnapshotLoad(snapshot.ContentFingerprint, snapshot.Records.Length);
             StartBackgroundCatchUp(snapshot.Volumes, progress, ct);
             return true;
+        }
+
+        private void QueueContainsPostingsSnapshotLoad(ulong contentFingerprint, int recordCount)
+        {
+            if (contentFingerprint == 0 || recordCount <= 0)
+                return;
+
+            Task.Run(() =>
+            {
+                var stopwatch = Stopwatch.StartNew();
+                try
+                {
+                    var postings = _snapshotStore.TryLoadContainsPostingsSnapshot(contentFingerprint, recordCount);
+                    var loaded = postings != null && _index.TryLoadContainsPostingsSnapshot(postings);
+                    stopwatch.Stop();
+                    UsnDiagLog.Write(
+                        $"[POSTINGS SNAPSHOT RESTORE] outcome={(loaded ? "success" : "miss")} elapsedMs={stopwatch.ElapsedMilliseconds} records={recordCount}");
+                }
+                catch (Exception ex)
+                {
+                    stopwatch.Stop();
+                    UsnDiagLog.Write(
+                        $"[POSTINGS SNAPSHOT RESTORE] outcome=failed elapsedMs={stopwatch.ElapsedMilliseconds} error={ex.GetType().Name}:{IndexPerfLog.FormatValue(ex.Message)}");
+                }
+            });
         }
 
         private int BuildIndexFromMft(IProgress<string> progress, CancellationToken ct)

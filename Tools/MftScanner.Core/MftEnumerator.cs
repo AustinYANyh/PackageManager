@@ -143,6 +143,8 @@ namespace MftScanner
             const int bufferSize = 1024 * 1024; // 1MB，进一步减少 DeviceIoControl 调用次数
             var buffer  = Marshal.AllocHGlobal(bufferSize);
             var frnMap  = new Dictionary<ulong, (string name, ulong parentFrn, bool isDirectory)>(300_000);
+            var recordEntries = new List<MftRecordEntry>(300_000);
+            var recordEntryKeys = new HashSet<MftRecordEntryKey>();
             long nextUsn  = 0;
             ulong journalId = 0;
             var startCount = output.Count;
@@ -190,8 +192,12 @@ namespace MftScanner
                             var fileName = Marshal.PtrToStringUni(IntPtr.Add(buffer, offset + fileNameOffset), fileNameLength / 2);
                             var isDir = (fileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 
-                            // 同一 FRN 可能有多条记录（短文件名 8.3 等），保留最长文件名（长文件名）
-                            if (!frnMap.TryGetValue(frn, out var existing) || fileName.Length > existing.name.Length)
+                            var entryKey = new MftRecordEntryKey(frn, parentFrn, fileName, isDir);
+                            if (recordEntryKeys.Add(entryKey))
+                                recordEntries.Add(new MftRecordEntry(frn, fileName, parentFrn, isDir));
+
+                            // 路径解析只需要目录链。目录 FRN 理论上唯一；如遇到短名/长名重复，保留更长名称。
+                            if (isDir && (!frnMap.TryGetValue(frn, out var existing) || fileName.Length > existing.name.Length))
                             {
                                 frnMap[frn] = (fileName, parentFrn, isDir);
                             }
@@ -220,17 +226,21 @@ namespace MftScanner
                 CloseHandle(handle);
             }
 
-            // 第二遍：从去重后的 frnMap 构建 FileRecord
-            foreach (var kv in frnMap)
+            // 第二遍：按路径条目构建 FileRecord。硬链接共享 FRN，但 ParentFRN/Name 不同，必须都保留。
+            var aliasGroups = CountAliasesByFrnAndParent(recordEntries);
+            for (var i = 0; i < recordEntries.Count; i++)
             {
-                var (name, parentFrn, isDir) = kv.Value;
+                var entry = recordEntries[i];
+                if (ShouldSkipShortNameAlias(entry, aliasGroups))
+                    continue;
+
                 output.Add(new FileRecord(
-                    lowerName:    name.ToLowerInvariant(),
-                    originalName: name,
-                    parentFrn:    parentFrn,
+                    lowerName:    entry.Name.ToLowerInvariant(),
+                    originalName: entry.Name,
+                    parentFrn:    entry.ParentFrn,
                     driveLetter:  dl,
-                    isDirectory:  isDir,
-                    frn:          kv.Key));
+                    isDirectory:  entry.IsDirectory,
+                    frn:          entry.Frn));
             }
 
             var directoryMap = BuildDirectoryOnlyMap(frnMap);
@@ -845,6 +855,141 @@ namespace MftScanner
             }
 
             return false;
+        }
+
+        private static Dictionary<FrnParentKey, AliasNameCounts> CountAliasesByFrnAndParent(List<MftRecordEntry> entries)
+        {
+            var result = new Dictionary<FrnParentKey, AliasNameCounts>();
+            if (entries == null || entries.Count == 0)
+                return result;
+
+            for (var i = 0; i < entries.Count; i++)
+            {
+                var entry = entries[i];
+                var key = new FrnParentKey(entry.Frn, entry.ParentFrn);
+                result.TryGetValue(key, out var counts);
+                if (IsLikelyShortNameAlias(entry.Name))
+                    counts.ShortNameCount++;
+                else
+                    counts.LongNameCount++;
+                result[key] = counts;
+            }
+
+            return result;
+        }
+
+        private static bool ShouldSkipShortNameAlias(
+            MftRecordEntry entry,
+            Dictionary<FrnParentKey, AliasNameCounts> aliasGroups)
+        {
+            if (entry.IsDirectory || aliasGroups == null || aliasGroups.Count == 0)
+                return false;
+
+            if (!IsLikelyShortNameAlias(entry.Name))
+                return false;
+
+            return aliasGroups.TryGetValue(new FrnParentKey(entry.Frn, entry.ParentFrn), out var counts)
+                   && counts.LongNameCount > 0;
+        }
+
+        private static bool IsLikelyShortNameAlias(string name)
+        {
+            return !string.IsNullOrEmpty(name)
+                   && name.IndexOf('~') >= 0
+                   && name.Length <= 12;
+        }
+
+        private readonly struct MftRecordEntry
+        {
+            public MftRecordEntry(ulong frn, string name, ulong parentFrn, bool isDirectory)
+            {
+                Frn = frn;
+                Name = name ?? string.Empty;
+                ParentFrn = parentFrn;
+                IsDirectory = isDirectory;
+            }
+
+            public ulong Frn { get; }
+            public string Name { get; }
+            public ulong ParentFrn { get; }
+            public bool IsDirectory { get; }
+        }
+
+        private readonly struct MftRecordEntryKey : IEquatable<MftRecordEntryKey>
+        {
+            public MftRecordEntryKey(ulong frn, ulong parentFrn, string name, bool isDirectory)
+            {
+                Frn = frn;
+                ParentFrn = parentFrn;
+                Name = name ?? string.Empty;
+                IsDirectory = isDirectory;
+            }
+
+            public ulong Frn { get; }
+            public ulong ParentFrn { get; }
+            public string Name { get; }
+            public bool IsDirectory { get; }
+
+            public bool Equals(MftRecordEntryKey other)
+            {
+                return Frn == other.Frn
+                       && ParentFrn == other.ParentFrn
+                       && IsDirectory == other.IsDirectory
+                       && string.Equals(Name, other.Name, StringComparison.OrdinalIgnoreCase);
+            }
+
+            public override bool Equals(object obj)
+            {
+                return obj is MftRecordEntryKey other && Equals(other);
+            }
+
+            public override int GetHashCode()
+            {
+                unchecked
+                {
+                    var hash = Frn.GetHashCode();
+                    hash = (hash * 397) ^ ParentFrn.GetHashCode();
+                    hash = (hash * 397) ^ IsDirectory.GetHashCode();
+                    hash = (hash * 397) ^ StringComparer.OrdinalIgnoreCase.GetHashCode(Name ?? string.Empty);
+                    return hash;
+                }
+            }
+        }
+
+        private readonly struct FrnParentKey : IEquatable<FrnParentKey>
+        {
+            public FrnParentKey(ulong frn, ulong parentFrn)
+            {
+                Frn = frn;
+                ParentFrn = parentFrn;
+            }
+
+            public ulong Frn { get; }
+            public ulong ParentFrn { get; }
+
+            public bool Equals(FrnParentKey other)
+            {
+                return Frn == other.Frn && ParentFrn == other.ParentFrn;
+            }
+
+            public override bool Equals(object obj)
+            {
+                return obj is FrnParentKey other && Equals(other);
+            }
+
+            public override int GetHashCode()
+            {
+                unchecked
+                {
+                    return (Frn.GetHashCode() * 397) ^ ParentFrn.GetHashCode();
+                }
+            }
+        }
+
+        private struct AliasNameCounts
+        {
+            public int ShortNameCount;
+            public int LongNameCount;
         }
 
         private static ulong[] EnumerateDirectorySubtree(

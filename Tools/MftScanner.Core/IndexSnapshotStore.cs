@@ -15,19 +15,23 @@ namespace MftScanner
         private const int SnapshotVersion3 = 3;
         private const int SnapshotVersion4 = 4;
         private const int SnapshotVersion5 = 5;
+        private const int SnapshotVersion6 = 6;
         private const int SnapshotCompressionDeflate = 1;
+        private const int PostingsSnapshotVersion1 = 1;
         private const string SnapshotWriteMutexName = "PackageManager.MftScannerIndex.WriteLock";
         private const int SnapshotWriteLockTimeoutMilliseconds = 200;
         private static readonly TimeSpan SnapshotTempMaxAge = TimeSpan.FromHours(1);
 
         private readonly string _snapshotDirectoryPath;
         private readonly string _snapshotFilePath;
+        private readonly string _postingsFilePath;
 
         public IndexSnapshotStore()
         {
             var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
             _snapshotDirectoryPath = Path.Combine(appDataPath, "PackageManager", "MftScannerIndex");
             _snapshotFilePath = Path.Combine(_snapshotDirectoryPath, "index.bin");
+            _postingsFilePath = Path.Combine(_snapshotDirectoryPath, "index.postings.bin");
         }
 
         public bool TryLoad(out IndexSnapshot snapshot, out IndexSnapshotLoadMetrics metrics)
@@ -60,6 +64,9 @@ namespace MftScanner
                             break;
                         case SnapshotVersion5:
                             snapshot = ReadVersion5(reader);
+                            break;
+                        case SnapshotVersion6:
+                            snapshot = ReadVersion6(reader);
                             break;
                         default:
                             return false;
@@ -116,7 +123,7 @@ namespace MftScanner
                 using (var stream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
                 using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: false))
                 {
-                    WriteVersion5(writer, snapshot);
+                    WriteVersion6(writer, snapshot);
                 }
 
                 if (File.Exists(_snapshotFilePath))
@@ -128,9 +135,11 @@ namespace MftScanner
                     File.Move(tempPath, _snapshotFilePath);
                 }
 
+                SaveOrDeletePostingsSnapshot(snapshot);
+
                 var fileInfo = new FileInfo(_snapshotFilePath);
                 return new IndexSnapshotSaveMetrics(
-                    SnapshotVersion5,
+                    SnapshotVersion6,
                     fileInfo.Exists ? fileInfo.Length : 0,
                     snapshot.Records?.Length ?? 0,
                     snapshot.Volumes?.Length ?? 0,
@@ -167,6 +176,11 @@ namespace MftScanner
                 {
                 }
             }
+        }
+
+        public ContainsPostingsSnapshot TryLoadContainsPostingsSnapshot(ulong expectedFingerprint, int expectedRecordCount)
+        {
+            return TryLoadPostingsSnapshot(expectedFingerprint, expectedRecordCount);
         }
 
         private static IndexSnapshot ReadVersion1(BinaryReader reader)
@@ -272,6 +286,20 @@ namespace MftScanner
         }
 
         private static IndexSnapshot ReadVersion5(BinaryReader reader)
+        {
+            var compression = reader.ReadInt32();
+            if (compression != SnapshotCompressionDeflate)
+                return null;
+
+            using (var compressed = new DeflateStream(reader.BaseStream, CompressionMode.Decompress, leaveOpen: true))
+            using (var bodyReader = new BinaryReader(compressed, Encoding.UTF8, leaveOpen: false))
+            {
+                var contentFingerprint = bodyReader.ReadUInt64();
+                return ReadVersion3Body(bodyReader, readContainsPostings: true, contentFingerprint: contentFingerprint);
+            }
+        }
+
+        private static IndexSnapshot ReadVersion6(BinaryReader reader)
         {
             var compression = reader.ReadInt32();
             if (compression != SnapshotCompressionDeflate)
@@ -421,6 +449,26 @@ namespace MftScanner
             }
         }
 
+        private static void WriteVersion6(BinaryWriter writer, IndexSnapshot snapshot)
+        {
+            writer.Write(SnapshotVersion6);
+            writer.Write(SnapshotCompressionDeflate);
+            using (var compressed = new DeflateStream(writer.BaseStream, CompressionLevel.Fastest, leaveOpen: true))
+            using (var bodyWriter = new BinaryWriter(compressed, Encoding.UTF8, leaveOpen: false))
+            {
+                var fingerprint = snapshot.ContentFingerprint != 0
+                    ? snapshot.ContentFingerprint
+                    : IndexSnapshotFingerprint.Compute(snapshot.Records);
+                bodyWriter.Write(fingerprint);
+                WriteVersion3Body(bodyWriter, new IndexSnapshot(
+                    snapshot.Records,
+                    snapshot.Volumes,
+                    snapshot.StringPoolCount,
+                    containsPostings: null,
+                    contentFingerprint: fingerprint));
+            }
+        }
+
         private static void WriteVersion3Body(BinaryWriter writer, IndexSnapshot snapshot)
         {
 
@@ -540,6 +588,100 @@ namespace MftScanner
             writer.Write(snapshot.Bytes);
         }
 
+        private ContainsPostingsSnapshot TryLoadPostingsSnapshot(ulong expectedFingerprint, int expectedRecordCount)
+        {
+            if (!File.Exists(_postingsFilePath) || expectedFingerprint == 0 || expectedRecordCount <= 0)
+                return null;
+
+            try
+            {
+                using (var stream = new FileStream(_postingsFilePath, FileMode.Open, FileAccess.Read,
+                           FileShare.ReadWrite | FileShare.Delete))
+                using (var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: false))
+                {
+                    var version = reader.ReadInt32();
+                    if (version != PostingsSnapshotVersion1)
+                        return null;
+
+                    var fingerprint = reader.ReadUInt64();
+                    if (fingerprint != expectedFingerprint)
+                        return null;
+
+                    var postings = ReadContainsPostings(reader);
+                    if (postings == null || postings.RecordCount != expectedRecordCount)
+                        return null;
+
+                    UsnDiagLog.Write(
+                        $"[POSTINGS SNAPSHOT LOAD] outcome=success fileBytes={stream.Length} records={postings.RecordCount} buckets={postings.Keys.Length} bytes={postings.Bytes.Length}");
+                    return postings;
+                }
+            }
+            catch (Exception ex)
+            {
+                UsnDiagLog.Write($"[POSTINGS SNAPSHOT LOAD] outcome=failed error={ex.GetType().Name}:{ex.Message}");
+                return null;
+            }
+        }
+
+        private void SaveOrDeletePostingsSnapshot(IndexSnapshot snapshot)
+        {
+            var postings = snapshot?.ContainsPostings;
+            var fingerprint = snapshot?.ContentFingerprint ?? 0;
+            var expectedRecordCount = snapshot?.Records?.Length ?? 0;
+            if (postings == null
+                || fingerprint == 0
+                || postings.RecordCount != expectedRecordCount)
+            {
+                TryDeletePostingsSnapshot();
+                return;
+            }
+
+            var tempPath = _postingsFilePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                using (var stream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
+                using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: false))
+                {
+                    writer.Write(PostingsSnapshotVersion1);
+                    writer.Write(fingerprint);
+                    WriteContainsPostings(writer, postings);
+                }
+
+                if (File.Exists(_postingsFilePath))
+                    File.Replace(tempPath, _postingsFilePath, null, true);
+                else
+                    File.Move(tempPath, _postingsFilePath);
+
+                var fileInfo = new FileInfo(_postingsFilePath);
+                UsnDiagLog.Write(
+                    $"[POSTINGS SNAPSHOT SAVE] outcome=success fileBytes={(fileInfo.Exists ? fileInfo.Length : 0)} records={postings.RecordCount} buckets={postings.Keys.Length} bytes={postings.Bytes.Length}");
+            }
+            catch (Exception ex)
+            {
+                UsnDiagLog.Write($"[POSTINGS SNAPSHOT SAVE] outcome=failed error={ex.GetType().Name}:{ex.Message}");
+                try
+                {
+                    if (File.Exists(tempPath))
+                        File.Delete(tempPath);
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        private void TryDeletePostingsSnapshot()
+        {
+            try
+            {
+                if (File.Exists(_postingsFilePath))
+                    File.Delete(_postingsFilePath);
+            }
+            catch
+            {
+            }
+        }
+
         private void CleanupStaleTempSnapshots()
         {
             try
@@ -550,6 +692,20 @@ namespace MftScanner
 
                 var cutoffUtc = DateTime.UtcNow - SnapshotTempMaxAge;
                 foreach (var file in directory.EnumerateFiles("index.bin.*.tmp"))
+                {
+                    try
+                    {
+                        if (file.LastWriteTimeUtc < cutoffUtc)
+                        {
+                            file.Delete();
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
+
+                foreach (var file in directory.EnumerateFiles("index.postings.bin.*.tmp"))
                 {
                     try
                     {
