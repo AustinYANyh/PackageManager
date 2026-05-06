@@ -64,7 +64,7 @@ public class PluginAddinInfo : INotifyPropertyChanged
     }
 
     /// <summary>
-    /// 获取或设置插件是否启用（扩展名为 .addin 时为启用）。
+    /// 获取或设置插件是否启用。
     /// </summary>
     public bool IsEnabled
     {
@@ -77,13 +77,14 @@ public class PluginAddinInfo : INotifyPropertyChanged
     /// 根据文件路径更新插件的各项属性。
     /// </summary>
     /// <param name="path">插件文件的完整路径。</param>
-    public void UpdateFromPath(string path)
+    /// <param name="isEnabled">是否启用。</param>
+    public void UpdateFromPath(string path, bool isEnabled)
     {
         FullPath = path;
         FileName = System.IO.Path.GetFileName(path);
         Extension = System.IO.Path.GetExtension(path);
         Name = System.IO.Path.GetFileNameWithoutExtension(path);
-        IsEnabled = string.Equals(Extension, ".addin", System.StringComparison.OrdinalIgnoreCase);
+        IsEnabled = isEnabled;
     }
 
     /// <summary>

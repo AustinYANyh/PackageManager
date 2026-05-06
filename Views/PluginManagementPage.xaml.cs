@@ -18,19 +18,15 @@ namespace PackageManager.Views;
 /// </summary>
 public partial class PluginManagementPage : Page, INotifyPropertyChanged, ICentralPage
 {
-    private static readonly HashSet<string> ExcludedExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-    {
-        ".dll",
-        ".sig",
-        ".zip",
-        ".config",
-    };
+    private const string AddinExtension = ".addin";
+    private const string DisabledAddinFolderName = "RevitAddinDisabled";
 
     private readonly DataPersistenceService dataPersistenceService;
     private readonly ApplicationFinderService applicationFinderService;
     private string addinRootPathText;
     private string currentVersionFolder;
     private string currentVersionFolderText;
+    private string disabledVersionFolder;
     private ApplicationVersion selectedRevitExecutableVersion;
 
     /// <summary>
@@ -141,6 +137,18 @@ public partial class PluginManagementPage : Page, INotifyPropertyChanged, ICentr
                 }
             }
 
+            foreach (var folderVersion in EnumerateDisabledVersionFolders())
+            {
+                if (!merged.ContainsKey(folderVersion))
+                {
+                    merged[folderVersion] = new ApplicationVersion
+                    {
+                        Name = "Revit",
+                        Version = folderVersion,
+                    };
+                }
+            }
+
             foreach (var version in merged.Values.OrderByDescending(v => ParseVersionNumber(v.Version)).ThenByDescending(v => v.Version))
             {
                 RevitExecutableVersions.Add(version);
@@ -168,6 +176,21 @@ public partial class PluginManagementPage : Page, INotifyPropertyChanged, ICentr
                         .ToList();
     }
 
+    private IEnumerable<string> EnumerateDisabledVersionFolders()
+    {
+        var disabledRoot = Path.Combine(dataPersistenceService.GetDataFolderPath(), DisabledAddinFolderName);
+        if (!Directory.Exists(disabledRoot))
+        {
+            return Enumerable.Empty<string>();
+        }
+
+        return Directory.EnumerateDirectories(disabledRoot, "*", SearchOption.TopDirectoryOnly)
+                        .Select(Path.GetFileName)
+                        .Where(name => !string.IsNullOrWhiteSpace(name) && name.All(char.IsDigit))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
+    }
+
     private void RefreshPlugins()
     {
         Plugins.Clear();
@@ -180,25 +203,22 @@ public partial class PluginManagementPage : Page, INotifyPropertyChanged, ICentr
         }
 
         currentVersionFolder = Path.Combine(AddinRootPathText ?? string.Empty, SelectedRevitExecutableVersion.Version ?? string.Empty);
+        disabledVersionFolder = Path.Combine(
+            dataPersistenceService.GetDataFolderPath(),
+            DisabledAddinFolderName,
+            SelectedRevitExecutableVersion.Version ?? string.Empty);
         CurrentVersionFolderText = Directory.Exists(currentVersionFolder)
             ? $"当前版本目录: {currentVersionFolder}"
             : $"当前版本目录不存在: {currentVersionFolder}";
 
-        if (!Directory.Exists(currentVersionFolder))
-        {
-            return;
-        }
+        var pluginItems = EnumeratePluginFiles(currentVersionFolder, true)
+            .Concat(EnumeratePluginFiles(disabledVersionFolder, false))
+            .OrderBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.FullPath, StringComparer.OrdinalIgnoreCase);
 
-        var files = Directory.EnumerateFiles(currentVersionFolder, "*", SearchOption.TopDirectoryOnly)
-                             .Where(path => !ExcludedExtensions.Contains(Path.GetExtension(path) ?? string.Empty))
-                             .OrderBy(path => Path.GetFileNameWithoutExtension(path), StringComparer.OrdinalIgnoreCase)
-                             .ThenBy(path => Path.GetExtension(path), StringComparer.OrdinalIgnoreCase);
-
-        foreach (var file in files)
+        foreach (var file in pluginItems)
         {
-            var item = new PluginAddinInfo();
-            item.UpdateFromPath(file);
-            Plugins.Add(item);
+            Plugins.Add(file);
         }
     }
 
@@ -245,26 +265,30 @@ public partial class PluginManagementPage : Page, INotifyPropertyChanged, ICentr
                 throw new FileNotFoundException("插件文件不存在", originalPath);
             }
 
-            var targetPath = targetEnabled ? GetEnabledFilePath(originalPath) : GetDisabledFilePath(originalPath);
-            if (!string.Equals(originalPath, targetPath, StringComparison.OrdinalIgnoreCase))
-            {
-                if (File.Exists(targetPath))
-                {
-                    throw new IOException($"目标文件已存在：{Path.GetFileName(targetPath)}");
-                }
+            var targetPath = targetEnabled
+                ? Path.Combine(currentVersionFolder ?? string.Empty, Path.GetFileName(originalPath))
+                : Path.Combine(disabledVersionFolder ?? string.Empty, Path.GetFileName(originalPath));
 
-                File.Move(originalPath, targetPath);
-                item.UpdateFromPath(targetPath);
-            }
-            else
+            if (string.Equals(originalPath, targetPath, StringComparison.OrdinalIgnoreCase))
             {
                 item.IsEnabled = targetEnabled;
+                return;
             }
+
+            EnsureDirectoryExists(Path.GetDirectoryName(targetPath));
+
+            if (File.Exists(targetPath))
+            {
+                throw new IOException($"目标文件已存在：{Path.GetFileName(targetPath)}");
+            }
+
+            File.Move(originalPath, targetPath);
+            item.UpdateFromPath(targetPath, targetEnabled);
         }
         catch (Exception ex)
         {
             LoggingService.LogError(ex, "切换插件启用状态失败");
-            item.UpdateFromPath(originalPath);
+            item.UpdateFromPath(originalPath, !targetEnabled);
             MessageBox.Show($"切换插件状态失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
@@ -292,27 +316,29 @@ public partial class PluginManagementPage : Page, INotifyPropertyChanged, ICentr
         RequestExit?.Invoke();
     }
 
-    private static string GetEnabledFilePath(string path)
+    private IEnumerable<PluginAddinInfo> EnumeratePluginFiles(string folder, bool isEnabled)
     {
-        var directory = Path.GetDirectoryName(path) ?? string.Empty;
-        var name = Path.GetFileNameWithoutExtension(path);
-        return Path.Combine(directory, name + ".addin");
+        if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder))
+        {
+            return Enumerable.Empty<PluginAddinInfo>();
+        }
+
+        return Directory.EnumerateFiles(folder, "*", SearchOption.TopDirectoryOnly)
+                        .Where(path => string.Equals(Path.GetExtension(path), AddinExtension, StringComparison.OrdinalIgnoreCase))
+                        .Select(path =>
+                        {
+                            var item = new PluginAddinInfo();
+                            item.UpdateFromPath(path, isEnabled);
+                            return item;
+                        });
     }
 
-    private static string GetDisabledFilePath(string path)
+    private static void EnsureDirectoryExists(string directory)
     {
-        var directory = Path.GetDirectoryName(path) ?? string.Empty;
-        var name = Path.GetFileNameWithoutExtension(path);
-        var index = 1;
-        string candidate;
-        do
+        if (!string.IsNullOrWhiteSpace(directory) && !Directory.Exists(directory))
         {
-            candidate = Path.Combine(directory, $"{name}.addin{index}");
-            index++;
+            Directory.CreateDirectory(directory);
         }
-        while (File.Exists(candidate) && !string.Equals(candidate, path, StringComparison.OrdinalIgnoreCase));
-
-        return candidate;
     }
 
     private static int ParseVersionNumber(string version)
