@@ -518,12 +518,79 @@ namespace MftScanner
 
             try
             {
-                Process.Start(new ProcessStartInfo("cmd.exe", "/K cd /d \"" + targetDirectory + "\"") { UseShellExecute = true });
+                StartPowerShellTerminal(targetDirectory);
             }
             catch (Exception ex)
             {
                 MessageBox.Show("无法打开终端：" + ex.Message, "文件搜索", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
+        }
+
+        private static void StartPowerShellTerminal(string targetDirectory)
+        {
+            var powerShellPath = ResolvePowerShell7Path();
+            var terminalPath = ResolveWindowsTerminalPath();
+            var terminalTitle = GetTerminalTitle(targetDirectory);
+
+            if (!string.IsNullOrWhiteSpace(terminalPath))
+            {
+                var arguments = "new-tab --title \"" + EscapeCommandLineArgument(terminalTitle) + "\" -d \"" + EscapeCommandLineArgument(targetDirectory) + "\" \"" + EscapeCommandLineArgument(powerShellPath) + "\" -NoLogo -NoExit";
+                Process.Start(new ProcessStartInfo(terminalPath, arguments)
+                {
+                    UseShellExecute = true,
+                    WorkingDirectory = targetDirectory,
+                });
+                return;
+            }
+
+            var argumentsFallback = "-NoLogo -NoExit";
+            Process.Start(new ProcessStartInfo(powerShellPath, argumentsFallback)
+            {
+                UseShellExecute = true,
+                WorkingDirectory = targetDirectory,
+            });
+        }
+
+        private static string ResolvePowerShell7Path()
+        {
+            var candidates = new[]
+            {
+                Environment.ExpandEnvironmentVariables(@"%ProgramFiles%\PowerShell\7\pwsh.exe"),
+                Environment.ExpandEnvironmentVariables(@"%ProgramFiles(x86)%\PowerShell\7\pwsh.exe"),
+                Environment.ExpandEnvironmentVariables(@"%LocalAppData%\Microsoft\PowerShell\7\pwsh.exe"),
+                Environment.ExpandEnvironmentVariables(@"%ProgramW6432%\PowerShell\7\pwsh.exe"),
+            };
+
+            var candidate = candidates.FirstOrDefault(File.Exists);
+            if (!string.IsNullOrWhiteSpace(candidate))
+            {
+                return candidate;
+            }
+
+            throw new FileNotFoundException("未找到 PowerShell 7 的 pwsh.exe。");
+        }
+
+        private static string EscapePowerShellSingleQuotedString(string value)
+        {
+            return (value ?? string.Empty).Replace("'", "''");
+        }
+
+        private static string ResolveWindowsTerminalPath()
+        {
+            var candidate = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), @"Microsoft\WindowsApps\wt.exe");
+            return File.Exists(candidate) ? candidate : "wt.exe";
+        }
+
+        private static string GetTerminalTitle(string targetDirectory)
+        {
+            var trimmed = (targetDirectory ?? string.Empty).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var title = Path.GetFileName(trimmed);
+            return string.IsNullOrWhiteSpace(title) ? targetDirectory : title;
+        }
+
+        private static string EscapeCommandLineArgument(string value)
+        {
+            return (value ?? string.Empty).Replace("\"", "\\\"");
         }
 
         private void ShowProperties(EverythingSearchResultItem item)

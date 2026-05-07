@@ -63,6 +63,8 @@ namespace PackageManager.Models
     /// </summary>
     public class PackageInfo : INotifyPropertyChanged
     {
+        private const string DisabledAddinFolderName = "RevitAddinDisabled";
+
         private string productName;
 
         private string version;
@@ -1037,11 +1039,37 @@ namespace PackageManager.Models
             var addinDir = Path.Combine(GetAddinPath(), applicationVersion.Version);
             Directory.CreateDirectory(addinDir);
 
-            var targetAddinFile = Path.Combine(addinDir, Path.GetFileName(addinTemplateFile));
+            var targetAddinFileName = Path.GetFileName(addinTemplateFile);
+            DeleteDisabledRevitAddin(applicationVersion.Version, targetAddinFileName);
+
+            var targetAddinFile = Path.Combine(addinDir, targetAddinFileName);
             File.WriteAllText(targetAddinFile, addinContent, new UTF8Encoding(false));
 
             LoggingService.LogInfo(
                 $"已同步 Revit Addin：Product={ProductName}, RevitVersion={applicationVersion.Version}, Target={targetAddinFile}, Assembly={targetAssembly}");
+        }
+
+        private static void DeleteDisabledRevitAddin(string revitVersion, string addinFileName)
+        {
+            if (DataPersistenceService == null ||
+                string.IsNullOrWhiteSpace(revitVersion) ||
+                string.IsNullOrWhiteSpace(addinFileName))
+            {
+                return;
+            }
+
+            var disabledAddinFile = Path.Combine(
+                DataPersistenceService.GetDataFolderPath(),
+                DisabledAddinFolderName,
+                revitVersion,
+                addinFileName);
+            if (!File.Exists(disabledAddinFile))
+            {
+                return;
+            }
+
+            File.Delete(disabledAddinFile);
+            LoggingService.LogInfo($"已删除禁用目录中的旧 Revit Addin：{disabledAddinFile}");
         }
 
         private ApplicationVersion ResolveSelectedApplicationVersion()
