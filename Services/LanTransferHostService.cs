@@ -12,6 +12,9 @@ using Newtonsoft.Json.Linq;
 
 namespace PackageManager.Services;
 
+/// <summary>
+/// 局域网文件传输主机服务，负责监听传入连接、处理传输请求和密语会话。
+/// </summary>
 internal sealed class LanTransferHostService : IDisposable
 {
     internal const int DefaultPort = 48931;
@@ -27,6 +30,14 @@ internal sealed class LanTransferHostService : IDisposable
     private TcpListener _listener;
     private Task _acceptLoopTask;
 
+    /// <summary>
+    /// 初始化 <see cref="LanTransferHostService"/> 的新实例。
+    /// </summary>
+    /// <param name="configurationProvider">用于获取本机主机配置的延迟委托。</param>
+    /// <param name="requestApprovalAsync">当收到传输请求时的审批回调，返回是否接受及收件箱路径。</param>
+    /// <param name="secretChatApprovalAsync">当收到密语会话请求时的审批回调，可选。</param>
+    /// <param name="secretChatAccepted">密语会话被接受后的通知回调，可选。</param>
+    /// <exception cref="ArgumentNullException"><paramref name="configurationProvider"/> 或 <paramref name="requestApprovalAsync"/> 为 null。</exception>
     public LanTransferHostService(
         Func<LanHostConfiguration> configurationProvider,
         Func<LanTransferRequest, Task<LanIncomingTransferDecision>> requestApprovalAsync,
@@ -39,18 +50,28 @@ internal sealed class LanTransferHostService : IDisposable
         _secretChatAccepted = secretChatAccepted;
     }
 
+    /// <summary>当前监听端口号。</summary>
     public int ListenPort { get; private set; }
 
+    /// <summary>当传输会话开始时触发。</summary>
     public event Action<LanTransferSession> SessionStarted;
 
+    /// <summary>当传输会话完成（成功、失败或取消）时触发。</summary>
     public event Action<LanTransferSession> SessionCompleted;
 
+    /// <summary>当接收完成并记录传输历史时触发。</summary>
     public event Action<LanTransferRecord> ReceiveRecorded;
 
+    /// <summary>当收到密语消息时触发。</summary>
     public event Action<LanSecretMessageFrame> SecretMessageReceived;
 
+    /// <summary>当收到密语回执（已读/销毁）时触发。</summary>
     public event Action<LanSecretReceiptFrame> SecretReceiptReceived;
 
+    /// <summary>
+    /// 启动 TCP 监听，从默认端口开始尝试，最多探测 <see cref="MaxPortProbeCount"/> 个端口。
+    /// </summary>
+    /// <exception cref="InvalidOperationException">所有候选端口均绑定失败。</exception>
     public void Start()
     {
         if (_listener != null)
@@ -81,6 +102,10 @@ internal sealed class LanTransferHostService : IDisposable
         throw new InvalidOperationException("文件传输监听启动失败", lastError);
     }
 
+    /// <summary>
+    /// 取消指定的传入传输任务。
+    /// </summary>
+    /// <param name="transferId">传输标识。</param>
     public void CancelIncomingTransfer(string transferId)
     {
         if (string.IsNullOrWhiteSpace(transferId))
@@ -94,6 +119,9 @@ internal sealed class LanTransferHostService : IDisposable
         }
     }
 
+    /// <summary>
+    /// 停止监听、取消所有传入传输并释放资源。
+    /// </summary>
     public void Dispose()
     {
         _cts.Cancel();
@@ -114,6 +142,14 @@ internal sealed class LanTransferHostService : IDisposable
         _incomingTransferCancels.Clear();
     }
 
+    /// <summary>
+    /// 向指定远端探测握手，发送 hello 帧并等待应答。
+    /// </summary>
+    /// <param name="hostOrAddress">目标主机名或 IP 地址。</param>
+    /// <param name="port">目标端口号。</param>
+    /// <param name="localConfiguration">本机配置，用于构建握手帧。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>远端的握手应答帧，若连接失败则返回 null。</returns>
     public static async Task<LanHelloAckFrame> ProbePeerAsync(string hostOrAddress, int port, LanHostConfiguration localConfiguration, CancellationToken cancellationToken)
     {
         using (var client = new TcpClient())
@@ -621,31 +657,52 @@ internal sealed class LanTransferHostService : IDisposable
     }
 }
 
+/// <summary>
+/// 文件传输主机的本机配置信息。
+/// </summary>
 internal sealed class LanHostConfiguration
 {
+    /// <summary>设备唯一标识。</summary>
     public string DeviceId { get; set; }
 
+    /// <summary>用户显示名称。</summary>
     public string DisplayName { get; set; }
 
+    /// <summary>机器名称。</summary>
     public string MachineName { get; set; }
 
+    /// <summary>应用程序版本号。</summary>
     public string AppVersion { get; set; }
 
+    /// <summary>收件箱目录路径。</summary>
     public string InboxPath { get; set; }
 
+    /// <summary>设备支持的能力列表。</summary>
     public List<string> Capabilities { get; set; } = new List<string>();
 
+    /// <summary>密语聊天的 RSA 公钥（XML 格式）。</summary>
     public string SecretChatPublicKey { get; set; }
 }
 
+/// <summary>
+/// 传入传输请求的审批决定。
+/// </summary>
 internal sealed class LanIncomingTransferDecision
 {
+    /// <summary>是否接受传输。</summary>
     public bool Accepted { get; set; }
 
+    /// <summary>附加消息，如拒绝原因。</summary>
     public string Message { get; set; }
 
+    /// <summary>自定义收件箱路径，为 null 时使用默认路径。</summary>
     public string InboxPath { get; set; }
 
+    /// <summary>
+    /// 创建一个接受传输的决定。
+    /// </summary>
+    /// <param name="inboxPath">收件箱路径。</param>
+    /// <returns>接受决定。</returns>
     public static LanIncomingTransferDecision Accept(string inboxPath)
     {
         return new LanIncomingTransferDecision
@@ -655,6 +712,11 @@ internal sealed class LanIncomingTransferDecision
         };
     }
 
+    /// <summary>
+    /// 创建一个拒绝传输的决定。
+    /// </summary>
+    /// <param name="message">拒绝原因。</param>
+    /// <returns>拒绝决定。</returns>
     public static LanIncomingTransferDecision Reject(string message)
     {
         return new LanIncomingTransferDecision
@@ -665,191 +727,310 @@ internal sealed class LanIncomingTransferDecision
     }
 }
 
+/// <summary>
+/// 接收目录准备结果，包含最终目录和临时目录路径。
+/// </summary>
 internal sealed class LanPreparedReceivePath
 {
+    /// <summary>接收完成后的最终目录路径。</summary>
     public string FinalDirectory { get; set; }
 
+    /// <summary>接收过程中使用的临时目录路径。</summary>
     public string TempDirectory { get; set; }
 }
 
+/// <summary>
+/// 握手帧，连接建立后发送的第一条消息。
+/// </summary>
 internal class LanHelloFrame
 {
+    /// <summary>帧类型标识。</summary>
     public string Type { get; set; }
 
+    /// <summary>协议版本号。</summary>
     public int ProtocolVersion { get; set; }
 
+    /// <summary>设备唯一标识。</summary>
     public string DeviceId { get; set; }
 
+    /// <summary>用户显示名称。</summary>
     public string DisplayName { get; set; }
 
+    /// <summary>机器名称。</summary>
     public string MachineName { get; set; }
 
+    /// <summary>应用程序版本号。</summary>
     public string AppVersion { get; set; }
 
+    /// <summary>设备支持的能力列表。</summary>
     public List<string> Capabilities { get; set; } = new List<string>();
 
+    /// <summary>密语聊天的 RSA 公钥（XML 格式）。</summary>
     public string SecretChatPublicKey { get; set; }
 }
 
+/// <summary>
+/// 握手应答帧，包含兼容性信息。
+/// </summary>
 internal sealed class LanHelloAckFrame : LanHelloFrame
 {
+    /// <summary>协议版本是否兼容。</summary>
     public bool Compatible { get; set; }
 
+    /// <summary>附加消息，如错误说明。</summary>
     public string Message { get; set; }
 }
 
+/// <summary>
+/// 文件传输请求帧。
+/// </summary>
 internal sealed class LanTransferRequestFrame
 {
+    /// <summary>帧类型标识。</summary>
     public string Type { get; set; }
 
+    /// <summary>传输唯一标识。</summary>
     public string TransferId { get; set; }
 
+    /// <summary>发送方显示名称。</summary>
     public string SenderDisplayName { get; set; }
 
+    /// <summary>发送方机器名称。</summary>
     public string SenderMachineName { get; set; }
 
+    /// <summary>发送方 IP 地址。</summary>
     public string SenderAddress { get; set; }
 
+    /// <summary>发送方监听端口。</summary>
     public int SenderPort { get; set; }
 
+    /// <summary>待传输的文件/目录项列表。</summary>
     public List<LanTransferItem> Items { get; set; } = new List<LanTransferItem>();
 
+    /// <summary>顶层项名称列表。</summary>
     public List<string> TopLevelNames { get; set; } = new List<string>();
 
+    /// <summary>传输总字节数。</summary>
     public long TotalBytes { get; set; }
 }
 
+/// <summary>
+/// 文件传输响应帧。
+/// </summary>
 internal sealed class LanTransferResponseFrame
 {
+    /// <summary>帧类型标识。</summary>
     public string Type { get; set; }
 
+    /// <summary>是否接受传输。</summary>
     public bool Accepted { get; set; }
 
+    /// <summary>接收方保存文件的目录路径。</summary>
     public string SaveDirectory { get; set; }
 
+    /// <summary>附加消息。</summary>
     public string Message { get; set; }
 }
 
+/// <summary>
+/// 文件头帧，描述待传输的单个文件或目录。
+/// </summary>
 internal sealed class LanFileHeaderFrame
 {
+    /// <summary>帧类型标识。</summary>
     public string Type { get; set; }
 
+    /// <summary>文件相对路径。</summary>
     public string RelativePath { get; set; }
 
+    /// <summary>是否为目录。</summary>
     public bool IsDirectory { get; set; }
 
+    /// <summary>文件字节长度，目录时为 0。</summary>
     public long Length { get; set; }
 }
 
+/// <summary>
+/// 传输取消帧。
+/// </summary>
 internal sealed class LanCancelFrame
 {
+    /// <summary>帧类型标识。</summary>
     public string Type { get; set; }
 
+    /// <summary>取消原因。</summary>
     public string Message { get; set; }
 }
 
+/// <summary>
+/// 传输错误帧。
+/// </summary>
 internal sealed class LanErrorFrame
 {
+    /// <summary>帧类型标识。</summary>
     public string Type { get; set; }
 
+    /// <summary>错误描述。</summary>
     public string Message { get; set; }
 }
 
+/// <summary>
+/// 密语会话请求帧。
+/// </summary>
 internal sealed class LanSecretSessionRequestFrame
 {
+    /// <summary>帧类型标识。</summary>
     public string Type { get; set; }
 
+    /// <summary>会话唯一标识。</summary>
     public string SessionId { get; set; }
 
+    /// <summary>发送方显示名称。</summary>
     public string SenderDisplayName { get; set; }
 
+    /// <summary>发送方机器名称。</summary>
     public string SenderMachineName { get; set; }
 
+    /// <summary>发送方 IP 地址。</summary>
     public string SenderAddress { get; set; }
 
+    /// <summary>发送方监听端口。</summary>
     public int SenderPort { get; set; }
 }
 
+/// <summary>
+/// 密语会话响应帧。
+/// </summary>
 internal sealed class LanSecretSessionResponseFrame
 {
+    /// <summary>帧类型标识。</summary>
     public string Type { get; set; }
 
+    /// <summary>会话唯一标识。</summary>
     public string SessionId { get; set; }
 
+    /// <summary>是否接受密语会话。</summary>
     public bool Accepted { get; set; }
 
+    /// <summary>附加消息。</summary>
     public string Message { get; set; }
 }
 
+/// <summary>
+/// 密语消息帧，携带加密后的消息内容。
+/// </summary>
 internal sealed class LanSecretMessageFrame
 {
+    /// <summary>帧类型标识。</summary>
     public string Type { get; set; }
 
+    /// <summary>会话唯一标识。</summary>
     public string SessionId { get; set; }
 
+    /// <summary>消息唯一标识。</summary>
     public string MessageId { get; set; }
 
+    /// <summary>发送方设备标识。</summary>
     public string SenderDeviceId { get; set; }
 
+    /// <summary>发送方显示名称。</summary>
     public string SenderDisplayName { get; set; }
 
+    /// <summary>发送方机器名称。</summary>
     public string SenderMachineName { get; set; }
 
+    /// <summary>发送方 IP 地址。</summary>
     public string SenderAddress { get; set; }
 
+    /// <summary>发送方监听端口。</summary>
     public int SenderPort { get; set; }
 
+    /// <summary>AES 加密后的密文（Base64）。</summary>
     public string CipherText { get; set; }
 
+    /// <summary>RSA 加密后的 AES 密钥（Base64）。</summary>
     public string EncryptedKey { get; set; }
 
+    /// <summary>AES 初始化向量（Base64）。</summary>
     public string Iv { get; set; }
 
+    /// <summary>HMAC-SHA256 消息认证码（Base64）。</summary>
     public string Hmac { get; set; }
 
+    /// <summary>发送方 RSA 公钥（XML 格式）。</summary>
     public string SenderPublicKey { get; set; }
 }
 
+/// <summary>
+/// 密语回执帧（已读或销毁通知）。
+/// </summary>
 internal sealed class LanSecretReceiptFrame
 {
+    /// <summary>帧类型标识。</summary>
     public string Type { get; set; }
 
+    /// <summary>会话唯一标识。</summary>
     public string SessionId { get; set; }
 
+    /// <summary>消息唯一标识。</summary>
     public string MessageId { get; set; }
 
+    /// <summary>回执类型，如 "read" 或 "destroy"。</summary>
     public string Receipt { get; set; }
 
+    /// <summary>发送方设备标识。</summary>
     public string SenderDeviceId { get; set; }
 
+    /// <summary>发送方 IP 地址。</summary>
     public string SenderAddress { get; set; }
 
+    /// <summary>发送方监听端口。</summary>
     public int SenderPort { get; set; }
 }
 
+/// <summary>
+/// 密语聊天会话请求，由主机服务传递给上层进行审批。
+/// </summary>
 internal sealed class LanSecretChatSessionRequest
 {
+    /// <summary>会话唯一标识。</summary>
     public string SessionId { get; set; }
 
+    /// <summary>对方设备标识。</summary>
     public string PeerDeviceId { get; set; }
 
+    /// <summary>对方显示名称。</summary>
     public string PeerDisplayName { get; set; }
 
+    /// <summary>对方机器名称。</summary>
     public string PeerMachineName { get; set; }
 
+    /// <summary>对方 IP 地址。</summary>
     public string PeerAddress { get; set; }
 
+    /// <summary>对方监听端口。</summary>
     public int PeerPort { get; set; }
 
+    /// <summary>对方 RSA 公钥（XML 格式）。</summary>
     public string PeerPublicKey { get; set; }
 
+    /// <summary>对方的组合显示标签。</summary>
     public string PeerLabel => string.IsNullOrWhiteSpace(PeerMachineName)
         ? (PeerDisplayName ?? "未知同事")
         : $"{PeerDisplayName} ({PeerMachineName})";
 }
 
+/// <summary>
+/// 局域网传输线路协议工具类，提供帧的读写和文件流传输能力。
+/// </summary>
 internal static class LanTransferWireProtocol
 {
+    /// <summary>
+    /// 将对象序列化为 JSON 并作为帧写入网络流。
+    /// </summary>
+    /// <param name="stream">网络流。</param>
+    /// <param name="frame">待写入的帧对象。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
     public static async Task WriteFrameAsync(NetworkStream stream, object frame, CancellationToken cancellationToken)
     {
         var json = JsonConvert.SerializeObject(frame);
@@ -860,6 +1041,13 @@ internal static class LanTransferWireProtocol
         await stream.FlushAsync(cancellationToken);
     }
 
+    /// <summary>
+    /// 从网络流中读取一帧并解析为 JSON 对象。
+    /// </summary>
+    /// <param name="stream">网络流。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>解析后的 JSON 对象。</returns>
+    /// <exception cref="IOException">帧长度非法。</exception>
     public static async Task<JObject> ReadFrameAsync(NetworkStream stream, CancellationToken cancellationToken)
     {
         var lengthBuffer = new byte[sizeof(int)];
@@ -876,6 +1064,14 @@ internal static class LanTransferWireProtocol
         return JObject.Parse(json);
     }
 
+    /// <summary>
+    /// 从网络流中读取指定长度的数据并写入文件，支持进度回调。
+    /// </summary>
+    /// <param name="stream">网络流。</param>
+    /// <param name="filePath">目标文件路径。</param>
+    /// <param name="length">要读取的字节数。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <param name="progressCallback">每次写入后的进度回调，参数为本次写入字节数。</param>
     public static async Task CopyFixedLengthToFileAsync(NetworkStream stream, string filePath, long length, CancellationToken cancellationToken, Action<long> progressCallback)
     {
         using (var fileStream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, true))
@@ -899,6 +1095,15 @@ internal static class LanTransferWireProtocol
         }
     }
 
+    /// <summary>
+    /// 从网络流中精确读取指定字节数到缓冲区。
+    /// </summary>
+    /// <param name="stream">网络流。</param>
+    /// <param name="buffer">目标缓冲区。</param>
+    /// <param name="offset">缓冲区偏移量。</param>
+    /// <param name="count">要读取的字节数。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <exception cref="EndOfStreamException">连接在读取完成前关闭。</exception>
     public static async Task ReadExactAsync(NetworkStream stream, byte[] buffer, int offset, int count, CancellationToken cancellationToken)
     {
         while (count > 0)

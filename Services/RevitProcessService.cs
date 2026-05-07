@@ -37,6 +37,11 @@ namespace PackageManager.Services
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool CloseHandle(IntPtr hObject);
 
+        /// <summary>
+        /// 查找所有使用指定可执行文件的 Revit 进程。
+        /// </summary>
+        /// <param name="executablePath">Revit 可执行文件的完整路径。</param>
+        /// <returns>匹配的进程信息列表。</returns>
         public IReadOnlyList<RevitProcessInfo> FindProcessesForExecutable(string executablePath)
         {
             if (string.IsNullOrWhiteSpace(executablePath))
@@ -92,6 +97,11 @@ namespace PackageManager.Services
                 .ToList();
         }
 
+        /// <summary>
+        /// 尝试将指定 Revit 进程的窗口激活到前台。
+        /// </summary>
+        /// <param name="processInfo">目标进程信息。</param>
+        /// <returns>激活成功返回 true，否则 false。</returns>
         public bool TryActivateProcess(RevitProcessInfo processInfo)
         {
             if (processInfo == null || processInfo.MainWindowHandle == IntPtr.Zero)
@@ -226,16 +236,34 @@ namespace PackageManager.Services
 
     internal sealed class RevitProcessInfo
     {
+        /// <summary>
+        /// 获取或设置进程 ID。
+        /// </summary>
         public int ProcessId { get; set; }
 
+        /// <summary>
+        /// 获取或设置可执行文件路径。
+        /// </summary>
         public string ExecutablePath { get; set; }
 
+        /// <summary>
+        /// 获取或设置进程是否正在响应。
+        /// </summary>
         public bool IsResponding { get; set; }
 
+        /// <summary>
+        /// 获取或设置主窗口句柄。
+        /// </summary>
         public IntPtr MainWindowHandle { get; set; }
 
+        /// <summary>
+        /// 获取或设置进程启动时间。
+        /// </summary>
         public DateTime? StartTime { get; set; }
 
+        /// <summary>
+        /// 获取是否存在主窗口。
+        /// </summary>
         public bool HasMainWindow => MainWindowHandle != IntPtr.Zero;
     }
 }

@@ -8,6 +8,9 @@ using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
 using PackageManager.Services.PingCode.Exception;
 
+/// <summary>
+/// PingCode 开放接口客户端的身份认证部分。
+/// </summary>
 public partial class PingCodeApiService
 {
     private string GetClientId()

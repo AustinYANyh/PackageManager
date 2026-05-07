@@ -6,6 +6,9 @@ using System.Text;
 using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
 
+/// <summary>
+/// PingCode 开放接口客户端的附件处理部分。
+/// </summary>
 public partial class PingCodeApiService
 {
     private async Task<string> BuildAttachmentsHtmlAsync(JToken v)

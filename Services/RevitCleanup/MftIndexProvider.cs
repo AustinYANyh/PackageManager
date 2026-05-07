@@ -25,6 +25,10 @@ namespace PackageManager.Services.RevitCleanup
         private bool availabilityChecked;
         private string toolPath;
 
+        /// <summary>
+        /// 检查 MFT 扫描工具是否可用（需要管理员权限）。
+        /// </summary>
+        /// <returns>可用返回 true，否则 false。</returns>
         public bool IsAvailable()
         {
             lock (gate)
@@ -40,6 +44,13 @@ namespace PackageManager.Services.RevitCleanup
             }
         }
 
+        /// <summary>
+        /// 通过 MFT 索引异步查询符合条件的文件。
+        /// </summary>
+        /// <param name="options">查询选项。</param>
+        /// <param name="progress">进度报告。</param>
+        /// <param name="cancellationToken">取消令牌。</param>
+        /// <returns>查询结果；不可用或失败时返回 null。</returns>
         public Task<RevitFileQueryResult> QueryAsync(RevitFileQueryOptions options,
             IProgress<RevitFileQueryProgress> progress, CancellationToken cancellationToken)
         {

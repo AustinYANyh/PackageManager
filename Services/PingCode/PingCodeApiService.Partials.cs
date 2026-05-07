@@ -7,7 +7,7 @@ using Newtonsoft.Json.Linq;
 namespace PackageManager.Services.PingCode
 {
     /// <summary>
-    /// PingCodeApiService 的辅助定义
+    /// PingCode 开放接口客户端的辅助定义（枚举与内部类型）。
     /// </summary>
     public partial class PingCodeApiService
     {

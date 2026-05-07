@@ -1108,7 +1108,14 @@ namespace PackageManager.Services
 
     internal sealed class CommonStartupSettings
     {
+        /// <summary>
+        /// 获取或设置常用启动项列表。
+        /// </summary>
         public List<CommonStartupItem> CommonStartupItems { get; set; } = new List<CommonStartupItem>();
+
+        /// <summary>
+        /// 获取或设置常用启动项分组定义列表。
+        /// </summary>
         public List<CommonStartupGroup> CommonStartupGroups { get; set; } = new List<CommonStartupGroup>();
     }
 }

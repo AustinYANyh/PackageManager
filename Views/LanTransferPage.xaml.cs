@@ -27,6 +27,11 @@ public partial class LanTransferPage : Page, INotifyPropertyChanged, ICentralPag
     private readonly Dictionary<string, SecretChatWindow> _secretChatWindows = new Dictionary<string, SecretChatWindow>(StringComparer.OrdinalIgnoreCase);
     private string _manualAddress;
 
+    /// <summary>
+    /// 初始化 <see cref="LanTransferPage"/> 的新实例。
+    /// </summary>
+    /// <param name="service">局域网传输服务实例。</param>
+    /// <exception cref="ArgumentNullException"><paramref name="service"/> 为 null。</exception>
     public LanTransferPage(LanTransferService service)
     {
         _service = service ?? throw new ArgumentNullException(nameof(service));
@@ -35,14 +40,27 @@ public partial class LanTransferPage : Page, INotifyPropertyChanged, ICentralPag
         HookServiceEvents();
     }
 
+    /// <summary>
+    /// 请求退出当前页面的导航事件。
+    /// </summary>
     public event Action RequestExit;
 
+    /// <inheritdoc/>
     public event PropertyChangedEventHandler PropertyChanged;
 
+    /// <summary>
+    /// 获取局域网传输服务实例。
+    /// </summary>
     public LanTransferService Service => _service;
 
+    /// <summary>
+    /// 获取待发送文件的队列集合。
+    /// </summary>
     public ObservableCollection<QueuedTransferSource> QueuedItems { get; } = new ObservableCollection<QueuedTransferSource>();
 
+    /// <summary>
+    /// 获取或设置当前选中的远程对等端。
+    /// </summary>
     public LanPeerInfo SelectedPeer
     {
         get => _selectedPeer;
@@ -68,56 +86,95 @@ public partial class LanTransferPage : Page, INotifyPropertyChanged, ICentralPag
         }
     }
 
+    /// <summary>
+    /// 获取或设置当前选中的队列项。
+    /// </summary>
     public QueuedTransferSource SelectedQueuedItem
     {
         get => _selectedQueuedItem;
         set => SetProperty(ref _selectedQueuedItem, value);
     }
 
+    /// <summary>
+    /// 获取或设置当前选中的活动传输会话。
+    /// </summary>
     public LanTransferSession SelectedActiveTransfer
     {
         get => _selectedActiveTransfer;
         set => SetProperty(ref _selectedActiveTransfer, value);
     }
 
+    /// <summary>
+    /// 获取或设置手动输入的目标地址。
+    /// </summary>
     public string ManualAddress
     {
         get => _manualAddress;
         set => SetProperty(ref _manualAddress, value);
     }
 
+    /// <summary>
+    /// 获取页面顶部的摘要文本。
+    /// </summary>
     public string HeaderSummaryText => LocalSummaryText;
 
+    /// <summary>
+    /// 获取选中接收方的摘要标题。
+    /// </summary>
     public string SelectedPeerSummaryTitle => SelectedPeer?.DisplayLabel ?? "未选择接收方";
 
+    /// <summary>
+    /// 获取选中接收方的详细信息摘要。
+    /// </summary>
     public string SelectedPeerSummaryText => SelectedPeer == null
         ? "先在左侧选择在线设备，或手动输入 IP / 主机名连接。"
         : SelectedPeer.SecretUnreadCount > 0
             ? $"{SelectedPeer.EndpointDisplay} · {SelectedPeer.StatusSummaryText} · 密语未读 {SelectedPeer.SecretUnreadCount} 条"
             : $"{SelectedPeer.EndpointDisplay} · {SelectedPeer.StatusSummaryText}";
 
+    /// <summary>
+    /// 获取发送目标摘要文本。
+    /// </summary>
     public string SendTargetSummaryText => SelectedPeer == null
         ? "请选择左侧设备后再发送。"
         : SelectedPeer.SecretUnreadCount > 0
             ? $"将发送到：{SelectedPeer.DisplayLabel} · 密语未读 {SelectedPeer.SecretUnreadCount} 条"
             : $"将发送到：{SelectedPeer.DisplayLabel}";
 
+    /// <summary>
+    /// 获取待确认请求的摘要文本。
+    /// </summary>
     public string PendingRequestSummaryText => Service.PendingRequests.Count == 0
         ? "当前没有待确认请求。"
         : $"待确认 {Service.PendingRequests.Count} 项，保持现有通知和确认流程。";
 
+    /// <summary>
+    /// 获取活动传输的摘要文本。
+    /// </summary>
     public string ActiveTransferSummaryText => Service.ActiveTransfers.Count == 0
         ? "当前没有进行中的传输。"
         : $"正在处理 {Service.ActiveTransfers.Count} 项传输。";
 
+    /// <summary>
+    /// 获取传输历史的摘要文本。
+    /// </summary>
     public string HistorySummaryText => Service.TransferHistory.Count == 0
         ? "暂无历史记录，默认折叠显示。"
         : $"最近 {Service.TransferHistory.Count} 条记录，默认折叠显示。";
 
+    /// <summary>
+    /// 获取本机网络状态的摘要文本。
+    /// </summary>
     public string LocalSummaryText => $"本机：{Service.DisplayName} · 机器名：{Service.MachineName} · 在线用户：{Service.OnlinePeerCount} · 监听端口：{Service.ListenPort}";
 
+    /// <summary>
+    /// 获取收件箱路径的摘要文本。
+    /// </summary>
     public string InboxSummaryText => $"收件箱：{Service.InboxPath}";
 
+    /// <summary>
+    /// 获取发送队列的摘要文本。
+    /// </summary>
     public string QueueSummaryText
     {
         get
@@ -465,15 +522,33 @@ public partial class LanTransferPage : Page, INotifyPropertyChanged, ICentralPag
     }
 }
 
+/// <summary>
+/// 待发送文件/文件夹队列中的单个条目。
+/// </summary>
 public sealed class QueuedTransferSource
 {
+    /// <summary>
+    /// 获取或设置文件或文件夹的完整路径。
+    /// </summary>
     public string FullPath { get; set; }
 
+    /// <summary>
+    /// 获取或设置显示名称。
+    /// </summary>
     public string DisplayName { get; set; }
 
+    /// <summary>
+    /// 获取或设置条目类型（如 "文件" 或 "文件夹"）。
+    /// </summary>
     public string ItemType { get; set; }
 
+    /// <summary>
+    /// 获取或设置总字节数。
+    /// </summary>
     public long TotalBytes { get; set; }
 
+    /// <summary>
+    /// 获取或设置摘要描述文本。
+    /// </summary>
     public string SummaryText { get; set; }
 }

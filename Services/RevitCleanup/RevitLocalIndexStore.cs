@@ -17,6 +17,9 @@ namespace PackageManager.Services.RevitCleanup
         private readonly JsonSerializerSettings jsonSettings;
         private RevitLocalIndexManifest manifest;
 
+        /// <summary>
+        /// 初始化 <see cref="RevitLocalIndexStore"/> 的新实例。
+        /// </summary>
         public RevitLocalIndexStore()
         {
             var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
@@ -29,6 +32,11 @@ namespace PackageManager.Services.RevitCleanup
             };
         }
 
+        /// <summary>
+        /// 获取指定根目录的索引元数据。
+        /// </summary>
+        /// <param name="rootPath">根目录路径。</param>
+        /// <returns>元数据；未找到或无效时返回 null。</returns>
         public RevitIndexedRootMetadata GetRootMetadata(string rootPath)
         {
             var normalizedRootPath = RevitCleanupPathUtility.NormalizePath(rootPath);
@@ -45,6 +53,11 @@ namespace PackageManager.Services.RevitCleanup
             }
         }
 
+        /// <summary>
+        /// 加载指定根目录的索引快照。
+        /// </summary>
+        /// <param name="rootPath">根目录路径。</param>
+        /// <returns>索引快照；未找到或加载失败时返回 null。</returns>
         public RevitRootIndexSnapshot LoadSnapshot(string rootPath)
         {
             var normalizedRootPath = RevitCleanupPathUtility.NormalizePath(rootPath);
@@ -80,6 +93,11 @@ namespace PackageManager.Services.RevitCleanup
             }
         }
 
+        /// <summary>
+        /// 保存索引快照并更新清单。
+        /// </summary>
+        /// <param name="snapshot">索引快照。</param>
+        /// <param name="watcherEnabled">目录监听是否已启用。</param>
         public void SaveSnapshot(RevitRootIndexSnapshot snapshot, bool watcherEnabled)
         {
             if (snapshot == null || string.IsNullOrWhiteSpace(snapshot.RootPath))
@@ -122,6 +140,10 @@ namespace PackageManager.Services.RevitCleanup
             }
         }
 
+        /// <summary>
+        /// 从索引中移除指定的文件记录并持久化。
+        /// </summary>
+        /// <param name="filePaths">要移除的文件路径集合。</param>
         public void RemoveFiles(IEnumerable<string> filePaths)
         {
             var normalizedPaths = (filePaths ?? Array.Empty<string>())
@@ -265,51 +287,108 @@ namespace PackageManager.Services.RevitCleanup
 
     internal sealed class RevitLocalIndexManifest
     {
+        /// <summary>
+        /// 获取或设置根目录路径到索引元数据的映射。
+        /// </summary>
         public Dictionary<string, RevitIndexedRootMetadata> Roots { get; set; } = new Dictionary<string, RevitIndexedRootMetadata>(StringComparer.OrdinalIgnoreCase);
     }
 
     internal sealed class RevitIndexedRootMetadata
     {
+        /// <summary>
+        /// 获取或设置根目录路径。
+        /// </summary>
         public string RootPath { get; set; }
 
+        /// <summary>
+        /// 获取或设置根目录显示名称。
+        /// </summary>
         public string RootDisplayName { get; set; }
 
+        /// <summary>
+        /// 获取或设置快照文件的存储键。
+        /// </summary>
         public string StorageKey { get; set; }
 
+        /// <summary>
+        /// 获取或设置最后一次完整索引时间（UTC）。
+        /// </summary>
         public DateTime LastIndexedUtc { get; set; }
 
+        /// <summary>
+        /// 获取或设置最后一次同步时间（UTC）。
+        /// </summary>
         public DateTime LastSyncUtc { get; set; }
 
+        /// <summary>
+        /// 获取或设置目录监听是否已启用。
+        /// </summary>
         public bool WatcherEnabled { get; set; }
     }
 
     internal sealed class RevitRootIndexSnapshot
     {
+        /// <summary>
+        /// 获取或设置根目录路径。
+        /// </summary>
         public string RootPath { get; set; }
 
+        /// <summary>
+        /// 获取或设置根目录显示名称。
+        /// </summary>
         public string RootDisplayName { get; set; }
 
+        /// <summary>
+        /// 获取或设置最后一次完整索引时间（UTC）。
+        /// </summary>
         public DateTime LastIndexedUtc { get; set; }
 
+        /// <summary>
+        /// 获取或设置最后一次同步时间（UTC）。
+        /// </summary>
         public DateTime LastSyncUtc { get; set; }
 
+        /// <summary>
+        /// 获取或设置索引中的文件记录列表。
+        /// </summary>
         public List<RevitIndexedFileRecord> Files { get; set; } = new List<RevitIndexedFileRecord>();
     }
 
     internal sealed class RevitIndexedFileRecord
     {
+        /// <summary>
+        /// 获取或设置所属根目录路径。
+        /// </summary>
         public string RootPath { get; set; }
 
+        /// <summary>
+        /// 获取或设置所属根目录显示名称。
+        /// </summary>
         public string RootDisplayName { get; set; }
 
+        /// <summary>
+        /// 获取或设置文件完整路径。
+        /// </summary>
         public string FullPath { get; set; }
 
+        /// <summary>
+        /// 获取或设置文件名。
+        /// </summary>
         public string FileName { get; set; }
 
+        /// <summary>
+        /// 获取或设置文件扩展名。
+        /// </summary>
         public string Extension { get; set; }
 
+        /// <summary>
+        /// 获取或设置文件大小（字节）。
+        /// </summary>
         public long SizeBytes { get; set; }
 
+        /// <summary>
+        /// 获取或设置文件最后修改时间（UTC）。
+        /// </summary>
         public DateTime ModifiedTimeUtc { get; set; }
     }
 }

@@ -16,19 +16,38 @@ namespace PackageManager.Services.RevitCleanup
 
     internal sealed class RevitFileQueryRoot
     {
+        /// <summary>
+        /// 获取或设置根目录的显示名称。
+        /// </summary>
         public string DisplayName { get; set; }
 
+        /// <summary>
+        /// 获取或设置根目录路径。
+        /// </summary>
         public string RootPath { get; set; }
     }
 
     internal sealed class RevitFileQueryOptions
     {
+        /// <summary>
+        /// 获取或设置查询的根目录列表。
+        /// </summary>
         public List<RevitFileQueryRoot> Roots { get; set; } = new List<RevitFileQueryRoot>();
 
+        /// <summary>
+        /// 获取或设置要搜索的文件扩展名数组。
+        /// </summary>
         public string[] Extensions { get; set; } = { ".rvt", ".rfa" };
 
+        /// <summary>
+        /// 获取或设置是否强制重建本地索引。
+        /// </summary>
         public bool ForceRebuildLocalIndex { get; set; }
 
+        /// <summary>
+        /// 对查询选项进行标准化：规范化路径、去重、补齐默认扩展名。
+        /// </summary>
+        /// <returns>标准化后的新 <see cref="RevitFileQueryOptions"/> 实例。</returns>
         public RevitFileQueryOptions Normalize()
         {
             var normalizedRoots = Roots.Where(root => root != null)
@@ -59,41 +78,85 @@ namespace PackageManager.Services.RevitCleanup
 
     internal sealed class RevitIndexedFileInfo
     {
+        /// <summary>
+        /// 获取或设置文件完整路径。
+        /// </summary>
         public string FullPath { get; set; }
 
+        /// <summary>
+        /// 获取或设置文件名。
+        /// </summary>
         public string FileName { get; set; }
 
+        /// <summary>
+        /// 获取或设置文件大小（字节）。
+        /// </summary>
         public long SizeBytes { get; set; }
 
+        /// <summary>
+        /// 获取或设置文件最后修改时间（UTC）。
+        /// </summary>
         public DateTime ModifiedTimeUtc { get; set; }
 
+        /// <summary>
+        /// 获取或设置所属根目录路径。
+        /// </summary>
         public string RootPath { get; set; }
 
+        /// <summary>
+        /// 获取或设置所属根目录的显示名称。
+        /// </summary>
         public string RootDisplayName { get; set; }
 
+        /// <summary>
+        /// 获取或设置文件来源的索引类型。
+        /// </summary>
         public RevitFileQuerySourceKind SourceKind { get; set; }
     }
 
     internal sealed class RevitFileQueryProgress
     {
+        /// <summary>
+        /// 获取或设置进度消息文本。
+        /// </summary>
         public string Message { get; set; }
     }
 
     internal sealed class RevitFileQueryResult
     {
+        /// <summary>
+        /// 获取或设置查询结果的索引来源类型。
+        /// </summary>
         public RevitFileQuerySourceKind SourceKind { get; set; }
 
+        /// <summary>
+        /// 获取或设置索引提供方的显示名称。
+        /// </summary>
         public string ProviderDisplayText { get; set; }
 
+        /// <summary>
+        /// 获取或设置查询到的文件列表。
+        /// </summary>
         public IReadOnlyList<RevitIndexedFileInfo> Files { get; set; } = Array.Empty<RevitIndexedFileInfo>();
 
+        /// <summary>
+        /// 获取所有文件的总大小（字节）。
+        /// </summary>
         public long TotalSizeBytes => Files?.Sum(item => item.SizeBytes) ?? 0L;
 
+        /// <summary>
+        /// 获取文件总数。
+        /// </summary>
         public int TotalCount => Files?.Count ?? 0;
     }
 
     internal static class RevitCleanupPathUtility
     {
+        /// <summary>
+        /// 规范化路径：去除尾部斜杠、解析相对路径并统一分隔符。
+        /// </summary>
+        /// <param name="path">原始路径。</param>
+        /// <returns>规范化后的路径；无效输入返回 null。</returns>
         public static string NormalizePath(string path)
         {
             if (string.IsNullOrWhiteSpace(path))
@@ -135,6 +198,11 @@ namespace PackageManager.Services.RevitCleanup
             }
         }
 
+        /// <summary>
+        /// 规范化文件扩展名：确保以点开头并转为小写。
+        /// </summary>
+        /// <param name="extension">原始扩展名。</param>
+        /// <returns>规范化后的扩展名；无效输入返回 null。</returns>
         public static string NormalizeExtension(string extension)
         {
             if (string.IsNullOrWhiteSpace(extension))
@@ -146,6 +214,12 @@ namespace PackageManager.Services.RevitCleanup
             return extension.StartsWith(".", StringComparison.Ordinal) ? extension.ToLowerInvariant() : "." + extension.ToLowerInvariant();
         }
 
+        /// <summary>
+        /// 判断文件扩展名是否在给定的扩展名列表中。
+        /// </summary>
+        /// <param name="path">文件路径。</param>
+        /// <param name="extensions">扩展名列表。</param>
+        /// <returns>匹配返回 true，否则 false。</returns>
         public static bool IsIndexedExtension(string path, IEnumerable<string> extensions)
         {
             var extension = NormalizeExtension(IOPath.GetExtension(path));
@@ -157,6 +231,12 @@ namespace PackageManager.Services.RevitCleanup
             return (extensions ?? Array.Empty<string>()).Any(item => string.Equals(NormalizeExtension(item), extension, StringComparison.OrdinalIgnoreCase));
         }
 
+        /// <summary>
+        /// 判断指定路径是否位于给定根目录下（含根目录本身）。
+        /// </summary>
+        /// <param name="path">待判断的路径。</param>
+        /// <param name="rootPath">根目录路径。</param>
+        /// <returns>是子路径或相等返回 true，否则 false。</returns>
         public static bool IsPathUnderRoot(string path, string rootPath)
         {
             var normalizedPath = NormalizePath(path);

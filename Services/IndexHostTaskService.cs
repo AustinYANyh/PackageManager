@@ -15,6 +15,10 @@ namespace PackageManager.Services
     {
         private const int HostAvailabilityWaitMilliseconds = 15000;
 
+        /// <summary>
+        /// 确保索引宿主计划任务已注册并在运行；若未注册则创建任务并启动。
+        /// </summary>
+        /// <returns>成功注册且正在运行返回 true，否则 false。</returns>
         public static bool EnsureRegisteredAndRunningOnStartup()
         {
             try

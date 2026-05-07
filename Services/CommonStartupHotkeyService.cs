@@ -27,6 +27,11 @@ namespace PackageManager.Services
         private bool _hotkeyPendingActivation;
         private int _pendingHotkeyVkCode;
 
+        /// <summary>
+        /// 初始化 <see cref="CommonStartupHotkeyService"/> 的新实例。
+        /// </summary>
+        /// <param name="windowManager">常用启动项窗口管理器。</param>
+        /// <param name="fileSearchWindowManager">文件搜索窗口管理器。</param>
         public CommonStartupHotkeyService(CommonStartupWindowManager windowManager, FileSearchWindowManager fileSearchWindowManager)
         {
             _windowManager = windowManager ?? throw new ArgumentNullException(nameof(windowManager));
@@ -34,9 +39,19 @@ namespace PackageManager.Services
             _keyboardProc = KeyboardHookCallback;
         }
 
+        /// <summary>
+        /// 获取常用启动项热键的默认显示文本。
+        /// </summary>
         public static string DefaultHotkeyDisplayText => "Ctrl+Q";
+
+        /// <summary>
+        /// 获取文件搜索热键的默认显示文本。
+        /// </summary>
         public static string DefaultFileSearchHotkeyDisplayText => "Ctrl+E";
 
+        /// <summary>
+        /// 启动全局键盘钩子，开始监听热键。
+        /// </summary>
         public void Start()
         {
             if (_hookHandle != IntPtr.Zero)
@@ -54,6 +69,9 @@ namespace PackageManager.Services
             }
         }
 
+        /// <summary>
+        /// 停止全局键盘钩子。
+        /// </summary>
         public void Stop()
         {
             if (_hookHandle == IntPtr.Zero)
@@ -66,6 +84,9 @@ namespace PackageManager.Services
             _pendingHotkeyVkCode = 0;
         }
 
+        /// <summary>
+        /// 释放资源，停止键盘钩子。
+        /// </summary>
         public void Dispose()
         {
             Stop();

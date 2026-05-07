@@ -8,6 +8,9 @@ using PackageManager.Services;
 
 namespace PackageManager.Views;
 
+/// <summary>
+/// 密语（加密聊天）窗口，提供端到端加密的即时通讯界面。
+/// </summary>
 public partial class SecretChatWindow : Window
 {
     private const uint WdaExcludeFromCapture = 0x00000011;
@@ -15,6 +18,12 @@ public partial class SecretChatWindow : Window
     private readonly LanTransferService _service;
     private readonly SecretChatSession _session;
 
+    /// <summary>
+    /// 初始化 <see cref="SecretChatWindow"/> 的新实例。
+    /// </summary>
+    /// <param name="service">局域网传输服务实例。</param>
+    /// <param name="session">密语会话实例。</param>
+    /// <exception cref="ArgumentNullException"><paramref name="service"/> 或 <paramref name="session"/> 为 null。</exception>
     public SecretChatWindow(LanTransferService service, SecretChatSession session)
     {
         _service = service ?? throw new ArgumentNullException(nameof(service));
@@ -40,6 +49,9 @@ public partial class SecretChatWindow : Window
         _session.Messages.CollectionChanged += Messages_CollectionChanged;
     }
 
+    /// <summary>
+    /// 获取当前密语会话实例。
+    /// </summary>
     public SecretChatSession Session => _session;
 
     private void SecretChatWindow_Loaded(object sender, RoutedEventArgs e)

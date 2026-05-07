@@ -9,6 +9,9 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using PackageManager.Services.PingCode.Exception;
 
+/// <summary>
+/// PingCode 开放接口客户端的 HTTP 请求部分。
+/// </summary>
 public partial class PingCodeApiService
 {
     private async Task<JObject> GetJsonAsync(string url)

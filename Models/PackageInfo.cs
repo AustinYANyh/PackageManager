@@ -1050,6 +1050,10 @@ namespace PackageManager.Models
             return applicationVersion ?? AvailableExecutableVersions?.FirstOrDefault();
         }
 
+        /// <summary>
+        /// 获取当前选中的应用程序版本信息。
+        /// </summary>
+        /// <returns>选中的 <see cref="ApplicationVersion"/>，若无选中则返回列表首项。</returns>
         public ApplicationVersion GetSelectedApplicationVersion()
         {
             return ResolveSelectedApplicationVersion();

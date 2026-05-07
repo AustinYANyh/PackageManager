@@ -43,12 +43,20 @@ namespace PackageManager.Services
         private bool _hotkeyArmed; // Ctrl+Q/E KeyDown 已记录，等 KeyUp 触发
         private int _armedVkCode;
 
+        /// <summary>
+        /// 初始化 <see cref="RawInputHotkeySource"/> 的新实例。
+        /// </summary>
+        /// <param name="windowManager">常用启动项窗口管理器。</param>
+        /// <param name="fileSearchWindowManager">文件搜索窗口管理器。</param>
         public RawInputHotkeySource(CommonStartupWindowManager windowManager, FileSearchWindowManager fileSearchWindowManager)
         {
             _windowManager = windowManager ?? throw new ArgumentNullException(nameof(windowManager));
             _fileSearchWindowManager = fileSearchWindowManager ?? throw new ArgumentNullException(nameof(fileSearchWindowManager));
         }
 
+        /// <summary>
+        /// 启动 Raw Input 键盘监听。
+        /// </summary>
         public void Start()
         {
             if (_hwndSource != null)
@@ -64,6 +72,9 @@ namespace PackageManager.Services
                 dispatcher.Invoke(new Action(CreateHwndSource));
         }
 
+        /// <summary>
+        /// 停止 Raw Input 键盘监听。
+        /// </summary>
         public void Stop()
         {
             if (_hwndSource == null) return;
@@ -77,6 +88,9 @@ namespace PackageManager.Services
                 dispatcher.Invoke(new Action(DestroyHwndSource));
         }
 
+        /// <summary>
+        /// 释放资源，停止键盘监听。
+        /// </summary>
         public void Dispose() => Stop();
 
         private void CreateHwndSource()

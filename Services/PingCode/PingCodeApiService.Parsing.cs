@@ -6,6 +6,9 @@ using System;
 using System.Collections.Generic;
 using Newtonsoft.Json.Linq;
 
+/// <summary>
+/// PingCode 开放接口客户端的数据解析部分。
+/// </summary>
 public partial class PingCodeApiService
 {
     private static double ReadDouble(JToken t)

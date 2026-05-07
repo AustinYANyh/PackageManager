@@ -16,11 +16,24 @@ namespace PackageManager.Services.RevitCleanup
         private readonly RevitLocalIndexStore store = new RevitLocalIndexStore();
         private readonly ConcurrentDictionary<string, RootWatcherState> watchers = new ConcurrentDictionary<string, RootWatcherState>(StringComparer.OrdinalIgnoreCase);
 
+        /// <summary>
+        /// 确保本地索引已就绪（按需构建）。
+        /// </summary>
+        /// <param name="options">查询选项。</param>
+        /// <param name="progress">进度报告。</param>
+        /// <param name="cancellationToken">取消令牌。</param>
         public async Task EnsureIndexReadyAsync(RevitFileQueryOptions options, IProgress<RevitFileQueryProgress> progress, CancellationToken cancellationToken)
         {
             await QueryAsync(options, progress, cancellationToken).ConfigureAwait(false);
         }
 
+        /// <summary>
+        /// 使用本地索引异步查询符合条件的文件。
+        /// </summary>
+        /// <param name="options">查询选项。</param>
+        /// <param name="progress">进度报告。</param>
+        /// <param name="cancellationToken">取消令牌。</param>
+        /// <returns>查询结果。</returns>
         public Task<RevitFileQueryResult> QueryAsync(RevitFileQueryOptions options, IProgress<RevitFileQueryProgress> progress, CancellationToken cancellationToken)
         {
             return Task.Run(() =>
@@ -163,6 +176,11 @@ namespace PackageManager.Services.RevitCleanup
             }, cancellationToken);
         }
 
+        /// <summary>
+        /// 从本地索引中移除指定文件记录。
+        /// </summary>
+        /// <param name="filePaths">要移除的文件路径集合。</param>
+        /// <param name="cancellationToken">取消令牌。</param>
         public Task RemoveFilesFromIndexAsync(IEnumerable<string> filePaths, CancellationToken cancellationToken)
         {
             return Task.Run(() =>

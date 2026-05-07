@@ -241,6 +241,12 @@ namespace PackageManager.Services
             }
         }
 
+        /// <summary>
+        /// 检查嵌入工具是否已是最新版本（通过 SHA256 对比）。
+        /// </summary>
+        /// <param name="resourceSuffix">嵌入资源名称后缀。</param>
+        /// <param name="outputFileName">输出文件名。</param>
+        /// <returns>已是最新返回 true，否则 false。</returns>
         public static bool IsEmbeddedToolUpToDate(string resourceSuffix, string outputFileName)
         {
             try
@@ -267,6 +273,11 @@ namespace PackageManager.Services
             }
         }
 
+        /// <summary>
+        /// 获取嵌入工具提取后的目标文件路径（不执行提取）。
+        /// </summary>
+        /// <param name="outputFileName">输出文件名。</param>
+        /// <returns>目标路径；文件名无效时返回 null。</returns>
         public static string GetExtractedToolPath(string outputFileName)
         {
             if (string.IsNullOrWhiteSpace(outputFileName))

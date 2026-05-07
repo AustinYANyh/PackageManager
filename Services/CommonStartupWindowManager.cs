@@ -19,11 +19,17 @@ namespace PackageManager.Services
         private readonly string _showRequestEventName;
         private int? _currentToolProcessId;
 
+        /// <summary>
+        /// 初始化 <see cref="CommonStartupWindowManager"/> 的新实例。
+        /// </summary>
         public CommonStartupWindowManager()
         {
             _showRequestEventName = BuildShowRequestEventName(_sessionId);
         }
 
+        /// <summary>
+        /// 显示或激活常用启动项工具窗口；若工具未运行则启动新进程。
+        /// </summary>
         public void ShowOrActivate()
         {
             if (TryRestartCurrentToolIfOutdated())
@@ -115,6 +121,9 @@ namespace PackageManager.Services
             }
         }
 
+        /// <summary>
+        /// 向当前运行的常用启动项工具发送关闭消息。
+        /// </summary>
         public void Shutdown()
         {
             if (!TryGetCurrentToolProcess(out var process))

@@ -10,6 +10,9 @@ using Newtonsoft.Json;
 
 namespace PackageManager.Services;
 
+/// <summary>
+/// 局域网设备发现服务，通过 UDP 广播和监听实现同网段设备的自动发现。
+/// </summary>
 internal sealed class LanDiscoveryService : IDisposable
 {
     internal const int DiscoveryPort = 48930;
@@ -23,14 +26,26 @@ internal sealed class LanDiscoveryService : IDisposable
     private Task _receiveLoopTask;
     private Task _broadcastLoopTask;
 
+    /// <summary>
+    /// 初始化 <see cref="LanDiscoveryService"/> 的新实例。
+    /// </summary>
+    /// <param name="identityProvider">用于获取本机设备标识的延迟委托。</param>
+    /// <exception cref="ArgumentNullException"><paramref name="identityProvider"/> 为 null。</exception>
     public LanDiscoveryService(Func<LanLocalIdentity> identityProvider)
     {
         _identityProvider = identityProvider ?? throw new ArgumentNullException(nameof(identityProvider));
         RefreshLocalAddresses();
     }
 
+    /// <summary>
+    /// 当收到其他设备的发现广播时触发，参数为广播内容和远程终结点。
+    /// </summary>
     public event Action<LanDiscoveryAnnouncement, IPEndPoint> AnnouncementReceived;
 
+    /// <summary>
+    /// 启动广播和接收循环，开始局域网设备发现。
+    /// 若已启动则直接返回。
+    /// </summary>
     public void Start()
     {
         if ((_receiveLoopTask != null) || (_broadcastLoopTask != null))
@@ -51,6 +66,9 @@ internal sealed class LanDiscoveryService : IDisposable
         _broadcastLoopTask = Task.Run(() => BroadcastLoopAsync(_cts.Token));
     }
 
+    /// <summary>
+    /// 停止广播与接收循环，释放 UDP 套接字资源。
+    /// </summary>
     public void Dispose()
     {
         _cts.Cancel();
@@ -189,52 +207,85 @@ internal sealed class LanDiscoveryService : IDisposable
     }
 }
 
+/// <summary>
+/// 局域网发现广播消息，携带设备标识和能力信息。
+/// </summary>
 internal sealed class LanDiscoveryAnnouncement
 {
+    /// <summary>协议版本号。</summary>
     public int ProtocolVersion { get; set; }
 
+    /// <summary>设备唯一标识。</summary>
     public string DeviceId { get; set; }
 
+    /// <summary>用户显示名称。</summary>
     public string DisplayName { get; set; }
 
+    /// <summary>机器名称。</summary>
     public string MachineName { get; set; }
 
+    /// <summary>文件传输监听端口。</summary>
     public int ListenPort { get; set; }
 
+    /// <summary>应用程序版本号。</summary>
     public string AppVersion { get; set; }
 
+    /// <summary>设备支持的能力列表。</summary>
     public List<string> Capabilities { get; set; } = new List<string>();
 
+    /// <summary>密语聊天的 RSA 公钥（XML 格式）。</summary>
     public string SecretChatPublicKey { get; set; }
 }
 
+/// <summary>
+/// 本机设备标识信息，用于局域网发现广播。
+/// </summary>
 internal sealed class LanLocalIdentity
 {
+    /// <summary>是否启用局域网传输功能。</summary>
     public bool Enabled { get; set; }
 
+    /// <summary>设备唯一标识。</summary>
     public string DeviceId { get; set; }
 
+    /// <summary>用户显示名称。</summary>
     public string DisplayName { get; set; }
 
+    /// <summary>机器名称。</summary>
     public string MachineName { get; set; }
 
+    /// <summary>文件传输监听端口。</summary>
     public int ListenPort { get; set; }
 
+    /// <summary>应用程序版本号。</summary>
     public string AppVersion { get; set; }
 
+    /// <summary>设备支持的能力列表。</summary>
     public List<string> Capabilities { get; set; } = new List<string>();
 
+    /// <summary>密语聊天的 RSA 公钥（XML 格式）。</summary>
     public string SecretChatPublicKey { get; set; }
 }
 
+/// <summary>
+/// 局域网传输协议常量与工具方法。
+/// </summary>
 internal static class LanTransferProtocol
 {
+    /// <summary>当前协议版本号。</summary>
     public const int ProtocolVersion = 1;
 
+    /// <summary>密语聊天能力标识。</summary>
     public const string SecretChatCapability = "secret-chat-v1";
 
+    /// <summary>当前实例支持的能力列表。</summary>
     public static List<string> CurrentCapabilities => new List<string> { SecretChatCapability };
 
+    /// <summary>
+    /// 判断对方能力列表是否包含密语聊天支持。
+    /// </summary>
+    /// <param name="capabilities">对方能力列表。</param>
+    /// <returns>若支持密语聊天则返回 true，否则返回 false。</returns>
     public static bool SupportsSecretChat(IEnumerable<string> capabilities)
     {
         return capabilities != null && capabilities.Any(capability =>

@@ -16,6 +16,9 @@ using Newtonsoft.Json.Linq;
 
 namespace PackageManager.Services;
 
+/// <summary>
+/// 局域网文件传输服务，整合设备发现、传输管理和密语聊天功能。
+/// </summary>
 public sealed class LanTransferService : LanTransferBindableBase, IDisposable
 {
     private readonly DataPersistenceService _dataPersistenceService;
@@ -41,6 +44,11 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
     private string _statusText;
     private string _appVersion;
 
+    /// <summary>
+    /// 初始化 <see cref="LanTransferService"/> 的新实例，加载设置并启动服务。
+    /// </summary>
+    /// <param name="dataPersistenceService">数据持久化服务，用于读写设置和历史记录。</param>
+    /// <exception cref="ArgumentNullException"><paramref name="dataPersistenceService"/> 为 null。</exception>
     public LanTransferService(DataPersistenceService dataPersistenceService)
     {
         _dataPersistenceService = dataPersistenceService ?? throw new ArgumentNullException(nameof(dataPersistenceService));
@@ -50,68 +58,88 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         EnsureRunningState();
     }
 
+    /// <summary>已发现的局域网对端列表。</summary>
     public ObservableCollection<LanPeerInfo> Peers => _peers;
 
+    /// <summary>等待审批的传入传输请求列表。</summary>
     public ObservableCollection<LanTransferRequest> PendingRequests => _pendingRequests;
 
+    /// <summary>正在进行中的传输会话列表。</summary>
     public ObservableCollection<LanTransferSession> ActiveTransfers => _activeTransfers;
 
+    /// <summary>传输历史记录列表。</summary>
     public ObservableCollection<LanTransferRecord> TransferHistory => _transferHistory;
 
+    /// <summary>密语聊天会话列表。</summary>
     public ObservableCollection<SecretChatSession> SecretChatSessions => _secretChatSessions;
 
+    /// <summary>是否启用局域网传输功能。</summary>
     public bool IsEnabled
     {
         get => _isEnabled;
         private set => SetProperty(ref _isEnabled, value);
     }
 
-    public string DisplayName
-    {
+    /// <summary>本机显示名称。</summary>
+    public string DisplayName    {
         get => _displayName;
         private set => SetProperty(ref _displayName, value);
     }
 
-    public string DeviceId
-    {
+    /// <summary>本机设备唯一标识。</summary>
+    public string DeviceId    {
         get => _deviceId;
         private set => SetProperty(ref _deviceId, value);
     }
 
-    public string InboxPath
-    {
+    /// <summary>收件箱目录路径。</summary>
+    public string InboxPath    {
         get => _inboxPath;
         private set => SetProperty(ref _inboxPath, value);
     }
 
+    /// <summary>服务状态显示文本。</summary>
     public string StatusText
     {
         get => _statusText;
         private set => SetProperty(ref _statusText, value);
     }
 
+    /// <summary>应用程序版本号。</summary>
     public string AppVersion
     {
         get => _appVersion;
         private set => SetProperty(ref _appVersion, value);
     }
 
+    /// <summary>当前文件传输监听端口号。</summary>
     public int ListenPort => _hostService?.ListenPort ?? 0;
 
+    /// <summary>本机机器名称。</summary>
     public string MachineName => Environment.MachineName;
 
+    /// <summary>日志目录路径。</summary>
     public string LogDirectory => LanTransferLogger.GetDirectoryPath();
 
+    /// <summary>传输历史记录文件路径。</summary>
     public string HistoryFilePath => Path.Combine(_dataPersistenceService.GetDataFolderPath(), "lan_transfer_history.json");
 
+    /// <summary>当前在线对端数量。</summary>
     public int OnlinePeerCount => _peers.Count(peer => peer.IsOnline);
 
+    /// <summary>
+    /// 释放服务资源，停止设备发现和传输监听。
+    /// </summary>
     public void Dispose()
     {
         _peerCleanupTimer.Dispose();
         StopServices();
     }
 
+    /// <summary>
+    /// 应用新设置并更新运行状态。
+    /// </summary>
+    /// <param name="settings">应用程序设置。</param>
     public void ApplySettings(AppSettings settings)
     {
         if (settings == null)
@@ -129,6 +157,12 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         OnPropertyChanged(nameof(OnlinePeerCount));
     }
 
+    /// <summary>
+    /// 手动连接到指定 IP 或主机名的对端设备。
+    /// </summary>
+    /// <param name="hostOrAddress">目标 IP 地址或主机名。</param>
+    /// <returns>连接成功的对端信息。</returns>
+    /// <exception cref="InvalidOperationException">地址无效或无法连接。</exception>
     public async Task<LanPeerInfo> ConnectManualPeerAsync(string hostOrAddress)
     {
         if (string.IsNullOrWhiteSpace(hostOrAddress))
@@ -193,6 +227,13 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         throw new InvalidOperationException("无法连接到目标 Packagemanager 实例。", lastError);
     }
 
+    /// <summary>
+    /// 向指定对端发送文件和目录。
+    /// </summary>
+    /// <param name="peer">目标对端。</param>
+    /// <param name="paths">要发送的文件或目录路径集合。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <exception cref="InvalidOperationException">对端不可发送、无文件可传或对方拒绝。</exception>
     public async Task SendPathsAsync(LanPeerInfo peer, IReadOnlyCollection<string> paths, CancellationToken cancellationToken = default(CancellationToken))
     {
         if (peer == null)
@@ -406,6 +447,9 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         }
     }
 
+    /// <summary>
+    /// 打开收件箱目录，若不存在则创建。
+    /// </summary>
     public void OpenInbox()
     {
         Directory.CreateDirectory(InboxPath);
@@ -416,6 +460,9 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         });
     }
 
+    /// <summary>
+    /// 打开日志目录，若不存在则创建。
+    /// </summary>
     public void OpenLogs()
     {
         Directory.CreateDirectory(LogDirectory);
@@ -426,11 +473,22 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         });
     }
 
+    /// <summary>
+    /// 取消指定的传输任务。
+    /// </summary>
+    /// <param name="transferId">传输标识。</param>
     public void CancelTransfer(string transferId)
     {
         _hostService?.CancelIncomingTransfer(transferId);
     }
 
+    /// <summary>
+    /// 向指定对端请求密语聊天会话。
+    /// </summary>
+    /// <param name="peer">目标对端。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>密语聊天会话。</returns>
+    /// <exception cref="InvalidOperationException">对端不支持密语或不在线。</exception>
     public Task<SecretChatSession> RequestSecretChatAsync(LanPeerInfo peer, CancellationToken cancellationToken = default(CancellationToken))
     {
         if (peer == null)
@@ -447,6 +505,13 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         return Task.FromResult(OpenSecretChatSession(peer));
     }
 
+    /// <summary>
+    /// 在指定密语会话中发送加密消息。
+    /// </summary>
+    /// <param name="session">密语会话。</param>
+    /// <param name="text">消息文本。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <exception cref="InvalidOperationException">会话不可发送或对方密语能力不可用。</exception>
     public async Task SendSecretMessageAsync(SecretChatSession session, string text, CancellationToken cancellationToken = default(CancellationToken))
     {
         if (session == null || !session.CanSend)
@@ -513,6 +578,11 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         }
     }
 
+    /// <summary>
+    /// 将指定的密语消息标记为已读，并启动自毁倒计时。
+    /// </summary>
+    /// <param name="session">密语会话。</param>
+    /// <param name="message">要标记已读的消息。</param>
     public async Task MarkSecretMessageReadAsync(SecretChatSession session, SecretChatMessage message)
     {
         if (session == null || message == null || message.Direction != SecretChatMessageDirection.Incoming || message.State != SecretChatMessageState.Unread)
@@ -527,6 +597,12 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         await SendSecretReceiptAsync(session, message, "read", CancellationToken.None);
     }
 
+    /// <summary>
+    /// 设置密语聊天窗口的状态。
+    /// </summary>
+    /// <param name="session">密语会话。</param>
+    /// <param name="isOpen">窗口是否打开。</param>
+    /// <param name="isActive">窗口是否处于活动状态。</param>
     public void SetSecretChatWindowState(SecretChatSession session, bool isOpen, bool isActive)
     {
         if (session == null)
@@ -542,6 +618,10 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         }
     }
 
+    /// <summary>
+    /// 将指定密语会话中所有未读消息标记为已读。
+    /// </summary>
+    /// <param name="session">密语会话。</param>
     public async Task MarkUnreadSecretMessagesReadAsync(SecretChatSession session)
     {
         if (session == null)
@@ -559,6 +639,10 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         }
     }
 
+    /// <summary>
+    /// 关闭密语聊天窗口并更新会话状态。
+    /// </summary>
+    /// <param name="session">密语会话。</param>
     public void CloseSecretChatSession(SecretChatSession session)
     {
         if (session == null)
@@ -1583,26 +1667,41 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
     }
 }
 
+/// <summary>
+/// 已准备的传输条目，包含源路径和相对路径信息。
+/// </summary>
 internal sealed class LanPreparedTransferEntry
 {
+    /// <summary>源文件或目录的完整路径。</summary>
     public string SourcePath { get; set; }
 
+    /// <summary>在传输包中的相对路径。</summary>
     public string RelativePath { get; set; }
 
+    /// <summary>文件或目录名称。</summary>
     public string Name { get; set; }
 
+    /// <summary>是否为目录。</summary>
     public bool IsDirectory { get; set; }
 
+    /// <summary>文件字节长度，目录时为 0。</summary>
     public long Length { get; set; }
 }
 
+/// <summary>
+/// 加密保护后的密语消息载荷。
+/// </summary>
 internal sealed class SecretProtectedPayload
 {
+    /// <summary>AES 加密后的密文（Base64）。</summary>
     public string CipherText { get; set; }
 
+    /// <summary>RSA 加密后的 AES 密钥（Base64）。</summary>
     public string EncryptedKey { get; set; }
 
+    /// <summary>AES 初始化向量（Base64）。</summary>
     public string Iv { get; set; }
 
+    /// <summary>HMAC-SHA256 消息认证码（Base64）。</summary>
     public string Hmac { get; set; }
 }

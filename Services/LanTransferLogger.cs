@@ -10,6 +10,10 @@ internal static class LanTransferLogger
 
     private static string _directory;
 
+    /// <summary>
+    /// 获取局域网传输日志目录路径。
+    /// </summary>
+    /// <returns>日志目录的完整路径。</returns>
     public static string GetDirectoryPath()
     {
         if (!string.IsNullOrWhiteSpace(_directory))
@@ -27,16 +31,29 @@ internal static class LanTransferLogger
         return _directory;
     }
 
+    /// <summary>
+    /// 记录信息级别日志。
+    /// </summary>
+    /// <param name="message">日志消息。</param>
     public static void LogInfo(string message)
     {
         Append("INFO", message, null);
     }
 
+    /// <summary>
+    /// 记录警告级别日志。
+    /// </summary>
+    /// <param name="message">警告消息。</param>
     public static void LogWarning(string message)
     {
         Append("WARN", message, null);
     }
 
+    /// <summary>
+    /// 记录错误级别日志，包含异常详情。
+    /// </summary>
+    /// <param name="ex">异常对象。</param>
+    /// <param name="message">附加描述消息。</param>
     public static void LogError(Exception ex, string message = null)
     {
         Append("ERROR", message, ex);
