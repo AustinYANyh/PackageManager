@@ -656,17 +656,17 @@ if (-not $nonInteractiveMode -and (Test-WindowsConsoleChoice)) {
   Write-Host ""
   $excludePromptList = @(
     $items | Where-Object {
-      (Is-TrackedPendingChange $_) -or
+      ((Is-TrackedPendingChange $_) -and -not (Is-ExcludedItem -item $_ -excludeIdSet $excludeIdSet -excludePathSet $excludePathSet)) -or
       ($addAllCandidates -and (((Is-GitUntracked $_) -or (Is-SvnUnversioned $_)) -and (Is-CommonAddCandidate $_))) -or
       ($addIdSet.Contains([int]$_.Id))
     } | Sort-Object Id
   )
 
-  Write-Host "步骤 2/2：以下是会进入本次提交日志的改动项，请确认是否要排除某些项：" -ForegroundColor Cyan
+  Write-Host ("步骤 2/2：以下是会进入本次提交日志的改动项（共 {0} 项），请确认是否要排除某些项：" -f $excludePromptList.Count) -ForegroundColor Cyan
   Write-Host "操作说明：直接按 1 = 全部保留（默认）；按 2 = 输入编号排除。这里按键立即生效，不需要回车。" -ForegroundColor Yellow
   Write-Host "超时规则：${PromptTimeoutSeconds} 秒内不按键，自动选择 1，不排除任何文件。" -ForegroundColor Yellow
   Write-Host "说明：未在步骤 1 选择加入的未跟踪文件不会列在这里，也不会进入提交日志。" -ForegroundColor Yellow
-  Write-Host "文件列表：" -ForegroundColor Cyan
+  Write-Host "文件列表（如果这里缺少你认为应提交的文件，请先关闭窗口并重新运行 skill，确保文件已保存且 Git 状态已刷新）：" -ForegroundColor Cyan
   foreach ($x in $excludePromptList) { Write-Host ("  编号 {0,-6} 路径 {1}" -f $x.Id, $x.Path) }
   Write-Host ""
   if ($excludePromptList.Count -eq 0) {
@@ -744,7 +744,13 @@ foreach ($g in $projGroups) {
   }
 }
 
-$includedDefaultLog = @($included | Where-Object { Is-TrackedPendingChange $_ } | Sort-Object Id)
+$addedIdSet = New-Object System.Collections.Generic.HashSet[int]
+foreach ($a in $addActions) {
+  if ($null -ne $a.id) { [void]$addedIdSet.Add([int]$a.id) }
+}
+$includedDefaultLog = @(
+  $included | Where-Object { (Is-TrackedPendingChange $_) -or $addedIdSet.Contains([int]$_.Id) } | Sort-Object Id
+)
 $projGroupsDefault = $includedDefaultLog | Group-Object Project | Sort-Object Name
 $projectsDefault = @()
 foreach ($g in $projGroupsDefault) {
