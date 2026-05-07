@@ -973,6 +973,8 @@ public partial class CommonStartupWindow : Window
 
             var startInfo = ShouldUseOriginalShellActivation(item.FullPath)
                 ? CreateOriginalShellActivationStartInfo(item)
+                : ShouldLaunchFromItemDirectory(item.FullPath)
+                    ? CreateScriptLaunchStartInfo(item)
                 : CreateLaunchStartInfo(item, forceNewInstance);
 
             LoggingService.LogInfo(
@@ -1052,6 +1054,27 @@ public partial class CommonStartupWindow : Window
         }
 
         return NormalizeForceNewProcessStartInfo(startInfo, forceNewInstance);
+    }
+
+    private static ProcessStartInfo CreateScriptLaunchStartInfo(StartupItemVm item)
+    {
+        var scriptPath = item?.FullPath;
+        if (string.IsNullOrWhiteSpace(scriptPath))
+        {
+            throw new InvalidOperationException("脚本路径为空。");
+        }
+
+        var workingDirectory = GetLaunchWorkingDirectory(scriptPath);
+        if (string.IsNullOrWhiteSpace(workingDirectory))
+        {
+            workingDirectory = System.IO.Path.GetDirectoryName(scriptPath);
+        }
+
+        var command = BuildPowerShellScriptLaunchCommand(scriptPath, item?.Arguments, workingDirectory);
+        var terminalTitle = string.IsNullOrWhiteSpace(item?.Name)
+            ? System.IO.Path.GetFileNameWithoutExtension(scriptPath)
+            : item.Name;
+        return CreatePowerShellTerminalStartInfo(workingDirectory, terminalTitle, command);
     }
 
     private static ProcessStartInfo CreateOriginalShellActivationStartInfo(StartupItemVm item)
@@ -2932,27 +2955,9 @@ public partial class CommonStartupWindow : Window
 
     private static void StartPowerShellTerminal(string targetDirectory)
     {
-        var powerShellPath = ResolvePowerShell7Path();
-        var terminalPath = ResolveWindowsTerminalPath();
-        var terminalTitle = GetTerminalTitle(targetDirectory);
-
-        if (!string.IsNullOrWhiteSpace(terminalPath))
-        {
-            var arguments = "new-tab --title \"" + EscapeCommandLineArgument(terminalTitle) + "\" -d \"" + EscapeCommandLineArgument(targetDirectory) + "\" \"" + EscapeCommandLineArgument(powerShellPath) + "\" -NoLogo -NoExit";
-            Process.Start(new ProcessStartInfo(terminalPath, arguments)
-            {
-                UseShellExecute = true,
-                WorkingDirectory = targetDirectory,
-            });
-            return;
-        }
-
-        var argumentsFallback = "-NoLogo -NoExit";
-        Process.Start(new ProcessStartInfo(powerShellPath, argumentsFallback)
-        {
-            UseShellExecute = true,
-            WorkingDirectory = targetDirectory,
-        });
+        var command = BuildPowerShellSetLocationCommand(targetDirectory);
+        var startInfo = CreatePowerShellTerminalStartInfo(targetDirectory, GetTerminalTitle(targetDirectory), command);
+        Process.Start(startInfo);
     }
 
     private static string ResolvePowerShell7Path()
@@ -2977,6 +2982,53 @@ public partial class CommonStartupWindow : Window
     private static string EscapePowerShellSingleQuotedString(string value)
     {
         return (value ?? string.Empty).Replace("'", "''");
+    }
+
+    private static string BuildPowerShellSetLocationCommand(string targetDirectory)
+    {
+        return "Set-Location -LiteralPath '" + EscapePowerShellSingleQuotedString(targetDirectory) + "'";
+    }
+
+    private static string BuildPowerShellScriptLaunchCommand(string scriptPath, string arguments, string workingDirectory)
+    {
+        var command = new StringBuilder();
+        if (!string.IsNullOrWhiteSpace(workingDirectory))
+        {
+            command.Append(BuildPowerShellSetLocationCommand(workingDirectory));
+            command.Append("; ");
+        }
+
+        command.Append("& '").Append(EscapePowerShellSingleQuotedString(scriptPath)).Append("'");
+        if (!string.IsNullOrWhiteSpace(arguments))
+        {
+            command.Append(' ').Append(arguments);
+        }
+
+        return command.ToString();
+    }
+
+    private static ProcessStartInfo CreatePowerShellTerminalStartInfo(string targetDirectory, string terminalTitle, string powerShellCommand)
+    {
+        var powerShellPath = ResolvePowerShell7Path();
+        var encodedCommand = Convert.ToBase64String(Encoding.Unicode.GetBytes(powerShellCommand ?? string.Empty));
+        var powerShellArguments = "-NoLogo -NoExit -EncodedCommand " + encodedCommand;
+        var terminalPath = ResolveWindowsTerminalPath();
+
+        if (!string.IsNullOrWhiteSpace(terminalPath))
+        {
+            var arguments = "new-tab --title \"" + EscapeCommandLineArgument(terminalTitle) + "\" -d \"" + EscapeCommandLineArgument(targetDirectory) + "\" \"" + EscapeCommandLineArgument(powerShellPath) + "\" " + powerShellArguments;
+            return new ProcessStartInfo(terminalPath, arguments)
+            {
+                UseShellExecute = true,
+                WorkingDirectory = targetDirectory,
+            };
+        }
+
+        return new ProcessStartInfo(powerShellPath, powerShellArguments)
+        {
+            UseShellExecute = true,
+            WorkingDirectory = targetDirectory,
+        };
     }
 
     private static string ResolveWindowsTerminalPath()
