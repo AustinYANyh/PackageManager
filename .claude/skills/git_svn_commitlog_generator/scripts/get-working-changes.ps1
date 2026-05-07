@@ -1,6 +1,11 @@
 param(
   [string]$Root = ".",
-  [object]$IncludeUntracked = $true,
+  # 为 NeedsAdd 扫描 Git ?? / SVN unversioned；关闭可加速超大混合工作副本（默认开启）
+  [object]$ScanUntrackedForNeedsAdd = $true,
+  # 脚本直接运行时默认无人值守；skill 默认通过可见 PowerShell 传 -Interactive 做限时交互
+  [switch]$NonInteractive,
+  [switch]$Interactive,
+  [int]$PromptTimeoutSeconds = 30,
   [object]$IncludeDiff = $true,
   [int]$MaxDiffBytesPerFile = 40960,
   [int]$MaxFilesWithDiff = 80,
@@ -12,15 +17,131 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+try {
+  [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+  $OutputEncoding = [System.Text.Encoding]::UTF8
+} catch {
+}
 
 function To-Bool([object]$v, [bool]$defaultValue) {
   if ($null -eq $v) { return $defaultValue }
   if ($v -is [bool]) { return [bool]$v }
+  if ($v -is [System.Management.Automation.SwitchParameter]) { return [bool]$v }
   if ($v -is [int]) { return ($v -ne 0) }
   $s = ($v.ToString()).Trim().ToLowerInvariant()
   if ($s -in @("1","true","t","yes","y","on")) { return $true }
   if ($s -in @("0","false","f","no","n","off")) { return $false }
   return $defaultValue
+}
+
+function Test-WindowsConsoleChoice {
+  try {
+    if ($PSVersionTable.PSEdition -eq 'Core' -and -not $IsWindows) { return $false }
+    if (-not ($IsWindows -or ($env:OS -match 'Windows'))) { return $false }
+    if ([Console]::IsInputRedirected) { return $false }
+    return $true
+  } catch { return $false }
+}
+
+function Invoke-TimedChoiceKey {
+  param(
+    [ValidatePattern('^[1-9A-Z]+$')][string]$Choices = "12",
+    [int]$TimeoutSec = 30,
+    [char]$DefaultKey = '1',
+    [string]$Message = "Select"
+  )
+  if (-not (Test-WindowsConsoleChoice)) { return 1 }
+  if ($TimeoutSec -lt 1) { $TimeoutSec = 1 }
+
+  $choiceChars = $Choices.ToCharArray()
+  $defaultIndex = [Array]::IndexOf($choiceChars, $DefaultKey)
+  if ($defaultIndex -lt 0) { $defaultIndex = 0 }
+
+  $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSec)
+  $lastLen = 0
+  while ($true) {
+    $remaining = [Math]::Max(0, [int][Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalSeconds))
+    $line = ("{0}（剩余 {1} 秒，超时自动选 {2}）： " -f $Message, $remaining, $choiceChars[$defaultIndex])
+    $pad = if ($lastLen -gt $line.Length) { " " * ($lastLen - $line.Length) } else { "" }
+    Write-Host -NoNewline ("`r{0}{1}" -f $line, $pad)
+    $lastLen = $line.Length
+
+    if ($remaining -le 0) {
+      Write-Host ""
+      return ($defaultIndex + 1)
+    }
+
+    $until = [DateTime]::UtcNow.AddMilliseconds(100)
+    while ([DateTime]::UtcNow -lt $until) {
+      if ([Console]::KeyAvailable) {
+        $key = [Console]::ReadKey($true)
+        $pressed = [char]::ToUpperInvariant($key.KeyChar)
+        for ($i = 0; $i -lt $choiceChars.Length; $i++) {
+          if ([char]::ToUpperInvariant($choiceChars[$i]) -eq $pressed) {
+            Write-Host $key.KeyChar
+            return ($i + 1)
+          }
+        }
+      }
+      Start-Sleep -Milliseconds 20
+    }
+  }
+}
+
+function Read-TimedConsoleLine {
+  param(
+    [string]$Prompt,
+    [int]$TimeoutSec = 30
+  )
+  if (-not (Test-WindowsConsoleChoice)) { return "" }
+  if ($TimeoutSec -lt 1) { $TimeoutSec = 1 }
+
+  $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSec)
+  $chars = New-Object System.Collections.Generic.List[char]
+  $lastLen = 0
+
+  function Render-TimedInputLine {
+    param(
+      [string]$PromptText,
+      [int]$RemainingSeconds,
+      [string]$CurrentText,
+      [int]$PreviousLength
+    )
+    $line = ("{0}（输入编号后按回车；剩余 {1} 秒，超时=不选择）： {2}" -f $PromptText, $RemainingSeconds, $CurrentText)
+    $pad = if ($PreviousLength -gt $line.Length) { " " * ($PreviousLength - $line.Length) } else { "" }
+    Write-Host -NoNewline ("`r{0}{1}" -f $line, $pad)
+    return $line.Length
+  }
+
+  while ([DateTime]::UtcNow -lt $deadline) {
+    $remaining = [Math]::Max(0, [int][Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalSeconds))
+    $lastLen = Render-TimedInputLine -PromptText $Prompt -RemainingSeconds $remaining -CurrentText (-join $chars) -PreviousLength $lastLen
+
+    if (-not [Console]::KeyAvailable) {
+      Start-Sleep -Milliseconds 100
+      continue
+    }
+
+    $key = [Console]::ReadKey($true)
+    if ($key.Key -eq [ConsoleKey]::Enter) {
+      Write-Host ""
+      return -join $chars
+    }
+
+    if ($key.Key -eq [ConsoleKey]::Backspace) {
+      if ($chars.Count -gt 0) {
+        $chars.RemoveAt($chars.Count - 1)
+      }
+      continue
+    }
+
+    if (-not [char]::IsControl($key.KeyChar)) {
+      $chars.Add($key.KeyChar)
+    }
+  }
+
+  Write-Host ""
+  return -join $chars
 }
 
 function Normalize-RelPath([string]$fullPath, [string]$rootFull) {
@@ -175,11 +296,13 @@ function Get-SvnWorkingCopyRoots([string]$rootFull) {
   return @($roots)
 }
 
-function Get-SvnStatusChanges([string]$wcRoot, [string]$rootFull) {
+function Get-SvnStatusChanges([string]$wcRoot, [string]$rootFull, [bool]$quiet) {
   $items = @()
   try {
     Push-Location -LiteralPath $wcRoot
-    $xmlText = (& svn status --xml 2>$null) -join "`n"
+    $svnArgs = @("status", "--xml")
+    if ($quiet) { $svnArgs += "-q" }
+    $xmlText = (& svn @svnArgs 2>$null) -join "`n"
     if (-not $xmlText) { return @() }
     $xml = [xml]$xmlText
     $entries = $xml.status.target.entry
@@ -194,8 +317,9 @@ function Get-SvnStatusChanges([string]$wcRoot, [string]$rootFull) {
       }
       $rel = Normalize-RelPath -fullPath $abs -rootFull $rootFull
 
-      # item: modified, added, deleted, unversioned, replaced, conflicted, missing, etc.
+      # item: modified, added, deleted, unversioned, replaced, conflicted, missing, ignored, etc.
       if ($item -eq "normal" -and $props -eq "none") { continue }
+      if ($item -eq "ignored") { continue }
 
       $items += [pscustomobject]@{
         Source = "svn"
@@ -210,6 +334,26 @@ function Get-SvnStatusChanges([string]$wcRoot, [string]$rootFull) {
     Pop-Location -ErrorAction SilentlyContinue
   }
   return $items
+}
+
+# 同一路径同时出现在 Git 与 SVN 时保留一条，优先 Git。
+function Merge-DuplicateSourcesByPath([System.Collections.IEnumerable]$rawChanges) {
+  $list = @($rawChanges)
+  if ($list.Count -le 1) { return $list }
+  $byPath = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([System.StringComparer]::OrdinalIgnoreCase)
+  foreach ($c in $list) {
+    if (-not $c -or -not $c.Path) { continue }
+    $p = [string]($c.Path -replace '\\', '/')
+    if (-not $byPath.ContainsKey($p)) {
+      $byPath[$p] = $c
+      continue
+    }
+    $existing = $byPath[$p]
+    if ($existing.Source -eq "svn" -and $c.Source -eq "git") {
+      $byPath[$p] = $c
+    }
+  }
+  return @($byPath.Values)
 }
 
 function Get-SvnDiffForPath([string]$wcRoot, [string]$relPathFromRoot, [string]$rootFull, [int]$maxBytes) {
@@ -259,24 +403,63 @@ function Get-ProjectNameForPath([string]$relPath, [string]$rootFull, $cache) {
 }
 
 $rootFull = (Resolve-Path -LiteralPath $Root).Path
-$IncludeUntracked = To-Bool -v $IncludeUntracked -defaultValue $true
+$ScanUntrackedForNeedsAdd = To-Bool -v $ScanUntrackedForNeedsAdd -defaultValue $true
+$nonInteractiveMode = $true
+if ($Interactive.IsPresent) { $nonInteractiveMode = $false }
+if ($NonInteractive.IsPresent) { $nonInteractiveMode = $true }
+if ($PromptTimeoutSeconds -lt 1) { $PromptTimeoutSeconds = 30 }
 $IncludeDiff = To-Bool -v $IncludeDiff -defaultValue $true
 $Svn = To-Bool -v $Svn -defaultValue $true
 $UseDefaultExcludes = To-Bool -v $UseDefaultExcludes -defaultValue $true
 $hasGit = Test-IsGitRepo -rootFull $rootFull
 
-$rawChanges = @()
+# 已跟踪的待提交：Git（无 ??）+ SVN（status --xml -q，不含未版本管理，避免海量条目）
+$rawTracked = @()
 if ($hasGit) {
-  $rawChanges += Get-GitPorcelainChanges -rootFull $rootFull -includeUntracked $IncludeUntracked
+  $rawTracked += Get-GitPorcelainChanges -rootFull $rootFull -includeUntracked $false
 }
 
+$wcRoots = @()
 if ($Svn) {
-  $wcRoots = @()
   try { $wcRoots = Get-SvnWorkingCopyRoots -rootFull $rootFull } catch { $wcRoots = @() }
   foreach ($wc in $wcRoots) {
-    $rawChanges += Get-SvnStatusChanges -wcRoot $wc -rootFull $rootFull
+    $rawTracked += Get-SvnStatusChanges -wcRoot $wc -rootFull $rootFull -quiet $true
   }
 }
+
+$rawTracked = Merge-DuplicateSourcesByPath -rawChanges $rawTracked
+
+$trackedPathSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+foreach ($t in $rawTracked) {
+  if ($t.Path) { [void]$trackedPathSet.Add(($t.Path -replace '\\', '/')) }
+}
+
+$rawUntracked = @()
+if ($ScanUntrackedForNeedsAdd) {
+  if ($hasGit) {
+    $gitAll = Get-GitPorcelainChanges -rootFull $rootFull -includeUntracked $true
+    foreach ($g in $gitAll) {
+      if ($g.IndexStatus -ne "?" -or $g.WorktreeStatus -ne "?") { continue }
+      $pn = ($g.Path -replace '\\', '/')
+      if (-not $trackedPathSet.Contains($pn)) { $rawUntracked += $g }
+    }
+  }
+  if ($Svn) {
+    foreach ($wc in $wcRoots) {
+      $svnFull = Get-SvnStatusChanges -wcRoot $wc -rootFull $rootFull -quiet $false
+      foreach ($s in $svnFull) {
+        if ($s.SvnItem -ne "unversioned") { continue }
+        $pn = ($s.Path -replace '\\', '/')
+        if (-not $trackedPathSet.Contains($pn)) { $rawUntracked += $s }
+      }
+    }
+  }
+  $rawUntracked = Merge-DuplicateSourcesByPath -rawChanges $rawUntracked
+}
+
+$orderedTracked = @($rawTracked | Sort-Object Source, Path, IndexStatus, WorktreeStatus, SvnItem, WcRoot)
+$orderedUntracked = @($rawUntracked | Sort-Object Source, Path, IndexStatus, WorktreeStatus, SvnItem, WcRoot)
+$rawChanges = @($orderedTracked) + @($orderedUntracked)
 
 # Normalize exclusion inputs
 $excludeIdSet = New-Object System.Collections.Generic.HashSet[int]
@@ -292,7 +475,8 @@ foreach ($p in $ExcludePaths) {
 }
 
 # Assign stable ids by (Source, Path, ...), then filter by id/path
-$ordered = $rawChanges | Sort-Object Source, Path, IndexStatus, WorktreeStatus, SvnItem, WcRoot
+# 保持「已跟踪变更」在前、「未跟踪候选」在后，便于默认提交日志与稳定 Id
+$ordered = $rawChanges
 $projectCache = @{}
 $items = @()
 $id = 1
@@ -334,23 +518,16 @@ function Is-ExcludedItem($item, $excludeIdSet, $excludePathSet) {
   return $false
 }
 
-$addIdSet = New-Object System.Collections.Generic.HashSet[int]
-$addAllCandidates = $false
-foreach ($aid in $AddIds) {
-  if ($aid -and $aid.Trim().ToLowerInvariant() -eq "all") {
-    $addAllCandidates = $true
-    continue
-  }
-  $v = 0
-  if ([int]::TryParse($aid, [ref]$v)) { [void]$addIdSet.Add($v) }
-}
-
 function Is-GitUntracked($item) {
   return ($item.Source -eq "git" -and $item.GitIndexStatus -eq "?" -and $item.GitWorktreeStatus -eq "?")
 }
 
 function Is-SvnUnversioned($item) {
   return ($item.Source -eq "svn" -and ($item.SvnItem -eq "unversioned"))
+}
+
+function Is-TrackedPendingChange($item) {
+  return -not ((Is-GitUntracked $item) -or (Is-SvnUnversioned $item))
 }
 
 function Is-CommonAddCandidate($item) {
@@ -444,6 +621,67 @@ function Add-ToVersionControl($item, [string]$rootFull) {
   }
 }
 
+$addIdSet = New-Object System.Collections.Generic.HashSet[int]
+$addAllCandidates = $false
+foreach ($aid in $AddIds) {
+  if ($aid -and $aid.Trim().ToLowerInvariant() -eq "all") {
+    $addAllCandidates = $true
+    continue
+  }
+  $v = 0
+  if ([int]::TryParse($aid, [ref]$v)) { [void]$addIdSet.Add($v) }
+}
+
+$consoleChoiceUsed = $false
+if (-not $nonInteractiveMode -and (Test-WindowsConsoleChoice)) {
+  $naList = @($items | Where-Object { ((Is-GitUntracked $_) -or (Is-SvnUnversioned $_)) -and (Is-CommonAddCandidate $_) } | Sort-Object Id)
+  if ($naList.Count -gt 0) {
+    Write-Host ""
+    Write-Host "步骤 1/2：发现以下文件还没有纳入版本管理，可能需要加入本次提交：" -ForegroundColor Cyan
+    Write-Host "操作说明：直接按 1 = 不加入（默认）；按 2 = 全部加入；按 3 = 输入编号选择加入。这里按键立即生效，不需要回车。" -ForegroundColor Yellow
+    Write-Host "超时规则：${PromptTimeoutSeconds} 秒内不按键，自动选择 1，不加入任何未跟踪文件。" -ForegroundColor Yellow
+    Write-Host "文件列表：" -ForegroundColor Cyan
+    foreach ($x in $naList) { Write-Host ("  编号 {0,-6} 来源 {1,-4} 路径 {2}" -f $x.Id, $x.Source, $x.Path) }
+    Write-Host ""
+    $ch = Invoke-TimedChoiceKey -Choices "123" -TimeoutSec $PromptTimeoutSeconds -DefaultKey '1' -Message "请选择：1不加入 2全部加入 3输入编号"
+    $consoleChoiceUsed = $true
+    if ($ch -eq 2) { $addAllCandidates = $true }
+    elseif ($ch -eq 3) {
+      Write-Host "请输入要加入的编号，多个编号用逗号/空格分隔，例如：3,5,8" -ForegroundColor Yellow
+      $ln = Read-TimedConsoleLine -Prompt "要加入的编号" -TimeoutSec $PromptTimeoutSeconds
+      foreach ($tok in ($ln -split '[,\s;]+')) { $tv = 0; if ([int]::TryParse($tok, [ref]$tv)) { [void]$addIdSet.Add($tv) } }
+    }
+  }
+
+  Write-Host ""
+  $excludePromptList = @(
+    $items | Where-Object {
+      (Is-TrackedPendingChange $_) -or
+      ($addAllCandidates -and (((Is-GitUntracked $_) -or (Is-SvnUnversioned $_)) -and (Is-CommonAddCandidate $_))) -or
+      ($addIdSet.Contains([int]$_.Id))
+    } | Sort-Object Id
+  )
+
+  Write-Host "步骤 2/2：以下是会进入本次提交日志的改动项，请确认是否要排除某些项：" -ForegroundColor Cyan
+  Write-Host "操作说明：直接按 1 = 全部保留（默认）；按 2 = 输入编号排除。这里按键立即生效，不需要回车。" -ForegroundColor Yellow
+  Write-Host "超时规则：${PromptTimeoutSeconds} 秒内不按键，自动选择 1，不排除任何文件。" -ForegroundColor Yellow
+  Write-Host "说明：未在步骤 1 选择加入的未跟踪文件不会列在这里，也不会进入提交日志。" -ForegroundColor Yellow
+  Write-Host "文件列表：" -ForegroundColor Cyan
+  foreach ($x in $excludePromptList) { Write-Host ("  编号 {0,-6} 路径 {1}" -f $x.Id, $x.Path) }
+  Write-Host ""
+  if ($excludePromptList.Count -eq 0) {
+    Write-Host "当前没有可排除的提交日志改动项，跳过排除选择。" -ForegroundColor Yellow
+  } else {
+    $ch2 = Invoke-TimedChoiceKey -Choices "12" -TimeoutSec $PromptTimeoutSeconds -DefaultKey '1' -Message "请选择：1全部保留 2输入编号排除"
+    $consoleChoiceUsed = $true
+    if ($ch2 -eq 2) {
+      Write-Host "请输入要排除的编号，多个编号用逗号/空格分隔，例如：3,5,8" -ForegroundColor Yellow
+      $ln2 = Read-TimedConsoleLine -Prompt "要排除的编号" -TimeoutSec $PromptTimeoutSeconds
+      foreach ($tok in ($ln2 -split '[,\s;]+')) { $tv = 0; if ([int]::TryParse($tok, [ref]$tv)) { [void]$excludeIdSet.Add($tv) } }
+    }
+  }
+}
+
 $addActions = @()
 foreach ($it in $items) {
   if ($addAllCandidates -or $addIdSet.Contains([int]$it.Id)) {
@@ -469,7 +707,10 @@ $needsAdd = @($included | Where-Object { ((Is-GitUntracked $_) -or (Is-SvnUnvers
 $diffCount = 0
 $diffById = @{}
 if ($IncludeDiff) {
-  foreach ($it in $included) {
+  $includedForDiff = @(
+    $included | Sort-Object @{ Expression = { if ((Is-GitUntracked $_) -or (Is-SvnUnversioned $_)) { 1 } else { 0 } }; Ascending = $true }, Id
+  )
+  foreach ($it in $includedForDiff) {
     if ($diffCount -ge $MaxFilesWithDiff) { break }
     if ($it.Source -eq "git" -and $hasGit) {
       $unstaged = Get-GitDiffForPath -rootFull $rootFull -path $it.Path -cached:$false -maxBytes $MaxDiffBytesPerFile
@@ -503,11 +744,31 @@ foreach ($g in $projGroups) {
   }
 }
 
+$includedDefaultLog = @($included | Where-Object { Is-TrackedPendingChange $_ } | Sort-Object Id)
+$projGroupsDefault = $includedDefaultLog | Group-Object Project | Sort-Object Name
+$projectsDefault = @()
+foreach ($g in $projGroupsDefault) {
+  $name = $g.Name
+  if (-not $name) { $name = "unknown" }
+  $projectsDefault += [pscustomobject]@{
+    Name = $name
+    Scope = $name
+    Items = @($g.Group | Sort-Object Id)
+    Files = @($g.Group | Select-Object -ExpandProperty Path | Sort-Object -Unique)
+    GitFiles = @($g.Group | Where-Object { $_.Source -eq "git" } | Select-Object -ExpandProperty Path | Sort-Object -Unique)
+    SvnFiles = @($g.Group | Where-Object { $_.Source -eq "svn" } | Select-Object -ExpandProperty Path | Sort-Object -Unique)
+  }
+}
+
 $out = [pscustomobject]@{
   Root = $rootFull
   GeneratedAt = (Get-Date).ToString("o")
   Defaults = [pscustomobject]@{
     UseDefaultExcludes = $UseDefaultExcludes
+    ScanUntrackedForNeedsAdd = $ScanUntrackedForNeedsAdd
+    NonInteractive = $nonInteractiveMode
+    PromptTimeoutSeconds = $PromptTimeoutSeconds
+    ConsoleChoiceUsed = $consoleChoiceUsed
   }
   Add = [pscustomobject]@{
     AddIds = @($AddIds)
@@ -527,6 +788,9 @@ $out = [pscustomobject]@{
   }
   NeedsAdd = @($needsAdd)
   ItemsAll = @($items)
+  # 已纳入版本库且有改动的项（提交日志主线只用这些 + 对应 Diffs）
+  ItemsIncludedDefaultLog = @($includedDefaultLog)
+  ProjectsDefault = @($projectsDefault)
   ItemsIncluded = @($included)
   ItemsExcluded = @($excluded)
   Diffs = $diffById
