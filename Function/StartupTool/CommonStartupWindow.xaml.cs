@@ -2910,6 +2910,45 @@ public partial class CommonStartupWindow : Window
         MessageBox.Show("目标路径不存在。", "常用启动项", MessageBoxButton.OK, MessageBoxImage.Warning);
     }
 
+    private void OpenItemTerminal(string fullPath)
+    {
+        var targetDirectory = GetItemDirectory(fullPath);
+        if (string.IsNullOrWhiteSpace(targetDirectory) || !Directory.Exists(targetDirectory))
+        {
+            MessageBox.Show("目标目录不存在。", "常用启动项", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo("cmd.exe", "/K cd /d \"" + targetDirectory + "\"")
+            {
+                UseShellExecute = true
+            });
+            StatusText.Text = "已打开终端：" + targetDirectory;
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("无法打开终端：" + ex.Message, "常用启动项", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private static string GetItemDirectory(string fullPath)
+    {
+        if (string.IsNullOrWhiteSpace(fullPath))
+        {
+            return null;
+        }
+
+        if (Directory.Exists(fullPath))
+        {
+            return fullPath;
+        }
+
+        var directory = System.IO.Path.GetDirectoryName(fullPath);
+        return Directory.Exists(directory) ? directory : null;
+    }
+
     private void CopyPath(string fullPath)
     {
         if (string.IsNullOrWhiteSpace(fullPath))
@@ -3043,8 +3082,8 @@ public partial class CommonStartupWindow : Window
     private void UpdateKeyboardHint()
     {
         KeyboardHintText.Text = _canUseIntegratedFileSearch
-            ? "Esc 隐藏 · Enter 启动 · Ctrl+Enter 打开目录 · F2 编辑 · Delete 删除 · Ctrl+C 复制路径"
-            : "Esc 隐藏 · Enter 启动 · Ctrl+Enter 打开目录 · F2 编辑 · Delete 删除 · Ctrl+C 复制路径 · 当前未启用文件搜索联动";
+            ? "Esc 隐藏 · Enter 启动 · Ctrl+Enter 打开目录 · Ctrl+T 打开终端 · F2 编辑 · Delete 删除 · Ctrl+C 复制路径"
+            : "Esc 隐藏 · Enter 启动 · Ctrl+Enter 打开目录 · Ctrl+T 打开终端 · F2 编辑 · Delete 删除 · Ctrl+C 复制路径 · 当前未启用文件搜索联动";
     }
 
     private void Window_Loaded(object sender, RoutedEventArgs e)
@@ -3139,6 +3178,11 @@ public partial class CommonStartupWindow : Window
                 OpenItemFolder(_selectedItem.FullPath);
                 e.Handled = true;
             }
+            else if (_selectedItem != null && e.Key == Key.T && Keyboard.Modifiers == ModifierKeys.Control)
+            {
+                OpenItemTerminal(_selectedItem.FullPath);
+                e.Handled = true;
+            }
             else if (e.Key == Key.Down || e.Key == Key.Up)
             {
                 NavigateSelection(e.Key == Key.Down ? 1 : -1);
@@ -3173,6 +3217,13 @@ public partial class CommonStartupWindow : Window
         if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Control)
         {
             OpenItemFolder(_selectedItem.FullPath);
+            e.Handled = true;
+            return;
+        }
+
+        if (e.Key == Key.T && Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            OpenItemTerminal(_selectedItem.FullPath);
             e.Handled = true;
             return;
         }
@@ -3214,6 +3265,12 @@ public partial class CommonStartupWindow : Window
         if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Control)
         {
             OpenItemFolder(candidate.FullPath);
+            return true;
+        }
+
+        if (e.Key == Key.T && Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            OpenItemTerminal(candidate.FullPath);
             return true;
         }
 
