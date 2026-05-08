@@ -25,7 +25,7 @@ description: Git+SVN 改动由脚本采集；模型默认打开本机可见 Powe
 
 ## 核心约束（必须遵守）
 
-1. **脚本 JSON 输出是唯一数据源**：模型不得自行递归扫描目录来决定「改动范围」。
+1. **脚本 JSON 输出是改动范围与用户选择的唯一数据源**：模型不得自行递归扫描目录来决定「纳入/排除哪些文件」。但生成提交日志时必须理解具体变更；若 `Diffs` 缺失、为空或不足以判断行为变化，模型必须只针对 `ItemsIncludedDefaultLog` 中未排除的路径补取只读差异或读取文件内容，不能只凭路径和项目名编造日志。
 2. **交互在脚本内完成且必须可超时**：是否将 `NeedsAdd` 纳入版本库、是否排除提交项，由 `get-working-changes.ps1` 在 **Windows 可交互控制台** 内处理。脚本优先打开勾选表格；GUI 不可用时才回退编号输入。窗口会显示剩余秒数；点击“确定”或超时都会进入下一步。若超时时当前有勾选，则按当前勾选结果继续；若当前没有任何勾选，则采用默认值（不加入未跟踪 / 全部保留不排除）。回退到编号输入时，输入行同样按 `-PromptTimeoutSeconds` 超时，超时或空输入视为不选择任何 Id。**禁止**由模型在聊天里用 `Start-Sleep`、阻塞式原生选项菜单或「伪后置步骤」替代脚本交互。
 3. **模型默认限时交互调用**：生成提交日志时，模型默认必须打开本机可见 PowerShell 运行脚本 **`-Interactive -PromptTimeoutSeconds 30`**，给用户一次加入/排除机会；无人操作则脚本自动按默认项继续。只有用户明确要求“非交互 / CI / 直接生成 / 不要弹窗”时，才使用 **`-NonInteractive`**。
 4. **一次只生成一条提交日志**：即使涉及多个项目，也不要拆成多条提交；多项目只在 `scope` 中写清楚，并在正文条目中说明各项目关键改动。
@@ -44,6 +44,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_c
 ```
 
 若当前工具显示为 `Bash(...)`，只允许执行这种固定短命令；不要在 Bash 中拼接多行 `powershell -Command`。
+
+默认生成提交日志时不得主动传 `-IncludeDiff false`。脚本会先完成未跟踪加入与排除交互，再只对最终 **`ItemsIncludedDefaultLog`** 范围读取 diff，避免对所有候选文件读 diff。只有用户明确要求“只看文件列表 / 快速跳过 diff / 不需要精准日志”时才允许关闭 diff；如果关闭了 diff，Step 2 必须按 `ItemsIncludedDefaultLog` 补充只读差异或文件内容后再写日志。
 
 **人类在 Windows 本机终端**：需要脚本内交互时，使用 **`-Interactive`**（且 stdin 未重定向），脚本会依次（若存在）提示：① 未跟踪/未版本管理候选是否 `git add`/`svn add`；② 是否排除本次提交项。每一步都会在 `-PromptTimeoutSeconds` 后自动落默认值，因此无人值守时不会卡住；仍可用 `-AddIds`、`-ExcludeIds`、`-ExcludePaths` 跳过对应提问（与脚本实现一致）。
 
@@ -82,13 +84,21 @@ JSON 关键字段（与脚本一致）：
 
 - **`ItemsIncludedDefaultLog[]`**：已纳入版本库、将写入「默认/最终」叙事主线的路径（不含 `??` / svn `unversioned`）
 - **`ProjectsDefault[]`**：由上一字段聚合
-- `ItemsAll[]`、`ItemsIncluded[]`、`ItemsExcluded[]`、`NeedsAdd[]`、`Projects[]`、`Diffs`：含义同脚本输出；`Defaults` 中含 `NonInteractive`、`PromptTimeoutSeconds`、`ConsoleChoiceUsed`
+- `ItemsAll[]`、`ItemsIncluded[]`、`ItemsExcluded[]`、`NeedsAdd[]`、`Projects[]`、`Diffs`：含义同脚本输出；`Defaults` 中含 `IncludeDiff`、`MaxDiffBytesPerFile`、`MaxFilesWithDiff`、`NonInteractive`、`PromptTimeoutSeconds`、`ConsoleChoiceUsed`
 
 `NeedsAdd[]` 候选类型规则（脚本侧 `Is-CommonAddCandidate` 与历史技能一致）：常见源码、前端、Markdown、脚本、工程配置、接口/schema 等文本；二进制与产物目录不进入。
 
 ### Step 2) 模型生成提交日志
 
-仅凭 Step 1 的 JSON：以 **`ItemsIncludedDefaultLog`**、**`ProjectsDefault`**、**`Diffs`**（及必要时 **`ItemsExcluded`**）归纳一条提交说明；**不得**再发起聊天内「加入未跟踪 / 排除」流程（已在脚本的限时交互或显式 `-NonInteractive` 中落定）。
+以 Step 1 的 JSON 确定最终范围：只处理 **`ItemsIncludedDefaultLog`** 中的文件，并尊重 **`ItemsExcluded`**。**不得**再发起聊天内「加入未跟踪 / 排除」流程（已在脚本的限时交互或显式 `-NonInteractive` 中落定）。
+
+生成日志前必须确认有足够信息理解具体变更：
+
+- 优先使用 **`Diffs`** 中的 `unstaged` / `staged` / `patch` 内容归纳行为变化；脚本默认只为最终 `ItemsIncludedDefaultLog` 范围填充 diff。
+- 如果 `Diffs` 对相关 Id 不存在、值为空、被截断或仅凭 diff 仍无法判断语义，模型必须补充执行只读检查：可以对 `ItemsIncludedDefaultLog` 的路径运行 `git diff -- <path>`、`git diff --cached -- <path>`、`svn diff -- <path>`，或读取这些路径的当前文件内容。
+- 补充检查只能覆盖 `ItemsIncludedDefaultLog` 里的路径；不得重新扫描全仓、不得把未纳入或已排除的文件写进提交日志。
+- 只读检查允许使用 `git diff` / `svn diff` / 读取文件；仍禁止模型执行 `git add`、`git commit`、`git push`、`svn add`、`svn commit` 等会改变状态或提交推送的命令。
+- 若一个被纳入文件仍无法取得内容或差异，应在内部降低该文件权重；不要编造具体行为。
 
 ### 提交日志正文要点
 
@@ -109,7 +119,7 @@ Step 1 wrapper 会自动把采集 JSON 保存到 `.claude/skills/git_svn_commitl
 
 模型只负责生成 **Step 2 的最终提交日志文本**。Claude Code Bash 工具无法可靠传递中文参数，也不能用 `python -c` / `node -e` / `powershell -Command` 在 Bash 内处理中文。**因此模型必须在自身推理中直接得到最终提交日志的 UTF-8 Base64 字符串**，Step 3 命令行只传 ASCII Base64 给 `-CommitMessageBase64Utf8`。
 
-`-CommitMessageBase64Utf8` 内容必须只包含最终提交日志标题+正文的 UTF-8 Base64，不得包含核对表、说明文字或占位符。模型不得使用 stdin、pipe、heredoc、重定向来传提交日志，不得为了传日志而单独创建或编辑提交日志/Base64 文件（包括 `commit_msg_b64.txt`、`final_commit_message.txt` 等），不得把提交日志作为 `-CommitMessageText` 长参数塞进 Bash/WSL 命令行，不得在 Bash 中执行 `python -c` / `node -e` / `powershell -Command` 等编码命令来处理中文，不得执行 `git` / `svn` 命令，不得创建临时 `.ps1` 提交脚本，也不得直接调用 `run-commit-push-choice.ps1`。
+`-CommitMessageBase64Utf8` 内容必须只包含最终提交日志标题+正文的 UTF-8 Base64，不得包含核对表、说明文字或占位符。模型不得使用 stdin、pipe、heredoc、重定向来传提交日志，不得为了传日志而单独创建或编辑提交日志/Base64 文件（包括 `commit_msg_b64.txt`、`final_commit_message.txt` 等），不得把提交日志作为 `-CommitMessageText` 长参数塞进 Bash/WSL 命令行，不得在 Bash 中执行 `python -c` / `node -e` / `powershell -Command` 等编码命令来处理中文，不得执行 `git add` / `git commit` / `git push` / `svn add` / `svn commit` 等会改变状态或提交推送的命令，不得创建临时 `.ps1` 提交脚本，也不得直接调用 `run-commit-push-choice.ps1`。
 
 不得因为“无法确信 Base64 与中文原文逐字一致”而跳过 Step 3；Step 3 窗口会显示脚本实际解码后的提交日志和 SHA256，并由用户按 `1` 提交或按 `2` 取消。模型仍不得调用任何 shell 命令来“辅助计算” Base64。
 
@@ -127,7 +137,7 @@ Step 3 返回 JSON 中的 `CommitMessage` 与 `CommitMessageSha256` 是脚本实
 
 ## 输出要求（最终给用户的内容）
 
-1. **默认提交日志**：基于 `ItemsIncludedDefaultLog` / `ProjectsDefault` / 相关 `Diffs`。
+1. **默认提交日志**：基于 `ItemsIncludedDefaultLog` / `ProjectsDefault` / 相关 `Diffs`，并在 `Diffs` 为空或不足时基于补充只读差异/文件内容。
 2. **推荐**在默认日志前附 **`### 待提交文件核对`** Markdown 表（`| # | 状态 | 路径 | 来源 | 项目 |`，行与 `ItemsIncludedDefaultLog` 一一对应；Git `状态` 为 `GitIndexStatus`+`GitWorktreeStatus` 两字符拼接；SVN 为 `SvnItem`）。
 3. **提交/推送结果**：若执行 Step 3，简要说明 `completed` / `skipped` / `failed`，失败时列出失败命令摘要。
 4. **收尾**：若执行了 Step 3，末尾 **`### 最终版提交日志（可直接复制）`** 必须逐字复制 Step 3 结果 JSON 的 `CommitMessage`；若未执行 Step 3，复制 Step 2 的 `$finalCommitLog`。用 ```text 完整贴一遍标题+正文，须全文便于从底部复制。

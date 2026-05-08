@@ -411,7 +411,14 @@ function Invoke-ItemCheckDialog {
 
 function Normalize-RelPath([string]$fullPath, [string]$rootFull) {
   try {
-    $rel = [System.IO.Path]::GetRelativePath($rootFull, $fullPath)
+    $rootResolved = [System.IO.Path]::GetFullPath($rootFull)
+    $pathResolved = [System.IO.Path]::GetFullPath($fullPath)
+    if (-not $rootResolved.EndsWith([System.IO.Path]::DirectorySeparatorChar)) {
+      $rootResolved += [System.IO.Path]::DirectorySeparatorChar
+    }
+    $rootUri = New-Object System.Uri($rootResolved)
+    $pathUri = New-Object System.Uri($pathResolved)
+    $rel = [System.Uri]::UnescapeDataString($rootUri.MakeRelativeUri($pathUri).ToString())
     return $rel -replace '\\','/'
   } catch {
     return $fullPath -replace '\\','/'
@@ -449,6 +456,58 @@ function Safe-TrimBytes([string]$text, [int]$maxBytes) {
   return [System.Text.Encoding]::UTF8.GetString($slice)
 }
 
+function Quote-NativeArgument([string]$value) {
+  if ($null -eq $value) { return '""' }
+  if ($value -eq "") { return '""' }
+  if ($value -notmatch '[\s"`]') { return $value }
+  return '"' + (($value -replace '\\(?=")', '$0$0') -replace '"', '\"') + '"'
+}
+
+function Invoke-NativeText {
+  param(
+    [string]$Tool,
+    [string[]]$Arguments,
+    [string]$WorkingDirectory,
+    [int]$TimeoutSeconds = 15
+  )
+
+  try {
+    $cmd = Get-Command -Name $Tool -CommandType Application -ErrorAction SilentlyContinue
+    if (-not $cmd) { return "" }
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $cmd.Source
+    $psi.Arguments = (@($Arguments) | ForEach-Object { Quote-NativeArgument $_ }) -join " "
+    $psi.WorkingDirectory = $WorkingDirectory
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+    $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+    [void]$proc.Start()
+    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+    $stderrTask = $proc.StandardError.ReadToEndAsync()
+    if ($TimeoutSeconds -gt 0) {
+      if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
+        try { $proc.Kill() } catch {}
+        return ""
+      }
+    } else {
+      $proc.WaitForExit()
+    }
+    $stdout = $stdoutTask.Result
+    [void]$stderrTask.Result
+    if ($proc.ExitCode -ne 0) { return "" }
+    return $stdout
+  } catch {
+    return ""
+  }
+}
+
 function Test-IsGitRepo([string]$rootFull) {
   try {
     Push-Location -LiteralPath $rootFull
@@ -457,11 +516,23 @@ function Test-IsGitRepo([string]$rootFull) {
   } catch { return $false } finally { Pop-Location -ErrorAction SilentlyContinue }
 }
 
+function Get-GitRepoRoot([string]$rootFull) {
+  try {
+    Push-Location -LiteralPath $rootFull
+    $v = (git rev-parse --show-toplevel 2>$null).Trim()
+    if ($v) { return (Resolve-Path -LiteralPath $v).Path }
+  } catch {
+  } finally {
+    Pop-Location -ErrorAction SilentlyContinue
+  }
+  return $rootFull
+}
+
 function Get-GitPorcelainChanges([string]$rootFull, [bool]$includeUntracked) {
   $items = @()
   try {
     Push-Location -LiteralPath $rootFull
-    $args = @("status", "--porcelain=v1", "-z")
+    $args = @("-c", "status.relativePaths=false", "status", "--porcelain=v1", "-z")
     if ($includeUntracked) {
       $args += "--untracked-files=all"
     } else {
@@ -515,15 +586,35 @@ function Get-GitPorcelainChanges([string]$rootFull, [bool]$includeUntracked) {
 }
 
 function Get-GitDiffForPath([string]$rootFull, [string]$path, [bool]$cached, [int]$maxBytes) {
+  $args = @("diff", "--no-ext-diff", "--no-color")
+  if ($cached) { $args += "--cached" }
+  $args += @("--", $path)
+
+  $nativeText = Invoke-NativeText -Tool "git" -Arguments $args -WorkingDirectory $rootFull
+  if ($nativeText) { return (Safe-TrimBytes -text $nativeText -maxBytes $maxBytes) }
+
   try {
     Push-Location -LiteralPath $rootFull
-    $args = @("diff")
-    if ($cached) { $args += "--cached" }
-    $args += @("--", $path)
     $txt = (& git @args 2>$null) -join "`n"
-    if (-not $txt) { return "" }
-    return (Safe-TrimBytes -text $txt -maxBytes $maxBytes)
-  } catch { return "" } finally { Pop-Location -ErrorAction SilentlyContinue }
+    if ($txt) { return (Safe-TrimBytes -text $txt -maxBytes $maxBytes) }
+  } catch {
+  } finally {
+    Pop-Location -ErrorAction SilentlyContinue
+  }
+
+  try {
+    $txt = (& git -C $rootFull @args 2>$null) -join "`n"
+    if ($txt) { return (Safe-TrimBytes -text $txt -maxBytes $maxBytes) }
+  } catch {
+  }
+
+  try {
+    $txt = (& git -C $rootFull @args 2>&1) -join "`n"
+    if ($LASTEXITCODE -eq 0 -and $txt) { return (Safe-TrimBytes -text $txt -maxBytes $maxBytes) }
+  } catch {
+  }
+
+  return ""
 }
 
 function Get-SvnWorkingCopyRoots([string]$rootFull) {
@@ -580,7 +671,11 @@ function Get-SvnStatusChanges([string]$wcRoot, [string]$rootFull, [bool]$quiet) 
       if (-not [System.IO.Path]::IsPathRooted($p)) {
         $abs = Join-Path -Path $wcRoot -ChildPath $p
       }
-      $rel = Normalize-RelPath -fullPath $abs -rootFull $rootFull
+      if ((Normalize-RelPath -fullPath $abs -rootFull $rootFull) -notmatch '^\.\.') {
+        $rel = Normalize-RelPath -fullPath $abs -rootFull $rootFull
+      } else {
+        $rel = Normalize-RelPath -fullPath $abs -rootFull $wcRoot
+      }
 
       # item: modified, added, deleted, unversioned, replaced, conflicted, missing, ignored, etc.
       if ($item -eq "normal" -and $props -eq "none") { continue }
@@ -628,6 +723,9 @@ function Get-SvnDiffForPath([string]$wcRoot, [string]$relPathFromRoot, [string]$
       # deleted files might not exist; try diff by relative path in wc
       $abs = Join-Path -Path $wcRoot -ChildPath ($relPathFromRoot -replace '/','\')
     }
+    $nativeText = Invoke-NativeText -Tool "svn" -Arguments @("diff", "--", $abs) -WorkingDirectory $wcRoot
+    if ($nativeText) { return (Safe-TrimBytes -text $nativeText -maxBytes $maxBytes) }
+
     Push-Location -LiteralPath $wcRoot
     $txt = (& svn diff -- $abs 2>$null) -join "`n"
     if (-not $txt) { return "" }
@@ -677,9 +775,13 @@ $IncludeDiff = To-Bool -v $IncludeDiff -defaultValue $true
 $Svn = To-Bool -v $Svn -defaultValue $true
 $UseDefaultExcludes = To-Bool -v $UseDefaultExcludes -defaultValue $true
 $hasGit = Test-IsGitRepo -rootFull $rootFull
+$gitRepoRoot = $rootFull
+if ($hasGit) {
+  $gitRepoRoot = Get-GitRepoRoot -rootFull $rootFull
+}
 if ($hasGit) {
   try {
-    Push-Location -LiteralPath $rootFull
+    Push-Location -LiteralPath $gitRepoRoot
     & git update-index -q --refresh 2>$null
   } catch {
   } finally {
@@ -690,7 +792,7 @@ if ($hasGit) {
 # 已跟踪的待提交：Git（无 ??）+ SVN（status --xml -q，不含未版本管理，避免海量条目）
 $rawTracked = @()
 if ($hasGit) {
-  $rawTracked += Get-GitPorcelainChanges -rootFull $rootFull -includeUntracked $false
+  $rawTracked += Get-GitPorcelainChanges -rootFull $gitRepoRoot -includeUntracked $false
 }
 
 $wcRoots = @()
@@ -711,7 +813,7 @@ foreach ($t in $rawTracked) {
 $rawUntracked = @()
 if ($ScanUntrackedForNeedsAdd) {
   if ($hasGit) {
-    $gitAll = Get-GitPorcelainChanges -rootFull $rootFull -includeUntracked $true
+    $gitAll = Get-GitPorcelainChanges -rootFull $gitRepoRoot -includeUntracked $true
     foreach ($g in $gitAll) {
       if ($g.IndexStatus -ne "?" -or $g.WorktreeStatus -ne "?") { continue }
       $pn = ($g.Path -replace '\\', '/')
@@ -989,18 +1091,26 @@ foreach ($it in $items) {
 
 $needsAdd = @($included | Where-Object { ((Is-GitUntracked $_) -or (Is-SvnUnversioned $_)) -and (Is-CommonAddCandidate $_) } | Sort-Object Id)
 
+$addedIdSet = New-Object System.Collections.Generic.HashSet[int]
+foreach ($a in $addActions) {
+  if ($null -ne $a.id) { [void]$addedIdSet.Add([int]$a.id) }
+}
+$includedDefaultLog = @(
+  $included | Where-Object { (Is-TrackedPendingChange $_) -or $addedIdSet.Contains([int]$_.Id) } | Sort-Object Id
+)
+
 # Attach diffs (limited)
 $diffCount = 0
 $diffById = @{}
 if ($IncludeDiff) {
   $includedForDiff = @(
-    $included | Sort-Object @{ Expression = { if ((Is-GitUntracked $_) -or (Is-SvnUnversioned $_)) { 1 } else { 0 } }; Ascending = $true }, Id
+    $includedDefaultLog | Sort-Object Id
   )
   foreach ($it in $includedForDiff) {
     if ($diffCount -ge $MaxFilesWithDiff) { break }
     if ($it.Source -eq "git" -and $hasGit) {
-      $unstaged = Get-GitDiffForPath -rootFull $rootFull -path $it.Path -cached:$false -maxBytes $MaxDiffBytesPerFile
-      $staged = Get-GitDiffForPath -rootFull $rootFull -path $it.Path -cached:$true -maxBytes $MaxDiffBytesPerFile
+      $unstaged = Get-GitDiffForPath -rootFull $gitRepoRoot -path $it.Path -cached:$false -maxBytes $MaxDiffBytesPerFile
+      $staged = Get-GitDiffForPath -rootFull $gitRepoRoot -path $it.Path -cached:$true -maxBytes $MaxDiffBytesPerFile
       $diffById["$($it.Id)"] = [pscustomobject]@{ unstaged = $unstaged; staged = $staged }
       $diffCount += 1
     } elseif ($it.Source -eq "svn" -and $Svn) {
@@ -1030,13 +1140,6 @@ foreach ($g in $projGroups) {
   }
 }
 
-$addedIdSet = New-Object System.Collections.Generic.HashSet[int]
-foreach ($a in $addActions) {
-  if ($null -ne $a.id) { [void]$addedIdSet.Add([int]$a.id) }
-}
-$includedDefaultLog = @(
-  $included | Where-Object { (Is-TrackedPendingChange $_) -or $addedIdSet.Contains([int]$_.Id) } | Sort-Object Id
-)
 $projGroupsDefault = $includedDefaultLog | Group-Object Project | Sort-Object Name
 $projectsDefault = @()
 foreach ($g in $projGroupsDefault) {
@@ -1058,6 +1161,9 @@ $out = [pscustomobject]@{
   Defaults = [pscustomobject]@{
     UseDefaultExcludes = $UseDefaultExcludes
     ScanUntrackedForNeedsAdd = $ScanUntrackedForNeedsAdd
+    IncludeDiff = $IncludeDiff
+    MaxDiffBytesPerFile = $MaxDiffBytesPerFile
+    MaxFilesWithDiff = $MaxFilesWithDiff
     NonInteractive = $nonInteractiveMode
     PromptTimeoutSeconds = $PromptTimeoutSeconds
     ConsoleChoiceUsed = $consoleChoiceUsed
@@ -1072,6 +1178,7 @@ $out = [pscustomobject]@{
   }
   Git = [pscustomobject]@{
     HasRepo = $hasGit
+    RepoRoot = $gitRepoRoot
     ItemCount = @($items | Where-Object { $_.Source -eq "git" }).Count
   }
   Svn = [pscustomobject]@{
