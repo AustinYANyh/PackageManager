@@ -42,6 +42,7 @@ namespace MftScanner
         private HashSet<RecordKey> _deletedOverlayKeys = new HashSet<RecordKey>();
         private bool _containsAcceleratorReady = true;
         private long _containsAcceleratorEpoch;
+        private readonly object _liveOverlayPublishLock = new object();
         private readonly object _shortContainsHotBucketLock = new object();
         private Dictionary<string, ShortContainsHotBucket> _shortContainsHotBuckets = new Dictionary<string, ShortContainsHotBucket>(StringComparer.Ordinal);
         private readonly LinkedList<string> _shortContainsHotBucketLru = new LinkedList<string>();
@@ -62,12 +63,42 @@ namespace MftScanner
         private readonly List<PendingContainsMutation> _pendingContainsMutations = new List<PendingContainsMutation>();
         private bool _pendingContainsMutationsOverflowed;
         private const int MaxPendingContainsMutations = 65536;
+        private const int DefaultMaxLiveDeltaMutations = 20000;
+        private const int CatchUpMaxLiveDeltaMutations = 100000;
 
-        public int TotalCount => SortedArray.Length;
+        public int TotalCount
+        {
+            get
+            {
+                var overlay = Volatile.Read(ref _containsOverlay) ?? ContainsOverlay.Empty;
+                var deleted = Volatile.Read(ref _deletedOverlayKeys);
+                var total = (SortedArray?.Length ?? 0) + overlay.AddedCount - (deleted?.Count ?? 0);
+                return total < 0 ? 0 : total;
+            }
+        }
 
         public long ContentVersion => Interlocked.Read(ref _contentVersion);
 
         public bool AreDerivedStructuresReady => Volatile.Read(ref _derivedStructuresReady);
+
+        public int LiveDeltaCount
+        {
+            get
+            {
+                var overlay = Volatile.Read(ref _containsOverlay) ?? ContainsOverlay.Empty;
+                var deleted = Volatile.Read(ref _deletedOverlayKeys);
+                return overlay.AddedCount + (deleted?.Count ?? 0);
+            }
+        }
+
+        public bool HasLiveAddedOverlay
+        {
+            get
+            {
+                var overlay = Volatile.Read(ref _containsOverlay) ?? ContainsOverlay.Empty;
+                return overlay.AddedCount > 0;
+            }
+        }
 
         public bool HasExtensionIndex
         {
@@ -98,6 +129,30 @@ namespace MftScanner
                    && keys.Contains(RecordKey.FromRecord(record));
         }
 
+        public FileRecord[] GetLiveAddedRecordsSnapshot()
+        {
+            var overlay = Volatile.Read(ref _containsOverlay) ?? ContainsOverlay.Empty;
+            if (overlay.AddedCount == 0)
+                return Array.Empty<FileRecord>();
+
+            var records = overlay.AddedRecords;
+            if (records == null || records.Count == 0)
+                return Array.Empty<FileRecord>();
+
+            var result = new List<FileRecord>(records.Count);
+            for (var i = 0; i < records.Count; i++)
+            {
+                var record = records[i];
+                if (record != null && !IsDeleted(record))
+                    result.Add(record);
+            }
+
+            if (result.Count > 1)
+                result.Sort(ByLowerName);
+
+            return result.Count == 0 ? Array.Empty<FileRecord>() : result.ToArray();
+        }
+
         public bool HasContainsAccelerator
         {
             get
@@ -105,7 +160,6 @@ namespace MftScanner
                 var accelerator = Volatile.Read(ref _containsAccelerator);
                 var overlay = Volatile.Read(ref _containsOverlay) ?? ContainsOverlay.Empty;
                 return Volatile.Read(ref _containsAcceleratorReady)
-                       && !overlay.IsOverflowed
                        && accelerator != null
                        && !accelerator.IsEmpty;
             }
@@ -121,7 +175,6 @@ namespace MftScanner
             var bigramCountReady = Volatile.Read(ref _bigramAsciiCounts) != null
                                    && Volatile.Read(ref _bigramAsciiRecordCount) == recordCount;
             var ready = Volatile.Read(ref _containsAcceleratorReady)
-                        && !overlay.IsOverflowed
                         && accelerator != null
                         && !accelerator.IsEmpty;
 
@@ -143,6 +196,7 @@ namespace MftScanner
             public int CandidateCount { get; set; }
             public long IntersectMs { get; set; }
             public long VerifyMs { get; set; }
+            public bool IncludesLiveOverlay { get; set; }
         }
 
         public sealed class MatchSearchResult
@@ -151,6 +205,18 @@ namespace MftScanner
             public int Total { get; set; }
             public int CandidateCount { get; set; }
             public long VerifyMs { get; set; }
+        }
+
+        public sealed class LiveDeltaApplyResult
+        {
+            public int Changes { get; set; }
+            public int Inserted { get; set; }
+            public int Deleted { get; set; }
+            public int Restored { get; set; }
+            public int AlreadyVisible { get; set; }
+            public int OverlayAdds { get; set; }
+            public int OverlayDeletes { get; set; }
+            public bool CompactRequired { get; set; }
         }
 
         private sealed class ShortContainsHotBucket
@@ -196,7 +262,6 @@ namespace MftScanner
             var accelerator = Volatile.Read(ref _containsAccelerator);
             var overlay = Volatile.Read(ref _containsOverlay) ?? ContainsOverlay.Empty;
             if (!Volatile.Read(ref _containsAcceleratorReady)
-                || overlay.IsOverflowed
                 || accelerator == null
                 || accelerator.IsEmpty)
             {
@@ -215,11 +280,6 @@ namespace MftScanner
                     return true;
                 }
 
-                if (overlay.IsOverflowed)
-                {
-                    IndexPerfLog.Write("INDEX",
-                        $"[CONTAINS ACCELERATOR] outcome=overlay-overflow fallback=true query={IndexPerfLog.FormatValue(query)}");
-                }
                 return false;
             }
 
@@ -308,7 +368,6 @@ namespace MftScanner
             var accelerator = Volatile.Read(ref _containsAccelerator);
             var overlay = Volatile.Read(ref _containsOverlay) ?? ContainsOverlay.Empty;
             if (!Volatile.Read(ref _containsAcceleratorReady)
-                || overlay.IsOverflowed
                 || accelerator == null
                 || accelerator.IsEmpty
                 || !accelerator.HasTrigramBucket)
@@ -335,9 +394,8 @@ namespace MftScanner
                     return false;
 
                 _containsAccelerator = accelerator;
-                _containsOverlay = ContainsOverlay.Empty;
                 _containsAcceleratorReady = true;
-                _containsAcceleratorEpoch++;
+                Interlocked.Increment(ref _containsAcceleratorEpoch);
                 _pendingContainsMutations.Clear();
                 _pendingContainsMutationsOverflowed = false;
                 IndexPerfLog.Write("INDEX",
@@ -748,7 +806,8 @@ namespace MftScanner
             IReadOnlyList<FileRecord> sortedRecords,
             bool buildContainsAccelerator = true,
             bool takeOwnership = false,
-            bool buildDerivedStructures = true)
+            bool buildDerivedStructures = true,
+            bool buildShortAsciiStructures = true)
         {
             var totalStopwatch = Stopwatch.StartNew();
             var arr = takeOwnership && sortedRecords is FileRecord[] ownedRecords
@@ -807,12 +866,13 @@ namespace MftScanner
                 configArr,
                 buildContainsAccelerator ? ContainsAccelerator.Build(arr, ContainsAcceleratorBucketKinds.All) : null,
                 buildContainsAccelerator,
-                buildDerivedStructures);
+                buildDerivedStructures,
+                buildShortAsciiStructures);
             totalStopwatch.Stop();
             IndexPerfLog.Write("INDEX",
                 $"[LOAD SORTED RECORDS] records={arr.Length} sortedAlready={sortedAlready} " +
                 $"verifyMs={verifyStopwatch.ElapsedMilliseconds} sortMs={sortMilliseconds} " +
-                $"derived={buildDerivedStructures} totalMs={totalStopwatch.ElapsedMilliseconds}");
+                $"derived={buildDerivedStructures} shortAscii={buildShortAsciiStructures} totalMs={totalStopwatch.ElapsedMilliseconds}");
         }
 
         public void Build(IReadOnlyList<FileRecord> records, bool buildContainsAccelerator = true)
@@ -1930,7 +1990,7 @@ namespace MftScanner
                 SortedArray = newArr;
                 ParentSortedArray = InsertIntoSortedArray(ParentSortedArray, record, ByParentThenLowerName);
                 RemoveDeletedOverlayKey(RecordKey.FromRecord(record));
-                _contentVersion++;
+                Interlocked.Increment(ref _contentVersion);
                 ClearShortContainsHotBuckets();
                 AddShortAsciiIndexesRecord(record);
             }
@@ -1957,7 +2017,7 @@ namespace MftScanner
                 }
 
                 if (addedToOverlay)
-                    _contentVersion++;
+                    Interlocked.Increment(ref _contentVersion);
                 ClearShortContainsHotBuckets();
                 IndexPerfLog.Write("INDEX",
                     $"[DELETE OVERLAY] source=remove added={addedToOverlay} overlayCount={DeletedOverlayCount} " +
@@ -1971,37 +2031,59 @@ namespace MftScanner
             if (record == null)
                 return false;
 
-            return MarkDeleted(record.Frn, record.LowerName, record.ParentFrn, record.DriveLetter, source);
+            return MarkDeleted(record.Frn, record.LowerName, record.ParentFrn, record.DriveLetter, record.IsDirectory, source);
         }
 
         public bool MarkDeleted(ulong frn, string lowerName, ulong parentFrn, char driveLetter, string source)
         {
-            _lock.EnterWriteLock();
-            try
+            return MarkDeleted(frn, lowerName, parentFrn, driveLetter, false, source);
+        }
+
+        public bool MarkDeleted(ulong frn, string lowerName, ulong parentFrn, char driveLetter, bool isDirectory, string source)
+        {
+            var result = ApplyLiveDeltaBatch(new[]
             {
-                var key = new RecordKey(frn, lowerName, parentFrn, driveLetter);
-                var addedToOverlay = AddDeletedOverlayKey(key);
-                if (!addedToOverlay)
-                {
-                    IndexPerfLog.Write("INDEX",
-                        $"[DELETE OVERLAY] source={IndexPerfLog.FormatValue(source)} added=false overlayCount={DeletedOverlayCount} " +
-                        $"drive={char.ToUpperInvariant(driveLetter)} frn={frn} parentFrn={parentFrn} lowerName={IndexPerfLog.FormatValue(lowerName)}");
-                    return false;
-                }
+                new UsnChangeEntry(
+                    UsnChangeKind.Delete,
+                    frn,
+                    lowerName,
+                    lowerName,
+                    parentFrn,
+                    driveLetter,
+                    isDirectory)
+            });
 
-                if (_containsAcceleratorReady)
-                    AppendContainsOverlay(PendingContainsMutation.ForRemove(key));
-                else
-                    EnqueuePendingContainsRemove(key);
+            var applied = result.Deleted > 0 || result.Restored > 0 || result.Inserted > 0;
+            IndexPerfLog.Write("INDEX",
+                $"[DELETE OVERLAY] source={IndexPerfLog.FormatValue(source)} added={applied} overlayCount={DeletedOverlayCount} " +
+                $"drive={char.ToUpperInvariant(driveLetter)} frn={frn} parentFrn={parentFrn} lowerName={IndexPerfLog.FormatValue(lowerName)} " +
+                $"inserted={result.Inserted} deleted={result.Deleted} restored={result.Restored} overlayAdds={result.OverlayAdds} overlayDeletes={result.OverlayDeletes}");
+            return applied;
+        }
 
-                _contentVersion++;
-                ClearShortContainsHotBuckets();
-                IndexPerfLog.Write("INDEX",
-                    $"[DELETE OVERLAY] source={IndexPerfLog.FormatValue(source)} added=true overlayCount={DeletedOverlayCount} " +
-                    $"drive={char.ToUpperInvariant(driveLetter)} frn={frn} parentFrn={parentFrn} lowerName={IndexPerfLog.FormatValue(lowerName)}");
-                return true;
-            }
-            finally { _lock.ExitWriteLock(); }
+        public bool TryRestoreDeleted(FileRecord record, string source)
+        {
+            if (record == null)
+                return false;
+
+            var result = ApplyLiveDeltaBatch(new[]
+            {
+                new UsnChangeEntry(
+                    UsnChangeKind.Create,
+                    record.Frn,
+                    record.LowerName,
+                    record.OriginalName,
+                    record.ParentFrn,
+                    record.DriveLetter,
+                    record.IsDirectory)
+            });
+
+            var restored = result.Restored > 0 || result.Inserted > 0;
+            IndexPerfLog.Write("INDEX",
+                $"[DELETE OVERLAY RESTORE] source={IndexPerfLog.FormatValue(source)} outcome={(restored ? "restored-tombstone" : "not-deleted")} " +
+                $"overlayCount={DeletedOverlayCount} drive={char.ToUpperInvariant(record.DriveLetter)} frn={record.Frn} " +
+                $"parentFrn={record.ParentFrn} lowerName={IndexPerfLog.FormatValue(record.LowerName)}");
+            return restored;
         }
 
         public FileRecord[] FindByLowerName(string lowerName)
@@ -2084,7 +2166,7 @@ namespace MftScanner
                 Array.Copy(arr, insertIdx, newArr, insertIdx + 1, arr.Length - insertIdx);
                 SortedArray = newArr;
                 ParentSortedArray = InsertIntoSortedArray(ParentSortedArray, newRecord, ByParentThenLowerName);
-                _contentVersion++;
+                Interlocked.Increment(ref _contentVersion);
                 ClearShortContainsHotBuckets();
                 RemoveShortAsciiIndexesRecord(new FileRecord(oldLowerName, oldLowerName, oldParentFrn, driveLetter, false, frn));
                 AddShortAsciiIndexesRecord(newRecord);
@@ -2737,10 +2819,11 @@ namespace MftScanner
             FileRecord[] configArr,
             ContainsAccelerator containsAccelerator,
             bool containsAcceleratorReady,
-            bool derivedStructuresReady)
+            bool derivedStructuresReady,
+            bool buildShortAsciiStructures = true)
         {
-            var singleCharAsciiIndex = BuildSingleCharAsciiIndex(arr);
-            var bigramAsciiIndex = BuildBigramAsciiIndex(arr);
+            var singleCharAsciiIndex = buildShortAsciiStructures ? BuildSingleCharAsciiIndex(arr) : null;
+            var bigramAsciiIndex = buildShortAsciiStructures ? BuildBigramAsciiIndex(arr) : null;
             _lock.EnterWriteLock();
             try
             {
@@ -2759,19 +2842,26 @@ namespace MftScanner
                 _containsOverlay = ContainsOverlay.Empty;
                 Volatile.Write(ref _deletedOverlayKeys, new HashSet<RecordKey>());
                 _containsAcceleratorReady = containsAcceleratorReady;
-                _containsAcceleratorEpoch++;
+                Interlocked.Increment(ref _containsAcceleratorEpoch);
                 _pendingContainsMutations.Clear();
                 _pendingContainsMutationsOverflowed = false;
-                _contentVersion++;
+                Interlocked.Increment(ref _contentVersion);
                 ClearShortContainsHotBuckets();
-                _singleCharAsciiBitsets = singleCharAsciiIndex.Bitsets;
-                _singleCharAsciiCounts = singleCharAsciiIndex.Counts;
-                _singleCharAsciiDriveCounts = singleCharAsciiIndex.DriveCounts;
-                _singleCharAsciiRecordCount = arr?.Length ?? 0;
-                _bigramAsciiCounts = bigramAsciiIndex.Counts;
-                _bigramAsciiDriveCounts = bigramAsciiIndex.DriveCounts;
-                _bigramAsciiPageSamples = bigramAsciiIndex.PageSamples;
-                _bigramAsciiRecordCount = arr?.Length ?? 0;
+                if (buildShortAsciiStructures)
+                {
+                    _singleCharAsciiBitsets = singleCharAsciiIndex.Bitsets;
+                    _singleCharAsciiCounts = singleCharAsciiIndex.Counts;
+                    _singleCharAsciiDriveCounts = singleCharAsciiIndex.DriveCounts;
+                    _singleCharAsciiRecordCount = arr?.Length ?? 0;
+                    _bigramAsciiCounts = bigramAsciiIndex.Counts;
+                    _bigramAsciiDriveCounts = bigramAsciiIndex.DriveCounts;
+                    _bigramAsciiPageSamples = bigramAsciiIndex.PageSamples;
+                    _bigramAsciiRecordCount = arr?.Length ?? 0;
+                }
+                else
+                {
+                    ClearShortAsciiIndexes();
+                }
             }
             finally { _lock.ExitWriteLock(); }
         }
@@ -2886,7 +2976,7 @@ namespace MftScanner
                     _containsAccelerator = rebuiltAccelerator ?? ContainsAccelerator.Empty;
                     _containsOverlay = ContainsOverlay.Empty;
                     _containsAcceleratorReady = true;
-                    _containsAcceleratorEpoch++;
+                    Interlocked.Increment(ref _containsAcceleratorEpoch);
                     _pendingContainsMutations.Clear();
                     _pendingContainsMutationsOverflowed = false;
                 }
@@ -2898,7 +2988,7 @@ namespace MftScanner
                 {
                     EnqueuePendingContainsMutations(deltaByKey);
                 }
-                _contentVersion++;
+                Interlocked.Increment(ref _contentVersion);
                 ClearShortContainsHotBuckets();
                 _singleCharAsciiBitsets = singleCharAsciiIndex.Bitsets;
                 _singleCharAsciiCounts = singleCharAsciiIndex.Counts;
@@ -2917,6 +3007,255 @@ namespace MftScanner
 
             IndexPerfLog.Write("INDEX",
                 $"[APPLY BATCH] outcome=success changes={changes.Count} records={arr.Length} computeMs={computeStopwatch.ElapsedMilliseconds} publishMs={publishStopwatch.ElapsedMilliseconds}");
+        }
+
+        public LiveDeltaApplyResult ApplyLiveDeltaBatch(
+            IReadOnlyList<UsnChangeEntry> changes,
+            int maxLiveDeltaMutations = DefaultMaxLiveDeltaMutations)
+        {
+            var result = new LiveDeltaApplyResult
+            {
+                Changes = changes?.Count ?? 0
+            };
+            if (changes == null || changes.Count == 0)
+                return result;
+
+            var mutations = new List<PendingContainsMutation>(changes.Count * 2);
+            lock (_liveOverlayPublishLock)
+            {
+                var baseRecords = SortedArray;
+                for (var i = 0; i < changes.Count; i++)
+                {
+                    var change = changes[i];
+                    switch (change.Kind)
+                    {
+                        case UsnChangeKind.Create:
+                            ApplyLiveCreate(baseRecords, change.ToRecord(), mutations, result);
+                            break;
+
+                        case UsnChangeKind.Delete:
+                            ApplyLiveDelete(baseRecords, RecordKey.FromChange(change), change.Frn, change.DriveLetter, mutations, result);
+                            break;
+
+                        case UsnChangeKind.Rename:
+                            ApplyLiveDelete(baseRecords, RecordKey.FromRenameOld(change), change.Frn, change.DriveLetter, mutations, result);
+                            ApplyLiveCreate(baseRecords, change.ToRecord(), mutations, result);
+                            break;
+                    }
+                }
+
+                if (mutations.Count > 0)
+                {
+                    var overlay = Volatile.Read(ref _containsOverlay) ?? ContainsOverlay.Empty;
+                    var updatedOverlay = overlay.WithMutations(mutations, maxLiveDeltaMutations);
+                    Volatile.Write(ref _containsOverlay, updatedOverlay);
+                    if (updatedOverlay.IsOverflowed)
+                    {
+                        result.CompactRequired = true;
+                    }
+                }
+
+                if (mutations.Count > 0 || result.Deleted > 0 || result.Restored > 0)
+                {
+                    Interlocked.Increment(ref _contentVersion);
+                    Interlocked.Increment(ref _containsAcceleratorEpoch);
+                }
+
+                result.OverlayAdds = (Volatile.Read(ref _containsOverlay) ?? ContainsOverlay.Empty).AddedCount;
+                result.OverlayDeletes = DeletedOverlayCount;
+                if (result.OverlayAdds + result.OverlayDeletes > maxLiveDeltaMutations)
+                    result.CompactRequired = true;
+
+                return result;
+            }
+        }
+
+        public LiveDeltaApplyResult ApplyCatchUpLiveDeltaBatch(IReadOnlyList<UsnChangeEntry> changes)
+        {
+            return ApplyLiveDeltaBatch(changes, CatchUpMaxLiveDeltaMutations);
+        }
+
+        public bool TryCompactLiveDeltaOverlay(out long compactMilliseconds, CancellationToken ct = default(CancellationToken))
+        {
+            compactMilliseconds = 0;
+            FileRecord[] baseArr;
+            ContainsOverlay overlay;
+            HashSet<RecordKey> deletedKeys;
+            long baseContentVersion;
+
+            _lock.EnterReadLock();
+            try
+            {
+                overlay = Volatile.Read(ref _containsOverlay) ?? ContainsOverlay.Empty;
+                deletedKeys = Volatile.Read(ref _deletedOverlayKeys) ?? new HashSet<RecordKey>();
+                if (overlay.AddedCount == 0 && deletedKeys.Count == 0)
+                    return false;
+
+                baseArr = SortedArray ?? Array.Empty<FileRecord>();
+                baseContentVersion = ContentVersion;
+            }
+            finally
+            {
+                _lock.ExitReadLock();
+            }
+
+            var stopwatch = Stopwatch.StartNew();
+            var removedKeys = overlay.GetRemovedKeysSnapshot();
+            if (deletedKeys.Count > 0)
+            {
+                if (removedKeys.Count == 0)
+                    removedKeys = new HashSet<RecordKey>(deletedKeys);
+                else
+                    removedKeys.UnionWith(deletedKeys);
+            }
+
+            var survivors = new FileRecord[baseArr.Length];
+            var survivorCount = 0;
+            for (var i = 0; i < baseArr.Length; i++)
+            {
+                if (((i + 1) & 0x3FFF) == 0)
+                    ct.ThrowIfCancellationRequested();
+
+                var record = baseArr[i];
+                if (record == null || removedKeys.Contains(RecordKey.FromRecord(record)))
+                    continue;
+
+                survivors[survivorCount++] = record;
+            }
+
+            var inserted = overlay.GetAddedRecordsSnapshot();
+            if (inserted.Count > 1)
+                inserted.Sort(ByLowerName);
+
+            var arr = MergeSortedRecords(survivors, survivorCount, inserted);
+            var singleCharAsciiIndex = BuildSingleCharAsciiIndex(arr);
+            var bigramAsciiIndex = BuildBigramAsciiIndex(arr);
+            BuildDerivedStructures(
+                arr,
+                out var extensionMap,
+                out var parentArr,
+                out var directoryArr,
+                out var launchableArr,
+                out var scriptArr,
+                out var logArr,
+                out var configArr);
+            var accelerator = ContainsAccelerator.Build(arr, ContainsAcceleratorBucketKinds.Trigram, ct);
+            stopwatch.Stop();
+            compactMilliseconds = stopwatch.ElapsedMilliseconds;
+
+            _lock.EnterWriteLock();
+            try
+            {
+                if (ContentVersion != baseContentVersion
+                    || !ReferenceEquals(overlay, Volatile.Read(ref _containsOverlay))
+                    || !ReferenceEquals(deletedKeys, Volatile.Read(ref _deletedOverlayKeys)))
+                {
+                    return false;
+                }
+
+                ExtensionHashMap = extensionMap;
+                SortedArray = arr;
+                ParentSortedArray = parentArr;
+                DirectorySortedArray = directoryArr;
+                LaunchableSortedArray = launchableArr;
+                ScriptSortedArray = scriptArr;
+                LogSortedArray = logArr;
+                ConfigSortedArray = configArr;
+                _derivedStructuresReady = true;
+                _containsAccelerator = accelerator ?? ContainsAccelerator.Empty;
+                _containsOverlay = ContainsOverlay.Empty;
+                Volatile.Write(ref _deletedOverlayKeys, new HashSet<RecordKey>());
+                _containsAcceleratorReady = true;
+                Interlocked.Increment(ref _containsAcceleratorEpoch);
+                _pendingContainsMutations.Clear();
+                _pendingContainsMutationsOverflowed = false;
+                Interlocked.Increment(ref _contentVersion);
+                ClearShortContainsHotBuckets();
+                _singleCharAsciiBitsets = singleCharAsciiIndex.Bitsets;
+                _singleCharAsciiCounts = singleCharAsciiIndex.Counts;
+                _singleCharAsciiDriveCounts = singleCharAsciiIndex.DriveCounts;
+                _singleCharAsciiRecordCount = arr?.Length ?? 0;
+                _bigramAsciiCounts = bigramAsciiIndex.Counts;
+                _bigramAsciiDriveCounts = bigramAsciiIndex.DriveCounts;
+                _bigramAsciiPageSamples = bigramAsciiIndex.PageSamples;
+                _bigramAsciiRecordCount = arr?.Length ?? 0;
+                return true;
+            }
+            finally
+            {
+                _lock.ExitWriteLock();
+            }
+        }
+
+        private void ApplyLiveCreate(
+            FileRecord[] baseRecords,
+            FileRecord record,
+            List<PendingContainsMutation> mutations,
+            LiveDeltaApplyResult result)
+        {
+            if (record == null)
+                return;
+
+            var key = RecordKey.FromRecord(record);
+            if (!key.IsValid)
+                return;
+
+            var restored = RemoveDeletedOverlayKey(key);
+            if (restored)
+            {
+                mutations.Add(PendingContainsMutation.ForRestore(key));
+                result.Restored++;
+            }
+
+            if (FindRecordByKey(baseRecords, key) != null)
+            {
+                if (!restored)
+                    result.AlreadyVisible++;
+                return;
+            }
+
+            mutations.Add(PendingContainsMutation.ForInsert(record));
+            result.Inserted++;
+        }
+
+        private void ApplyLiveDelete(
+            FileRecord[] baseRecords,
+            RecordKey key,
+            ulong frn,
+            char driveLetter,
+            List<PendingContainsMutation> mutations,
+            LiveDeltaApplyResult result)
+        {
+            if (!key.IsValid)
+                return;
+
+            var overlay = Volatile.Read(ref _containsOverlay) ?? ContainsOverlay.Empty;
+            var removedOverlayKeys = overlay.GetAddedKeysByFrn(frn, driveLetter);
+            for (var i = 0; i < removedOverlayKeys.Count; i++)
+            {
+                mutations.Add(PendingContainsMutation.ForRemove(removedOverlayKeys[i]));
+                result.Deleted++;
+            }
+
+            if (overlay.ContainsAdded(key))
+            {
+                if (!removedOverlayKeys.Contains(key))
+                {
+                    mutations.Add(PendingContainsMutation.ForRemove(key));
+                    result.Deleted++;
+                }
+                return;
+            }
+
+            if (removedOverlayKeys.Count > 0 && FindRecordByKey(baseRecords, key) == null)
+            {
+                return;
+            }
+
+            var added = AddDeletedOverlayKey(key);
+            mutations.Add(PendingContainsMutation.ForRemove(key));
+            if (added)
+                result.Deleted++;
         }
 
         private void ApplyBatchUnderWriteLock(Dictionary<RecordKey, FileRecord> deltaByKey, bool rebuildContainsAccelerator)
@@ -2974,7 +3313,7 @@ namespace MftScanner
                 _containsAccelerator = ContainsAccelerator.Build(arr, ContainsAcceleratorBucketKinds.All);
                 _containsOverlay = ContainsOverlay.Empty;
                 _containsAcceleratorReady = true;
-                _containsAcceleratorEpoch++;
+                Interlocked.Increment(ref _containsAcceleratorEpoch);
                 _pendingContainsMutations.Clear();
                 _pendingContainsMutationsOverflowed = false;
             }
@@ -2986,7 +3325,7 @@ namespace MftScanner
             {
                 EnqueuePendingContainsMutations(deltaByKey);
             }
-            _contentVersion++;
+            Interlocked.Increment(ref _contentVersion);
             ClearShortContainsHotBuckets();
             _singleCharAsciiBitsets = singleCharAsciiIndex.Bitsets;
             _singleCharAsciiCounts = singleCharAsciiIndex.Counts;
@@ -3103,7 +3442,7 @@ namespace MftScanner
                     _containsOverlay = publishOverlay;
                     _pendingContainsMutations.Clear();
                     _pendingContainsMutationsOverflowed = false;
-                    _containsAcceleratorEpoch++;
+                    Interlocked.Increment(ref _containsAcceleratorEpoch);
                     IndexPerfLog.Write("INDEX",
                         $"[CONTAINS PUBLISH] outcome=success scope={scope} overlayAdds={_containsOverlay.AddedCount} overlayRemoves={_containsOverlay.RemovedCount}");
                     return true;
@@ -3221,6 +3560,84 @@ namespace MftScanner
                         $"[DERIVED STRUCTURES] outcome=failed reason={IndexPerfLog.FormatValue(reason)} error={ex.GetType().Name}:{IndexPerfLog.FormatValue(ex.Message)}");
                 }
             });
+        }
+
+        public void QueueEnsureShortAsciiStructures(string reason)
+        {
+            var recordCount = SortedArray?.Length ?? 0;
+            if (recordCount == 0
+                || (Volatile.Read(ref _singleCharAsciiCounts) != null
+                    && Volatile.Read(ref _singleCharAsciiRecordCount) == recordCount
+                    && Volatile.Read(ref _bigramAsciiCounts) != null
+                    && Volatile.Read(ref _bigramAsciiRecordCount) == recordCount))
+            {
+                return;
+            }
+
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                try
+                {
+                    EnsureShortAsciiStructures(CancellationToken.None, reason);
+                }
+                catch (Exception ex)
+                {
+                    IndexPerfLog.Write("INDEX",
+                        $"[SHORT ASCII STRUCTURES] outcome=failed reason={IndexPerfLog.FormatValue(reason)} error={ex.GetType().Name}:{IndexPerfLog.FormatValue(ex.Message)}");
+                }
+            });
+        }
+
+        private void EnsureShortAsciiStructures(CancellationToken ct, string reason)
+        {
+            FileRecord[] snapshot;
+            long contentVersion;
+            _lock.EnterReadLock();
+            try
+            {
+                snapshot = SortedArray ?? Array.Empty<FileRecord>();
+                contentVersion = ContentVersion;
+                if (snapshot.Length == 0
+                    || (Volatile.Read(ref _singleCharAsciiCounts) != null
+                        && Volatile.Read(ref _singleCharAsciiRecordCount) == snapshot.Length
+                        && Volatile.Read(ref _bigramAsciiCounts) != null
+                        && Volatile.Read(ref _bigramAsciiRecordCount) == snapshot.Length))
+                {
+                    return;
+                }
+            }
+            finally
+            {
+                _lock.ExitReadLock();
+            }
+
+            ct.ThrowIfCancellationRequested();
+            var stopwatch = Stopwatch.StartNew();
+            var singleCharAsciiIndex = BuildSingleCharAsciiIndex(snapshot);
+            var bigramAsciiIndex = BuildBigramAsciiIndex(snapshot);
+            stopwatch.Stop();
+
+            _lock.EnterWriteLock();
+            try
+            {
+                if (ContentVersion != contentVersion || !ReferenceEquals(snapshot, SortedArray))
+                    return;
+
+                _singleCharAsciiBitsets = singleCharAsciiIndex.Bitsets;
+                _singleCharAsciiCounts = singleCharAsciiIndex.Counts;
+                _singleCharAsciiDriveCounts = singleCharAsciiIndex.DriveCounts;
+                _singleCharAsciiRecordCount = snapshot.Length;
+                _bigramAsciiCounts = bigramAsciiIndex.Counts;
+                _bigramAsciiDriveCounts = bigramAsciiIndex.DriveCounts;
+                _bigramAsciiPageSamples = bigramAsciiIndex.PageSamples;
+                _bigramAsciiRecordCount = snapshot.Length;
+                IndexPerfLog.Write("INDEX",
+                    $"[SHORT ASCII STRUCTURES] outcome=success reason={IndexPerfLog.FormatValue(reason)} records={snapshot.Length} elapsedMs={stopwatch.ElapsedMilliseconds}");
+            }
+            finally
+            {
+                _lock.ExitWriteLock();
+            }
         }
 
         private static FileRecord[] InsertIntoSortedArray(FileRecord[] target, FileRecord record)
@@ -3412,6 +3829,29 @@ namespace MftScanner
             return lo;
         }
 
+        private static FileRecord FindRecordByKey(FileRecord[] records, RecordKey key)
+        {
+            if (records == null || records.Length == 0 || !key.IsValid)
+                return null;
+
+            var start = LowerBoundByLowerName(records, key.LowerName);
+            for (var i = start; i < records.Length; i++)
+            {
+                var record = records[i];
+                if (record == null)
+                    continue;
+
+                var compare = string.CompareOrdinal(record.LowerName, key.LowerName);
+                if (compare != 0)
+                    break;
+
+                if (RecordKey.FromRecord(record).Equals(key))
+                    return record;
+            }
+
+            return null;
+        }
+
         private void EnqueuePendingContainsInsert(FileRecord record)
         {
             EnqueuePendingContainsMutation(PendingContainsMutation.ForInsert(record));
@@ -3452,14 +3892,13 @@ namespace MftScanner
             Volatile.Write(ref _containsOverlay, updatedOverlay);
             if (updatedOverlay.IsOverflowed)
             {
-                _containsAcceleratorReady = false;
                 EnqueuePendingContainsMutation(mutation);
                 IndexPerfLog.Write("INDEX",
                     $"[CONTAINS OVERLAY] outcome=overflow adds={overlay.AddedCount} removes={overlay.RemovedCount}");
                 return;
             }
 
-            _containsAcceleratorEpoch++;
+            Interlocked.Increment(ref _containsAcceleratorEpoch);
         }
 
         private void AppendContainsOverlay(Dictionary<RecordKey, FileRecord> deltaByKey)
@@ -4149,6 +4588,15 @@ namespace MftScanner
                 };
             }
 
+            public static PendingContainsMutation ForRestore(RecordKey key)
+            {
+                return new PendingContainsMutation
+                {
+                    Kind = PendingContainsMutationKind.Restore,
+                    Key = key
+                };
+            }
+
             public void ApplyTo(ContainsAccelerator accelerator)
             {
                 if (accelerator == null)
@@ -4162,14 +4610,18 @@ namespace MftScanner
                     return;
                 }
 
-                accelerator.WithRemoved(Key);
+                if (Kind == PendingContainsMutationKind.Remove)
+                {
+                    accelerator.WithRemoved(Key);
+                }
             }
         }
 
         private enum PendingContainsMutationKind
         {
             Insert,
-            Remove
+            Remove,
+            Restore
         }
 
         private sealed class ContainsOverlay
@@ -4177,18 +4629,22 @@ namespace MftScanner
             public static readonly ContainsOverlay Empty = new ContainsOverlay(
                 new Dictionary<RecordKey, FileRecord>(),
                 new HashSet<RecordKey>(),
+                new Dictionary<FrnDriveKey, List<RecordKey>>(),
                 false);
 
             private readonly Dictionary<RecordKey, FileRecord> _addedByKey;
             private readonly HashSet<RecordKey> _removedKeys;
+            private readonly Dictionary<FrnDriveKey, List<RecordKey>> _addedKeysByFrn;
 
             private ContainsOverlay(
                 Dictionary<RecordKey, FileRecord> addedByKey,
                 HashSet<RecordKey> removedKeys,
+                Dictionary<FrnDriveKey, List<RecordKey>> addedKeysByFrn,
                 bool isOverflowed)
             {
                 _addedByKey = addedByKey ?? new Dictionary<RecordKey, FileRecord>();
                 _removedKeys = removedKeys ?? new HashSet<RecordKey>();
+                _addedKeysByFrn = addedKeysByFrn ?? new Dictionary<FrnDriveKey, List<RecordKey>>();
                 IsOverflowed = isOverflowed;
                 AddedRecords = new List<FileRecord>(_addedByKey.Values);
             }
@@ -4206,27 +4662,53 @@ namespace MftScanner
                 return _removedKeys.Contains(key);
             }
 
-            public ContainsOverlay WithMutation(PendingContainsMutation mutation, int maxMutations)
+            public bool ContainsAdded(RecordKey key)
             {
-                if (IsOverflowed)
+                return _addedByKey.ContainsKey(key);
+            }
+
+            public HashSet<RecordKey> GetRemovedKeysSnapshot()
+            {
+                return _removedKeys.Count == 0
+                    ? new HashSet<RecordKey>()
+                    : new HashSet<RecordKey>(_removedKeys);
+            }
+
+            public List<FileRecord> GetAddedRecordsSnapshot()
+            {
+                return AddedRecords.Count == 0
+                    ? new List<FileRecord>(0)
+                    : new List<FileRecord>(AddedRecords);
+            }
+
+            public List<RecordKey> GetAddedKeysByFrn(ulong frn, char driveLetter)
+            {
+                if (frn == 0 || _addedKeysByFrn.Count == 0)
                 {
-                    return this;
+                    return new List<RecordKey>(0);
                 }
 
+                return _addedKeysByFrn.TryGetValue(new FrnDriveKey(frn, driveLetter), out var matches)
+                    ? new List<RecordKey>(matches)
+                    : new List<RecordKey>(0);
+            }
+
+            public ContainsOverlay WithMutation(PendingContainsMutation mutation, int maxMutations)
+            {
                 var addedByKey = new Dictionary<RecordKey, FileRecord>(_addedByKey);
                 var removedKeys = new HashSet<RecordKey>(_removedKeys);
                 ApplyMutation(addedByKey, removedKeys, mutation);
                 if (addedByKey.Count + removedKeys.Count > maxMutations)
                 {
-                    return new ContainsOverlay(addedByKey, removedKeys, true);
+                    return new ContainsOverlay(addedByKey, removedKeys, BuildAddedKeysByFrn(addedByKey), true);
                 }
 
-                return new ContainsOverlay(addedByKey, removedKeys, false);
+                return new ContainsOverlay(addedByKey, removedKeys, BuildAddedKeysByFrn(addedByKey), IsOverflowed);
             }
 
             public ContainsOverlay WithMutations(IReadOnlyList<PendingContainsMutation> mutations, int maxMutations)
             {
-                if (mutations == null || mutations.Count == 0 || IsOverflowed)
+                if (mutations == null || mutations.Count == 0)
                 {
                     return this;
                 }
@@ -4238,11 +4720,11 @@ namespace MftScanner
                     ApplyMutation(addedByKey, removedKeys, mutations[i]);
                     if (addedByKey.Count + removedKeys.Count > maxMutations)
                     {
-                        return new ContainsOverlay(addedByKey, removedKeys, true);
+                        return new ContainsOverlay(addedByKey, removedKeys, BuildAddedKeysByFrn(addedByKey), true);
                     }
                 }
 
-                return new ContainsOverlay(addedByKey, removedKeys, false);
+                return new ContainsOverlay(addedByKey, removedKeys, BuildAddedKeysByFrn(addedByKey), IsOverflowed);
             }
 
             public ContainsOverlay PruneForBase(ContainsAccelerator accelerator)
@@ -4272,7 +4754,7 @@ namespace MftScanner
 
                 return addedByKey.Count == 0 && removedKeys.Count == 0
                     ? Empty
-                    : new ContainsOverlay(addedByKey, removedKeys, false);
+                    : new ContainsOverlay(addedByKey, removedKeys, BuildAddedKeysByFrn(addedByKey), false);
             }
 
             public static ContainsOverlay FromPending(IReadOnlyList<PendingContainsMutation> pending)
@@ -4289,7 +4771,7 @@ namespace MftScanner
                     ApplyMutation(addedByKey, removedKeys, pending[i]);
                 }
 
-                return new ContainsOverlay(addedByKey, removedKeys, false);
+                return new ContainsOverlay(addedByKey, removedKeys, BuildAddedKeysByFrn(addedByKey), false);
             }
 
             private static void ApplyMutation(
@@ -4305,8 +4787,69 @@ namespace MftScanner
                     return;
                 }
 
+                if (mutation.Kind == PendingContainsMutationKind.Restore)
+                {
+                    removedKeys.Remove(mutation.Key);
+                    return;
+                }
+
                 addedByKey.Remove(mutation.Key);
                 removedKeys.Add(mutation.Key);
+            }
+
+            private static Dictionary<FrnDriveKey, List<RecordKey>> BuildAddedKeysByFrn(
+                Dictionary<RecordKey, FileRecord> addedByKey)
+            {
+                if (addedByKey == null || addedByKey.Count == 0)
+                    return new Dictionary<FrnDriveKey, List<RecordKey>>();
+
+                var index = new Dictionary<FrnDriveKey, List<RecordKey>>();
+                foreach (var key in addedByKey.Keys)
+                {
+                    if (key.Frn == 0)
+                        continue;
+
+                    var frnKey = new FrnDriveKey(key.Frn, key.DriveLetter);
+                    if (!index.TryGetValue(frnKey, out var keys))
+                    {
+                        keys = new List<RecordKey>(1);
+                        index[frnKey] = keys;
+                    }
+
+                    keys.Add(key);
+                }
+
+                return index;
+            }
+        }
+
+        private struct FrnDriveKey : IEquatable<FrnDriveKey>
+        {
+            public FrnDriveKey(ulong frn, char driveLetter)
+            {
+                Frn = frn;
+                DriveLetter = char.ToUpperInvariant(driveLetter);
+            }
+
+            public ulong Frn { get; }
+            public char DriveLetter { get; }
+
+            public bool Equals(FrnDriveKey other)
+            {
+                return Frn == other.Frn && DriveLetter == other.DriveLetter;
+            }
+
+            public override bool Equals(object obj)
+            {
+                return obj is FrnDriveKey other && Equals(other);
+            }
+
+            public override int GetHashCode()
+            {
+                unchecked
+                {
+                    return (Frn.GetHashCode() * 397) ^ DriveLetter.GetHashCode();
+                }
             }
         }
 

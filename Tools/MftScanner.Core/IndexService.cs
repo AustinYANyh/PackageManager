@@ -35,6 +35,8 @@ namespace MftScanner
         private Task _containsWarmupTask;
         private CancellationTokenSource _shortContainsWarmupCts;
         private Task _shortContainsWarmupTask;
+        private CancellationTokenSource _liveDeltaCompactCts;
+        private Task _liveDeltaCompactTask;
         private readonly HashSet<string> _shortContainsWarmups = new HashSet<string>(StringComparer.Ordinal);
         private volatile bool _isBackgroundCatchUpInProgress;
         private volatile bool _isSnapshotStale;
@@ -54,6 +56,8 @@ namespace MftScanner
         private const int SnapshotSearchIdleDelayMilliseconds = 5000;
         private const int CatchUpApplyIdleDelayMilliseconds = 1000;
         private const int CatchUpApplyMaxDeferMilliseconds = 30000;
+        private const int CatchUpLiveDeltaBatchSize = 4096;
+        private const int LiveDeltaCompactDelayMilliseconds = 750;
         private const int MaxIncrementalContainsCacheRecords = 2000000;
         private const int MaxPathCandidateCacheRecords = 500000;
         private const int MaxPostingsFirstPathVerifyRecords = 500000;
@@ -176,8 +180,60 @@ namespace MftScanner
             _usnWatcher.FileCreated    += OnFileCreated;
             _usnWatcher.FileDeleted    += OnFileDeleted;
             _usnWatcher.FileRenamed    += OnFileRenamed;
+            _usnWatcher.ChangesCollected += OnUsnChangesCollected;
             _usnWatcher.JournalOverflow += OnJournalOverflow;
             _watcherInitialized = true;
+        }
+
+        private void OnUsnChangesCollected(object sender, UsnChangesCollectedEventArgs args)
+        {
+            var changes = args?.Changes;
+            if (changes == null || changes.Count == 0)
+                return;
+
+            var stopwatch = Stopwatch.StartNew();
+            try
+            {
+                var eventStopwatch = Stopwatch.StartNew();
+                var indexChangedArgs = BuildBatchIndexChangedArgs(changes);
+                eventStopwatch.Stop();
+
+                var cacheStopwatch = Stopwatch.StartNew();
+                InvalidatePathCandidateCacheIfAffected(changes);
+                cacheStopwatch.Stop();
+
+                var enumeratorStopwatch = Stopwatch.StartNew();
+                _enumerator.ApplyUsnChanges(changes);
+                enumeratorStopwatch.Stop();
+
+                var overlayStopwatch = Stopwatch.StartNew();
+                var liveDelta = _index.ApplyLiveDeltaBatch(changes);
+                overlayStopwatch.Stop();
+                if (liveDelta.CompactRequired)
+                    QueueLiveDeltaCompact("watcher-batch");
+
+                var publishStopwatch = Stopwatch.StartNew();
+                PublishBatchIndexChanges(indexChangedArgs);
+                publishStopwatch.Stop();
+
+                ScheduleSnapshotSave();
+                stopwatch.Stop();
+                UsnDiagLog.Write(
+                    $"[WATCHER BATCH APPLY] outcome=success strategy=live-delta drive={args.DriveLetter} changes={changes.Count} " +
+                    $"elapsedMs={stopwatch.ElapsedMilliseconds} eventsMs={eventStopwatch.ElapsedMilliseconds} " +
+                    $"cacheMs={cacheStopwatch.ElapsedMilliseconds} enumeratorMs={enumeratorStopwatch.ElapsedMilliseconds} " +
+                    $"overlayMs={overlayStopwatch.ElapsedMilliseconds} publishMs={publishStopwatch.ElapsedMilliseconds} " +
+                    $"inserted={liveDelta.Inserted} deleted={liveDelta.Deleted} restored={liveDelta.Restored} " +
+                    $"alreadyVisible={liveDelta.AlreadyVisible} overlayAdds={liveDelta.OverlayAdds} " +
+                    $"overlayDeletes={liveDelta.OverlayDeletes} compactRequired={liveDelta.CompactRequired}");
+            }
+            catch (Exception ex)
+            {
+                stopwatch.Stop();
+                UsnDiagLog.Write(
+                    $"[WATCHER BATCH APPLY] outcome=fail drive={args.DriveLetter} changes={changes.Count} " +
+                    $"elapsedMs={stopwatch.ElapsedMilliseconds} error={ex.GetType().Name}:{IndexPerfLog.FormatValue(ex.Message)}");
+            }
         }
 
         /// <summary>文件创建：插入新 FileRecord，同时更新 FRN 字典供路径解析。需求 6.2</summary>
@@ -189,10 +245,38 @@ namespace MftScanner
             var lowerName = args.FileName.ToLowerInvariant();
 
             // 同一文件的 USN 事件可能触发多次（创建+写入+关闭），用 FRN 去重
-            // 如果索引里已有相同 (lowerName, parentFrn, driveLetter) 的记录，跳过
+            // 如果索引里已有可见的相同 (lowerName, parentFrn, driveLetter) 记录，跳过；
+            // tombstone 记录不能算可见，否则删除后同名重建会一直被隐藏。
             var idx = _index;
-            if (ContainsRecordByNameParentAndDrive(idx.SortedArray, lowerName, args.ParentFrn, args.DriveLetter))
+            var existing = FindRecordByNameParentAndDrive(
+                idx.SortedArray,
+                lowerName,
+                args.ParentFrn,
+                args.DriveLetter,
+                idx,
+                out var existingDeleted);
+            if (existing != null && !existingDeleted)
+            {
+                UsnDiagLog.Write(
+                    $"[CREATE UPSERT] outcome=already-visible drive={args.DriveLetter} frn={args.Frn} " +
+                    $"parentFrn={args.ParentFrn} lowerName={IndexPerfLog.FormatValue(lowerName)}");
                 return;
+            }
+
+            if (existingDeleted
+                && existing != null
+                && existing.Frn == args.Frn
+                && _index.TryRestoreDeleted(existing, "usn-create"))
+            {
+                var restoredFullPath = _enumerator.ResolveFullPath(args.DriveLetter, args.ParentFrn, args.FileName);
+                ScheduleSnapshotSave();
+                UsnDiagLog.Write(
+                    $"[CREATE UPSERT] outcome=restored-tombstone drive={args.DriveLetter} frn={args.Frn} " +
+                    $"parentFrn={args.ParentFrn} lowerName={IndexPerfLog.FormatValue(lowerName)}");
+                IndexChanged?.Invoke(this, new IndexChangedEventArgs(
+                    IndexChangeType.Created, lowerName, restoredFullPath, isDirectory: args.IsDirectory));
+                return;
+            }
 
             var record = new FileRecord(
                 lowerName:    lowerName,
@@ -201,9 +285,26 @@ namespace MftScanner
                 driveLetter:  args.DriveLetter,
                 isDirectory:  args.IsDirectory,
                 frn:          args.Frn);
-            _index.Insert(record);
+            var liveDelta = _index.ApplyLiveDeltaBatch(new[]
+            {
+                new UsnChangeEntry(
+                    UsnChangeKind.Create,
+                    args.Frn,
+                    lowerName,
+                    args.FileName,
+                    args.ParentFrn,
+                    args.DriveLetter,
+                    args.IsDirectory)
+            });
+            if (liveDelta.CompactRequired)
+                QueueLiveDeltaCompact("usn-create");
             var fullPath = _enumerator.ResolveFullPath(args.DriveLetter, args.ParentFrn, args.FileName);
             ScheduleSnapshotSave();
+            UsnDiagLog.Write(
+                $"[CREATE UPSERT] outcome={(existingDeleted ? "inserted-after-tombstone" : "inserted")} drive={args.DriveLetter} frn={args.Frn} " +
+                $"parentFrn={args.ParentFrn} lowerName={IndexPerfLog.FormatValue(lowerName)} strategy=live-delta " +
+                $"inserted={liveDelta.Inserted} restored={liveDelta.Restored} alreadyVisible={liveDelta.AlreadyVisible} " +
+                $"overlayAdds={liveDelta.OverlayAdds} overlayDeletes={liveDelta.OverlayDeletes}");
             IndexChanged?.Invoke(this, new IndexChangedEventArgs(
                 IndexChangeType.Created, lowerName, fullPath, isDirectory: args.IsDirectory));
         }
@@ -214,7 +315,7 @@ namespace MftScanner
             InvalidatePathCandidateCacheIfAffected(args.DriveLetter, args.ParentFrn, args.Frn);
             // 删除前先解析路径（FRN 字典此时还未清除），供 UI 精确匹配
             var fullPath = _enumerator.ResolveFullPath(args.DriveLetter, args.ParentFrn, args.LowerName);
-            var applied = _index.MarkDeleted(args.Frn, args.LowerName, args.ParentFrn, args.DriveLetter, "usn-delete");
+            var applied = _index.MarkDeleted(args.Frn, args.LowerName, args.ParentFrn, args.DriveLetter, false, "usn-delete");
             if (!applied)
             {
                 UsnDiagLog.Write(
@@ -223,6 +324,8 @@ namespace MftScanner
                 return;
             }
 
+            if (_index.LiveDeltaCount > CatchUpLiveDeltaBatchSize)
+                QueueLiveDeltaCompact("usn-delete");
             ScheduleSnapshotSave();
             IndexChanged?.Invoke(this, new IndexChangedEventArgs(
                 IndexChangeType.Deleted, args.LowerName, fullPath, isDirectory: false));
@@ -237,10 +340,30 @@ namespace MftScanner
                 args.DriveLetter, args.OldParentFrn, args.OldLowerName);
             _enumerator.RegisterFrn(args.DriveLetter, args.NewFrn,
                 args.NewRecord.OriginalName, args.NewRecord.ParentFrn, args.NewRecord.IsDirectory);
-            _index.Rename(args.NewFrn, args.OldLowerName, args.OldParentFrn, args.DriveLetter, args.NewRecord);
+            var liveDelta = _index.ApplyLiveDeltaBatch(new[]
+            {
+                new UsnChangeEntry(
+                    UsnChangeKind.Rename,
+                    args.NewFrn,
+                    args.NewRecord.LowerName,
+                    args.NewRecord.OriginalName,
+                    args.NewRecord.ParentFrn,
+                    args.DriveLetter,
+                    args.NewRecord.IsDirectory,
+                    args.OldLowerName,
+                    args.OldParentFrn)
+            });
+            if (liveDelta.CompactRequired)
+                QueueLiveDeltaCompact("usn-rename");
             var newFullPath = _enumerator.ResolveFullPath(
                 args.DriveLetter, args.NewRecord.ParentFrn, args.NewRecord.OriginalName);
             ScheduleSnapshotSave();
+            UsnDiagLog.Write(
+                $"[RENAME UPSERT] outcome=success strategy=live-delta drive={args.DriveLetter} frn={args.NewFrn} " +
+                $"oldParentFrn={args.OldParentFrn} newParentFrn={args.NewRecord.ParentFrn} " +
+                $"oldLowerName={IndexPerfLog.FormatValue(args.OldLowerName)} newLowerName={IndexPerfLog.FormatValue(args.NewRecord.LowerName)} " +
+                $"inserted={liveDelta.Inserted} deleted={liveDelta.Deleted} restored={liveDelta.Restored} " +
+                $"alreadyVisible={liveDelta.AlreadyVisible} overlayAdds={liveDelta.OverlayAdds} overlayDeletes={liveDelta.OverlayDeletes}");
             IndexChanged?.Invoke(this, new IndexChangedEventArgs(
                 IndexChangeType.Renamed, args.OldLowerName, newFullPath,
                 oldFullPath,
@@ -751,6 +874,117 @@ namespace MftScanner
             return record != null && (!hasDeletedOverlay || index == null || !index.IsDeleted(record));
         }
 
+        private (List<FileRecord> page, int total, int scanned, int added, long verifyMs) MergeLiveAddedMatches(
+            MemoryIndex index,
+            List<FileRecord> basePage,
+            int baseTotal,
+            MatchMode mode,
+            string normalizedQuery,
+            SearchTypeFilter filter,
+            string pathPrefix,
+            int offset,
+            int maxResults,
+            IProgress<string> progress,
+            CancellationToken ct)
+        {
+            var stopwatch = Stopwatch.StartNew();
+            var liveRecords = index?.GetLiveAddedRecordsSnapshot() ?? Array.Empty<FileRecord>();
+            if (liveRecords.Length == 0)
+            {
+                stopwatch.Stop();
+                return (basePage ?? new List<FileRecord>(), baseTotal, 0, 0, stopwatch.ElapsedMilliseconds);
+            }
+
+            Regex regex = null;
+            if (mode == MatchMode.Regex)
+            {
+                try
+                {
+                    regex = new Regex(normalizedQuery ?? string.Empty, RegexOptions.IgnoreCase, TimeSpan.FromSeconds(2));
+                }
+                catch (ArgumentException)
+                {
+                    progress?.Report("正则表达式无效");
+                    stopwatch.Stop();
+                    return (basePage ?? new List<FileRecord>(), baseTotal, liveRecords.Length, 0, stopwatch.ElapsedMilliseconds);
+                }
+            }
+
+            var page = basePage ?? new List<FileRecord>(Math.Min(Math.Max(maxResults, 0), 64));
+            var total = baseTotal;
+            var added = 0;
+            var normalizedMaxResults = Math.Max(maxResults, 0);
+            var normalizedOffset = Math.Max(offset, 0);
+            var normalizedPrefix = string.IsNullOrWhiteSpace(pathPrefix)
+                ? null
+                : (pathPrefix.EndsWith("\\", StringComparison.Ordinal) ? pathPrefix : pathPrefix + "\\");
+
+            for (var i = 0; i < liveRecords.Length; i++)
+            {
+                if (((i + 1) & 0x3FF) == 0)
+                    ct.ThrowIfCancellationRequested();
+
+                var record = liveRecords[i];
+                if (record == null
+                    || !MatchesSearchFilter(record, filter)
+                    || !LiveRecordMatchesMode(record, mode, normalizedQuery, regex))
+                {
+                    continue;
+                }
+
+                if (normalizedPrefix != null)
+                {
+                    var fullPath = _enumerator.ResolveFullPath(record.DriveLetter, record.ParentFrn, record.OriginalName)
+                                   ?? (record.DriveLetter + ":\\" + record.OriginalName);
+                    if (!fullPath.StartsWith(normalizedPrefix, StringComparison.OrdinalIgnoreCase))
+                        continue;
+                }
+
+                total++;
+                added++;
+                if (total > normalizedOffset && page.Count < normalizedMaxResults)
+                    page.Add(record);
+            }
+
+            stopwatch.Stop();
+            return (page, total, liveRecords.Length, added, stopwatch.ElapsedMilliseconds);
+        }
+
+        private static bool LiveRecordMatchesMode(FileRecord record, MatchMode mode, string normalizedQuery, Regex regex)
+        {
+            if (record == null || string.IsNullOrEmpty(record.LowerName))
+                return false;
+
+            switch (mode)
+            {
+                case MatchMode.Prefix:
+                    return !string.IsNullOrEmpty(normalizedQuery)
+                           && record.LowerName.StartsWith(normalizedQuery, StringComparison.Ordinal);
+                case MatchMode.Suffix:
+                    return !string.IsNullOrEmpty(normalizedQuery)
+                           && record.LowerName.EndsWith(normalizedQuery, StringComparison.Ordinal);
+                case MatchMode.Regex:
+                    if (regex == null)
+                        return false;
+                    try
+                    {
+                        return regex.IsMatch(record.LowerName);
+                    }
+                    catch (RegexMatchTimeoutException)
+                    {
+                        return false;
+                    }
+                case MatchMode.Wildcard:
+                    if (TryGetSimpleExtensionWildcard(normalizedQuery, out var extension))
+                        return record.LowerName.EndsWith(extension, StringComparison.Ordinal);
+                    if (TrySimplifyWildcard(normalizedQuery, out var simplifiedMode, out var simplifiedQuery))
+                        return LiveRecordMatchesMode(record, simplifiedMode, simplifiedQuery, null);
+                    return Regex.IsMatch(record.LowerName, WildcardToRegex(normalizedQuery), RegexOptions.IgnoreCase);
+                default:
+                    return NameContains(record, normalizedQuery);
+            }
+        }
+
         private static int DeduplicateResultsByFullPath(List<ScannedFileInfo> results)
         {
             if (results == null || results.Count <= 1)
@@ -815,14 +1049,19 @@ namespace MftScanner
             return start < end;
         }
 
-        private static bool ContainsRecordByNameParentAndDrive(
+        private static FileRecord FindRecordByNameParentAndDrive(
             FileRecord[] sortedArray,
             string lowerName,
             ulong parentFrn,
-            char driveLetter)
+            char driveLetter,
+            MemoryIndex index,
+            out bool isDeleted)
         {
+            isDeleted = false;
             if (!TryGetExactNameRange(sortedArray, lowerName, out var start, out var end))
-                return false;
+                return null;
+
+            FileRecord deletedRecord = null;
 
             for (var i = start; i < end; i++)
             {
@@ -831,11 +1070,24 @@ namespace MftScanner
                     && record.ParentFrn == parentFrn
                     && record.DriveLetter == driveLetter)
                 {
-                    return true;
+                    var deleted = index != null && index.IsDeleted(record);
+                    if (!deleted)
+                    {
+                        isDeleted = false;
+                        return record;
+                    }
+
+                    deletedRecord = record;
                 }
             }
 
-            return false;
+            if (deletedRecord != null)
+            {
+                isDeleted = true;
+                return deletedRecord;
+            }
+
+            return null;
         }
 
         private static FileRecord[] GetCandidateSource(MemoryIndex index, SearchTypeFilter filter, CancellationToken ct)
@@ -975,6 +1227,7 @@ namespace MftScanner
                 var pathPreMatchedApplied = false;
                 List<FileRecord> pathPreMatchedPage = null;
                 int pathPreMatchedTotal = 0;
+                var liveAddedAlreadyIncluded = false;
                 var containsCacheScopeKey = string.Empty;
                 var indexContentVersion = idx.ContentVersion;
 
@@ -1152,6 +1405,7 @@ namespace MftScanner
                             pathContainsPostingsFirstApplied = true;
                             pathContainsMatchedPage = driveVerify.page;
                             pathContainsMatchedTotal = driveVerify.total;
+                            liveAddedAlreadyIncluded = rootContainsResult.IncludesLiveOverlay;
                             containsMode = rootContainsResult.Mode + (filter == SearchTypeFilter.All ? "+drive" : "+drive-filter");
                             containsQueryForWarmup = normalizedQuery;
                             containsCandidateCount = rootContainsResult.CandidateCount;
@@ -1287,6 +1541,7 @@ namespace MftScanner
                             pathContainsPostingsFirstApplied = true;
                             pathContainsMatchedPage = pathVerify.page;
                             pathContainsMatchedTotal = pathVerify.total;
+                            liveAddedAlreadyIncluded = pathContainsResult.IncludesLiveOverlay;
                             containsMode = pathContainsResult.Mode + "+path";
                             containsQueryForWarmup = normalizedQuery;
                             containsCandidateCount = pathContainsResult.CandidateCount;
@@ -1366,7 +1621,8 @@ namespace MftScanner
 
                     if (!pathPreMatchedApplied
                         && !pathContainsPostingsFirstApplied
-                        && (candidateSource == null || candidateSource.Length == 0))
+                        && (candidateSource == null || candidateSource.Length == 0)
+                        && !idx.HasLiveAddedOverlay)
                     {
                         if (pathPrefix != null)
                             progress?.Report("指定路径下无匹配结果");
@@ -1434,6 +1690,7 @@ namespace MftScanner
                                         {
                                             matched = wildcardContains.Page;
                                             totalMatched = wildcardContains.Total;
+                                            liveAddedAlreadyIncluded = wildcardContains.IncludesLiveOverlay;
                                             containsMode = wildcardContains.Mode;
                                             containsQueryForWarmup = simplifiedQuery;
                                             containsCandidateCount = wildcardContains.CandidateCount;
@@ -1484,6 +1741,7 @@ namespace MftScanner
                             {
                                 matched = containsResult.Page;
                                 totalMatched = containsResult.Total;
+                                liveAddedAlreadyIncluded = containsResult.IncludesLiveOverlay;
                                 containsMode = containsResult.Mode;
                                 containsQueryForWarmup = normalizedQuery;
                                 containsCandidateCount = containsResult.CandidateCount;
@@ -1521,6 +1779,35 @@ namespace MftScanner
                             break;
                     }
                     QueueContainsWarmupForQuery(idx, containsQueryForWarmup, containsMode, pathPrefilterApplied);
+
+                    if (!liveAddedAlreadyIncluded && idx.HasLiveAddedOverlay)
+                    {
+                        var liveMerge = MergeLiveAddedMatches(
+                            idx,
+                            matched,
+                            totalMatched,
+                            mode,
+                            normalizedQuery,
+                            filter,
+                            pathPrefix,
+                            normalizedOffset,
+                            normalizedMaxResults,
+                            progress,
+                            ct);
+                        if (liveMerge.scanned > 0)
+                        {
+                            matched = liveMerge.page;
+                            totalMatched = liveMerge.total;
+                            containsVerifyMilliseconds += liveMerge.verifyMs;
+                            if (liveMerge.added > 0 && mode == MatchMode.Contains)
+                                containsMode = string.IsNullOrEmpty(containsMode) ? "live-overlay" : containsMode + "+live-overlay";
+                            UsnDiagLog.Write(
+                                $"[LIVE DELTA MERGE] scanned={liveMerge.scanned} added={liveMerge.added} total={liveMerge.total} " +
+                                $"elapsedMs={liveMerge.verifyMs} filter={filter} mode={mode} pathPrefix={IndexPerfLog.FormatValue(pathPrefix)} " +
+                                $"query={IndexPerfLog.FormatValue(normalizedQuery)}");
+                        }
+                    }
+
                     matchStopwatch.Stop();
                     matchElapsedMilliseconds = matchStopwatch.ElapsedMilliseconds;
 
@@ -1740,7 +2027,25 @@ namespace MftScanner
                 return false;
 
             var idx = _index;
-            var candidates = idx.FindByLowerName(fileName.ToLowerInvariant());
+            var lowerFileName = fileName.ToLowerInvariant();
+            var candidates = idx.FindByLowerName(lowerFileName);
+            if (idx.HasLiveAddedOverlay)
+            {
+                var liveAdded = idx.GetLiveAddedRecordsSnapshot();
+                if (liveAdded.Length > 0)
+                {
+                    var merged = new List<FileRecord>(candidates.Length + Math.Min(liveAdded.Length, 8));
+                    merged.AddRange(candidates);
+                    for (var i = 0; i < liveAdded.Length; i++)
+                    {
+                        var record = liveAdded[i];
+                        if (record != null && string.Equals(record.LowerName, lowerFileName, StringComparison.Ordinal))
+                            merged.Add(record);
+                    }
+
+                    candidates = merged.ToArray();
+                }
+            }
             for (var i = 0; i < candidates.Length; i++)
             {
                 var record = candidates[i];
@@ -2448,14 +2753,14 @@ namespace MftScanner
                 snapshot.Records,
                 buildContainsAccelerator: false,
                 takeOwnership: true,
-                buildDerivedStructures: false);
+                buildDerivedStructures: false,
+                buildShortAsciiStructures: false);
             var containsPostingsLoaded = _index.TryLoadContainsPostingsSnapshot(snapshot.ContainsPostings);
             if (!containsPostingsLoaded)
             {
-                containsPostingsLoaded = TryLoadContainsPostingsSnapshotSync(
+                QueueContainsPostingsSnapshotLoad(
                     snapshot.ContentFingerprint,
-                    snapshot.Records.Length,
-                    "restore-ready");
+                    snapshot.Records.Length);
             }
             if (snapshotMetrics.Version < 6)
             {
@@ -2465,7 +2770,8 @@ namespace MftScanner
             restoreStopwatch.Stop();
             UsnDiagLog.Write(
                 $"[SNAPSHOT RESTORE] elapsedMs={restoreStopwatch.ElapsedMilliseconds} records={snapshot.Records.Length} " +
-                $"volumes={snapshot.Volumes.Length} containsPostingsLoaded={containsPostingsLoaded}");
+                $"volumes={snapshot.Volumes.Length} containsPostingsLoaded={containsPostingsLoaded} " +
+                $"postingsLoadMode={(containsPostingsLoaded ? "inline" : "async")}");
 
             restoredCount = _index.TotalCount;
             totalStopwatch.Stop();
@@ -2475,9 +2781,8 @@ namespace MftScanner
                 $"restoreMs={restoreStopwatch.ElapsedMilliseconds} restoredCount={restoredCount}");
 
             _index.QueueEnsureDerivedStructures("snapshot-restore");
+            _index.QueueEnsureShortAsciiStructures("snapshot-restore");
             QueueDefaultShortContainsHotBucketWarmup(_index, "snapshot-restore");
-            if (!containsPostingsLoaded)
-                QueueContainsAcceleratorWarmup("snapshot-postings-miss");
             StartBackgroundCatchUp(snapshot.Volumes, progress, ct);
             return true;
         }
@@ -2525,7 +2830,7 @@ namespace MftScanner
                     var loaded = postings != null && _index.TryLoadContainsPostingsSnapshot(postings);
                     stopwatch.Stop();
                     UsnDiagLog.Write(
-                        $"[POSTINGS SNAPSHOT RESTORE] outcome={(loaded ? "success" : "miss")} elapsedMs={stopwatch.ElapsedMilliseconds} records={recordCount}");
+                        $"[POSTINGS SNAPSHOT RESTORE] outcome={(loaded ? "success" : "miss")} mode=async elapsedMs={stopwatch.ElapsedMilliseconds} records={recordCount}");
                     if (!loaded)
                         QueueContainsAcceleratorWarmup("snapshot-postings-miss");
                 }
@@ -2789,6 +3094,28 @@ namespace MftScanner
                     totalChangeCount += volumeResults[i].Changes?.Count ?? 0;
                 }
 
+                var watcherStartStopwatch = Stopwatch.StartNew();
+                var checkpoints = new (char driveLetter, long nextUsn, ulong journalId)[volumeResults.Length];
+                for (var i = 0; i < volumeResults.Length; i++)
+                {
+                    checkpoints[i] = (volumeResults[i].DriveLetter, volumeResults[i].NextUsn, volumeResults[i].LatestJournalId);
+                }
+
+                for (var i = 0; i < checkpoints.Length; i++)
+                {
+                    var checkpoint = checkpoints[i];
+                    _usnWatcher.StartWatching(checkpoint.driveLetter, checkpoint.nextUsn, checkpoint.journalId, ct);
+                }
+
+                watcherStartStopwatch.Stop();
+
+                var liveDeltaInserted = 0;
+                var liveDeltaDeleted = 0;
+                var liveDeltaRestored = 0;
+                var liveDeltaAlreadyVisible = 0;
+                var liveDeltaCompactRequired = false;
+                var applyStrategy = totalChangeCount > 0 ? "live-delta" : "none";
+
                 if (totalChangeCount > 0)
                 {
                     var allChanges = new List<UsnChangeEntry>(totalChangeCount);
@@ -2802,40 +3129,49 @@ namespace MftScanner
 
                     var indexChangedArgs = BuildBatchIndexChangedArgs(allChanges);
                     InvalidatePathCandidateCacheIfAffected(allChanges);
-                    WaitForSearchIdleBeforeCatchUpApply(ct, totalChangeCount);
                     _enumerator.ApplyUsnChanges(allChanges);
-                    _index.ApplyBatch(allChanges, rebuildContainsAccelerator: false);
+                    for (var start = 0; start < allChanges.Count; start += CatchUpLiveDeltaBatchSize)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        var count = Math.Min(CatchUpLiveDeltaBatchSize, allChanges.Count - start);
+                        var chunk = allChanges.GetRange(start, count);
+                        var liveDelta = _index.ApplyCatchUpLiveDeltaBatch(chunk);
+                        liveDeltaInserted += liveDelta.Inserted;
+                        liveDeltaDeleted += liveDelta.Deleted;
+                        liveDeltaRestored += liveDelta.Restored;
+                        liveDeltaAlreadyVisible += liveDelta.AlreadyVisible;
+                        liveDeltaCompactRequired |= liveDelta.CompactRequired;
+                    }
+
+                    if (liveDeltaCompactRequired)
+                        QueueLiveDeltaCompact("snapshot-catchup");
+
                     PublishBatchIndexChanges(indexChangedArgs);
+                    UsnDiagLog.Write(
+                        $"[SNAPSHOT CATCHUP LIVE APPLY] outcome=success strategy={applyStrategy} " +
+                        $"changes={totalChangeCount} inserted={liveDeltaInserted} deleted={liveDeltaDeleted} " +
+                        $"restored={liveDeltaRestored} alreadyVisible={liveDeltaAlreadyVisible} " +
+                        $"compactRequired={liveDeltaCompactRequired} liveDeltaCount={_index.LiveDeltaCount}");
                 }
 
                 applyStopwatch.Stop();
                 catchUpStopwatch.Stop();
 
-                var watcherStartStopwatch = Stopwatch.StartNew();
-                var checkpoints = new (char driveLetter, long nextUsn, ulong journalId)[volumeResults.Length];
-                for (var i = 0; i < volumeResults.Length; i++)
-                {
-                    checkpoints[i] = (volumeResults[i].DriveLetter, volumeResults[i].NextUsn, volumeResults[i].LatestJournalId);
-                }
-
                 var volumeSnapshots = _enumerator.CreateVolumeSnapshots(checkpoints);
-                _lastVolumeSnapshots = CopyVolumeSnapshots(volumeSnapshots);
-
-                for (var i = 0; i < checkpoints.Length; i++)
+                if (totalChangeCount == 0)
                 {
-                    var checkpoint = checkpoints[i];
-                    _usnWatcher.StartWatching(checkpoint.driveLetter, checkpoint.nextUsn, checkpoint.journalId, ct);
+                    _lastVolumeSnapshots = CopyVolumeSnapshots(volumeSnapshots);
+                    QueueSnapshotSave(_index.SortedArray, volumeSnapshots);
                 }
-
-                watcherStartStopwatch.Stop();
-                QueueSnapshotSave(_index.SortedArray, volumeSnapshots);
                 QueueDefaultShortContainsHotBucketWarmup(_index, "post-catchup");
                 QueueContainsAcceleratorWarmup("post-catchup");
 
                 UsnDiagLog.Write(
                     $"[SNAPSHOT CATCHUP TOTAL] catchUpMs={catchUpStopwatch.ElapsedMilliseconds} " +
                     $"applyMs={applyStopwatch.ElapsedMilliseconds} totalChanges={totalChangeCount} " +
-                    $"watcherStartMs={watcherStartStopwatch.ElapsedMilliseconds} indexedCount={_index.TotalCount}");
+                    $"watcherStartMs={watcherStartStopwatch.ElapsedMilliseconds} " +
+                    $"watcherStartedBeforeCatchupApply=True catchupApplyStrategy={applyStrategy} " +
+                    $"indexedCount={_index.TotalCount}");
 
                 PublishIndexStatus($"已索引 {_index.TotalCount} 个对象", false);
             }
@@ -3062,23 +3398,97 @@ namespace MftScanner
             }
         }
 
+        private void QueueLiveDeltaCompact(string reason)
+        {
+            var index = _index;
+            if (index == null || index.LiveDeltaCount == 0)
+                return;
+
+            lock (_containsWarmupLock)
+            {
+                if (_liveDeltaCompactTask != null && !_liveDeltaCompactTask.IsCompleted)
+                {
+                    UsnDiagLog.Write(
+                        $"[LIVE DELTA COMPACT] outcome=skip-running reason={IndexPerfLog.FormatValue(reason)} liveDeltaCount={index.LiveDeltaCount}");
+                    return;
+                }
+
+                _liveDeltaCompactCts?.Cancel();
+                _liveDeltaCompactCts?.Dispose();
+                _liveDeltaCompactCts = new CancellationTokenSource();
+                var cts = _liveDeltaCompactCts;
+                _liveDeltaCompactTask = Task.Run(() => RunLiveDeltaCompact(index, reason, cts), cts.Token);
+            }
+        }
+
+        private async Task RunLiveDeltaCompact(MemoryIndex index, string reason, CancellationTokenSource compactCts)
+        {
+            var ct = compactCts.Token;
+            try
+            {
+                await Task.Delay(LiveDeltaCompactDelayMilliseconds, ct).ConfigureAwait(false);
+                UsnDiagLog.Write(
+                    $"[LIVE DELTA COMPACT] outcome=start reason={IndexPerfLog.FormatValue(reason)} liveDeltaCount={index.LiveDeltaCount}");
+
+                long compactMs;
+                var compacted = index.TryCompactLiveDeltaOverlay(out compactMs, ct);
+                UsnDiagLog.Write(
+                    $"[LIVE DELTA COMPACT] outcome={(compacted ? "success" : "stale-or-empty")} reason={IndexPerfLog.FormatValue(reason)} " +
+                    $"compactMs={compactMs} liveDeltaCount={index.LiveDeltaCount} records={index.TotalCount}");
+
+                if (compacted)
+                {
+                    QueueSnapshotSave(index.SortedArray, _lastVolumeSnapshots);
+                    QueueContainsAcceleratorWarmup("post-live-delta-compact");
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                UsnDiagLog.Write(
+                    $"[LIVE DELTA COMPACT] outcome=canceled reason={IndexPerfLog.FormatValue(reason)}");
+            }
+            catch (Exception ex)
+            {
+                UsnDiagLog.Write(
+                    $"[LIVE DELTA COMPACT] outcome=failed reason={IndexPerfLog.FormatValue(reason)} error={ex.GetType().Name}:{IndexPerfLog.FormatValue(ex.Message)}");
+            }
+            finally
+            {
+                lock (_containsWarmupLock)
+                {
+                    if (ReferenceEquals(_liveDeltaCompactCts, compactCts))
+                    {
+                        _liveDeltaCompactCts = null;
+                        _liveDeltaCompactTask = null;
+                    }
+                }
+
+                compactCts.Dispose();
+            }
+        }
+
         private void CancelContainsWarmup()
         {
             CancellationTokenSource cts;
             CancellationTokenSource shortCts;
+            CancellationTokenSource compactCts;
             lock (_containsWarmupLock)
             {
                 cts = _containsWarmupCts;
                 shortCts = _shortContainsWarmupCts;
+                compactCts = _liveDeltaCompactCts;
                 _containsWarmupCts = null;
                 _containsWarmupTask = null;
                 _shortContainsWarmupCts = null;
                 _shortContainsWarmupTask = null;
+                _liveDeltaCompactCts = null;
+                _liveDeltaCompactTask = null;
                 _shortContainsWarmups.Clear();
             }
 
             CancelAndDispose(cts);
             CancelAndDispose(shortCts);
+            CancelAndDispose(compactCts);
         }
 
         private static void CancelAndDispose(CancellationTokenSource cts)
@@ -3365,6 +3775,15 @@ namespace MftScanner
         {
             try
             {
+                var liveDeltaCount = _index?.LiveDeltaCount ?? 0;
+                if (liveDeltaCount > 0)
+                {
+                    UsnDiagLog.Write(
+                        $"[SNAPSHOT SAVE DEFER] reason={reason} liveDeltaCount={liveDeltaCount} " +
+                        "message=base-snapshot-not-compacted");
+                    return;
+                }
+
                 if (!string.Equals(reason, "shutdown", StringComparison.OrdinalIgnoreCase)
                     && ShouldDeferSnapshotSave())
                 {

@@ -205,17 +205,24 @@ namespace MftScanner
                 var normalizedOffset = Math.Max(offset, 0);
                 var normalizedMaxResults = Math.Max(maxResults, 0);
                 var activeOverlay = overlay ?? ContainsOverlay.Empty;
+                ContainsSearchResult result;
                 if (query.Length == 1)
                 {
-                    return SearchSingleChar(query[0], query, filter, normalizedOffset, normalizedMaxResults, ct, activeOverlay);
+                    result = SearchSingleChar(query[0], query, filter, normalizedOffset, normalizedMaxResults, ct, activeOverlay);
+                    result.IncludesLiveOverlay = true;
+                    return result;
                 }
 
                 if (query.Length == 2)
                 {
-                    return SearchBigram(PackBigram(query[0], query[1]), query, filter, normalizedOffset, normalizedMaxResults, ct, activeOverlay);
+                    result = SearchBigram(PackBigram(query[0], query[1]), query, filter, normalizedOffset, normalizedMaxResults, ct, activeOverlay);
+                    result.IncludesLiveOverlay = true;
+                    return result;
                 }
 
-                return SearchTrigram(query, filter, normalizedOffset, normalizedMaxResults, ct, activeOverlay);
+                result = SearchTrigram(query, filter, normalizedOffset, normalizedMaxResults, ct, activeOverlay);
+                result.IncludesLiveOverlay = true;
+                return result;
             }
 
             private ContainsSearchResult SearchSingleChar(char token, string query, SearchTypeFilter filter, int offset, int maxResults, CancellationToken ct, ContainsOverlay overlay)

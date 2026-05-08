@@ -89,6 +89,18 @@ namespace MftScanner
         public char   DriveLetter { get; }
     }
 
+    public sealed class UsnChangesCollectedEventArgs : EventArgs
+    {
+        public UsnChangesCollectedEventArgs(char driveLetter, List<UsnChangeEntry> changes)
+        {
+            DriveLetter = driveLetter;
+            Changes = changes ?? new List<UsnChangeEntry>();
+        }
+
+        public char DriveLetter { get; }
+        public List<UsnChangeEntry> Changes { get; }
+    }
+
     /// <summary>文件重命名事件参数。需求 6.4</summary>
     public sealed class UsnFileRenamedEventArgs : EventArgs
     {
@@ -116,7 +128,7 @@ namespace MftScanner
     /// </summary>
     public sealed class UsnWatcher
     {
-        private const bool LogUsnRecords = false;
+        private static readonly bool LogUsnRecords = false;
         private static readonly TimeSpan WatcherPollLogInterval = TimeSpan.FromSeconds(30);
         private const int ReadUsnBufferSize = 4 * 1024 * 1024;
         private const int MaxWatcherReadRecordsPerSlice = 20000;
@@ -135,6 +147,7 @@ namespace MftScanner
         private const uint USN_REASON_FILE_DELETE    = 0x00000200;
         private const uint USN_REASON_RENAME_OLD_NAME = 0x00001000;
         private const uint USN_REASON_RENAME_NEW_NAME = 0x00002000;
+        private const uint USN_REASON_CLOSE          = 0x80000000;
         private const int  ERROR_JOURNAL_ENTRY_DELETED = 1181;
         private static readonly IntPtr INVALID_HANDLE_VALUE = new IntPtr(-1);
 
@@ -210,8 +223,11 @@ namespace MftScanner
             public long LastLoggedNextUsn = long.MinValue;
             public long LastLoggedJournalNextUsn = long.MinValue;
             public bool HasBacklog;
+            public DateTime LastActivityUtc = DateTime.MinValue;
             public Dictionary<ulong, (string oldName, ulong oldParentFrn)> PendingRenameOldByFrn
                 = new Dictionary<ulong, (string oldName, ulong oldParentFrn)>();
+            public Dictionary<ulong, UsnChangeEntry> PendingProvisionalByFrn
+                = new Dictionary<ulong, UsnChangeEntry>();
         }
 
         private readonly Dictionary<char, VolumeWatchState> _volumes
@@ -228,6 +244,8 @@ namespace MftScanner
 
         /// <summary>文件或目录被重命名时触发。需求 6.4</summary>
         public event EventHandler<UsnFileRenamedEventArgs> FileRenamed;
+
+        public event EventHandler<UsnChangesCollectedEventArgs> ChangesCollected;
 
         /// <summary>USN 日志溢出或失效时触发，订阅者应触发全量重建。需求 6.5</summary>
         public event EventHandler JournalOverflow;
@@ -435,7 +453,9 @@ namespace MftScanner
             {
                 while (!ct.IsCancellationRequested)
                 {
-                    var delayMilliseconds = state.HasBacklog ? 10 : 1000;
+                    var recentlyActive = state.LastActivityUtc != DateTime.MinValue
+                                         && (DateTime.UtcNow - state.LastActivityUtc).TotalSeconds <= 2;
+                    var delayMilliseconds = state.HasBacklog ? 10 : (recentlyActive ? 50 : 500);
                     try { Task.Delay(delayMilliseconds, ct).Wait(ct); }
                     catch (OperationCanceledException) { break; }
 
@@ -476,8 +496,16 @@ namespace MftScanner
                             continue;
 
                         LogWatcherPollIfNeeded(state, journalData.NextUsn);
+                        var changes = new List<UsnChangeEntry>(256);
                         ReadUsnBatch(state, handle, ref journalData, buffer, bufferSize, ct,
-                            raiseOverflowEvent: true, collectedChanges: null);
+                            raiseOverflowEvent: true, collectedChanges: changes);
+                        if (changes.Count > 0)
+                        {
+                            state.LastActivityUtc = DateTime.UtcNow;
+                            UsnDiagLog.Write(
+                                $"[WATCHER BATCH] drive={state.DriveLetter} changes={changes.Count} nextUsn={state.NextUsn}");
+                            ChangesCollected?.Invoke(this, new UsnChangesCollectedEventArgs(state.DriveLetter, changes));
+                        }
                         state.HasBacklog = state.NextUsn < journalData.NextUsn;
                     }
                     finally { CloseHandle(handle); }
@@ -528,7 +556,8 @@ namespace MftScanner
             {
                 StartUsn          = state.NextUsn,
                 ReasonMask        = USN_REASON_FILE_CREATE | USN_REASON_FILE_DELETE
-                                  | USN_REASON_RENAME_OLD_NAME | USN_REASON_RENAME_NEW_NAME,
+                                  | USN_REASON_RENAME_OLD_NAME | USN_REASON_RENAME_NEW_NAME
+                                  | USN_REASON_CLOSE,
                 ReturnOnlyOnClose = 0,
                 Timeout           = 0,
                 BytesToWaitFor    = 0,
@@ -537,6 +566,9 @@ namespace MftScanner
 
             var sliceStopwatch = System.Diagnostics.Stopwatch.StartNew();
             var recordsRead = 0;
+            var provisionalCreated = 0;
+            var provisionalCommitted = 0;
+            var provisionalDropped = 0;
             while (!ct.IsCancellationRequested)
             {
                 if (!DeviceIoControlReadUsn(handle, FSCTL_READ_USN_JOURNAL,
@@ -583,6 +615,7 @@ namespace MftScanner
                         var isNewName = (reason & USN_REASON_RENAME_NEW_NAME) != 0;
                         var isDelete  = (reason & USN_REASON_FILE_DELETE) != 0;
                         var isCreate  = (reason & USN_REASON_FILE_CREATE) != 0;
+                        var isClose   = (reason & USN_REASON_CLOSE) != 0;
 
                         if (LogUsnRecords)
                         {
@@ -591,11 +624,13 @@ namespace MftScanner
 
                         if (isOldName)
                         {
+                            DropProvisional(state, frn, ref provisionalDropped);
                             state.PendingRenameOldByFrn[frn] = (fileName, parentFrn);
                         }
                         else if (isNewName
                                  && state.PendingRenameOldByFrn.TryGetValue(frn, out var pendingRenameOld))
                         {
+                            DropProvisional(state, frn, ref provisionalDropped);
                             var lowerName = fileName.ToLowerInvariant();
                             var oldLowerName = pendingRenameOld.oldName.ToLowerInvariant();
                             if (collectedChanges != null)
@@ -631,9 +666,37 @@ namespace MftScanner
 
                             state.PendingRenameOldByFrn.Remove(frn);
                         }
+                        else if (isNewName)
+                        {
+                            var lowerName = fileName.ToLowerInvariant();
+                            UsnDiagLog.Write(
+                                $"[USN RENAME_NEW UPSERT] drive={state.DriveLetter} frn={frn} parentFrn={parentFrn} lowerName={lowerName}");
+                            var change = new UsnChangeEntry(
+                                kind: UsnChangeKind.Create,
+                                frn: frn,
+                                lowerName: lowerName,
+                                originalName: fileName,
+                                parentFrn: parentFrn,
+                                driveLetter: state.DriveLetter,
+                                isDirectory: isDir);
+                            if (ShouldHoldProvisional(lowerName))
+                            {
+                                state.PendingProvisionalByFrn[frn] = change;
+                                provisionalCreated++;
+                                if (isClose)
+                                {
+                                    CommitProvisional(state, frn, collectedChanges, ref provisionalCommitted);
+                                }
+                            }
+                            else
+                            {
+                                EmitCreate(change, collectedChanges);
+                            }
+                        }
                         else if (isDelete)
                         {
                             state.PendingRenameOldByFrn.Remove(frn);
+                            DropProvisional(state, frn, ref provisionalDropped);
                             var lowerName = fileName.ToLowerInvariant();
                             if (collectedChanges != null)
                             {
@@ -658,26 +721,31 @@ namespace MftScanner
                         else if (isCreate)
                         {
                             var lowerName = fileName.ToLowerInvariant();
-                            if (collectedChanges != null)
+                            var change = new UsnChangeEntry(
+                                kind: UsnChangeKind.Create,
+                                frn: frn,
+                                lowerName: lowerName,
+                                originalName: fileName,
+                                parentFrn: parentFrn,
+                                driveLetter: state.DriveLetter,
+                                isDirectory: isDir);
+                            if (ShouldHoldProvisional(lowerName))
                             {
-                                AppendCollectedChange(collectedChanges, new UsnChangeEntry(
-                                    kind: UsnChangeKind.Create,
-                                    frn: frn,
-                                    lowerName: lowerName,
-                                    originalName: fileName,
-                                    parentFrn: parentFrn,
-                                    driveLetter: state.DriveLetter,
-                                    isDirectory: isDir));
+                                state.PendingProvisionalByFrn[frn] = change;
+                                provisionalCreated++;
+                                if (isClose)
+                                {
+                                    CommitProvisional(state, frn, collectedChanges, ref provisionalCommitted);
+                                }
                             }
                             else
                             {
-                                FileCreated?.Invoke(this, new UsnFileCreatedEventArgs(
-                                    frn: frn,
-                                    fileName: fileName,
-                                    parentFrn: parentFrn,
-                                    driveLetter: state.DriveLetter,
-                                    isDirectory: isDir));
+                                EmitCreate(change, collectedChanges);
                             }
+                        }
+                        else if (isClose)
+                        {
+                            CommitProvisional(state, frn, collectedChanges, ref provisionalCommitted);
                         }
                     }
 
@@ -698,6 +766,7 @@ namespace MftScanner
             }
 
             state.NextUsn = readData.StartUsn;
+            LogProvisionalStats(state, provisionalCreated, provisionalCommitted, provisionalDropped);
             if (recordsRead > 0 && sliceStopwatch.ElapsedMilliseconds >= 50)
             {
                 UsnDiagLog.Write(
@@ -705,6 +774,79 @@ namespace MftScanner
                     $"nextUsn={state.NextUsn} journalNextUsn={journalData.NextUsn} yielded=false");
             }
             return true;
+        }
+
+        private void EmitCreate(UsnChangeEntry change, List<UsnChangeEntry> collectedChanges)
+        {
+            if (change == null)
+            {
+                return;
+            }
+
+            if (collectedChanges != null)
+            {
+                AppendCollectedChange(collectedChanges, change);
+                return;
+            }
+
+            FileCreated?.Invoke(this, new UsnFileCreatedEventArgs(
+                frn: change.Frn,
+                fileName: change.OriginalName,
+                parentFrn: change.ParentFrn,
+                driveLetter: change.DriveLetter,
+                isDirectory: change.IsDirectory));
+        }
+
+        private void CommitProvisional(
+            VolumeWatchState state,
+            ulong frn,
+            List<UsnChangeEntry> collectedChanges,
+            ref int committed)
+        {
+            if (state == null || !state.PendingProvisionalByFrn.TryGetValue(frn, out var change))
+            {
+                return;
+            }
+
+            state.PendingProvisionalByFrn.Remove(frn);
+            EmitCreate(change, collectedChanges);
+            committed++;
+        }
+
+        private static void DropProvisional(VolumeWatchState state, ulong frn, ref int dropped)
+        {
+            if (state != null && state.PendingProvisionalByFrn.Remove(frn))
+            {
+                dropped++;
+            }
+        }
+
+        private static bool ShouldHoldProvisional(string lowerName)
+        {
+            if (string.IsNullOrEmpty(lowerName))
+            {
+                return false;
+            }
+
+            return lowerName.IndexOf("~rf", StringComparison.Ordinal) >= 0
+                   || lowerName.EndsWith(".tmp", StringComparison.Ordinal)
+                   || lowerName.EndsWith(".tme", StringComparison.Ordinal)
+                   || lowerName.EndsWith(".temp", StringComparison.Ordinal);
+        }
+
+        private static void LogProvisionalStats(
+            VolumeWatchState state,
+            int created,
+            int committed,
+            int dropped)
+        {
+            if (created == 0 && committed == 0 && dropped == 0)
+            {
+                return;
+            }
+
+            UsnDiagLog.Write(
+                $"[USN PROVISIONAL] drive={state.DriveLetter} created={created} committed={committed} dropped={dropped} pending={state.PendingProvisionalByFrn.Count}");
         }
 
         private static void AppendCollectedChange(List<UsnChangeEntry> changes, UsnChangeEntry change)
