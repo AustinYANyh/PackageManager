@@ -1,6 +1,6 @@
 ---
 name: git_svn_commitlog_generator
-description: Git+SVN 改动由脚本采集；模型默认打开本机可见 PowerShell 做限时交互，超时自动按默认项继续生成提交日志。
+description: Git+SVN 改动由脚本采集；模型默认打开本机可见 PowerShell 做限时交互，超时自动生成日志并确认提交推送。
 ---
 
 # git_svn_commitlog_generator - Git+SVN 改动分析与提交日志生成
@@ -31,6 +31,7 @@ description: Git+SVN 改动由脚本采集；模型默认打开本机可见 Powe
 4. **一次只生成一条提交日志**：即使涉及多个项目，也不要拆成多条提交；多项目只在 `scope` 中写清楚，并在正文条目中说明各项目关键改动。
 5. **不要粘贴大段 diff**：提交日志只输出抽象后的变更点，不直接贴 patch 内容。
 6. **长日志必须主动硬换行**：标题与正文按后文「长文本换行规则」处理。
+7. **最终提交/推送也必须限时交互**：模型生成最终提交日志后，默认必须打开本机可见 PowerShell 询问是否提交并推送；`-PromptTimeoutSeconds` 默认 30 秒，超时自动选择 **第 1 个选项：提交并推送**。只有用户明确要求“只生成日志 / 不提交 / 不推送”时才跳过这一步。
 
 ## 执行流程
 
@@ -92,12 +93,34 @@ JSON 关键字段（与脚本一致）：
 - 只输出一条 `type(scope): summary`；多项目 scope 用顿号 `、` 连接。
 - 正文 2–8 条 `- ` 条目；若 `ItemsExcluded` 非空，附 `本次排除清单`（`#Id Path`）。
 
+### Step 3) 限时确认是否提交并推送
+
+生成最终提交日志后，模型默认调用提交/推送 wrapper。它会打开本机可见 PowerShell，显示提交日志、Git/SVN 文件数量和倒计时：
+
+- 按 `1`：提交并推送（默认，超时自动执行）。
+- 按 `2`：暂不提交。
+- Git 文件：脚本会按 `ItemsIncludedDefaultLog` 暂存对应 Git 路径，执行 `git commit -F <message>`，然后用非交互凭据模式 `git push`。
+- SVN 文件：若 `ItemsIncludedDefaultLog` 中包含 SVN 路径，脚本会执行非交互 `svn commit -F <message>`；SVN 没有 push。
+
+模型需要把 Step 1 原始 JSON 和 **Step 2 生成的最终提交日志原文** 分别写入临时文件，再调用。`$finalCommitLog` 必须就是模型最终给用户展示的提交日志标题+正文，不得使用占位符、核对表、说明文字，也不得让提交脚本重新生成另一份日志：
+
+```powershell
+$changesFile = Join-Path $env:TEMP ("git_svn_changes_{0}.json" -f ([guid]::NewGuid()))
+$messageFile = Join-Path $env:TEMP ("git_svn_commit_message_{0}.txt" -f ([guid]::NewGuid()))
+Set-Content -LiteralPath $changesFile -Value $changesJsonRaw -Encoding UTF8
+Set-Content -LiteralPath $messageFile -Value $finalCommitLog -Encoding UTF8
+powershell -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/invoke-commit-push-interactive.ps1 -ChangesJsonFile $changesFile -CommitMessageFile $messageFile -PromptTimeoutSeconds 30
+```
+
+若用户明确要求“只生成日志 / 不提交 / 不推送”，模型跳过 Step 3。
+
 ## 输出要求（最终给用户的内容）
 
 1. **默认提交日志**：基于 `ItemsIncludedDefaultLog` / `ProjectsDefault` / 相关 `Diffs`。
 2. **推荐**在默认日志前附 **`### 待提交文件核对`** Markdown 表（`| # | 状态 | 路径 | 来源 | 项目 |`，行与 `ItemsIncludedDefaultLog` 一一对应；Git `状态` 为 `GitIndexStatus`+`GitWorktreeStatus` 两字符拼接；SVN 为 `SvnItem`）。
-3. **收尾**：在回复末尾再附 **`### 最终版提交日志（可直接复制）`**，用 ```text 完整贴一遍标题+正文（可与默认版相同，须全文便于从底部复制）。
-4. 条目换行、scope/type 细则见下文「## type / scope / 条目生成规则」。
+3. **提交/推送结果**：若执行 Step 3，简要说明 `completed` / `skipped` / `failed`，失败时列出失败命令摘要。
+4. **收尾**：在回复末尾再附 **`### 最终版提交日志（可直接复制）`**，用 ```text 完整贴一遍标题+正文（可与默认版相同，须全文便于从底部复制）。
+5. 条目换行、scope/type 细则见下文「## type / scope / 条目生成规则」。
 
 ## type / scope / 条目生成规则（落地细则）
 
