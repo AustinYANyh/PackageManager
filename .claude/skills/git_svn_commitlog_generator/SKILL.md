@@ -1,5 +1,5 @@
 ---
-name: git_svn_commitlog_generator
+name: git-svn-commitlog-generator
 description: Git+SVN 改动由脚本采集；模型默认打开本机可见 PowerShell 做限时交互，超时自动生成日志并确认提交推送。
 ---
 
@@ -26,7 +26,7 @@ description: Git+SVN 改动由脚本采集；模型默认打开本机可见 Powe
 ## 核心约束（必须遵守）
 
 1. **脚本 JSON 输出是唯一数据源**：模型不得自行递归扫描目录来决定「改动范围」。
-2. **交互在脚本内完成且必须可超时**：是否将 `NeedsAdd` 纳入版本库、是否按 `Id` 排除项，由 `get-working-changes.ps1` 在 **Windows 可交互控制台** 内处理，窗口会显示剩余秒数；若在超时时间（`-PromptTimeoutSeconds`，默认 30）内无按键，则采用 **第 1 个选项**（不加入未跟踪 / 不排除）。若选择“按 Id 输入”，输入行同样按 `-PromptTimeoutSeconds` 超时，超时或空输入视为不选择任何 Id。**禁止**由模型在聊天里用 `Start-Sleep`、阻塞式原生选项菜单或「伪后置步骤」替代脚本交互。
+2. **交互在脚本内完成且必须可超时**：是否将 `NeedsAdd` 纳入版本库、是否排除提交项，由 `get-working-changes.ps1` 在 **Windows 可交互控制台** 内处理。脚本优先打开勾选表格；GUI 不可用时才回退编号输入。窗口会显示剩余秒数；点击“确定”或超时都会进入下一步。若超时时当前有勾选，则按当前勾选结果继续；若当前没有任何勾选，则采用默认值（不加入未跟踪 / 全部保留不排除）。回退到编号输入时，输入行同样按 `-PromptTimeoutSeconds` 超时，超时或空输入视为不选择任何 Id。**禁止**由模型在聊天里用 `Start-Sleep`、阻塞式原生选项菜单或「伪后置步骤」替代脚本交互。
 3. **模型默认限时交互调用**：生成提交日志时，模型默认必须打开本机可见 PowerShell 运行脚本 **`-Interactive -PromptTimeoutSeconds 30`**，给用户一次加入/排除机会；无人操作则脚本自动按默认项继续。只有用户明确要求“非交互 / CI / 直接生成 / 不要弹窗”时，才使用 **`-NonInteractive`**。
 4. **一次只生成一条提交日志**：即使涉及多个项目，也不要拆成多条提交；多项目只在 `scope` 中写清楚，并在正文条目中说明各项目关键改动。
 5. **不要粘贴大段 diff**：提交日志只输出抽象后的变更点，不直接贴 patch 内容。
@@ -37,22 +37,24 @@ description: Git+SVN 改动由脚本采集；模型默认打开本机可见 Powe
 
 ### Step 1) 获取 Git/SVN 待提交改动（脚本唯一来源）
 
-**模型默认（推荐）**：调用 wrapper 脚本打开本机可见 PowerShell，让脚本完成中文限时交互，并把 JSON 回传给模型；窗口退出后模型读取该 JSON 生成提交日志。**不要**把多行 `Start-Process -Command` 直接粘到 Bash/WSL 执行器里，避免引号被 Bash 解析导致 `unexpected EOF`。
+**模型默认（推荐）**：调用 wrapper 脚本打开本机可见 PowerShell，让脚本完成中文限时交互，并把 JSON 回传给模型；窗口退出后模型读取该 JSON 生成提交日志。Claude Code 当前只有 Bash 工具时，允许用 Bash 调 `powershell.exe` 启动 wrapper，但命令行不得包含中文提交日志正文。
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/invoke-working-changes-interactive.ps1 -PromptTimeoutSeconds 30
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/invoke-working-changes-interactive.ps1 -PromptTimeoutSeconds 30
 ```
 
-**人类在 Windows 本机终端**：需要脚本内 `choice` 时，使用 **`-Interactive`**（且 stdin 未重定向），脚本会依次（若存在）提示：① 未跟踪/未版本管理候选是否 `git add`/`svn add`；② 是否按 `Id` 排除。每一步都会在 `-PromptTimeoutSeconds` 后自动落默认值，因此无人值守时不会卡住；仍可用 `-AddIds`、`-ExcludeIds`、`-ExcludePaths` 跳过对应提问（与脚本实现一致）。
+若当前工具显示为 `Bash(...)`，只允许执行这种固定短命令；不要在 Bash 中拼接多行 `powershell -Command`。
+
+**人类在 Windows 本机终端**：需要脚本内交互时，使用 **`-Interactive`**（且 stdin 未重定向），脚本会依次（若存在）提示：① 未跟踪/未版本管理候选是否 `git add`/`svn add`；② 是否排除本次提交项。每一步都会在 `-PromptTimeoutSeconds` 后自动落默认值，因此无人值守时不会卡住；仍可用 `-AddIds`、`-ExcludeIds`、`-ExcludePaths` 跳过对应提问（与脚本实现一致）。
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/get-working-changes.ps1 -Interactive -PromptTimeoutSeconds 30
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/get-working-changes.ps1 -Interactive -PromptTimeoutSeconds 30
 ```
 
 交互窗口中的含义：
 
-- 步骤 1/2：未纳入版本管理的候选文件。直接按 `1` 不加入（默认），按 `2` 全部加入，按 `3` 输入编号选择加入；这一步按键立即生效，不需要回车。
-- 步骤 2/2：会进入本次提交日志的改动项。直接按 `1` 全部保留（默认），按 `2` 输入编号排除；这一步按键立即生效，不需要回车。
+- 步骤 1/2：未纳入版本管理的候选文件。默认打开勾选窗口；**勾选表示加入本次提交，未勾选表示不加入**。点击“确定”或超时都会进入下一步；超时时如果有勾选就按当前勾选加入，如果没有勾选就按默认不加入任何未跟踪文件；点击“使用默认”同样表示不加入。若 GUI 不可用则回退到编号输入：直接按 `1` 不加入（默认），按 `2` 全部加入，按 `3` 输入编号选择加入。
+- 步骤 2/2：会进入本次提交日志的改动项。默认打开勾选窗口；**勾选表示排除，未勾选表示保留**。点击“确定”或超时都会进入下一步；超时时如果有勾选就按当前勾选排除，如果没有勾选就按默认全部保留；点击“使用默认”同样表示全部保留。若 GUI 不可用则回退到编号输入。
 - 未在步骤 1 选择加入的未跟踪文件不会出现在步骤 2，也不会进入提交日志。
 - 步骤 2/2 显示的是脚本启动时的 Git/SVN 状态快照；如果刚保存文件或 Git 面板刚刷新，发现列表缺文件，关闭窗口后重新运行 skill。
 - 输入编号时可写 `3,5,8` 或 `3 5 8`；窗口会显示倒计时，超时或空输入表示不选择任何编号。
@@ -60,7 +62,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commi
 **非交互 / CI / 用户明确要求不要弹窗**：无控制台提问，直接按默认策略取 JSON（不加入未跟踪 / 不排除）。
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/get-working-changes.ps1 -NonInteractive
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/get-working-changes.ps1 -NonInteractive
 ```
 
 实现要点：SVN 已跟踪用 `svn status --xml -q`；`NeedsAdd` 仍可由第二次全树 `svn status --xml` 得到；超大库可用 `-ScanUntrackedForNeedsAdd false`。
@@ -68,12 +70,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commi
 常用参数：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/get-working-changes.ps1 -NonInteractive -IncludeDiff false
-powershell -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/get-working-changes.ps1 -NonInteractive -MaxFilesWithDiff 60 -MaxDiffBytesPerFile 20480
-powershell -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/get-working-changes.ps1 -NonInteractive -Svn false
-powershell -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/get-working-changes.ps1 -NonInteractive -UseDefaultExcludes false
-powershell -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/get-working-changes.ps1 -NonInteractive -ScanUntrackedForNeedsAdd false
-powershell -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/get-working-changes.ps1 -NonInteractive -PromptTimeoutSeconds 20
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/get-working-changes.ps1 -NonInteractive -IncludeDiff false
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/get-working-changes.ps1 -NonInteractive -MaxFilesWithDiff 60 -MaxDiffBytesPerFile 20480
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/get-working-changes.ps1 -NonInteractive -Svn false
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/get-working-changes.ps1 -NonInteractive -UseDefaultExcludes false
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/get-working-changes.ps1 -NonInteractive -ScanUntrackedForNeedsAdd false
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/get-working-changes.ps1 -NonInteractive -PromptTimeoutSeconds 20
 ```
 
 JSON 关键字段（与脚本一致）：
@@ -90,7 +92,7 @@ JSON 关键字段（与脚本一致）：
 
 ### 提交日志正文要点
 
-- 只输出一条 `type(scope): summary`；多项目 scope 用顿号 `、` 连接。
+- 只输出一条 `type(scope): 中文摘要`；多项目 scope 用顿号 `、` 连接。
 - 正文 2–8 条 `- ` 条目；若 `ItemsExcluded` 非空，附 `本次排除清单`（`#Id Path`）。
 
 ### Step 3) 限时确认是否提交并推送
@@ -99,18 +101,27 @@ JSON 关键字段（与脚本一致）：
 
 - 按 `1`：提交并推送（默认，超时自动执行）。
 - 按 `2`：暂不提交。
-- Git 文件：脚本会按 `ItemsIncludedDefaultLog` 暂存对应 Git 路径，执行 `git commit -F <message>`，然后用非交互凭据模式 `git push`。
-- SVN 文件：若 `ItemsIncludedDefaultLog` 中包含 SVN 路径，脚本会执行非交互 `svn commit -F <message>`；SVN 没有 push。
+- Git 文件：脚本会按 `ItemsIncludedDefaultLog` 暂存对应 Git 路径，执行 `git commit -F <message>`，然后以非交互方式执行 `git push`；如需凭据则直接失败返回，不阻塞。
+- SVN 文件：若 `ItemsIncludedDefaultLog` 中包含 SVN 路径，脚本会在同一个可见窗口执行 `svn commit -F <message>`；SVN 输出/提示显示在窗口中，不会污染 JSON，SVN 没有 push。
+- Step 3 的结果 JSON 由 wrapper 指定的结果文件产生；模型不得解析提交窗口输出，也不得临时创建提交 `.ps1` 替代 wrapper。
 
-模型需要把 Step 1 原始 JSON 和 **Step 2 生成的最终提交日志原文** 分别写入临时文件，再调用。`$finalCommitLog` 必须就是模型最终给用户展示的提交日志标题+正文，不得使用占位符、核对表、说明文字，也不得让提交脚本重新生成另一份日志。不要在 Bash/WSL 执行器里拼多行 `powershell -Command`，也不要直接调用 `run-commit-push-choice.ps1`；统一调用 `-File` wrapper，wrapper 会阻塞等待提交推送窗口结束：
+Step 1 wrapper 会自动把采集 JSON 保存到 `.claude/skills/git_svn_commitlog_generator/.state/last_changes.json`。
+
+模型只负责生成 **Step 2 的最终提交日志文本**。Claude Code Bash 工具无法可靠传递中文参数，也不能用 `python -c` / `node -e` / `powershell -Command` 在 Bash 内处理中文。**因此模型必须在自身推理中直接得到最终提交日志的 UTF-8 Base64 字符串**，Step 3 命令行只传 ASCII Base64 给 `-CommitMessageBase64Utf8`。
+
+`-CommitMessageBase64Utf8` 内容必须只包含最终提交日志标题+正文的 UTF-8 Base64，不得包含核对表、说明文字或占位符。模型不得使用 stdin、pipe、heredoc、重定向来传提交日志，不得为了传日志而单独创建或编辑提交日志/Base64 文件（包括 `commit_msg_b64.txt`、`final_commit_message.txt` 等），不得把提交日志作为 `-CommitMessageText` 长参数塞进 Bash/WSL 命令行，不得在 Bash 中执行 `python -c` / `node -e` / `powershell -Command` 等编码命令来处理中文，不得执行 `git` / `svn` 命令，不得创建临时 `.ps1` 提交脚本，也不得直接调用 `run-commit-push-choice.ps1`。
+
+不得因为“无法确信 Base64 与中文原文逐字一致”而跳过 Step 3；Step 3 窗口会显示脚本实际解码后的提交日志和 SHA256，并由用户按 `1` 提交或按 `2` 取消。模型仍不得调用任何 shell 命令来“辅助计算” Base64。
 
 ```powershell
-$changesFile = Join-Path $env:TEMP ("git_svn_changes_{0}.json" -f ([guid]::NewGuid()))
-$messageFile = Join-Path $env:TEMP ("git_svn_commit_message_{0}.txt" -f ([guid]::NewGuid()))
-Set-Content -LiteralPath $changesFile -Value $changesJsonRaw -Encoding UTF8
-Set-Content -LiteralPath $messageFile -Value $finalCommitLog -Encoding UTF8
-powershell -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/invoke-commit-push-interactive.ps1 -ChangesJsonFile $changesFile -CommitMessageFile $messageFile -PromptTimeoutSeconds 30
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/invoke-commit-push-interactive.ps1 -PromptTimeoutSeconds 30 -CommitMessageBase64Utf8 '<模型已在推理中算好的 ASCII Base64>'
 ```
+
+兼容入口：`-CommitMessageLines`、`-CommitMessageText` 仅供 Windows 原生命令行或自动化脚本使用，不再作为 Claude Code 默认路径。最终提交日志标题和正文都必须使用中文写法，不要照搬英文模板。
+
+Step 3 返回 JSON 中的 `CommitMessage` 与 `CommitMessageSha256` 是脚本实际用于 `git commit -F` / `svn commit -F` 的内容。模型最终回复里的“最终版提交日志（可直接复制）”必须逐字复制 `CommitMessage`，不得再根据记忆或上文重新生成一份；如果发现它和准备展示的日志不同，必须报告 `failed` 并停止。
+
+若执行器是 Bash/WSL，`powershell` 常会因为命令不存在返回 `errorcode 127`；应显式调用 `powershell.exe`。Step 3 在 Bash/WSL 中执行时，命令行只能包含 ASCII Base64，不能包含任何中文提交日志正文或中文编码命令。Step 3 内部若找不到 `git`/`svn`，结果 JSON 会以 `exitCode=127` 返回并写明缺失命令。
 
 若用户明确要求“只生成日志 / 不提交 / 不推送”，模型跳过 Step 3。
 
@@ -119,7 +130,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commi
 1. **默认提交日志**：基于 `ItemsIncludedDefaultLog` / `ProjectsDefault` / 相关 `Diffs`。
 2. **推荐**在默认日志前附 **`### 待提交文件核对`** Markdown 表（`| # | 状态 | 路径 | 来源 | 项目 |`，行与 `ItemsIncludedDefaultLog` 一一对应；Git `状态` 为 `GitIndexStatus`+`GitWorktreeStatus` 两字符拼接；SVN 为 `SvnItem`）。
 3. **提交/推送结果**：若执行 Step 3，简要说明 `completed` / `skipped` / `failed`，失败时列出失败命令摘要。
-4. **收尾**：在回复末尾再附 **`### 最终版提交日志（可直接复制）`**，用 ```text 完整贴一遍标题+正文（可与默认版相同，须全文便于从底部复制）。
+4. **收尾**：若执行了 Step 3，末尾 **`### 最终版提交日志（可直接复制）`** 必须逐字复制 Step 3 结果 JSON 的 `CommitMessage`；若未执行 Step 3，复制 Step 2 的 `$finalCommitLog`。用 ```text 完整贴一遍标题+正文，须全文便于从底部复制。
 5. 条目换行、scope/type 细则见下文「## type / scope / 条目生成规则」。
 
 ## type / scope / 条目生成规则（落地细则）
@@ -145,12 +156,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commi
 - 若一个项目内改动明显集中在某功能子模块，可输出 `Project-Module` 形式的 scope，但不要过长。
 - 若涉及多个项目，将 scope 用中文顿号 `、` 连接，例如 `MftScanner.Core、MftScanner`；scope 只负责说明范围，不表示要拆成多条提交。
 
-### summary 写法
+### 摘要写法
 
 一句话写清楚：**改了什么** + **解决什么问题/为什么要改**。\n
 例：\n
-- `fix(埋管绘制): 修复生成埋管与绘制线型不一致导致的 L 线方向错误问题`
-- `feat(MftScanner.Core、MftScanner): 路径前缀前置过滤替换后置过滤，优化IPC共享内存序列化`
+- `修复(git_svn_commitlog_generator): 改用 Base64 UTF-8 传递提交日志，消除 Bash eval 中文问题`
+- `功能(MftScanner.Core、MftScanner): 路径前缀前置过滤替换后置过滤，优化 IPC 共享内存序列化`
 
 ### 条目写法
 
@@ -190,7 +201,7 @@ feat(MftScanner.Core、MftScanner、PackageManager): 增加软删除覆盖层与
 示例格式：
 
 ```text
-feat(MftScanner.Core、MftScanner): 路径前缀前置过滤替换后置过滤，优化IPC共享内存序列化
+功能(MftScanner.Core、MftScanner): 路径前缀前置过滤替换后置过滤，优化 IPC 共享内存序列化
 
 - MftEnumerator 新增 _childDirectoryFrnsByParent 父子目录映射，
   TryGetDirectorySubtree 可将路径前缀定位到目录子树 FRN 集合

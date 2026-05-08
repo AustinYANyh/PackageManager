@@ -144,6 +144,271 @@ function Read-TimedConsoleLine {
   return -join $chars
 }
 
+function Get-ItemPropText([object]$item, [string]$name) {
+  if ($null -eq $item) { return "" }
+  $prop = $item.PSObject.Properties[$name]
+  if ($null -eq $prop -or $null -eq $prop.Value) { return "" }
+  return [string]$prop.Value
+}
+
+function Get-ItemStatusText([object]$item) {
+  $source = Get-ItemPropText -item $item -name "Source"
+  if ($source -eq "git") {
+    $ix = Get-ItemPropText -item $item -name "GitIndexStatus"
+    $wt = Get-ItemPropText -item $item -name "GitWorktreeStatus"
+    $s = ("{0}{1}" -f $ix, $wt).Trim()
+    if ($s) { return $s }
+  }
+  $svn = Get-ItemPropText -item $item -name "SvnItem"
+  if ($svn) { return $svn }
+  return ""
+}
+
+function Write-ItemTable {
+  param(
+    [object[]]$Items,
+    [string]$CheckHeader = ""
+  )
+  if ($null -eq $Items -or $Items.Count -eq 0) { return }
+  $rows = @($Items | ForEach-Object {
+    [pscustomobject]@{
+      Id = Get-ItemPropText -item $_ -name "Id"
+      Mark = $CheckHeader
+      Source = Get-ItemPropText -item $_ -name "Source"
+      Status = Get-ItemStatusText $_
+      Project = Get-ItemPropText -item $_ -name "Project"
+      Path = Get-ItemPropText -item $_ -name "Path"
+    }
+  })
+  $rows | Format-Table -AutoSize | Out-String -Width 4096 | Write-Host
+}
+
+function Invoke-ItemCheckDialog {
+  param(
+    [object[]]$Items,
+    [string]$Title,
+    [string]$Instruction,
+    [string]$CheckHeader,
+    [bool]$DefaultChecked,
+    [int]$TimeoutSec = 30
+  )
+
+  $result = [pscustomobject]@{
+    Used = $false
+    TimedOut = $false
+    CheckedIds = @()
+  }
+
+  if ($null -eq $Items -or $Items.Count -eq 0) { return $result }
+  if ($TimeoutSec -lt 1) { $TimeoutSec = 1 }
+
+  try {
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+  } catch {
+    return $result
+  }
+
+  $form = New-Object System.Windows.Forms.Form
+  $form.Text = $Title
+  $form.StartPosition = "CenterScreen"
+  $workingArea = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+  $formWidth = [Math]::Min(1120, [Math]::Max(900, $workingArea.Width - 80))
+  $formHeight = [Math]::Min(680, [Math]::Max(520, $workingArea.Height - 80))
+  $form.Size = New-Object System.Drawing.Size($formWidth, $formHeight)
+  $form.MinimumSize = New-Object System.Drawing.Size(900, 520)
+  $form.TopMost = $true
+
+  $layout = New-Object System.Windows.Forms.TableLayoutPanel
+  $layout.Dock = "Fill"
+  $layout.ColumnCount = 1
+  $layout.RowCount = 3
+  [void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 58)))
+  [void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Absolute, 50)))
+  [void]$layout.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100)))
+  $form.Controls.Add($layout)
+
+  $label = New-Object System.Windows.Forms.Label
+  $label.AutoSize = $false
+  $label.Dock = "Fill"
+  $label.Padding = New-Object System.Windows.Forms.Padding(10, 8, 10, 4)
+  $label.Text = $Instruction
+  $layout.Controls.Add($label, 0, 0)
+
+  $panel = New-Object System.Windows.Forms.FlowLayoutPanel
+  $panel.Dock = "Fill"
+  $panel.FlowDirection = "LeftToRight"
+  $panel.WrapContents = $false
+  $panel.Padding = New-Object System.Windows.Forms.Padding(10, 8, 10, 6)
+  $layout.Controls.Add($panel, 0, 1)
+
+  $grid = New-Object System.Windows.Forms.DataGridView
+  $grid.Dock = "Fill"
+  $grid.AllowUserToAddRows = $false
+  $grid.AllowUserToDeleteRows = $false
+  $grid.RowHeadersVisible = $false
+  $grid.SelectionMode = "FullRowSelect"
+  $grid.MultiSelect = $true
+  $grid.AutoGenerateColumns = $false
+  $grid.AutoSizeRowsMode = "AllCells"
+  $grid.DefaultCellStyle.WrapMode = [System.Windows.Forms.DataGridViewTriState]::True
+  $grid.EditMode = "EditOnEnter"
+
+  $colCheck = New-Object System.Windows.Forms.DataGridViewCheckBoxColumn
+  $colCheck.Name = "Checked"
+  $colCheck.HeaderText = $CheckHeader
+  $colCheck.Width = 58
+  [void]$grid.Columns.Add($colCheck)
+
+  foreach ($spec in @(
+    @("Id","编号",64),
+    @("Source","来源",64),
+    @("Status","状态",72),
+    @("Project","项目",160),
+    @("Path","路径",700)
+  )) {
+    $col = New-Object System.Windows.Forms.DataGridViewTextBoxColumn
+    $col.Name = $spec[0]
+    $col.HeaderText = $spec[1]
+    $col.Width = [int]$spec[2]
+    if ($spec[0] -eq "Path") { $col.AutoSizeMode = "Fill" }
+    $col.ReadOnly = $true
+    [void]$grid.Columns.Add($col)
+  }
+
+  foreach ($item in $Items) {
+    $idx = $grid.Rows.Add()
+    $row = $grid.Rows[$idx]
+    $row.Cells["Checked"].Value = $DefaultChecked
+    $row.Cells["Id"].Value = Get-ItemPropText -item $item -name "Id"
+    $row.Cells["Source"].Value = Get-ItemPropText -item $item -name "Source"
+    $row.Cells["Status"].Value = Get-ItemStatusText $item
+    $row.Cells["Project"].Value = Get-ItemPropText -item $item -name "Project"
+    $row.Cells["Path"].Value = Get-ItemPropText -item $item -name "Path"
+  }
+
+  $state = [pscustomobject]@{
+    Remaining = $TimeoutSec
+  }
+
+  $getCheckedCount = {
+    $checked = 0
+    foreach ($r in $grid.Rows) {
+      if ([bool]$r.Cells["Checked"].Value) { $checked++ }
+    }
+    return $checked
+  }
+
+  $updateCheckedCount = {
+    $checked = & $getCheckedCount
+    $timeoutText = if ($checked -gt 0) { "超时进入下一步并使用当前勾选" } else { "超时进入下一步并使用默认" }
+    $countLabel.Text = ("已勾选 {0}/{1}；剩余 {2} 秒，{3}" -f $checked, $grid.Rows.Count, ([Math]::Max(0, $state.Remaining)), $timeoutText)
+  }
+
+  $grid.add_CurrentCellDirtyStateChanged({
+    if ($grid.IsCurrentCellDirty) {
+      [void]$grid.CommitEdit([System.Windows.Forms.DataGridViewDataErrorContexts]::Commit)
+    }
+  })
+  $grid.add_CellValueChanged({
+    param($sender, $eventArgs)
+    if ($eventArgs.RowIndex -ge 0 -and $eventArgs.ColumnIndex -ge 0 -and $grid.Columns[$eventArgs.ColumnIndex].Name -eq "Checked") {
+      & $updateCheckedCount
+    }
+  })
+  $grid.add_CellClick({
+    param($sender, $eventArgs)
+    if ($eventArgs.RowIndex -lt 0 -or $eventArgs.ColumnIndex -lt 0) { return }
+    if ($grid.Columns[$eventArgs.ColumnIndex].Name -eq "Checked") { return }
+    $cell = $grid.Rows[$eventArgs.RowIndex].Cells["Checked"]
+    $cell.Value = -not [bool]$cell.Value
+    & $updateCheckedCount
+  })
+
+  $btnAll = New-Object System.Windows.Forms.Button
+  $btnAll.Text = "全选"
+  $btnAll.Width = 80
+  $btnAll.Height = 30
+  $btnAll.Add_Click({ foreach ($r in $grid.Rows) { $r.Cells["Checked"].Value = $true }; & $updateCheckedCount })
+  $panel.Controls.Add($btnAll)
+
+  $btnNone = New-Object System.Windows.Forms.Button
+  $btnNone.Text = "全不选"
+  $btnNone.Width = 80
+  $btnNone.Height = 30
+  $btnNone.Add_Click({ foreach ($r in $grid.Rows) { $r.Cells["Checked"].Value = $false }; & $updateCheckedCount })
+  $panel.Controls.Add($btnNone)
+
+  $btnInvert = New-Object System.Windows.Forms.Button
+  $btnInvert.Text = "反选"
+  $btnInvert.Width = 80
+  $btnInvert.Height = 30
+  $btnInvert.Add_Click({ foreach ($r in $grid.Rows) { $r.Cells["Checked"].Value = -not [bool]$r.Cells["Checked"].Value }; & $updateCheckedCount })
+  $panel.Controls.Add($btnInvert)
+
+  $btnOk = New-Object System.Windows.Forms.Button
+  $btnOk.Text = "确定，进入下一步"
+  $btnOk.Width = 140
+  $btnOk.Height = 30
+  $btnOk.Add_Click({ $form.Tag = "ok"; $form.Close() })
+  $panel.Controls.Add($btnOk)
+
+  $btnDefault = New-Object System.Windows.Forms.Button
+  $btnDefault.Text = "使用默认"
+  $btnDefault.Width = 90
+  $btnDefault.Height = 30
+  $btnDefault.Add_Click({ $form.Tag = "default"; $form.Close() })
+  $panel.Controls.Add($btnDefault)
+
+  $countLabel = New-Object System.Windows.Forms.Label
+  $countLabel.AutoSize = $true
+  $countLabel.Margin = New-Object System.Windows.Forms.Padding(12, 7, 0, 0)
+  $panel.Controls.Add($countLabel)
+
+  $form.AcceptButton = $btnOk
+  $form.CancelButton = $btnDefault
+  $layout.Controls.Add($grid, 0, 2)
+
+  $timer = New-Object System.Windows.Forms.Timer
+  $timer.Interval = 1000
+  $timer.Add_Tick({
+    $state.Remaining--
+    & $updateCheckedCount
+    if ($state.Remaining -le 0) {
+      $timer.Stop()
+      $form.Tag = if ((& $getCheckedCount) -gt 0) { "ok" } else { "timeout" }
+      $form.Close()
+    }
+  })
+  & $updateCheckedCount
+  $form.Add_Shown({ $timer.Start(); $form.Activate() })
+  $form.Add_FormClosed({ $timer.Stop(); $timer.Dispose() })
+
+  [void]$form.ShowDialog()
+
+  $result.Used = $true
+  if ($form.Tag -eq "timeout") { $result.TimedOut = $true }
+
+  if ($form.Tag -eq "ok") {
+    $ids = @()
+    foreach ($r in $grid.Rows) {
+      if ([bool]$r.Cells["Checked"].Value) {
+        $v = 0
+        if ([int]::TryParse([string]$r.Cells["Id"].Value, [ref]$v)) { $ids += $v }
+      }
+    }
+    $result.CheckedIds = @($ids)
+  } else {
+    if ($DefaultChecked) {
+      $result.CheckedIds = @($Items | ForEach-Object { [int](Get-ItemPropText -item $_ -name "Id") })
+    } else {
+      $result.CheckedIds = @()
+    }
+  }
+
+  return $result
+}
+
 function Normalize-RelPath([string]$fullPath, [string]$rootFull) {
   try {
     $rel = [System.IO.Path]::GetRelativePath($rootFull, $fullPath)
@@ -647,18 +912,23 @@ if (-not $nonInteractiveMode -and (Test-WindowsConsoleChoice)) {
   if ($naList.Count -gt 0) {
     Write-Host ""
     Write-Host "步骤 1/2：发现以下文件还没有纳入版本管理，可能需要加入本次提交：" -ForegroundColor Cyan
-    Write-Host "操作说明：直接按 1 = 不加入（默认）；按 2 = 全部加入；按 3 = 输入编号选择加入。这里按键立即生效，不需要回车。" -ForegroundColor Yellow
-    Write-Host "超时规则：${PromptTimeoutSeconds} 秒内不按键，自动选择 1，不加入任何未跟踪文件。" -ForegroundColor Yellow
+    Write-Host "点击窗口中要加入的文件；点“确定”或超时都会进入下一步；未操作超时/使用默认 = 不加入任何未跟踪文件。" -ForegroundColor Yellow
     Write-Host "文件列表：" -ForegroundColor Cyan
-    foreach ($x in $naList) { Write-Host ("  编号 {0,-6} 来源 {1,-4} 路径 {2}" -f $x.Id, $x.Source, $x.Path) }
-    Write-Host ""
-    $ch = Invoke-TimedChoiceKey -Choices "123" -TimeoutSec $PromptTimeoutSeconds -DefaultKey '1' -Message "请选择：1不加入 2全部加入 3输入编号"
-    $consoleChoiceUsed = $true
-    if ($ch -eq 2) { $addAllCandidates = $true }
-    elseif ($ch -eq 3) {
-      Write-Host "请输入要加入的编号，多个编号用逗号/空格分隔，例如：3,5,8" -ForegroundColor Yellow
-      $ln = Read-TimedConsoleLine -Prompt "要加入的编号" -TimeoutSec $PromptTimeoutSeconds
-      foreach ($tok in ($ln -split '[,\s;]+')) { $tv = 0; if ([int]::TryParse($tok, [ref]$tv)) { [void]$addIdSet.Add($tv) } }
+    Write-ItemTable -Items $naList
+    $dlgAdd = Invoke-ItemCheckDialog -Items $naList -Title "步骤 1/2：选择要加入版本管理的文件" -Instruction "勾选要加入本次提交的未跟踪文件。点“确定”或超时都会进入下一步；未操作超时/点击“使用默认”表示不加入任何文件。" -CheckHeader "加入" -DefaultChecked $false -TimeoutSec $PromptTimeoutSeconds
+    if ($dlgAdd.Used) {
+      $consoleChoiceUsed = $true
+      foreach ($id in @($dlgAdd.CheckedIds)) { [void]$addIdSet.Add([int]$id) }
+    } else {
+      Write-Host ""
+      $ch = Invoke-TimedChoiceKey -Choices "123" -TimeoutSec $PromptTimeoutSeconds -DefaultKey '1' -Message "请选择：1不加入 2全部加入 3输入编号"
+      $consoleChoiceUsed = $true
+      if ($ch -eq 2) { $addAllCandidates = $true }
+      elseif ($ch -eq 3) {
+        Write-Host "请输入要加入的编号，多个编号用逗号/空格分隔，例如：3,5,8" -ForegroundColor Yellow
+        $ln = Read-TimedConsoleLine -Prompt "要加入的编号" -TimeoutSec $PromptTimeoutSeconds
+        foreach ($tok in ($ln -split '[,\s;]+')) { $tv = 0; if ([int]::TryParse($tok, [ref]$tv)) { [void]$addIdSet.Add($tv) } }
+      }
     }
   }
 
@@ -672,21 +942,28 @@ if (-not $nonInteractiveMode -and (Test-WindowsConsoleChoice)) {
   )
 
   Write-Host ("步骤 2/2：以下是会进入本次提交日志的改动项（共 {0} 项），请确认是否要排除某些项：" -f $excludePromptList.Count) -ForegroundColor Cyan
-  Write-Host "操作说明：直接按 1 = 全部保留（默认）；按 2 = 输入编号排除。这里按键立即生效，不需要回车。" -ForegroundColor Yellow
-  Write-Host "超时规则：${PromptTimeoutSeconds} 秒内不按键，自动选择 1，不排除任何文件。" -ForegroundColor Yellow
+  Write-Host "默认会打开勾选表格：勾选 = 排除；未勾选 = 保留。点击任意文件行可切换勾选。" -ForegroundColor Yellow
+  Write-Host "点“确定”或超时都会进入下一步；未操作超时/点击“使用默认” = 全部保留，不排除任何文件。" -ForegroundColor Yellow
+  Write-Host "如果 GUI 不可用，会回退为编号输入：直接按 1 = 全部保留（默认）；按 2 = 输入编号排除。" -ForegroundColor Yellow
   Write-Host "说明：未在步骤 1 选择加入的未跟踪文件不会列在这里，也不会进入提交日志。" -ForegroundColor Yellow
   Write-Host "文件列表（如果这里缺少你认为应提交的文件，请先关闭窗口并重新运行 skill，确保文件已保存且 Git 状态已刷新）：" -ForegroundColor Cyan
-  foreach ($x in $excludePromptList) { Write-Host ("  编号 {0,-6} 路径 {1}" -f $x.Id, $x.Path) }
+  Write-ItemTable -Items $excludePromptList -CheckHeader "排除"
   Write-Host ""
   if ($excludePromptList.Count -eq 0) {
     Write-Host "当前没有可排除的提交日志改动项，跳过排除选择。" -ForegroundColor Yellow
   } else {
-    $ch2 = Invoke-TimedChoiceKey -Choices "12" -TimeoutSec $PromptTimeoutSeconds -DefaultKey '1' -Message "请选择：1全部保留 2输入编号排除"
-    $consoleChoiceUsed = $true
-    if ($ch2 -eq 2) {
-      Write-Host "请输入要排除的编号，多个编号用逗号/空格分隔，例如：3,5,8" -ForegroundColor Yellow
-      $ln2 = Read-TimedConsoleLine -Prompt "要排除的编号" -TimeoutSec $PromptTimeoutSeconds
-      foreach ($tok in ($ln2 -split '[,\s;]+')) { $tv = 0; if ([int]::TryParse($tok, [ref]$tv)) { [void]$excludeIdSet.Add($tv) } }
+    $dlgExclude = Invoke-ItemCheckDialog -Items $excludePromptList -Title "步骤 2/2：选择要排除的文件" -Instruction "勾选要从本次提交日志中排除的文件；未勾选表示保留。点“确定”或超时都会进入下一步；未操作超时/点击“使用默认”表示全部保留。" -CheckHeader "排除" -DefaultChecked $false -TimeoutSec $PromptTimeoutSeconds
+    if ($dlgExclude.Used) {
+      $consoleChoiceUsed = $true
+      foreach ($id in @($dlgExclude.CheckedIds)) { [void]$excludeIdSet.Add([int]$id) }
+    } else {
+      $ch2 = Invoke-TimedChoiceKey -Choices "12" -TimeoutSec $PromptTimeoutSeconds -DefaultKey '1' -Message "请选择：1全部保留 2输入编号排除"
+      $consoleChoiceUsed = $true
+      if ($ch2 -eq 2) {
+        Write-Host "请输入要排除的编号，多个编号用逗号/空格分隔，例如：3,5,8" -ForegroundColor Yellow
+        $ln2 = Read-TimedConsoleLine -Prompt "要排除的编号" -TimeoutSec $PromptTimeoutSeconds
+        foreach ($tok in ($ln2 -split '[,\s;]+')) { $tv = 0; if ([int]::TryParse($tok, [ref]$tv)) { [void]$excludeIdSet.Add($tv) } }
+      }
     }
   }
 }

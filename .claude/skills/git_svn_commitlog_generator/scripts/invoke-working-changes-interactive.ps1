@@ -7,6 +7,7 @@ param(
   [int]$MaxFilesWithDiff = 80,
   [object]$Svn = $true,
   [object]$UseDefaultExcludes = $true,
+  [string]$StateDir = "",
   [ValidateSet("Normal","Hidden","Minimized","Maximized")]
   [string]$WindowStyle = "Normal"
 )
@@ -33,6 +34,12 @@ $skillRoot = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
 $collector = Join-Path $skillRoot "scripts\get-working-changes.ps1"
 $collector = (Resolve-Path -LiteralPath $collector).Path
 $rootFull = (Resolve-Path -LiteralPath $Root).Path
+if (-not $StateDir) { $StateDir = Join-Path $skillRoot ".state" }
+if (-not [System.IO.Path]::IsPathRooted($StateDir)) {
+  $StateDir = Join-Path $rootFull $StateDir
+}
+New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
+$lastChangesFile = Join-Path $StateDir "last_changes.json"
 $out = Join-Path $env:TEMP ("git_svn_changes_{0}.json" -f ([guid]::NewGuid()))
 $err = Join-Path $env:TEMP ("git_svn_changes_{0}.err.txt" -f ([guid]::NewGuid()))
 
@@ -70,6 +77,7 @@ try {
     throw "交互窗口没有生成 JSON 输出文件：$out`n子进程退出码：$($proc.ExitCode)`n错误输出：$errText"
   }
 
+  Copy-Item -LiteralPath $out -Destination $lastChangesFile -Force
   Get-Content -LiteralPath $out -Raw
 } finally {
   Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue
