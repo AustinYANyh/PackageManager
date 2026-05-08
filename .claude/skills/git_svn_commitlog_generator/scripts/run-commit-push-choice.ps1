@@ -2,10 +2,14 @@ param(
   [string]$Root = ".",
   [Parameter(Mandatory = $true)][string]$ChangesJsonFile,
   [Parameter(Mandatory = $true)][string]$CommitMessageFile,
-  [int]$PromptTimeoutSeconds = 30
+  [int]$PromptTimeoutSeconds = 30,
+  [switch]$FromWrapper
 )
 
 $ErrorActionPreference = "Stop"
+if (-not $FromWrapper.IsPresent) {
+  throw "请不要直接调用 run-commit-push-choice.ps1；模型必须调用 invoke-commit-push-interactive.ps1，由 wrapper 打开并等待提交推送交互窗口。"
+}
 try {
   [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
   $OutputEncoding = [System.Text.Encoding]::UTF8
@@ -66,19 +70,40 @@ function Invoke-TimedChoiceKey {
   }
 }
 
+function Quote-NativeArgument([string]$value) {
+  if ($null -eq $value) { return '""' }
+  if ($value -notmatch '[\s"`]') { return $value }
+  return '"' + (($value -replace '\\(?=")', '$0$0') -replace '"', '\"') + '"'
+}
+
 function Invoke-LoggedCommand {
   param(
     [string]$Tool,
     [string[]]$Arguments,
     [string]$WorkingDirectory
   )
-  try {
-    Push-Location -LiteralPath $WorkingDirectory
-    $output = & $Tool @Arguments 2>&1
-    $exitCode = $LASTEXITCODE
-  } finally {
-    Pop-Location -ErrorAction SilentlyContinue
-  }
+  $psi = New-Object System.Diagnostics.ProcessStartInfo
+  $psi.FileName = $Tool
+  $psi.WorkingDirectory = $WorkingDirectory
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.CreateNoWindow = $true
+  $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+  $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+  $psi.Arguments = (@($Arguments) | ForEach-Object { Quote-NativeArgument $_ }) -join " "
+
+  $proc = New-Object System.Diagnostics.Process
+  $proc.StartInfo = $psi
+  [void]$proc.Start()
+  $stdout = $proc.StandardOutput.ReadToEnd()
+  $stderr = $proc.StandardError.ReadToEnd()
+  $proc.WaitForExit()
+  $exitCode = $proc.ExitCode
+  $output = @()
+  if ($stdout) { $output += ($stdout -split "`r?`n" | Where-Object { $_ -ne "" }) }
+  if ($stderr) { $output += ($stderr -split "`r?`n" | Where-Object { $_ -ne "" }) }
+
   return [pscustomobject]@{
     tool = $Tool
     args = @($Arguments)

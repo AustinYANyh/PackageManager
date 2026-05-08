@@ -32,7 +32,7 @@ $errQ = Quote-ForSingleQuotedPowerShell $err
 $innerCommand = @"
 try {
   `$ErrorActionPreference = 'Stop'
-  & '$runnerQ' -Root '$rootQ' -ChangesJsonFile '$changesQ' -CommitMessageFile '$messageQ' -PromptTimeoutSeconds $PromptTimeoutSeconds | Set-Content -LiteralPath '$outQ' -Encoding UTF8
+  & '$runnerQ' -Root '$rootQ' -ChangesJsonFile '$changesQ' -CommitMessageFile '$messageQ' -PromptTimeoutSeconds $PromptTimeoutSeconds -FromWrapper | Set-Content -LiteralPath '$outQ' -Encoding UTF8
 } catch {
   (`$_ | Out-String) | Set-Content -LiteralPath '$errQ' -Encoding UTF8
   exit 1
