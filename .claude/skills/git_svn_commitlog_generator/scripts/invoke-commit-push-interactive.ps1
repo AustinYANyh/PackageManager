@@ -20,34 +20,41 @@ $rootFull = (Resolve-Path -LiteralPath $Root).Path
 $changesFull = (Resolve-Path -LiteralPath $ChangesJsonFile).Path
 $messageFull = (Resolve-Path -LiteralPath $CommitMessageFile).Path
 $out = Join-Path $env:TEMP ("git_svn_commit_push_{0}.json" -f ([guid]::NewGuid()))
+$err = Join-Path $env:TEMP ("git_svn_commit_push_{0}.err.txt" -f ([guid]::NewGuid()))
 
 $runnerQ = Quote-ForSingleQuotedPowerShell $runner
 $rootQ = Quote-ForSingleQuotedPowerShell $rootFull
 $changesQ = Quote-ForSingleQuotedPowerShell $changesFull
 $messageQ = Quote-ForSingleQuotedPowerShell $messageFull
 $outQ = Quote-ForSingleQuotedPowerShell $out
+$errQ = Quote-ForSingleQuotedPowerShell $err
 
-$command = @(
-  "& '$runnerQ'",
-  "-Root '$rootQ'",
-  "-ChangesJsonFile '$changesQ'",
-  "-CommitMessageFile '$messageQ'",
-  "-PromptTimeoutSeconds $PromptTimeoutSeconds",
-  "| Set-Content -LiteralPath '$outQ' -Encoding UTF8"
-) -join " "
+$innerCommand = @"
+try {
+  `$ErrorActionPreference = 'Stop'
+  & '$runnerQ' -Root '$rootQ' -ChangesJsonFile '$changesQ' -CommitMessageFile '$messageQ' -PromptTimeoutSeconds $PromptTimeoutSeconds | Set-Content -LiteralPath '$outQ' -Encoding UTF8
+} catch {
+  (`$_ | Out-String) | Set-Content -LiteralPath '$errQ' -Encoding UTF8
+  exit 1
+}
+"@
+$encodedCommand = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($innerCommand))
 
 try {
-  Start-Process powershell.exe -WindowStyle $WindowStyle -Wait -ArgumentList @(
+  $proc = Start-Process powershell.exe -WindowStyle $WindowStyle -Wait -PassThru -ArgumentList @(
     "-NoProfile",
     "-ExecutionPolicy", "Bypass",
-    "-Command", $command
+    "-EncodedCommand", $encodedCommand
   )
 
   if (-not (Test-Path -LiteralPath $out)) {
-    throw "提交推送窗口没有生成 JSON 输出文件：$out"
+    $errText = ""
+    if (Test-Path -LiteralPath $err) { $errText = Get-Content -LiteralPath $err -Raw }
+    throw "提交推送窗口没有生成 JSON 输出文件：$out`n子进程退出码：$($proc.ExitCode)`n错误输出：$errText"
   }
 
   Get-Content -LiteralPath $out -Raw
 } finally {
   Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $err -Force -ErrorAction SilentlyContinue
 }

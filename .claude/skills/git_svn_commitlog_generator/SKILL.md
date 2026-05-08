@@ -102,7 +102,7 @@ JSON 关键字段（与脚本一致）：
 - Git 文件：脚本会按 `ItemsIncludedDefaultLog` 暂存对应 Git 路径，执行 `git commit -F <message>`，然后用非交互凭据模式 `git push`。
 - SVN 文件：若 `ItemsIncludedDefaultLog` 中包含 SVN 路径，脚本会执行非交互 `svn commit -F <message>`；SVN 没有 push。
 
-模型需要把 Step 1 原始 JSON 和 **Step 2 生成的最终提交日志原文** 分别写入临时文件，再调用。`$finalCommitLog` 必须就是模型最终给用户展示的提交日志标题+正文，不得使用占位符、核对表、说明文字，也不得让提交脚本重新生成另一份日志：
+模型需要把 Step 1 原始 JSON 和 **Step 2 生成的最终提交日志原文** 分别写入临时文件，再调用。`$finalCommitLog` 必须就是模型最终给用户展示的提交日志标题+正文，不得使用占位符、核对表、说明文字，也不得让提交脚本重新生成另一份日志。不要在 Bash/WSL 执行器里拼多行 `powershell -Command`，统一调用 `-File` wrapper：
 
 ```powershell
 $changesFile = Join-Path $env:TEMP ("git_svn_changes_{0}.json" -f ([guid]::NewGuid()))

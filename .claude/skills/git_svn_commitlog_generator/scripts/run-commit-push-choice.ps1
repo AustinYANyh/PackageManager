@@ -122,7 +122,7 @@ if ($choice -eq 1) {
 
     if ($errors.Count -eq 0) {
       Write-Host "正在执行 git commit..." -ForegroundColor Cyan
-      $commands += Invoke-LoggedCommand -Tool "git" -Arguments (@("commit", "-F", $CommitMessageFile, "--") + $gitPaths) -WorkingDirectory $rootFull
+      $commands += Invoke-LoggedCommand -Tool "git" -Arguments @("commit", "-F", $CommitMessageFile) -WorkingDirectory $rootFull
       if ($commands[-1].exitCode -ne 0) { $errors += "git commit 失败" }
     }
 

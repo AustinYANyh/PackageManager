@@ -412,6 +412,15 @@ $IncludeDiff = To-Bool -v $IncludeDiff -defaultValue $true
 $Svn = To-Bool -v $Svn -defaultValue $true
 $UseDefaultExcludes = To-Bool -v $UseDefaultExcludes -defaultValue $true
 $hasGit = Test-IsGitRepo -rootFull $rootFull
+if ($hasGit) {
+  try {
+    Push-Location -LiteralPath $rootFull
+    & git update-index -q --refresh 2>$null
+  } catch {
+  } finally {
+    Pop-Location -ErrorAction SilentlyContinue
+  }
+}
 
 # 已跟踪的待提交：Git（无 ??）+ SVN（status --xml -q，不含未版本管理，避免海量条目）
 $rawTracked = @()

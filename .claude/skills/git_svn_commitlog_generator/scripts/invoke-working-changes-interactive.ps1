@@ -34,6 +34,7 @@ $collector = Join-Path $skillRoot "scripts\get-working-changes.ps1"
 $collector = (Resolve-Path -LiteralPath $collector).Path
 $rootFull = (Resolve-Path -LiteralPath $Root).Path
 $out = Join-Path $env:TEMP ("git_svn_changes_{0}.json" -f ([guid]::NewGuid()))
+$err = Join-Path $env:TEMP ("git_svn_changes_{0}.err.txt" -f ([guid]::NewGuid()))
 
 $scanText = To-BoolText -value $ScanUntrackedForNeedsAdd -defaultValue "true"
 $includeDiffText = To-BoolText -value $IncludeDiff -defaultValue "true"
@@ -43,33 +44,34 @@ $useDefaultExcludesText = To-BoolText -value $UseDefaultExcludes -defaultValue "
 $collectorQ = Quote-ForSingleQuotedPowerShell $collector
 $rootQ = Quote-ForSingleQuotedPowerShell $rootFull
 $outQ = Quote-ForSingleQuotedPowerShell $out
+$errQ = Quote-ForSingleQuotedPowerShell $err
 
-$command = @(
-  "& '$collectorQ'",
-  "-Root '$rootQ'",
-  "-Interactive",
-  "-PromptTimeoutSeconds $PromptTimeoutSeconds",
-  "-ScanUntrackedForNeedsAdd $scanText",
-  "-IncludeDiff $includeDiffText",
-  "-MaxDiffBytesPerFile $MaxDiffBytesPerFile",
-  "-MaxFilesWithDiff $MaxFilesWithDiff",
-  "-Svn $svnText",
-  "-UseDefaultExcludes $useDefaultExcludesText",
-  "| Set-Content -LiteralPath '$outQ' -Encoding UTF8"
-) -join " "
+$innerCommand = @"
+try {
+  `$ErrorActionPreference = 'Stop'
+  & '$collectorQ' -Root '$rootQ' -Interactive -PromptTimeoutSeconds $PromptTimeoutSeconds -ScanUntrackedForNeedsAdd $scanText -IncludeDiff $includeDiffText -MaxDiffBytesPerFile $MaxDiffBytesPerFile -MaxFilesWithDiff $MaxFilesWithDiff -Svn $svnText -UseDefaultExcludes $useDefaultExcludesText | Set-Content -LiteralPath '$outQ' -Encoding UTF8
+} catch {
+  (`$_ | Out-String) | Set-Content -LiteralPath '$errQ' -Encoding UTF8
+  exit 1
+}
+"@
+$encodedCommand = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($innerCommand))
 
 try {
-  Start-Process powershell.exe -WindowStyle $WindowStyle -Wait -ArgumentList @(
+  $proc = Start-Process powershell.exe -WindowStyle $WindowStyle -Wait -PassThru -ArgumentList @(
     "-NoProfile",
     "-ExecutionPolicy", "Bypass",
-    "-Command", $command
+    "-EncodedCommand", $encodedCommand
   )
 
   if (-not (Test-Path -LiteralPath $out)) {
-    throw "交互窗口没有生成 JSON 输出文件：$out"
+    $errText = ""
+    if (Test-Path -LiteralPath $err) { $errText = Get-Content -LiteralPath $err -Raw }
+    throw "交互窗口没有生成 JSON 输出文件：$out`n子进程退出码：$($proc.ExitCode)`n错误输出：$errText"
   }
 
   Get-Content -LiteralPath $out -Raw
 } finally {
   Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $err -Force -ErrorAction SilentlyContinue
 }
