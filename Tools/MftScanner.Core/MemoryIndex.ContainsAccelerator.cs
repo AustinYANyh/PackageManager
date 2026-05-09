@@ -29,6 +29,7 @@ namespace MftScanner
             private readonly BucketStore<uint> _bigramBuckets;
             private readonly BucketStore<ulong> _trigramBuckets;
             private readonly BucketKinds _builtBuckets;
+            private readonly ulong _contentFingerprint;
 
             public static ContainsAccelerator Empty => new ContainsAccelerator();
 
@@ -37,6 +38,7 @@ namespace MftScanner
             public bool HasCharBucket => (_builtBuckets & BucketKinds.Char) != 0;
             public bool HasBigramBucket => (_builtBuckets & BucketKinds.Bigram) != 0;
             public bool HasTrigramBucket => (_builtBuckets & BucketKinds.Trigram) != 0;
+            public ulong ContentFingerprint => _contentFingerprint;
 
             private ContainsAccelerator()
             {
@@ -45,6 +47,7 @@ namespace MftScanner
                 _bigramBuckets = BucketStore<uint>.Empty;
                 _trigramBuckets = BucketStore<ulong>.Empty;
                 _builtBuckets = BucketKinds.None;
+                _contentFingerprint = 0;
             }
 
             private ContainsAccelerator(
@@ -52,13 +55,15 @@ namespace MftScanner
                 BucketKinds builtBuckets,
                 BucketStore<char> charBuckets,
                 BucketStore<uint> bigramBuckets,
-                BucketStore<ulong> trigramBuckets)
+                BucketStore<ulong> trigramBuckets,
+                ulong contentFingerprint)
             {
                 _builtBuckets = builtBuckets;
                 _records = records ?? Array.Empty<FileRecord>();
                 _charBuckets = charBuckets ?? BucketStore<char>.Empty;
                 _bigramBuckets = bigramBuckets ?? BucketStore<uint>.Empty;
                 _trigramBuckets = trigramBuckets ?? BucketStore<ulong>.Empty;
+                _contentFingerprint = contentFingerprint;
             }
 
             public bool Supports(string query)
@@ -138,7 +143,7 @@ namespace MftScanner
                 var builtBuckets = ToBucketKinds(requiredBuckets);
                 if (records == null || records.Length == 0)
                 {
-                    return new ContainsAccelerator(records, builtBuckets, BucketStore<char>.Empty, BucketStore<uint>.Empty, BucketStore<ulong>.Empty);
+                    return new ContainsAccelerator(records, builtBuckets, BucketStore<char>.Empty, BucketStore<uint>.Empty, BucketStore<ulong>.Empty, 0);
                 }
 
                 var reuseExisting = existing != null
@@ -148,6 +153,10 @@ namespace MftScanner
                 {
                     builtBuckets |= existing._builtBuckets;
                 }
+
+                var contentFingerprint = reuseExisting && existing._contentFingerprint != 0
+                    ? existing._contentFingerprint
+                    : IndexSnapshotFingerprint.Compute(records);
 
                 var charBuckets = (builtBuckets & BucketKinds.Char) != 0
                     ? (reuseExisting && existing.HasCharBucket
@@ -168,10 +177,13 @@ namespace MftScanner
                 totalStopwatch.Stop();
                 IndexPerfLog.Write("INDEX",
                     $"[CONTAINS BUILD] outcome=success buckets={builtBuckets} records={records.Length} elapsedMs={totalStopwatch.ElapsedMilliseconds}");
-                return new ContainsAccelerator(records, builtBuckets, charBuckets, bigramBuckets, trigramBuckets);
+                return new ContainsAccelerator(records, builtBuckets, charBuckets, bigramBuckets, trigramBuckets, contentFingerprint);
             }
 
-            public static ContainsAccelerator FromSnapshot(FileRecord[] records, ContainsPostingsSnapshot snapshot)
+            public static ContainsAccelerator FromSnapshot(
+                FileRecord[] records,
+                ContainsPostingsSnapshot snapshot,
+                ulong contentFingerprint = 0)
             {
                 if (records == null
                     || snapshot == null
@@ -241,7 +253,8 @@ namespace MftScanner
                     builtBuckets,
                     charBuckets,
                     bigramBuckets,
-                    trigramBuckets);
+                    trigramBuckets,
+                    contentFingerprint != 0 ? contentFingerprint : IndexSnapshotFingerprint.Compute(records));
             }
 
             private static bool IsValidBucketSnapshot(ContainsPostingsBucketSnapshot snapshot)

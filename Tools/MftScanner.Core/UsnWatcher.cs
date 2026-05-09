@@ -6,6 +6,16 @@ using System.Threading.Tasks;
 
 namespace MftScanner
 {
+    public enum UsnCatchUpResult
+    {
+        Success,
+        AccessDenied,
+        QueryFailed,
+        JournalExpired,
+        ReadFailed,
+        Canceled
+    }
+
     public enum UsnChangeKind
     {
         Create,
@@ -379,7 +389,7 @@ namespace MftScanner
             }
         }
 
-        public bool TryCollectCatchUpChanges(char driveLetter, long startUsn, ulong journalId, CancellationToken ct,
+        public UsnCatchUpResult TryCollectCatchUpChanges(char driveLetter, long startUsn, ulong journalId, CancellationToken ct,
             out List<UsnChangeEntry> changes, out long nextUsn, out ulong latestJournalId)
         {
             changes = new List<UsnChangeEntry>(4096);
@@ -394,26 +404,29 @@ namespace MftScanner
                 IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
 
             if (handle == INVALID_HANDLE_VALUE)
-                return false;
+                return UsnCatchUpResult.AccessDenied;
 
             const int bufferSize = ReadUsnBufferSize;
             var buffer = Marshal.AllocHGlobal(bufferSize);
             try
             {
+                if (ct.IsCancellationRequested)
+                    return UsnCatchUpResult.Canceled;
+
                 if (!DeviceIoControlQueryUsn(handle, FSCTL_QUERY_USN_JOURNAL,
                     IntPtr.Zero, 0, out var journalData,
                     Marshal.SizeOf(typeof(UsnJournalData)), out _, IntPtr.Zero))
-                    return false;
+                    return UsnCatchUpResult.QueryFailed;
 
                 latestJournalId = journalData.UsnJournalID;
 
                 if (journalData.UsnJournalID != journalId || startUsn < journalData.LowestValidUsn)
-                    return false;
+                    return UsnCatchUpResult.JournalExpired;
 
                 if (startUsn >= journalData.NextUsn)
                 {
                     nextUsn = journalData.NextUsn;
-                    return true;
+                    return UsnCatchUpResult.Success;
                 }
 
                 var state = new VolumeWatchState
@@ -425,10 +438,10 @@ namespace MftScanner
 
                 if (!ReadUsnBatch(state, handle, ref journalData, buffer, bufferSize, ct,
                         raiseOverflowEvent: false, collectedChanges: changes))
-                    return false;
+                    return ct.IsCancellationRequested ? UsnCatchUpResult.Canceled : UsnCatchUpResult.ReadFailed;
                 nextUsn = state.NextUsn;
                 latestJournalId = state.JournalId;
-                return true;
+                return UsnCatchUpResult.Success;
             }
             finally
             {

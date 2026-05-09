@@ -217,16 +217,16 @@ namespace MftScanner
                     return false;
 
                 var recordsStopwatch = System.Diagnostics.Stopwatch.StartNew();
-                if (!TryReadVersion7Records(out var records, out var fingerprint, out var recordStringPoolCount, out var recordsBytes))
+                if (!TryReadVersion7Records(out var records, out var sidecarFingerprint, out var recordStringPoolCount, out var recordsBytes))
                     return false;
                 recordsStopwatch.Stop();
 
                 var dirsStopwatch = System.Diagnostics.Stopwatch.StartNew();
-                if (!TryReadVersion7Directories(fingerprint, out var volumes, out var dirStringPoolCount, out var dirsBytes))
+                if (!TryReadVersion7Directories(sidecarFingerprint, out var volumes, out var dirStringPoolCount, out var dirsBytes))
                     return false;
                 dirsStopwatch.Stop();
 
-                snapshot = new IndexSnapshot(records, volumes, recordStringPoolCount + dirStringPoolCount, null, fingerprint);
+                snapshot = new IndexSnapshot(records, volumes, recordStringPoolCount + dirStringPoolCount, null, sidecarFingerprint);
                 metrics = new IndexSnapshotLoadMetrics(
                     SnapshotVersion7,
                     recordsBytes + dirsBytes,
@@ -236,7 +236,8 @@ namespace MftScanner
                     recordStringPoolCount + dirStringPoolCount);
                 UsnDiagLog.Write(
                     $"[V7 SNAPSHOT LOAD] outcome=success recordsMs={recordsStopwatch.ElapsedMilliseconds} dirsMs={dirsStopwatch.ElapsedMilliseconds} " +
-                    $"records={records.Length} volumes={volumes.Length} fileBytes={recordsBytes + dirsBytes}");
+                    $"records={records.Length} volumes={volumes.Length} fileBytes={recordsBytes + dirsBytes} " +
+                    $"sidecarFingerprint={sidecarFingerprint}");
                 return true;
             }
             catch (Exception ex)
@@ -1087,7 +1088,12 @@ namespace MftScanner
         private ContainsPostingsSnapshot TryLoadPostingsSnapshot(ulong expectedFingerprint, int expectedRecordCount)
         {
             if (!File.Exists(_postingsFilePath) || expectedFingerprint == 0 || expectedRecordCount <= 0)
+            {
+                UsnDiagLog.Write(
+                    $"[POSTINGS SNAPSHOT LOAD] outcome=miss reason=missing-or-invalid-request exists={File.Exists(_postingsFilePath)} " +
+                    $"expectedFingerprint={expectedFingerprint} expectedRecords={expectedRecordCount}");
                 return null;
+            }
 
             try
             {
@@ -1098,7 +1104,12 @@ namespace MftScanner
                     var version = reader.ReadInt32();
                     var fingerprint = reader.ReadUInt64();
                     if (fingerprint != expectedFingerprint)
+                    {
+                        UsnDiagLog.Write(
+                            $"[POSTINGS SNAPSHOT LOAD] outcome=miss reason=fingerprint-mismatch version={version} fileBytes={stream.Length} " +
+                            $"expectedFingerprint={expectedFingerprint} actualFingerprint={fingerprint} expectedRecords={expectedRecordCount}");
                         return null;
+                    }
 
                     ContainsPostingsSnapshot postings;
                     if (version == PostingsSnapshotVersion1)
@@ -1111,11 +1122,19 @@ namespace MftScanner
                     }
                     else
                     {
+                        UsnDiagLog.Write(
+                            $"[POSTINGS SNAPSHOT LOAD] outcome=miss reason=version-mismatch version={version} fileBytes={stream.Length} " +
+                            $"expectedFingerprint={expectedFingerprint} expectedRecords={expectedRecordCount}");
                         return null;
                     }
 
                     if (postings == null || postings.RecordCount != expectedRecordCount)
+                    {
+                        UsnDiagLog.Write(
+                            $"[POSTINGS SNAPSHOT LOAD] outcome=miss reason=record-count-mismatch version={version} fileBytes={stream.Length} " +
+                            $"expectedRecords={expectedRecordCount} actualRecords={(postings == null ? 0 : postings.RecordCount)}");
                         return null;
+                    }
 
                     UsnDiagLog.Write(
                         $"[POSTINGS SNAPSHOT LOAD] outcome=success version={version} fileBytes={stream.Length} records={postings.RecordCount} buckets={postings.BucketCount} bytes={postings.TotalBytes}");

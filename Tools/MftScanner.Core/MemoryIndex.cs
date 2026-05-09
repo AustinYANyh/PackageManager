@@ -371,8 +371,13 @@ namespace MftScanner
 
         internal ContainsPostingsSnapshot ExportContainsPostingsSnapshot()
         {
+            return ExportContainsPostingsSnapshot(out _);
+        }
+
+        internal ContainsPostingsSnapshot ExportContainsPostingsSnapshot(out ulong contentFingerprint)
+        {
+            contentFingerprint = 0;
             var accelerator = Volatile.Read(ref _containsAccelerator);
-            var overlay = Volatile.Read(ref _containsOverlay) ?? ContainsOverlay.Empty;
             if (!Volatile.Read(ref _containsAcceleratorReady)
                 || accelerator == null
                 || accelerator.IsEmpty
@@ -381,10 +386,14 @@ namespace MftScanner
                 return null;
             }
 
+            contentFingerprint = accelerator.ContentFingerprint;
+            if (contentFingerprint == 0)
+                return null;
+
             return accelerator.ExportSnapshot();
         }
 
-        internal bool TryLoadContainsPostingsSnapshot(ContainsPostingsSnapshot snapshot)
+        internal bool TryLoadContainsPostingsSnapshot(ContainsPostingsSnapshot snapshot, ulong contentFingerprint = 0)
         {
             if (snapshot == null)
                 return false;
@@ -395,7 +404,7 @@ namespace MftScanner
                 if (snapshot.RecordCount != (SortedArray?.Length ?? 0))
                     return false;
 
-                var accelerator = ContainsAccelerator.FromSnapshot(SortedArray, snapshot);
+                var accelerator = ContainsAccelerator.FromSnapshot(SortedArray, snapshot, contentFingerprint);
                 if (accelerator == null || accelerator.IsEmpty)
                     return false;
 
