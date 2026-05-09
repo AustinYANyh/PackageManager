@@ -15,11 +15,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-function Quote-ForSingleQuotedPowerShell([string]$value) {
-  return $value.Replace("'", "''")
-}
-
 $skillRoot = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
+$terminalHost = Join-Path $skillRoot "scripts\terminal-host.ps1"
+. $terminalHost
 $runner = Join-Path $skillRoot "scripts\run-commit-push-choice.ps1"
 $runner = (Resolve-Path -LiteralPath $runner).Path
 $rootFull = (Resolve-Path -LiteralPath $Root).Path
@@ -115,18 +113,13 @@ try {
   exit 1
 }
 "@
-$encodedCommand = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($innerCommand))
 
 try {
   if ($WindowStyle -eq "Hidden") {
     & $runner -Root $rootFull -ChangesJsonFile $changesFull -CommitMessageFile $messageFull -PromptTimeoutSeconds $PromptTimeoutSeconds -ResultJsonFile $out -AssumeDefaultChoice -FromWrapper *> $null
     $proc = [pscustomobject]@{ ExitCode = 0 }
   } else {
-    $proc = Start-Process powershell.exe -WindowStyle $WindowStyle -Wait -PassThru -ArgumentList @(
-      "-NoProfile",
-      "-ExecutionPolicy", "Bypass",
-      "-EncodedCommand", $encodedCommand
-    )
+    $proc = Invoke-InteractivePowerShellScript -ScriptText $innerCommand -WindowStyle $WindowStyle -Title "Git/SVN commit and push" -WorkingDirectory $rootFull
   }
 
   if (-not (Test-Path -LiteralPath $out)) {

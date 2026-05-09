@@ -14,10 +14,6 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-function Quote-ForSingleQuotedPowerShell([string]$value) {
-  return $value.Replace("'", "''")
-}
-
 function To-BoolText([object]$value, [string]$defaultValue) {
   if ($null -eq $value) { return $defaultValue }
   if ($value -is [bool]) {
@@ -31,6 +27,8 @@ function To-BoolText([object]$value, [string]$defaultValue) {
 }
 
 $skillRoot = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
+$terminalHost = Join-Path $skillRoot "scripts\terminal-host.ps1"
+. $terminalHost
 $collector = Join-Path $skillRoot "scripts\get-working-changes.ps1"
 $collector = (Resolve-Path -LiteralPath $collector).Path
 $rootFull = (Resolve-Path -LiteralPath $Root).Path
@@ -62,14 +60,9 @@ try {
   exit 1
 }
 "@
-$encodedCommand = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($innerCommand))
 
 try {
-  $proc = Start-Process powershell.exe -WindowStyle $WindowStyle -Wait -PassThru -ArgumentList @(
-    "-NoProfile",
-    "-ExecutionPolicy", "Bypass",
-    "-EncodedCommand", $encodedCommand
-  )
+  $proc = Invoke-InteractivePowerShellScript -ScriptText $innerCommand -WindowStyle $WindowStyle -Title "Git/SVN working changes" -WorkingDirectory $rootFull
 
   if (-not (Test-Path -LiteralPath $out)) {
     $errText = ""

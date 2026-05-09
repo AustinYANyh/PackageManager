@@ -696,6 +696,29 @@ function Get-SvnStatusChanges([string]$wcRoot, [string]$rootFull, [bool]$quiet) 
   return $items
 }
 
+function Get-SvnInfoForPath([string]$wcRoot, [string]$relPathFromRoot, [string]$rootFull) {
+  $abs = Join-Path -Path $rootFull -ChildPath ($relPathFromRoot -replace '/','\')
+
+  try {
+    Push-Location -LiteralPath $wcRoot
+    $xmlText = (& svn info --xml -- $abs 2>$null) -join "`n"
+    if (-not $xmlText) { return $null }
+    $xml = [xml]$xmlText
+    $entry = $xml.info.entry | Select-Object -First 1
+    if (-not $entry) { return $null }
+
+    return [pscustomobject]@{
+      WcRoot = [string]$entry.'wc-info'.'wcroot-abspath'
+      RepoRootUrl = [string]$entry.repository.root
+      RepoUuid = [string]$entry.repository.uuid
+    }
+  } catch {
+    return $null
+  } finally {
+    Pop-Location -ErrorAction SilentlyContinue
+  }
+}
+
 # 同一路径同时出现在 Git 与 SVN 时保留一条，优先 Git。
 function Merge-DuplicateSourcesByPath([System.Collections.IEnumerable]$rawChanges) {
   $list = @($rawChanges)
@@ -874,8 +897,24 @@ foreach ($c in $ordered) {
     GitRenamedFrom = if ($c.PSObject.Properties.Match("RenamedFrom").Count) { $c.RenamedFrom } else { "" }
     SvnItem = if ($c.PSObject.Properties.Match("SvnItem").Count) { $c.SvnItem } else { "" }
     SvnWcRoot = if ($c.PSObject.Properties.Match("WcRoot").Count) { $c.WcRoot } else { "" }
+    SvnRepoRootUrl = ""
+    SvnRepoUuid = ""
   }
   $id += 1
+}
+
+$svnInfoCache = @{}
+foreach ($item in @($items | Where-Object { $_.Source -eq "svn" })) {
+  if (-not $item.SvnWcRoot) { continue }
+  $cacheKey = "$($item.SvnWcRoot)|$($item.Path)"
+  if (-not $svnInfoCache.ContainsKey($cacheKey)) {
+    $svnInfoCache[$cacheKey] = Get-SvnInfoForPath -wcRoot $item.SvnWcRoot -relPathFromRoot $item.Path -rootFull $rootFull
+  }
+  $info = $svnInfoCache[$cacheKey]
+  if (-not $info) { continue }
+  if ($info.WcRoot) { $item.SvnWcRoot = $info.WcRoot }
+  if ($info.RepoRootUrl) { $item.SvnRepoRootUrl = $info.RepoRootUrl }
+  if ($info.RepoUuid) { $item.SvnRepoUuid = $info.RepoUuid }
 }
 
 function Is-ExcludedItem($item, $excludeIdSet, $excludePathSet) {

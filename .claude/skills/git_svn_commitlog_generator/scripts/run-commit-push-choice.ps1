@@ -186,6 +186,41 @@ function Invoke-LoggedCommand {
   }
 }
 
+function Get-ItemTextProperty([object]$Item, [string]$Name) {
+  if ($null -eq $Item) { return "" }
+  if ($Item.PSObject.Properties.Match($Name).Count -eq 0) { return "" }
+  return [string]$Item.$Name
+}
+
+function Get-SvnCommitGroups([object[]]$Items, [string]$RootFull) {
+  $buckets = @{}
+  foreach ($item in @($Items)) {
+    $wcRoot = Get-ItemTextProperty -Item $item -Name "SvnWcRoot"
+    if (-not $wcRoot) { continue }
+
+    $repoUuid = Get-ItemTextProperty -Item $item -Name "SvnRepoUuid"
+    $repoRootUrl = Get-ItemTextProperty -Item $item -Name "SvnRepoRootUrl"
+    $repoKey = if ($repoUuid) { $repoUuid } elseif ($repoRootUrl) { $repoRootUrl } else { $wcRoot }
+
+    if (-not $buckets.ContainsKey($repoKey)) {
+      $buckets[$repoKey] = [pscustomobject]@{
+        Key = $repoKey
+        WcRoot = $wcRoot
+        Items = @()
+      }
+    } elseif ([string]$buckets[$repoKey].WcRoot -ne [string]$wcRoot) {
+      $currentRoot = [string]$buckets[$repoKey].WcRoot
+      if ($currentRoot.Length -gt $wcRoot.Length -and $currentRoot.StartsWith($wcRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $buckets[$repoKey].WcRoot = $wcRoot
+      }
+    }
+
+    $buckets[$repoKey].Items = @($buckets[$repoKey].Items) + $item
+  }
+
+  return @($buckets.Values)
+}
+
 $rootFull = (Resolve-Path -LiteralPath $Root).Path
 $changes = Get-Content -LiteralPath $ChangesJsonFile -Raw | ConvertFrom-Json
 $messageText = Get-Content -LiteralPath $CommitMessageFile -Raw
@@ -235,17 +270,17 @@ if ($choice -eq 1) {
   }
 
   if ($svnItems.Count -gt 0 -and $errors.Count -eq 0) {
-    $svnGroups = $svnItems | Group-Object SvnWcRoot
+    $svnGroups = Get-SvnCommitGroups -Items $svnItems -RootFull $rootFull
     foreach ($group in $svnGroups) {
-      $wcRoot = $group.Name
+      $wcRoot = $group.WcRoot
       if (-not $wcRoot) {
         $errors += "SVN 工作副本根目录为空"
         continue
       }
-      $svnPaths = @($group.Group | ForEach-Object {
+      $svnPaths = @($group.Items | ForEach-Object {
         Join-Path -Path $rootFull -ChildPath ($_.Path -replace '/', '\')
-      })
-      Write-Host ("正在执行 svn commit：{0}" -f $wcRoot) -ForegroundColor Cyan
+      } | Sort-Object -Unique)
+      Write-Host ("正在执行 svn commit：{0}（{1} 个文件）" -f $wcRoot, $svnPaths.Count) -ForegroundColor Cyan
       $commands += Invoke-LoggedCommand -Tool "svn" -Arguments (@("commit", "-F", $CommitMessageFile, "--") + $svnPaths) -WorkingDirectory $wcRoot
       if ($commands[-1].exitCode -ne 0) { $errors += "svn commit 失败：$wcRoot" }
     }
