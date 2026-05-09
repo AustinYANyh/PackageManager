@@ -70,12 +70,14 @@ namespace MftScanner
 
                 if (query.Length == 1)
                 {
-                    return (_builtBuckets & BucketKinds.Char) != 0;
+                    return !IsAsciiToken(query[0])
+                           && (_builtBuckets & BucketKinds.Char) != 0;
                 }
 
                 if (query.Length == 2)
                 {
-                    return (_builtBuckets & BucketKinds.Bigram) != 0;
+                    return (!IsAsciiToken(query[0]) || !IsAsciiToken(query[1]))
+                           && (_builtBuckets & BucketKinds.Bigram) != 0;
                 }
 
                 return (_builtBuckets & BucketKinds.Trigram) != 0;
@@ -123,6 +125,15 @@ namespace MftScanner
                 ContainsAcceleratorBucketKinds requiredBuckets,
                 CancellationToken ct = default(CancellationToken))
             {
+                return Build(records, requiredBuckets, null, ct);
+            }
+
+            public static ContainsAccelerator Build(
+                FileRecord[] records,
+                ContainsAcceleratorBucketKinds requiredBuckets,
+                ContainsAccelerator existing,
+                CancellationToken ct)
+            {
                 var totalStopwatch = Stopwatch.StartNew();
                 var builtBuckets = ToBucketKinds(requiredBuckets);
                 if (records == null || records.Length == 0)
@@ -130,14 +141,28 @@ namespace MftScanner
                     return new ContainsAccelerator(records, builtBuckets, BucketStore<char>.Empty, BucketStore<uint>.Empty, BucketStore<ulong>.Empty);
                 }
 
+                var reuseExisting = existing != null
+                                    && !existing.IsEmpty
+                                    && ReferenceEquals(existing._records, records);
+                if (reuseExisting)
+                {
+                    builtBuckets |= existing._builtBuckets;
+                }
+
                 var charBuckets = (builtBuckets & BucketKinds.Char) != 0
-                    ? BuildBucketStore(records, "char", CountCharTokens, FillCharTokens, ct)
+                    ? (reuseExisting && existing.HasCharBucket
+                        ? existing._charBuckets
+                        : BuildBucketStore(records, "char", CountCharTokens, FillCharTokens, ct))
                     : BucketStore<char>.Empty;
                 var bigramBuckets = (builtBuckets & BucketKinds.Bigram) != 0
-                    ? BuildBucketStore(records, "bigram", CountBigramTokens, FillBigramTokens, ct)
+                    ? (reuseExisting && existing.HasBigramBucket
+                        ? existing._bigramBuckets
+                        : BuildBucketStore(records, "bigram", CountBigramTokens, FillBigramTokens, ct))
                     : BucketStore<uint>.Empty;
                 var trigramBuckets = (builtBuckets & BucketKinds.Trigram) != 0
-                    ? BuildBucketStore(records, "trigram", CountTrigramTokens, FillTrigramTokens, ct)
+                    ? (reuseExisting && existing.HasTrigramBucket
+                        ? existing._trigramBuckets
+                        : BuildBucketStore(records, "trigram", CountTrigramTokens, FillTrigramTokens, ct))
                     : BucketStore<ulong>.Empty;
 
                 totalStopwatch.Stop();
@@ -146,40 +171,124 @@ namespace MftScanner
                 return new ContainsAccelerator(records, builtBuckets, charBuckets, bigramBuckets, trigramBuckets);
             }
 
-            public static ContainsAccelerator FromTrigramSnapshot(FileRecord[] records, ContainsPostingsSnapshot snapshot)
+            public static ContainsAccelerator FromSnapshot(FileRecord[] records, ContainsPostingsSnapshot snapshot)
             {
                 if (records == null
                     || snapshot == null
                     || snapshot.RecordCount != records.Length
-                    || snapshot.Keys == null
-                    || snapshot.Offsets == null
-                    || snapshot.Counts == null
-                    || snapshot.ByteCounts == null
-                    || snapshot.Bytes == null
-                    || snapshot.Keys.Length != snapshot.Offsets.Length
-                    || snapshot.Keys.Length != snapshot.Counts.Length
-                    || snapshot.Keys.Length != snapshot.ByteCounts.Length)
+                    || snapshot.Buckets == null
+                    || snapshot.Buckets.Length == 0)
                 {
                     return null;
                 }
 
-                var trigramBuckets = BucketStore<ulong>.FromSnapshot(
-                    snapshot.Keys,
-                    snapshot.Offsets,
-                    snapshot.Counts,
-                    snapshot.ByteCounts,
-                    snapshot.Bytes);
+                var builtBuckets = BucketKinds.None;
+                var charBuckets = BucketStore<char>.Empty;
+                var bigramBuckets = BucketStore<uint>.Empty;
+                var trigramBuckets = BucketStore<ulong>.Empty;
+                for (var i = 0; i < snapshot.Buckets.Length; i++)
+                {
+                    var bucket = snapshot.Buckets[i];
+                    if (bucket == null || !IsValidBucketSnapshot(bucket))
+                    {
+                        continue;
+                    }
+
+                    switch (bucket.Kind)
+                    {
+                        case ContainsPostingsBucketKind.Char:
+                            charBuckets = BucketStore<char>.FromSnapshot(
+                                bucket.Keys,
+                                bucket.Offsets,
+                                bucket.Counts,
+                                bucket.ByteCounts,
+                                bucket.Bytes,
+                                key => (char)key);
+                            builtBuckets |= BucketKinds.Char;
+                            break;
+
+                        case ContainsPostingsBucketKind.Bigram:
+                            bigramBuckets = BucketStore<uint>.FromSnapshot(
+                                bucket.Keys,
+                                bucket.Offsets,
+                                bucket.Counts,
+                                bucket.ByteCounts,
+                                bucket.Bytes,
+                                key => (uint)key);
+                            builtBuckets |= BucketKinds.Bigram;
+                            break;
+
+                        case ContainsPostingsBucketKind.Trigram:
+                            trigramBuckets = BucketStore<ulong>.FromSnapshot(
+                                bucket.Keys,
+                                bucket.Offsets,
+                                bucket.Counts,
+                                bucket.ByteCounts,
+                                bucket.Bytes,
+                                key => key);
+                            builtBuckets |= BucketKinds.Trigram;
+                            break;
+                    }
+                }
+
+                if (builtBuckets == BucketKinds.None)
+                {
+                    return null;
+                }
+
                 return new ContainsAccelerator(
                     records,
-                    BucketKinds.Trigram,
-                    BucketStore<char>.Empty,
-                    BucketStore<uint>.Empty,
+                    builtBuckets,
+                    charBuckets,
+                    bigramBuckets,
                     trigramBuckets);
             }
 
-            public ContainsPostingsSnapshot ExportTrigramSnapshot()
+            private static bool IsValidBucketSnapshot(ContainsPostingsBucketSnapshot snapshot)
             {
-                return _trigramBuckets.ExportSnapshot(_records.Length);
+                return snapshot.Keys != null
+                       && snapshot.Offsets != null
+                       && snapshot.Counts != null
+                       && snapshot.ByteCounts != null
+                       && snapshot.Bytes != null
+                       && snapshot.Keys.Length == snapshot.Offsets.Length
+                       && snapshot.Keys.Length == snapshot.Counts.Length
+                       && snapshot.Keys.Length == snapshot.ByteCounts.Length;
+            }
+
+            public ContainsPostingsSnapshot ExportSnapshot()
+            {
+                var sections = new List<ContainsPostingsBucketSnapshot>(3);
+                if (HasCharBucket)
+                {
+                    var snapshot = _charBuckets.ExportSnapshot(
+                        ContainsPostingsBucketKind.Char,
+                        key => key);
+                    if (snapshot != null)
+                        sections.Add(snapshot);
+                }
+
+                if (HasBigramBucket)
+                {
+                    var snapshot = _bigramBuckets.ExportSnapshot(
+                        ContainsPostingsBucketKind.Bigram,
+                        key => key);
+                    if (snapshot != null)
+                        sections.Add(snapshot);
+                }
+
+                if (HasTrigramBucket)
+                {
+                    var snapshot = _trigramBuckets.ExportSnapshot(
+                        ContainsPostingsBucketKind.Trigram,
+                        key => key);
+                    if (snapshot != null)
+                        sections.Add(snapshot);
+                }
+
+                return sections.Count == 0
+                    ? null
+                    : new ContainsPostingsSnapshot(_records.Length, sections.ToArray());
             }
 
             public ContainsAccelerator WithInserted(FileRecord record)
@@ -784,7 +893,7 @@ namespace MftScanner
                 for (var i = 0; i < lowerName.Length; i++)
                 {
                     var token = lowerName[i];
-                    if (lowerName.IndexOf(token) == i)
+                    if (!IsAsciiToken(token) && lowerName.IndexOf(token) == i)
                     {
                         IncrementCount(counts, token);
                     }
@@ -796,7 +905,7 @@ namespace MftScanner
                 for (var i = 0; i < lowerName.Length; i++)
                 {
                     var token = lowerName[i];
-                    if (lowerName.IndexOf(token) != i)
+                    if (IsAsciiToken(token) || lowerName.IndexOf(token) != i)
                     {
                         continue;
                     }
@@ -821,6 +930,11 @@ namespace MftScanner
 
                 for (var i = 0; i < lowerName.Length - 1; i++)
                 {
+                    if (IsAsciiToken(lowerName[i]) && IsAsciiToken(lowerName[i + 1]))
+                    {
+                        continue;
+                    }
+
                     var token = PackBigram(lowerName[i], lowerName[i + 1]);
                     if (!ContainsBigramBefore(lowerName, token, i))
                     {
@@ -838,6 +952,11 @@ namespace MftScanner
 
                 for (var i = 0; i < lowerName.Length - 1; i++)
                 {
+                    if (IsAsciiToken(lowerName[i]) && IsAsciiToken(lowerName[i + 1]))
+                    {
+                        continue;
+                    }
+
                     var token = PackBigram(lowerName[i], lowerName[i + 1]);
                     if (ContainsBigramBefore(lowerName, token, i))
                     {
@@ -896,6 +1015,11 @@ namespace MftScanner
                     postings[position] = recordId;
                     positions[token] = position + 1;
                 }
+            }
+
+            private static bool IsAsciiToken(char value)
+            {
+                return value <= 0x7F;
             }
 
             private static bool ContainsBigramBefore(string lowerName, uint token, int endExclusive)
@@ -1279,25 +1403,28 @@ namespace MftScanner
                     int[] offsets,
                     int[] counts,
                     int[] byteCounts,
-                    byte[] bytes)
+                    byte[] bytes,
+                    Func<ulong, TKey> keyConverter)
                 {
-                    if (keys == null || offsets == null || counts == null || byteCounts == null || bytes == null)
+                    if (keys == null || offsets == null || counts == null || byteCounts == null || bytes == null || keyConverter == null)
                         return Empty;
 
                     var bucketIndexes = new Dictionary<TKey, int>(keys.Length);
                     var entries = new BucketEntry[keys.Length];
                     for (var i = 0; i < keys.Length; i++)
                     {
-                        bucketIndexes[(TKey)(object)keys[i]] = i;
+                        bucketIndexes[keyConverter(keys[i])] = i;
                         entries[i] = new BucketEntry(offsets[i], counts[i], byteCounts[i]);
                     }
 
                     return new BucketStore<TKey>(bucketIndexes, entries, bytes);
                 }
 
-                public ContainsPostingsSnapshot ExportSnapshot(int recordCount)
+                public ContainsPostingsBucketSnapshot ExportSnapshot(
+                    ContainsPostingsBucketKind kind,
+                    Func<TKey, ulong> keyConverter)
                 {
-                    if (typeof(TKey) != typeof(ulong)
+                    if (keyConverter == null
                         || _bucketIndexes == null
                         || _bucketIndexes.Count == 0
                         || _entries == null
@@ -1314,7 +1441,7 @@ namespace MftScanner
                     foreach (var kv in _bucketIndexes)
                     {
                         var index = kv.Value;
-                        keys[index] = (ulong)(object)kv.Key;
+                        keys[index] = keyConverter(kv.Key);
                         offsets[index] = _entries[index].Offset;
                         counts[index] = _entries[index].Count;
                         byteCounts[index] = _entries[index].ByteCount;
@@ -1322,7 +1449,7 @@ namespace MftScanner
 
                     var bytes = new byte[_compressedPostings.Length];
                     Array.Copy(_compressedPostings, bytes, bytes.Length);
-                    return new ContainsPostingsSnapshot(recordCount, keys, offsets, counts, byteCounts, bytes);
+                    return new ContainsPostingsBucketSnapshot(kind, keys, offsets, counts, byteCounts, bytes);
                 }
 
                 private static void WriteVarUInt32(Stream stream, uint value)

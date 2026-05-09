@@ -20,6 +20,7 @@ namespace MftScanner
         private const int SnapshotVersion7 = 7;
         private const int SnapshotCompressionDeflate = 1;
         private const int PostingsSnapshotVersion1 = 1;
+        private const int PostingsSnapshotVersion2 = 2;
         private const int RecordsSidecarMagic = 0x3752534D; // MSR7
         private const int DirsSidecarMagic = 0x3744534D; // MSD7
         private const string SnapshotWriteMutexName = "PackageManager.MftScannerIndex.WriteLock";
@@ -703,6 +704,11 @@ namespace MftScanner
 
         private static ContainsPostingsSnapshot ReadContainsPostings(BinaryReader reader)
         {
+            return ReadContainsPostingsV1(reader);
+        }
+
+        private static ContainsPostingsSnapshot ReadContainsPostingsV1(BinaryReader reader)
+        {
             try
             {
                 var hasPostings = reader.ReadBoolean();
@@ -732,8 +738,63 @@ namespace MftScanner
 
                 var bytes = reader.ReadBytes(byteLength);
                 return bytes.Length == byteLength
-                    ? new ContainsPostingsSnapshot(recordCount, keys, offsets, counts, byteCounts, bytes)
+                    ? new ContainsPostingsSnapshot(
+                        recordCount,
+                        ContainsPostingsBucketKind.Trigram,
+                        keys,
+                        offsets,
+                        counts,
+                        byteCounts,
+                        bytes)
                     : null;
+            }
+            catch (EndOfStreamException)
+            {
+                return null;
+            }
+        }
+
+        private static ContainsPostingsSnapshot ReadContainsPostingsV2(BinaryReader reader)
+        {
+            try
+            {
+                var recordCount = reader.ReadInt32();
+                var sectionCount = reader.ReadInt32();
+                if (recordCount < 0 || sectionCount < 0 || sectionCount > 16)
+                    return null;
+
+                var sections = new List<ContainsPostingsBucketSnapshot>(sectionCount);
+                for (var sectionIndex = 0; sectionIndex < sectionCount; sectionIndex++)
+                {
+                    var kind = (ContainsPostingsBucketKind)reader.ReadInt32();
+                    var keyCount = reader.ReadInt32();
+                    if (keyCount < 0)
+                        return null;
+
+                    var keys = new ulong[keyCount];
+                    var offsets = new int[keyCount];
+                    var counts = new int[keyCount];
+                    var byteCounts = new int[keyCount];
+                    for (var i = 0; i < keyCount; i++)
+                    {
+                        keys[i] = reader.ReadUInt64();
+                        offsets[i] = reader.ReadInt32();
+                        counts[i] = reader.ReadInt32();
+                        byteCounts[i] = reader.ReadInt32();
+                    }
+
+                    var byteLength = reader.ReadInt32();
+                    if (byteLength < 0)
+                        return null;
+
+                    var bytes = reader.ReadBytes(byteLength);
+                    if (bytes.Length != byteLength)
+                        return null;
+
+                    sections.Add(new ContainsPostingsBucketSnapshot(kind, keys, offsets, counts, byteCounts, bytes));
+                }
+
+                return new ContainsPostingsSnapshot(recordCount, sections.ToArray());
             }
             catch (EndOfStreamException)
             {
@@ -770,6 +831,29 @@ namespace MftScanner
 
             writer.Write(snapshot.Bytes.Length);
             writer.Write(snapshot.Bytes);
+        }
+
+        private static void WriteContainsPostingsV2(BinaryWriter writer, ContainsPostingsSnapshot snapshot)
+        {
+            var sections = snapshot?.Buckets ?? Array.Empty<ContainsPostingsBucketSnapshot>();
+            writer.Write(snapshot?.RecordCount ?? 0);
+            writer.Write(sections.Length);
+            for (var sectionIndex = 0; sectionIndex < sections.Length; sectionIndex++)
+            {
+                var section = sections[sectionIndex];
+                writer.Write((int)section.Kind);
+                writer.Write(section.Keys.Length);
+                for (var i = 0; i < section.Keys.Length; i++)
+                {
+                    writer.Write(section.Keys[i]);
+                    writer.Write(section.Offsets[i]);
+                    writer.Write(section.Counts[i]);
+                    writer.Write(section.ByteCounts[i]);
+                }
+
+                writer.Write(section.Bytes.Length);
+                writer.Write(section.Bytes);
+            }
         }
 
         private void SaveVersion7Sidecars(IndexSnapshot snapshot)
@@ -1012,19 +1096,29 @@ namespace MftScanner
                 using (var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: false))
                 {
                     var version = reader.ReadInt32();
-                    if (version != PostingsSnapshotVersion1)
-                        return null;
-
                     var fingerprint = reader.ReadUInt64();
                     if (fingerprint != expectedFingerprint)
                         return null;
 
-                    var postings = ReadContainsPostings(reader);
+                    ContainsPostingsSnapshot postings;
+                    if (version == PostingsSnapshotVersion1)
+                    {
+                        postings = ReadContainsPostingsV1(reader);
+                    }
+                    else if (version == PostingsSnapshotVersion2)
+                    {
+                        postings = ReadContainsPostingsV2(reader);
+                    }
+                    else
+                    {
+                        return null;
+                    }
+
                     if (postings == null || postings.RecordCount != expectedRecordCount)
                         return null;
 
                     UsnDiagLog.Write(
-                        $"[POSTINGS SNAPSHOT LOAD] outcome=success fileBytes={stream.Length} records={postings.RecordCount} buckets={postings.Keys.Length} bytes={postings.Bytes.Length}");
+                        $"[POSTINGS SNAPSHOT LOAD] outcome=success version={version} fileBytes={stream.Length} records={postings.RecordCount} buckets={postings.BucketCount} bytes={postings.TotalBytes}");
                     return postings;
                 }
             }
@@ -1065,9 +1159,9 @@ namespace MftScanner
                 using (var stream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
                 using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: false))
                 {
-                    writer.Write(PostingsSnapshotVersion1);
+                    writer.Write(PostingsSnapshotVersion2);
                     writer.Write(fingerprint);
-                    WriteContainsPostings(writer, postings);
+                    WriteContainsPostingsV2(writer, postings);
                 }
 
                 if (File.Exists(_postingsFilePath))
@@ -1077,7 +1171,7 @@ namespace MftScanner
 
                 var fileInfo = new FileInfo(_postingsFilePath);
                 UsnDiagLog.Write(
-                    $"[POSTINGS SNAPSHOT SAVE] outcome=success fileBytes={(fileInfo.Exists ? fileInfo.Length : 0)} records={postings.RecordCount} buckets={postings.Keys.Length} bytes={postings.Bytes.Length}");
+                    $"[POSTINGS SNAPSHOT SAVE] outcome=success version={PostingsSnapshotVersion2} fileBytes={(fileInfo.Exists ? fileInfo.Length : 0)} records={postings.RecordCount} buckets={postings.BucketCount} bytes={postings.TotalBytes}");
             }
             catch (Exception ex)
             {
@@ -1317,6 +1411,39 @@ namespace MftScanner
         public ulong ContentFingerprint { get; }
     }
 
+    internal enum ContainsPostingsBucketKind
+    {
+        Char = 1,
+        Bigram = 2,
+        Trigram = 3
+    }
+
+    internal sealed class ContainsPostingsBucketSnapshot
+    {
+        public ContainsPostingsBucketSnapshot(
+            ContainsPostingsBucketKind kind,
+            ulong[] keys,
+            int[] offsets,
+            int[] counts,
+            int[] byteCounts,
+            byte[] bytes)
+        {
+            Kind = kind;
+            Keys = keys ?? Array.Empty<ulong>();
+            Offsets = offsets ?? Array.Empty<int>();
+            Counts = counts ?? Array.Empty<int>();
+            ByteCounts = byteCounts ?? Array.Empty<int>();
+            Bytes = bytes ?? Array.Empty<byte>();
+        }
+
+        public ContainsPostingsBucketKind Kind { get; }
+        public ulong[] Keys { get; }
+        public int[] Offsets { get; }
+        public int[] Counts { get; }
+        public int[] ByteCounts { get; }
+        public byte[] Bytes { get; }
+    }
+
     internal sealed class ContainsPostingsSnapshot
     {
         public ContainsPostingsSnapshot(
@@ -1326,21 +1453,67 @@ namespace MftScanner
             int[] counts,
             int[] byteCounts,
             byte[] bytes)
+            : this(
+                recordCount,
+                ContainsPostingsBucketKind.Trigram,
+                keys,
+                offsets,
+                counts,
+                byteCounts,
+                bytes)
+        {
+        }
+
+        public ContainsPostingsSnapshot(
+            int recordCount,
+            ContainsPostingsBucketKind kind,
+            ulong[] keys,
+            int[] offsets,
+            int[] counts,
+            int[] byteCounts,
+            byte[] bytes)
+            : this(recordCount, new[]
+            {
+                new ContainsPostingsBucketSnapshot(kind, keys, offsets, counts, byteCounts, bytes)
+            })
+        {
+        }
+
+        public ContainsPostingsSnapshot(int recordCount, ContainsPostingsBucketSnapshot[] buckets)
         {
             RecordCount = recordCount;
-            Keys = keys ?? Array.Empty<ulong>();
-            Offsets = offsets ?? Array.Empty<int>();
-            Counts = counts ?? Array.Empty<int>();
-            ByteCounts = byteCounts ?? Array.Empty<int>();
-            Bytes = bytes ?? Array.Empty<byte>();
+            Buckets = buckets ?? Array.Empty<ContainsPostingsBucketSnapshot>();
+            var trigram = GetBucket(ContainsPostingsBucketKind.Trigram) ?? Buckets.FirstOrDefault();
+            Keys = trigram?.Keys ?? Array.Empty<ulong>();
+            Offsets = trigram?.Offsets ?? Array.Empty<int>();
+            Counts = trigram?.Counts ?? Array.Empty<int>();
+            ByteCounts = trigram?.ByteCounts ?? Array.Empty<int>();
+            Bytes = trigram?.Bytes ?? Array.Empty<byte>();
         }
 
         public int RecordCount { get; }
+        public ContainsPostingsBucketSnapshot[] Buckets { get; }
         public ulong[] Keys { get; }
         public int[] Offsets { get; }
         public int[] Counts { get; }
         public int[] ByteCounts { get; }
         public byte[] Bytes { get; }
+        public int BucketCount => Buckets?.Sum(bucket => bucket?.Keys?.Length ?? 0) ?? 0;
+        public int TotalBytes => Buckets?.Sum(bucket => bucket?.Bytes?.Length ?? 0) ?? 0;
+
+        public ContainsPostingsBucketSnapshot GetBucket(ContainsPostingsBucketKind kind)
+        {
+            if (Buckets == null)
+                return null;
+
+            for (var i = 0; i < Buckets.Length; i++)
+            {
+                if (Buckets[i] != null && Buckets[i].Kind == kind)
+                    return Buckets[i];
+            }
+
+            return null;
+        }
     }
 
     internal static class IndexSnapshotFingerprint

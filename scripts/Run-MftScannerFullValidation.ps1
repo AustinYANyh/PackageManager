@@ -92,7 +92,7 @@ function Wait-SharedHostWarmup {
     $last = $null
     while ($sw.Elapsed.TotalSeconds -lt $TimeoutSeconds) {
         $last = Read-SharedState
-        if ($last -and $last.ContainsBucketStatus -and $last.ContainsBucketStatus.TrigramReady) {
+        if ($last -and $last.ContainsBucketStatus -and $last.ContainsBucketStatus.CharReady -and $last.ContainsBucketStatus.BigramReady -and $last.ContainsBucketStatus.TrigramReady) {
             $sw.Stop()
             return [pscustomobject]@{
                 Ready = $true
@@ -134,6 +134,8 @@ function Invoke-SearchCase {
             Phase = $Phase
             Name = $Case.Name
             Keyword = $Case.Keyword
+            Scenario = $Case.Scenario
+            Language = $Case.Language
             Filter = $Case.Filter.ToString()
             ClientMs = $sw.ElapsedMilliseconds
             HostMs = $result.HostSearchMs
@@ -155,6 +157,8 @@ function Invoke-SearchCase {
             Phase = $Phase
             Name = $Case.Name
             Keyword = $Case.Keyword
+            Scenario = $Case.Scenario
+            Language = $Case.Language
             Filter = $Case.Filter.ToString()
             ClientMs = $sw.ElapsedMilliseconds
             HostMs = -1
@@ -366,7 +370,7 @@ function Write-MarkdownReport {
     $lines.Add("- 原始 JSON：``$JsonPath``")
     $lines.Add("- Indexed：$($Summary.IndexedCount)")
     $lines.Add("- Build/Ready：$($Summary.ReadyMs) ms")
-    $lines.Add("- Warmup：$($Summary.WarmupMs) ms，TrigramReady=$($Summary.TrigramReady)")
+    $lines.Add("- Warmup：$($Summary.WarmupMs) ms，CharReady=$($Summary.CharReady)，BigramReady=$($Summary.BigramReady)，TrigramReady=$($Summary.TrigramReady)")
     $lines.Add("- ShortWarmupDelay：$($Summary.ShortWarmupDelayMs) ms")
     $lines.Add("- HostReuse：$($Summary.HostReuse)")
     $lines.Add("- OldHost：$($Summary.OldHost)")
@@ -387,21 +391,21 @@ function Write-MarkdownReport {
 
     $lines.Add("## 慢查询 Top")
     $lines.Add("")
-    $lines.Add("| 阶段 | 用例 | 类型 | 客户端(ms) | 宿主(ms) | 命中 | 返回 | Trigram | 错误 |")
-    $lines.Add("| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |")
+    $lines.Add("| 阶段 | 用例 | 类型 | 客户端(ms) | 宿主(ms) | 命中 | 返回 | Char | Bigram | Trigram | 错误 |")
+    $lines.Add("| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- | --- |")
     foreach ($row in $slow) {
         $err = if ($null -ne $row.Error) { $row.Error.ToString().Replace("|", "/") } else { "" }
-        $lines.Add("| $($row.Phase) | $($row.Name) | $($row.Filter) | $($row.ClientMs) | $($row.HostMs) | $($row.Matched) | $($row.Returned) | $($row.TrigramReady) | $err |")
+        $lines.Add("| $($row.Phase) | $($row.Name) | $($row.Filter) | $($row.ClientMs) | $($row.HostMs) | $($row.Matched) | $($row.Returned) | $($row.CharReady) | $($row.BigramReady) | $($row.TrigramReady) | $err |")
     }
 
     $lines.Add("")
     $lines.Add("## 查询明细")
     $lines.Add("")
-    $lines.Add("| 阶段 | 用例 | 关键词 | 类型 | 客户端(ms) | 宿主(ms) | 命中 | 物理 | 唯一 | 返回 | Trigram |")
-    $lines.Add("| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
+    $lines.Add("| 阶段 | 场景 | 用例 | 关键词 | 类型 | 客户端(ms) | 宿主(ms) | 命中 | 物理 | 唯一 | 返回 | Char | Bigram | Trigram |")
+    $lines.Add("| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |")
     foreach ($row in $Rows) {
         $keyword = if ($null -ne $row.Keyword) { $row.Keyword.ToString().Replace("|", "/") } else { "" }
-        $lines.Add("| $($row.Phase) | $($row.Name) | ``$keyword`` | $($row.Filter) | $($row.ClientMs) | $($row.HostMs) | $($row.Matched) | $($row.Physical) | $($row.Unique) | $($row.Returned) | $($row.TrigramReady) |")
+        $lines.Add("| $($row.Phase) | $($row.Scenario) | $($row.Name) | ``$keyword`` | $($row.Filter) | $($row.ClientMs) | $($row.HostMs) | $($row.Matched) | $($row.Physical) | $($row.Unique) | $($row.Returned) | $($row.CharReady) | $($row.BigramReady) | $($row.TrigramReady) |")
     }
 
     $lines.Add("")
@@ -508,42 +512,46 @@ try {
 
     $desktop = [Environment]::GetFolderPath("Desktop")
     $cases = @(
-        [pscustomobject]@{ Name = "Global 1char d"; Keyword = "d"; Filter = [MftScanner.SearchTypeFilter]::All },
-        [pscustomobject]@{ Name = "Global 2char ve"; Keyword = "ve"; Filter = [MftScanner.SearchTypeFilter]::All },
-        [pscustomobject]@{ Name = "Global 3char ver"; Keyword = "ver"; Filter = [MftScanner.SearchTypeFilter]::All },
-        [pscustomobject]@{ Name = "Global codex"; Keyword = "codex"; Filter = [MftScanner.SearchTypeFilter]::All },
-        [pscustomobject]@{ Name = "Global calsupport Config"; Keyword = "calsupport"; Filter = [MftScanner.SearchTypeFilter]::Config },
-        [pscustomobject]@{ Name = "Global workbench Launchable"; Keyword = "workbench"; Filter = [MftScanner.SearchTypeFilter]::Launchable },
-        [pscustomobject]@{ Name = "Global *.log"; Keyword = "*.log"; Filter = [MftScanner.SearchTypeFilter]::All },
-        [pscustomobject]@{ Name = "Global log Log"; Keyword = "log"; Filter = [MftScanner.SearchTypeFilter]::Log },
-        [pscustomobject]@{ Name = "Desktop d"; Keyword = "$desktop d"; Filter = [MftScanner.SearchTypeFilter]::All },
-        [pscustomobject]@{ Name = "Desktop ve"; Keyword = "$desktop ve"; Filter = [MftScanner.SearchTypeFilter]::All },
-        [pscustomobject]@{ Name = "Desktop ver"; Keyword = "$desktop ver"; Filter = [MftScanner.SearchTypeFilter]::All },
-        [pscustomobject]@{ Name = "Desktop *.exe"; Keyword = "$desktop *.exe"; Filter = [MftScanner.SearchTypeFilter]::All },
-        [pscustomobject]@{ Name = "Desktop ve Launchable"; Keyword = "$desktop ve"; Filter = [MftScanner.SearchTypeFilter]::Launchable },
-        [pscustomobject]@{ Name = "Croot d"; Keyword = "C:\ d"; Filter = [MftScanner.SearchTypeFilter]::All },
-        [pscustomobject]@{ Name = "Croot ve"; Keyword = "C:\ ve"; Filter = [MftScanner.SearchTypeFilter]::All },
-        [pscustomobject]@{ Name = "Croot ver"; Keyword = "C:\ ver"; Filter = [MftScanner.SearchTypeFilter]::All },
-        [pscustomobject]@{ Name = "Croot calsupport Config"; Keyword = "C:\ calsupport"; Filter = [MftScanner.SearchTypeFilter]::Config },
-        [pscustomobject]@{ Name = "Croot *.log"; Keyword = "C:\ *.log"; Filter = [MftScanner.SearchTypeFilter]::All },
-        [pscustomobject]@{ Name = "Croot windows Folder"; Keyword = "C:\ windows"; Filter = [MftScanner.SearchTypeFilter]::Folder }
+        [pscustomobject]@{ Name = "Global 1char d"; Keyword = "d"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "Global 2char ve"; Keyword = "ve"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "Global 3char ver"; Keyword = "ver"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Typing"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "Global Chinese single"; Keyword = "我"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Chinese" },
+        [pscustomobject]@{ Name = "Global Chinese bigram"; Keyword = "鱼丸"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Chinese" },
+        [pscustomobject]@{ Name = "Global Chinese typing 1"; Keyword = "搜"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Typing"; Language = "Chinese" },
+        [pscustomobject]@{ Name = "Global Chinese typing 2"; Keyword = "搜索"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Typing"; Language = "Chinese" },
+        [pscustomobject]@{ Name = "Global codex"; Keyword = "codex"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "Global calsupport Config"; Keyword = "calsupport"; Filter = [MftScanner.SearchTypeFilter]::Config; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "Global workbench Launchable"; Keyword = "workbench"; Filter = [MftScanner.SearchTypeFilter]::Launchable; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "Global *.log"; Keyword = "*.log"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "Global log Log"; Keyword = "log"; Filter = [MftScanner.SearchTypeFilter]::Log; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "Desktop d"; Keyword = "$desktop d"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "Desktop ve"; Keyword = "$desktop ve"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "Desktop ver"; Keyword = "$desktop ver"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Typing"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "Desktop *.exe"; Keyword = "$desktop *.exe"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "Desktop ve Launchable"; Keyword = "$desktop ve"; Filter = [MftScanner.SearchTypeFilter]::Launchable; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "Croot d"; Keyword = "C:\ d"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "Croot ve"; Keyword = "C:\ ve"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "Croot ver"; Keyword = "C:\ ver"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Typing"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "Croot calsupport Config"; Keyword = "C:\ calsupport"; Filter = [MftScanner.SearchTypeFilter]::Config; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "Croot *.log"; Keyword = "C:\ *.log"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "Croot windows Folder"; Keyword = "C:\ windows"; Filter = [MftScanner.SearchTypeFilter]::Folder; Scenario = "Direct"; Language = "Ascii" }
     )
 
     $genericSingleChars = @("x", "q", "z", "1", "_")
     foreach ($token in $genericSingleChars) {
-        $cases += [pscustomobject]@{ Name = "Generic 1char $token"; Keyword = $token; Filter = [MftScanner.SearchTypeFilter]::All }
-        $cases += [pscustomobject]@{ Name = "Croot 1char $token"; Keyword = "C:\ $token"; Filter = [MftScanner.SearchTypeFilter]::All }
+        $cases += [pscustomobject]@{ Name = "Generic 1char $token"; Keyword = $token; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" }
+        $cases += [pscustomobject]@{ Name = "Croot 1char $token"; Keyword = "C:\ $token"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" }
     }
 
     $genericBigrams = @("on", "ex", "zz", "ui", "ar")
     foreach ($token in $genericBigrams) {
-        $cases += [pscustomobject]@{ Name = "Generic 2char $token"; Keyword = $token; Filter = [MftScanner.SearchTypeFilter]::All }
-        $cases += [pscustomobject]@{ Name = "Croot 2char $token"; Keyword = "C:\ $token"; Filter = [MftScanner.SearchTypeFilter]::All }
+        $cases += [pscustomobject]@{ Name = "Generic 2char $token"; Keyword = $token; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" }
+        $cases += [pscustomobject]@{ Name = "Croot 2char $token"; Keyword = "C:\ $token"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" }
     }
 
     $rows = New-Object System.Collections.Generic.List[object]
     foreach ($case in $cases) {
-        $rows.Add((Invoke-SearchCase -Client $client -Case $case -Phase "cold"))
+        $rows.Add((Invoke-SearchCase -Client $client -Case $case -Phase "just-built"))
     }
 
     $warmup = Wait-SharedHostWarmup -TimeoutSeconds $WarmupTimeoutSeconds
@@ -592,6 +600,8 @@ try {
         ReadyMs = $readySw.ElapsedMilliseconds
         WarmupMs = $warmup.WaitMs
         ShortWarmupDelayMs = $shortWarmupDelayMs
+        CharReady = $warmup.CharReady
+        BigramReady = $warmup.BigramReady
         TrigramReady = $warmup.TrigramReady
         HostReuse = $hostReuse
         OldHost = $oldHost

@@ -63,8 +63,8 @@ namespace MftScanner
         private readonly List<PendingContainsMutation> _pendingContainsMutations = new List<PendingContainsMutation>();
         private bool _pendingContainsMutationsOverflowed;
         private const int MaxPendingContainsMutations = 65536;
-        private const int DefaultMaxLiveDeltaMutations = 20000;
-        private const int CatchUpMaxLiveDeltaMutations = 100000;
+        private const int DefaultMaxLiveDeltaMutations = 2500;
+        private const int CatchUpMaxLiveDeltaMutations = 10000;
 
         public int TotalCount
         {
@@ -170,18 +170,14 @@ namespace MftScanner
             var accelerator = Volatile.Read(ref _containsAccelerator);
             var overlay = Volatile.Read(ref _containsOverlay) ?? ContainsOverlay.Empty;
             var recordCount = SortedArray?.Length ?? 0;
-            var singleCharCountReady = Volatile.Read(ref _singleCharAsciiCounts) != null
-                                       && Volatile.Read(ref _singleCharAsciiRecordCount) == recordCount;
-            var bigramCountReady = Volatile.Read(ref _bigramAsciiCounts) != null
-                                   && Volatile.Read(ref _bigramAsciiRecordCount) == recordCount;
             var ready = Volatile.Read(ref _containsAcceleratorReady)
                         && accelerator != null
                         && !accelerator.IsEmpty;
 
             return new ContainsBucketStatus
             {
-                CharReady = singleCharCountReady || (ready && accelerator.HasCharBucket),
-                BigramReady = bigramCountReady || (ready && accelerator.HasBigramBucket),
+                CharReady = ready && accelerator.HasCharBucket,
+                BigramReady = ready && accelerator.HasBigramBucket,
                 TrigramReady = ready && accelerator.HasTrigramBucket,
                 IsOverlayOverflowed = overlay.IsOverflowed,
                 Epoch = Interlocked.Read(ref _containsAcceleratorEpoch)
@@ -205,6 +201,15 @@ namespace MftScanner
             public int Total { get; set; }
             public int CandidateCount { get; set; }
             public long VerifyMs { get; set; }
+        }
+
+        public bool IsQuerySupportedByContainsAccelerator(string query)
+        {
+            var accelerator = Volatile.Read(ref _containsAccelerator);
+            return Volatile.Read(ref _containsAcceleratorReady)
+                   && accelerator != null
+                   && !accelerator.IsEmpty
+                   && accelerator.Supports(query);
         }
 
         public sealed class LiveDeltaApplyResult
@@ -235,6 +240,7 @@ namespace MftScanner
 
         public enum ContainsWarmupScope
         {
+            Short,
             TrigramOnly,
             Full
         }
@@ -370,12 +376,12 @@ namespace MftScanner
             if (!Volatile.Read(ref _containsAcceleratorReady)
                 || accelerator == null
                 || accelerator.IsEmpty
-                || !accelerator.HasTrigramBucket)
+                || (!accelerator.HasCharBucket && !accelerator.HasBigramBucket && !accelerator.HasTrigramBucket))
             {
                 return null;
             }
 
-            return accelerator.ExportTrigramSnapshot();
+            return accelerator.ExportSnapshot();
         }
 
         internal bool TryLoadContainsPostingsSnapshot(ContainsPostingsSnapshot snapshot)
@@ -389,8 +395,8 @@ namespace MftScanner
                 if (snapshot.RecordCount != (SortedArray?.Length ?? 0))
                     return false;
 
-                var accelerator = ContainsAccelerator.FromTrigramSnapshot(SortedArray, snapshot);
-                if (accelerator == null || accelerator.IsEmpty || !accelerator.HasTrigramBucket)
+                var accelerator = ContainsAccelerator.FromSnapshot(SortedArray, snapshot);
+                if (accelerator == null || accelerator.IsEmpty)
                     return false;
 
                 _containsAccelerator = accelerator;
@@ -399,7 +405,8 @@ namespace MftScanner
                 _pendingContainsMutations.Clear();
                 _pendingContainsMutationsOverflowed = false;
                 IndexPerfLog.Write("INDEX",
-                    $"[CONTAINS SNAPSHOT LOAD] outcome=success records={SortedArray.Length} buckets={snapshot.Keys.Length} bytes={snapshot.Bytes.Length}");
+                    $"[CONTAINS SNAPSHOT LOAD] outcome=success records={SortedArray.Length} buckets={snapshot.BucketCount} bytes={snapshot.TotalBytes} " +
+                    $"char={accelerator.HasCharBucket} bigram={accelerator.HasBigramBucket} trigram={accelerator.HasTrigramBucket}");
                 return true;
             }
             finally
@@ -3044,6 +3051,11 @@ namespace MftScanner
                     }
                 }
 
+                if (mutations.Count > 1)
+                {
+                    mutations = CoalesceContainsMutations(mutations);
+                }
+
                 if (mutations.Count > 0)
                 {
                     var overlay = Volatile.Read(ref _containsOverlay) ?? ContainsOverlay.Empty;
@@ -3073,6 +3085,30 @@ namespace MftScanner
         public LiveDeltaApplyResult ApplyCatchUpLiveDeltaBatch(IReadOnlyList<UsnChangeEntry> changes)
         {
             return ApplyLiveDeltaBatch(changes, CatchUpMaxLiveDeltaMutations);
+        }
+
+        private static List<PendingContainsMutation> CoalesceContainsMutations(List<PendingContainsMutation> mutations)
+        {
+            var byKey = new Dictionary<RecordKey, PendingContainsMutation>();
+            for (var i = 0; i < mutations.Count; i++)
+            {
+                var mutation = mutations[i];
+                var key = mutation.Kind == PendingContainsMutationKind.Insert
+                    ? RecordKey.FromRecord(mutation.Record)
+                    : mutation.Key;
+                if (!key.IsValid)
+                    continue;
+
+                byKey[key] = mutation.Kind == PendingContainsMutationKind.Insert
+                    ? PendingContainsMutation.ForInsert(mutation.Record)
+                    : mutation.Kind == PendingContainsMutationKind.Restore
+                        ? PendingContainsMutation.ForRestore(key)
+                        : PendingContainsMutation.ForRemove(key);
+            }
+
+            return byKey.Count == mutations.Count
+                ? mutations
+                : new List<PendingContainsMutation>(byKey.Values);
         }
 
         public bool TryCompactLiveDeltaOverlay(out long compactMilliseconds, CancellationToken ct = default(CancellationToken))
@@ -3139,7 +3175,6 @@ namespace MftScanner
                 out var scriptArr,
                 out var logArr,
                 out var configArr);
-            var accelerator = ContainsAccelerator.Build(arr, ContainsAcceleratorBucketKinds.Trigram, ct);
             stopwatch.Stop();
             compactMilliseconds = stopwatch.ElapsedMilliseconds;
 
@@ -3162,23 +3197,23 @@ namespace MftScanner
                 LogSortedArray = logArr;
                 ConfigSortedArray = configArr;
                 _derivedStructuresReady = true;
-                _containsAccelerator = accelerator ?? ContainsAccelerator.Empty;
+                _containsAccelerator = ContainsAccelerator.Empty;
                 _containsOverlay = ContainsOverlay.Empty;
                 Volatile.Write(ref _deletedOverlayKeys, new HashSet<RecordKey>());
-                _containsAcceleratorReady = true;
+                _containsAcceleratorReady = false;
                 Interlocked.Increment(ref _containsAcceleratorEpoch);
                 _pendingContainsMutations.Clear();
                 _pendingContainsMutationsOverflowed = false;
                 Interlocked.Increment(ref _contentVersion);
                 ClearShortContainsHotBuckets();
-                _singleCharAsciiBitsets = singleCharAsciiIndex.Bitsets;
-                _singleCharAsciiCounts = singleCharAsciiIndex.Counts;
-                _singleCharAsciiDriveCounts = singleCharAsciiIndex.DriveCounts;
-                _singleCharAsciiRecordCount = arr?.Length ?? 0;
-                _bigramAsciiCounts = bigramAsciiIndex.Counts;
-                _bigramAsciiDriveCounts = bigramAsciiIndex.DriveCounts;
-                _bigramAsciiPageSamples = bigramAsciiIndex.PageSamples;
-                _bigramAsciiRecordCount = arr?.Length ?? 0;
+                _singleCharAsciiBitsets = null;
+                _singleCharAsciiCounts = null;
+                _singleCharAsciiDriveCounts = null;
+                _singleCharAsciiRecordCount = 0;
+                _bigramAsciiCounts = null;
+                _bigramAsciiDriveCounts = null;
+                _bigramAsciiPageSamples = null;
+                _bigramAsciiRecordCount = 0;
                 return true;
             }
             finally
@@ -3389,20 +3424,20 @@ namespace MftScanner
 
         public bool TryEnsureContainsAccelerator(ContainsWarmupScope scope, CancellationToken ct)
         {
-            var requiredBuckets = scope == ContainsWarmupScope.Full
-                ? ContainsAcceleratorBucketKinds.All
-                : ContainsAcceleratorBucketKinds.Trigram;
+            var requiredBuckets = ToRequiredContainsBuckets(scope);
 
             while (!ct.IsCancellationRequested)
             {
                 FileRecord[] snapshot;
                 long epoch;
+                ContainsAccelerator currentAccelerator;
                 _lock.EnterReadLock();
                 try
                 {
+                    currentAccelerator = Volatile.Read(ref _containsAccelerator);
                     if (_containsAcceleratorReady
-                        && _containsAccelerator != null
-                        && _containsAccelerator.Supports(requiredBuckets))
+                        && currentAccelerator != null
+                        && currentAccelerator.Supports(requiredBuckets))
                     {
                         return true;
                     }
@@ -3415,7 +3450,7 @@ namespace MftScanner
                     _lock.ExitReadLock();
                 }
 
-                var accelerator = ContainsAccelerator.Build(snapshot, requiredBuckets, ct);
+                var accelerator = ContainsAccelerator.Build(snapshot, requiredBuckets, currentAccelerator, ct);
 
                 _lock.EnterWriteLock();
                 try
@@ -3455,6 +3490,28 @@ namespace MftScanner
 
             ct.ThrowIfCancellationRequested();
             return false;
+        }
+
+        public bool SupportsContainsAccelerator(ContainsWarmupScope scope)
+        {
+            var requiredBuckets = ToRequiredContainsBuckets(scope);
+            var accelerator = Volatile.Read(ref _containsAccelerator);
+            return Volatile.Read(ref _containsAcceleratorReady)
+                   && accelerator != null
+                   && accelerator.Supports(requiredBuckets);
+        }
+
+        private static ContainsAcceleratorBucketKinds ToRequiredContainsBuckets(ContainsWarmupScope scope)
+        {
+            switch (scope)
+            {
+                case ContainsWarmupScope.Full:
+                    return ContainsAcceleratorBucketKinds.All;
+                case ContainsWarmupScope.Short:
+                    return ContainsAcceleratorBucketKinds.Short;
+                default:
+                    return ContainsAcceleratorBucketKinds.Trigram;
+            }
         }
 
         private void InsertIntoFilterBuckets(FileRecord record)
@@ -3986,9 +4043,9 @@ namespace MftScanner
                     return false;
                 }
 
-                if (query.Length == 1)
-                {
-                    return (_builtBuckets & BucketKinds.Char) != 0;
+            if (query.Length == 1)
+            {
+                return (_builtBuckets & BucketKinds.Char) != 0;
                 }
 
                 if (query.Length == 2)
@@ -4561,6 +4618,7 @@ namespace MftScanner
             Char = 1,
             Bigram = 2,
             Trigram = 4,
+            Short = Char | Bigram,
             All = Char | Bigram | Trigram
         }
 

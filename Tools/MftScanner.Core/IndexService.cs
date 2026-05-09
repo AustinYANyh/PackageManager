@@ -62,7 +62,7 @@ namespace MftScanner
         private const int MaxPathCandidateCacheRecords = 500000;
         private const int MaxPostingsFirstPathVerifyRecords = 500000;
         private const int MaxPreferPathFirstDirectories = 10000;
-        private static readonly bool BuildShortContainsBuckets = false;
+        private static readonly bool BuildShortContainsBuckets = true;
 
         // 保存 progress 引用，供 OnJournalOverflow 使用（需求 6.5）
         private IProgress<string> _progress;
@@ -2128,6 +2128,11 @@ namespace MftScanner
 
             if (query.Length == 1 || query.Length == 2)
             {
+                if (!index.IsQuerySupportedByContainsAccelerator(query))
+                {
+                    QueueContainsAcceleratorWarmup("query-short-needed");
+                }
+
                 QueueShortContainsHotBucketWarmup(index, query, containsMode ?? "fallback");
                 return;
             }
@@ -2158,6 +2163,10 @@ namespace MftScanner
             UsnDiagLog.Write(
                 $"[CONTAINS SHORT GENERIC] reason={IndexPerfLog.FormatValue(reason)} " +
                 $"charReady={status.CharReady} bigramReady={status.BigramReady} records={index.TotalCount}");
+            if (!status.CharReady || !status.BigramReady)
+            {
+                QueueContainsAcceleratorWarmup("short-generic-needed");
+            }
         }
 
         private void QueueShortContainsHotBucketWarmup(MemoryIndex index, string query, string reason)
@@ -2754,7 +2763,7 @@ namespace MftScanner
                 buildContainsAccelerator: false,
                 takeOwnership: true,
                 buildDerivedStructures: false,
-                buildShortAsciiStructures: false);
+                buildShortAsciiStructures: true);
             var containsPostingsLoaded = _index.TryLoadContainsPostingsSnapshot(snapshot.ContainsPostings);
             if (!containsPostingsLoaded)
             {
@@ -3269,7 +3278,7 @@ namespace MftScanner
         private void QueueContainsAcceleratorWarmup(string reason)
         {
             var index = _index;
-            if (index == null || index.TotalCount == 0 || index.HasContainsAccelerator)
+            if (index == null || index.TotalCount == 0 || index.SupportsContainsAccelerator(MemoryIndex.ContainsWarmupScope.Full))
             {
                 return;
             }
@@ -3306,7 +3315,7 @@ namespace MftScanner
             var contentVersion = index?.ContentVersion ?? 0;
             try
             {
-                if (index == null || index.TotalCount == 0 || index.HasContainsAccelerator)
+                if (index == null || index.TotalCount == 0 || index.SupportsContainsAccelerator(MemoryIndex.ContainsWarmupScope.Full))
                 {
                     return;
                 }
@@ -3314,6 +3323,10 @@ namespace MftScanner
                 UsnDiagLog.Write(
                     $"[CONTAINS WARMUP] outcome=start reason={IndexPerfLog.FormatValue(reason)} " +
                     $"records={index.TotalCount}");
+                index.TryEnsureContainsAccelerator(MemoryIndex.ContainsWarmupScope.Short, ct);
+                UsnDiagLog.Write(
+                    $"[CONTAINS WARMUP] outcome=stage reason={IndexPerfLog.FormatValue(reason)} " +
+                    $"stage=short-ready elapsedMs={stopwatch.ElapsedMilliseconds} records={index.TotalCount}");
                 index.TryEnsureContainsAccelerator(MemoryIndex.ContainsWarmupScope.TrigramOnly, ct);
                 UsnDiagLog.Write(
                     $"[CONTAINS WARMUP] outcome=stage reason={IndexPerfLog.FormatValue(reason)} " +
@@ -3434,7 +3447,7 @@ namespace MftScanner
                 var compacted = index.TryCompactLiveDeltaOverlay(out compactMs, ct);
                 UsnDiagLog.Write(
                     $"[LIVE DELTA COMPACT] outcome={(compacted ? "success" : "stale-or-empty")} reason={IndexPerfLog.FormatValue(reason)} " +
-                    $"compactMs={compactMs} liveDeltaCount={index.LiveDeltaCount} records={index.TotalCount}");
+                    $"compactMs={compactMs} liveDeltaCount={index.LiveDeltaCount} records={index.TotalCount} rebuildContains=async");
 
                 if (compacted)
                 {

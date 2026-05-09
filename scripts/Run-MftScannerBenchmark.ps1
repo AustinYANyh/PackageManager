@@ -188,6 +188,55 @@ function Parse-ContainsQueryEvents {
     return $events
 }
 
+function Get-SearchTermForContains {
+    param([string]$Keyword)
+
+    if ([string]::IsNullOrWhiteSpace($Keyword)) {
+        return ""
+    }
+
+    $trimmed = $Keyword.Trim()
+    $lastSlash = [Math]::Max($trimmed.LastIndexOf("\"), $trimmed.LastIndexOf("/"))
+    if ($lastSlash -ge 0) {
+        $tail = $trimmed.Substring($lastSlash + 1).Trim()
+        $space = $tail.LastIndexOf(" ")
+        if ($space -ge 0 -and $space + 1 -lt $tail.Length) {
+            return $tail.Substring($space + 1).Trim()
+        }
+    }
+
+    $lastSpace = $trimmed.LastIndexOf(" ")
+    if ($lastSpace -ge 1 -and $trimmed.Substring(0, $lastSpace).Contains(":")) {
+        return $trimmed.Substring($lastSpace + 1).Trim()
+    }
+
+    return $trimmed
+}
+
+function Get-LatestContainsQueryEvent {
+    param(
+        [string]$LogPath,
+        [datetime]$Since,
+        [string]$Keyword
+    )
+
+    $term = Get-SearchTermForContains -Keyword $Keyword
+    $events = @(Parse-ContainsQueryEvents -LogPath $LogPath -Since $Since)
+    if ($events.Count -eq 0) {
+        return $null
+    }
+
+    $matched = @($events | Where-Object {
+        $_.Normalized -eq $term -or $_.Normalized -eq "'$term'" -or $_.Raw.Contains("normalized=$term") -or $_.Raw.Contains("normalized='$term'")
+    })
+
+    if ($matched.Count -gt 0) {
+        return @($matched | Sort-Object Time | Select-Object -Last 1)[0]
+    }
+
+    return @($events | Sort-Object Time | Select-Object -Last 1)[0]
+}
+
 function Parse-IndexStageEvents {
     param(
         [string]$LogPath,
@@ -276,10 +325,11 @@ function New-MarkdownReport {
         [string]$ReportJsonPath
     )
 
-    $summary = $Rows | Group-Object Name | ForEach-Object {
+    $summary = $Rows | Group-Object Phase, Name | ForEach-Object {
         $items = @($_.Group)
         [pscustomobject]@{
-            Name = $_.Name
+            Phase = $items[0].Phase
+            Name = $items[0].Name
             Count = $items.Count
             AvgClientMs = [math]::Round(($items | Measure-Object ClientMs -Average).Average, 1)
             AvgHostMs = [math]::Round(($items | Measure-Object HostSearchMs -Average).Average, 1)
@@ -325,6 +375,19 @@ function New-MarkdownReport {
         }
     }
 
+    $perceptionSummary = $Rows | Where-Object { $_.Scenario -eq "Typing" -or $_.Language -eq "Chinese" } | Group-Object Phase, Scenario | ForEach-Object {
+        $items = @($_.Group)
+        [pscustomobject]@{
+            Phase = $items[0].Phase
+            Scenario = $items[0].Scenario
+            Count = $items.Count
+            MaxClientMs = ($items | Measure-Object ClientMs -Maximum).Maximum
+            MaxHostMs = ($items | Measure-Object HostSearchMs -Maximum).Maximum
+            AvgHostMs = [math]::Round(($items | Measure-Object HostSearchMs -Average).Average, 1)
+            FallbackRows = @($items | Where-Object { $_.ContainsMode -eq "fallback" }).Count
+        }
+    }
+
     $lines = New-Object System.Collections.Generic.List[string]
     $lines.Add("# MftScanner 基准测试报告")
     $lines.Add("")
@@ -336,10 +399,19 @@ function New-MarkdownReport {
     $lines.Add("")
     $lines.Add("## 查询汇总")
     $lines.Add("")
-    $lines.Add("| 用例 | 次数 | 平均客户端耗时(ms) | 平均宿主耗时(ms) | UI命中数 | 物理命中数 | 唯一路径数 | 重复路径数 | 平均返回数 |")
-    $lines.Add("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+    $lines.Add("| 阶段 | 用例 | 次数 | 平均客户端耗时(ms) | 平均宿主耗时(ms) | UI命中数 | 物理命中数 | 唯一路径数 | 重复路径数 | 平均返回数 |")
+    $lines.Add("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
     foreach ($item in $summary) {
-        $lines.Add("| $($item.Name) | $($item.Count) | $($item.AvgClientMs) | $($item.AvgHostMs) | $($item.AvgMatched) | $($item.AvgPhysicalMatched) | $($item.AvgUniqueMatched) | $($item.AvgDuplicatePaths) | $($item.AvgReturned) |")
+        $lines.Add("| $($item.Phase) | $($item.Name) | $($item.Count) | $($item.AvgClientMs) | $($item.AvgHostMs) | $($item.AvgMatched) | $($item.AvgPhysicalMatched) | $($item.AvgUniqueMatched) | $($item.AvgDuplicatePaths) | $($item.AvgReturned) |")
+    }
+
+    $lines.Add("")
+    $lines.Add("## 真实体感覆盖")
+    $lines.Add("")
+    $lines.Add("| 阶段 | 场景 | 次数 | 最大客户端(ms) | 最大宿主(ms) | 平均宿主(ms) | fallback行数 |")
+    $lines.Add("| --- | --- | ---: | ---: | ---: | ---: | ---: |")
+    foreach ($item in $perceptionSummary) {
+        $lines.Add("| $($item.Phase) | $($item.Scenario) | $($item.Count) | $($item.MaxClientMs) | $($item.MaxHostMs) | $($item.AvgHostMs) | $($item.FallbackRows) |")
     }
 
     $lines.Add("")
@@ -385,13 +457,14 @@ function New-MarkdownReport {
     $lines.Add("")
     $lines.Add("## 查询明细")
     $lines.Add("")
-    $lines.Add("| 用例 | 类型过滤 | 关键词 | 客户端耗时(ms) | 宿主耗时(ms) | UI命中数 | 物理命中数 | 唯一路径数 | 重复路径数 | 返回数 | 错配返回 | stale | 是否截断 |")
-    $lines.Add("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |")
+    $lines.Add("| 阶段 | 场景 | 用例 | 类型过滤 | 关键词 | 客户端耗时(ms) | 宿主耗时(ms) | Contains模式 | UI命中数 | 物理命中数 | 唯一路径数 | 重复路径数 | 返回数 | 错配返回 | stale | 桶状态 | 是否截断 |")
+    $lines.Add("| --- | --- | --- | --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |")
     foreach ($row in $Rows) {
         $keyword = ($row.Keyword -replace "\|", "\|")
         $truncated = Convert-BoolToChinese $row.IsTruncated
         $stale = Convert-BoolToChinese $row.IsSnapshotStale
-        $lines.Add("| $($row.Name) | $($row.Filter) | ``$keyword`` | $($row.ClientMs) | $($row.HostSearchMs) | $($row.TotalMatchedCount) | $($row.PhysicalMatchedCount) | $($row.UniqueMatchedCount) | $($row.DuplicatePathCount) | $($row.ReturnedCount) | $($row.BadReturnedCount) | $stale | $truncated |")
+        $bucket = "C=$($row.CharBucketReady),B=$($row.BigramBucketReady),T=$($row.TrigramBucketReady)"
+        $lines.Add("| $($row.Phase) | $($row.Scenario) | $($row.Name) | $($row.Filter) | ``$keyword`` | $($row.ClientMs) | $($row.HostSearchMs) | $($row.ContainsMode) | $($row.TotalMatchedCount) | $($row.PhysicalMatchedCount) | $($row.UniqueMatchedCount) | $($row.DuplicatePathCount) | $($row.ReturnedCount) | $($row.BadReturnedCount) | $stale | $bucket | $truncated |")
     }
 
     $lines.Add("")
@@ -501,6 +574,99 @@ else {
 }
 $startedAt = Get-Date
 $rows = New-Object System.Collections.Generic.List[object]
+$dynamicChineseTerms = New-Object System.Collections.Generic.List[string]
+
+function Add-DynamicChineseTerm {
+    param([string]$Value)
+
+    if (![string]::IsNullOrWhiteSpace($Value) -and -not $dynamicChineseTerms.Contains($Value)) {
+        $dynamicChineseTerms.Add($Value)
+    }
+}
+
+function Add-DynamicChineseTermsFromResult {
+    param([object]$Result)
+
+    foreach ($item in @($Result.Results)) {
+        $name = $item.FileName
+        if ([string]::IsNullOrWhiteSpace($name)) {
+            continue
+        }
+
+        for ($i = 0; $i -lt $name.Length; $i++) {
+            $maxLength = [Math]::Min(4, $name.Length - $i)
+            for ($length = 1; $length -le $maxLength; $length++) {
+                $allChinese = $true
+                for ($j = 0; $j -lt $length; $j++) {
+                    $code = [int][char]$name[$i + $j]
+                    if ($code -lt 0x4E00 -or $code -gt 0x9FFF) {
+                        $allChinese = $false
+                        break
+                    }
+                }
+
+                if ($allChinese) {
+                    Add-DynamicChineseTerm $name.Substring($i, $length)
+                }
+            }
+
+            if ($dynamicChineseTerms.Count -ge 12) {
+                return
+            }
+        }
+    }
+}
+
+function Invoke-BenchmarkCase {
+    param(
+        [object]$Client,
+        [object]$Case,
+        [string]$Phase,
+        [int]$Iteration
+    )
+
+    $searchStartedAt = Get-Date
+    $searchCts = New-Object System.Threading.CancellationTokenSource ([TimeSpan]::FromSeconds($SearchTimeoutSeconds))
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        $result = $Client.SearchAsync($Case.Keyword, $MaxResults, 0, $Case.Filter, $null, $searchCts.Token).GetAwaiter().GetResult()
+        $sw.Stop()
+        $event = Get-LatestContainsQueryEvent -LogPath $logPath -Since $searchStartedAt.AddMilliseconds(-100) -Keyword $Case.Keyword
+        $rows.Add([pscustomobject]@{
+            Phase = $Phase
+            Scenario = $Case.Scenario
+            Language = $Case.Language
+            Name = $Case.Name
+            Iteration = $Iteration
+            Keyword = $Case.Keyword
+            Filter = $Case.Filter.ToString()
+            ClientMs = $sw.ElapsedMilliseconds
+            HostSearchMs = $result.HostSearchMs
+            ContainsMode = if ($event) { $event.Mode } else { "" }
+            ContainsCandidateCount = if ($event) { $event.CandidateCount } else { 0 }
+            ContainsVerifyMs = if ($event) { $event.VerifyMs } else { 0 }
+            TotalIndexedCount = $result.TotalIndexedCount
+            TotalMatchedCount = $result.TotalMatchedCount
+            PhysicalMatchedCount = $result.PhysicalMatchedCount
+            UniqueMatchedCount = $result.UniqueMatchedCount
+            DuplicatePathCount = $result.DuplicatePathCount
+            ReturnedCount = @($result.Results).Count
+            BadReturnedCount = Get-BadReturnedCount -Keyword $Case.Keyword -PathPrefix $PathPrefix -Result $result
+            IsTruncated = $result.IsTruncated
+            IsSnapshotStale = $result.IsSnapshotStale
+            CharBucketReady = $result.ContainsBucketStatus.CharReady
+            BigramBucketReady = $result.ContainsBucketStatus.BigramReady
+            TrigramBucketReady = $result.ContainsBucketStatus.TrigramReady
+        })
+
+        if ($Case.Language -like "Chinese*") {
+            Add-DynamicChineseTermsFromResult -Result $result
+        }
+    }
+    finally {
+        $searchCts.Dispose()
+    }
+}
 
 try {
     Write-Host "Waiting for shared index readiness..."
@@ -509,51 +675,52 @@ try {
     $readyCts.Dispose()
 
     $cases = @(
-        [pscustomobject]@{ Name = "PathContainsSingleChar"; Keyword = "$PathPrefix d"; Filter = [MftScanner.SearchTypeFilter]::All },
-        [pscustomobject]@{ Name = "PathContainsTwoChars"; Keyword = "$PathPrefix ve"; Filter = [MftScanner.SearchTypeFilter]::All },
-        [pscustomobject]@{ Name = "PathIncrementalV"; Keyword = "$PathPrefix v"; Filter = [MftScanner.SearchTypeFilter]::All },
-        [pscustomobject]@{ Name = "PathIncrementalVe"; Keyword = "$PathPrefix ve"; Filter = [MftScanner.SearchTypeFilter]::All },
-        [pscustomobject]@{ Name = "PathIncrementalVer"; Keyword = "$PathPrefix ver"; Filter = [MftScanner.SearchTypeFilter]::All },
-        [pscustomobject]@{ Name = "PathWildcardExe"; Keyword = "$PathPrefix *.exe"; Filter = [MftScanner.SearchTypeFilter]::All },
-        [pscustomobject]@{ Name = "PathLaunchableContains"; Keyword = "$PathPrefix ve"; Filter = [MftScanner.SearchTypeFilter]::Launchable },
-        [pscustomobject]@{ Name = "PathConfigCalsupport"; Keyword = "$PathPrefix calsupport"; Filter = [MftScanner.SearchTypeFilter]::Config },
-        [pscustomobject]@{ Name = "GlobalAllSingleChar"; Keyword = "d"; Filter = [MftScanner.SearchTypeFilter]::All },
-        [pscustomobject]@{ Name = "GlobalAllTwoChars"; Keyword = "ve"; Filter = [MftScanner.SearchTypeFilter]::All },
-        [pscustomobject]@{ Name = "GlobalIncrementalV"; Keyword = "v"; Filter = [MftScanner.SearchTypeFilter]::All },
-        [pscustomobject]@{ Name = "GlobalIncrementalVe"; Keyword = "ve"; Filter = [MftScanner.SearchTypeFilter]::All },
-        [pscustomobject]@{ Name = "GlobalIncrementalVer"; Keyword = "ver"; Filter = [MftScanner.SearchTypeFilter]::All },
-        [pscustomobject]@{ Name = "GlobalConfigCalsupport"; Keyword = "calsupport"; Filter = [MftScanner.SearchTypeFilter]::Config },
-        [pscustomobject]@{ Name = "GlobalLaunchableContains"; Keyword = "workbench"; Filter = [MftScanner.SearchTypeFilter]::Launchable }
+        [pscustomobject]@{ Name = "PathContainsSingleChar"; Keyword = "$PathPrefix d"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "PathContainsTwoChars"; Keyword = "$PathPrefix ve"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "PathIncrementalV"; Keyword = "$PathPrefix v"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Typing"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "PathIncrementalVe"; Keyword = "$PathPrefix ve"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Typing"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "PathIncrementalVer"; Keyword = "$PathPrefix ver"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Typing"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "PathWildcardExe"; Keyword = "$PathPrefix *.exe"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "PathLaunchableContains"; Keyword = "$PathPrefix ve"; Filter = [MftScanner.SearchTypeFilter]::Launchable; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "PathConfigCalsupport"; Keyword = "$PathPrefix calsupport"; Filter = [MftScanner.SearchTypeFilter]::Config; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "GlobalAllSingleChar"; Keyword = "d"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "GlobalAllTwoChars"; Keyword = "ve"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "GlobalIncrementalV"; Keyword = "v"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Typing"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "GlobalIncrementalVe"; Keyword = "ve"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Typing"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "GlobalIncrementalVer"; Keyword = "ver"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Typing"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "GlobalChineseSingle"; Keyword = "我"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Chinese" },
+        [pscustomobject]@{ Name = "GlobalChineseBigram"; Keyword = "鱼丸"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Chinese" },
+        [pscustomobject]@{ Name = "GlobalChineseSearch"; Keyword = "搜索"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Typing"; Language = "Chinese" },
+        [pscustomobject]@{ Name = "GlobalChineseTypingSou"; Keyword = "搜"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Typing"; Language = "Chinese" },
+        [pscustomobject]@{ Name = "GlobalConfigCalsupport"; Keyword = "calsupport"; Filter = [MftScanner.SearchTypeFilter]::Config; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "GlobalLaunchableContains"; Keyword = "workbench"; Filter = [MftScanner.SearchTypeFilter]::Launchable; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "ChineseSeed"; Keyword = "中"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Seed"; Language = "ChineseSeed" }
     )
 
     foreach ($case in $cases) {
         for ($i = 1; $i -le $Repeat; $i++) {
-            $searchCts = New-Object System.Threading.CancellationTokenSource ([TimeSpan]::FromSeconds($SearchTimeoutSeconds))
-            $sw = [System.Diagnostics.Stopwatch]::StartNew()
-            $result = $client.SearchAsync($case.Keyword, $MaxResults, 0, $case.Filter, $null, $searchCts.Token).GetAwaiter().GetResult()
-            $sw.Stop()
-            $searchCts.Dispose()
+            Invoke-BenchmarkCase -Client $client -Case $case -Phase "just-built" -Iteration $i
+        }
+    }
 
-            $rows.Add([pscustomobject]@{
-                Name = $case.Name
-                Iteration = $i
-                Keyword = $case.Keyword
-                Filter = $case.Filter.ToString()
-                ClientMs = $sw.ElapsedMilliseconds
-                HostSearchMs = $result.HostSearchMs
-                TotalIndexedCount = $result.TotalIndexedCount
-                TotalMatchedCount = $result.TotalMatchedCount
-                PhysicalMatchedCount = $result.PhysicalMatchedCount
-                UniqueMatchedCount = $result.UniqueMatchedCount
-                DuplicatePathCount = $result.DuplicatePathCount
-                ReturnedCount = @($result.Results).Count
-                BadReturnedCount = Get-BadReturnedCount -Keyword $case.Keyword -PathPrefix $PathPrefix -Result $result
-                IsTruncated = $result.IsTruncated
-                IsSnapshotStale = $result.IsSnapshotStale
-                CharBucketReady = $result.ContainsBucketStatus.CharReady
-                BigramBucketReady = $result.ContainsBucketStatus.BigramReady
-                TrigramBucketReady = $result.ContainsBucketStatus.TrigramReady
-            })
+    $deadline = (Get-Date).AddSeconds($ReadyTimeoutSeconds)
+    do {
+        $state = if ($client.ContainsBucketStatus) { $client.ContainsBucketStatus } else { $null }
+        if ($state -and $state.CharReady -and $state.BigramReady -and $state.TrigramReady) {
+            break
+        }
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $deadline)
+
+    $dynamicCases = New-Object System.Collections.Generic.List[object]
+    for ($i = 0; $i -lt $dynamicChineseTerms.Count; $i++) {
+        $term = $dynamicChineseTerms[$i]
+        $dynamicCases.Add([pscustomobject]@{ Name = "DynamicChinese$($i + 1)"; Keyword = $term; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Dynamic"; Language = "Chinese" })
+    }
+
+    foreach ($case in @($cases + $dynamicCases.ToArray())) {
+        for ($i = 1; $i -le $Repeat; $i++) {
+            Invoke-BenchmarkCase -Client $client -Case $case -Phase "postings-ready" -Iteration $i
         }
     }
 }
