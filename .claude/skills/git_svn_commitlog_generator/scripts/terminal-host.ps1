@@ -18,6 +18,13 @@ function Get-WindowsTerminalExecutable {
   return ""
 }
 
+function Quote-NativeArgument([string]$value) {
+  if ($null -eq $value) { return '""' }
+  if ($value -eq "") { return '""' }
+  if ($value -notmatch '[\s"`]') { return $value }
+  return '"' + (($value -replace '\\(?=")', '$0$0') -replace '"', '\"') + '"'
+}
+
 function Invoke-InteractivePowerShellScript {
   param(
     [Parameter(Mandatory = $true)][string]$ScriptText,
@@ -62,13 +69,15 @@ $ScriptText
       try {
         $wtArgs = @()
         if ($WindowStyle -eq "Maximized") { $wtArgs += "--maximized" }
+        $wtArgs += "new-tab"
         if ($Title) { $wtArgs += @("--title", $Title) }
         $wtArgs += @($powerShellExe)
         $wtArgs += $psArgs
 
+        $wtArgumentLine = (@($wtArgs) | ForEach-Object { Quote-NativeArgument $_ }) -join " "
         $startArgs = @{
           FilePath = $wtExe
-          ArgumentList = $wtArgs
+          ArgumentList = $wtArgumentLine
           PassThru = $true
         }
         if ($WorkingDirectory) { $startArgs.WorkingDirectory = $WorkingDirectory }
