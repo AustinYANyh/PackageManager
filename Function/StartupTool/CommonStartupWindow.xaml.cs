@@ -48,6 +48,7 @@ public partial class CommonStartupWindow : Window
     private readonly ObservableCollection<StartupActivityVm> _recentActivities = new();
     private readonly ObservableCollection<ScanResultItem> _scanResults = new();
     private readonly List<CommonStartupGroup> _groupDefinitions = new();
+    private readonly string _commonStartupSettingsFilePath;
     private readonly ISharedIndexService _indexService = SharedIndexServiceFactory.Create("CtrlQ.CommonStartup");
     private readonly bool _canUseIntegratedFileSearch;
     private readonly PinyinMatcher _pinyinMatcher = new PinyinMatcher();
@@ -55,6 +56,8 @@ public partial class CommonStartupWindow : Window
     private CancellationTokenSource _scanCts;
     private CancellationTokenSource _indexCts;
     private Task<int> _indexTask;
+    private FileSystemWatcher _commonStartupSettingsWatcher;
+    private DispatcherTimer _settingsReloadTimer;
     private StartupViewKind _currentView = StartupViewKind.All;
     private StartupItemVm _selectedItem;
     private bool _indexReady;
@@ -69,6 +72,7 @@ public partial class CommonStartupWindow : Window
     private int _ignoredWorkbenchScrollChangeCount;
     private int _workbenchRefreshVersion;
     private int _launchInProgress;
+    private DateTime _lastSelfSavedFileWriteUtc = DateTime.MinValue;
     private WorkbenchSearchContext _searchRestoreContext;
 
     private const int SwShow = 5;
@@ -117,6 +121,10 @@ public partial class CommonStartupWindow : Window
         InitializeComponent();
 
         _persistence = persistence;
+        _commonStartupSettingsFilePath = System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "PackageManager",
+            "common_startup_settings.json");
         _canUseIntegratedFileSearch = CanUseIntegratedFileSearch();
 
         ViewList.ItemsSource = _viewItems;
@@ -130,11 +138,14 @@ public partial class CommonStartupWindow : Window
         _debounceTimer.Tick += DebounceTimer_Tick;
         _liveRefreshTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
         _liveRefreshTimer.Tick += LiveRefreshTimer_Tick;
+        _settingsReloadTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(450) };
+        _settingsReloadTimer.Tick += SettingsReloadTimer_Tick;
         _indexService.IndexChanged += IndexService_IndexChanged;
         _indexService.IndexStatusChanged += IndexService_IndexStatusChanged;
 
         _hideInsteadOfClose = true;
         LoadSavedItems();
+        StartCommonStartupSettingsWatcher();
         UpdateKeyboardHint();
         RefreshWorkbench();
     }
@@ -335,7 +346,75 @@ public partial class CommonStartupWindow : Window
 
         normalized.CommonStartupItems = currentItems;
         normalized.CommonStartupGroups = currentGroups;
-        return _persistence.SaveSettings(normalized, preserveExistingCommonStartupData: false);
+        var saved = _persistence.SaveSettings(normalized, preserveExistingCommonStartupData: false);
+        if (saved)
+        {
+            _lastSelfSavedFileWriteUtc = GetCommonStartupSettingsLastWriteUtc();
+        }
+
+        return saved;
+    }
+
+    private void StartCommonStartupSettingsWatcher()
+    {
+        try
+        {
+            var directory = System.IO.Path.GetDirectoryName(_commonStartupSettingsFilePath);
+            if (string.IsNullOrWhiteSpace(directory))
+            {
+                return;
+            }
+
+            Directory.CreateDirectory(directory);
+            _commonStartupSettingsWatcher = new FileSystemWatcher(directory, System.IO.Path.GetFileName(_commonStartupSettingsFilePath))
+            {
+                NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.CreationTime
+            };
+            _commonStartupSettingsWatcher.Changed += CommonStartupSettingsWatcher_Changed;
+            _commonStartupSettingsWatcher.Created += CommonStartupSettingsWatcher_Changed;
+            _commonStartupSettingsWatcher.Renamed += CommonStartupSettingsWatcher_Changed;
+            _commonStartupSettingsWatcher.EnableRaisingEvents = true;
+        }
+        catch (Exception ex)
+        {
+            LoggingService.LogWarning($"启动项配置监听启动失败：{ex.Message}");
+        }
+    }
+
+    private void CommonStartupSettingsWatcher_Changed(object sender, FileSystemEventArgs e)
+    {
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            _settingsReloadTimer.Stop();
+            _settingsReloadTimer.Start();
+        }), DispatcherPriority.Background);
+    }
+
+    private void SettingsReloadTimer_Tick(object sender, EventArgs e)
+    {
+        _settingsReloadTimer.Stop();
+        var currentLastWriteUtc = GetCommonStartupSettingsLastWriteUtc();
+        if (currentLastWriteUtc != DateTime.MinValue && currentLastWriteUtc <= _lastSelfSavedFileWriteUtc)
+        {
+            return;
+        }
+
+        ReloadFromPersistence();
+        StatusText.Text = "启动项配置已刷新。";
+    }
+
+    private DateTime GetCommonStartupSettingsLastWriteUtc()
+    {
+        try
+        {
+            return File.Exists(_commonStartupSettingsFilePath)
+                ? File.GetLastWriteTimeUtc(_commonStartupSettingsFilePath)
+                : DateTime.MinValue;
+        }
+        catch
+        {
+            return DateTime.MinValue;
+        }
     }
 
     private void RefreshWorkbench()
@@ -3237,6 +3316,14 @@ public partial class CommonStartupWindow : Window
     {
         _debounceTimer.Stop();
         _liveRefreshTimer.Stop();
+        _settingsReloadTimer?.Stop();
+        if (_commonStartupSettingsWatcher != null)
+        {
+            _commonStartupSettingsWatcher.EnableRaisingEvents = false;
+            _commonStartupSettingsWatcher.Dispose();
+            _commonStartupSettingsWatcher = null;
+        }
+
         CancelActiveSearch();
         CancelIndexing();
         _indexService.IndexChanged -= IndexService_IndexChanged;

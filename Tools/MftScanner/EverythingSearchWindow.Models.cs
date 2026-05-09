@@ -150,6 +150,7 @@ namespace MftScanner
     {
         public string SortKey { get; set; }
         public string ScopePath { get; set; }
+        public string StartupGroupName { get; set; }
         public string ViewModeKey { get; set; }
         public List<SearchHistoryEntry> RecentSearches { get; set; }
     }

@@ -3,11 +3,13 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using MftScanner.Services;
 
 namespace MftScanner
 {
@@ -330,6 +332,13 @@ namespace MftScanner
                 return true;
             }
 
+            if (key == Key.A && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift))
+            {
+                e.Handled = true;
+                AddToStartup(item, GetSelectedStartupGroupName());
+                return true;
+            }
+
             if (key == Key.T && Keyboard.Modifiers == ModifierKeys.Control)
             {
                 e.Handled = true;
@@ -431,6 +440,7 @@ namespace MftScanner
         private void OpenFolderButton_Click(object sender, RoutedEventArgs e) { var item = ResultsGrid.SelectedItem as EverythingSearchResultItem; if (item != null) OpenContainingFolder(item.FullPath); }
         private void CopyPathButton_Click(object sender, RoutedEventArgs e) { var item = ResultsGrid.SelectedItem as EverythingSearchResultItem; if (item != null) { CopyToClipboard(item.FullPath); StatusText.Text = "路径已复制"; } }
         private void CopyNameButton_Click(object sender, RoutedEventArgs e) { var item = ResultsGrid.SelectedItem as EverythingSearchResultItem; if (item != null) { CopyToClipboard(item.FileName); StatusText.Text = "文件名已复制"; } }
+        private void AddToStartupButton_Click(object sender, RoutedEventArgs e) { var item = ResultsGrid.SelectedItem as EverythingSearchResultItem; if (item != null) AddToStartup(item, GetSelectedStartupGroupName()); }
         private void RunAsAdminButton_Click(object sender, RoutedEventArgs e) { ExecuteForSelected(OpenItem, true); }
         private void PropertiesButton_Click(object sender, RoutedEventArgs e) { var item = ResultsGrid.SelectedItem as EverythingSearchResultItem; if (item != null) ShowProperties(item); }
         private void OpenTerminalButton_Click(object sender, RoutedEventArgs e) { var item = ResultsGrid.SelectedItem as EverythingSearchResultItem; if (item != null) OpenTerminal(item); }
@@ -444,11 +454,38 @@ namespace MftScanner
         private void CopyPath_Click(object sender, RoutedEventArgs e) { var item = ResultsGrid.SelectedItem as EverythingSearchResultItem; if (item != null) { CopyToClipboard(item.FullPath); StatusText.Text = "路径已复制"; } }
         private void CopyNameMenuItem_Click(object sender, RoutedEventArgs e) { var item = ResultsGrid.SelectedItem as EverythingSearchResultItem; if (item != null) { CopyToClipboard(item.FileName); StatusText.Text = "文件名已复制"; } }
         private void CopyParentPathMenuItem_Click(object sender, RoutedEventArgs e) { var item = ResultsGrid.SelectedItem as EverythingSearchResultItem; if (item != null) { CopyToClipboard(item.DirectoryPath); StatusText.Text = "父目录路径已复制"; } }
+        private void AddToStartupMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            var menuItem = sender as MenuItem;
+            var groupName = menuItem == null ? GetSelectedStartupGroupName() : menuItem.Tag as string;
+            var item = ResultsGrid.SelectedItem as EverythingSearchResultItem;
+            if (item != null)
+                AddToStartup(item, groupName);
+        }
         private void RunAsAdminMenuItem_Click(object sender, RoutedEventArgs e) { ExecuteForSelected(OpenItem, true); }
         private void OpenTerminalMenuItem_Click(object sender, RoutedEventArgs e) { var item = ResultsGrid.SelectedItem as EverythingSearchResultItem; if (item != null) OpenTerminal(item); }
         private void RenameMenuItem_Click(object sender, RoutedEventArgs e) { var item = ResultsGrid.SelectedItem as EverythingSearchResultItem; if (item != null) RenameItem(item); }
         private void DeleteMenuItem_Click(object sender, RoutedEventArgs e) { var item = ResultsGrid.SelectedItem as EverythingSearchResultItem; if (item != null) DeleteItem(item); }
         private void PropertiesMenuItem_Click(object sender, RoutedEventArgs e) { var item = ResultsGrid.SelectedItem as EverythingSearchResultItem; if (item != null) ShowProperties(item); }
+
+        private void StartupGroupComboBox_DropDownOpened(object sender, EventArgs e)
+        {
+            RefreshStartupGroupOptions(GetSelectedStartupGroupName());
+        }
+
+        private void StartupGroupComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (StartupGroupComboBox.SelectedItem is ComboOption option && !string.IsNullOrWhiteSpace(option.Key))
+            {
+                _selectedStartupGroupName = option.Key;
+            }
+        }
+
+        private void ResultsContextMenu_Opened(object sender, RoutedEventArgs e)
+        {
+            RefreshStartupGroupOptions(GetSelectedStartupGroupName());
+            RefreshAddToStartupContextMenu();
+        }
 
         private void ExecuteForSelected(Action<EverythingSearchResultItem, bool> action, bool elevated)
         {
@@ -526,6 +563,56 @@ namespace MftScanner
             }
         }
 
+        private void AddToStartup(EverythingSearchResultItem item, string groupName)
+        {
+            if (item == null)
+                return;
+
+            try
+            {
+                var result = _startupSettingsWriter.AddItem(item.FullPath, item.IsDirectory, groupName);
+                if (!result.Success)
+                {
+                    MessageBox.Show(result.ErrorMessage ?? "加入启动项失败。", "文件搜索", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                SelectStartupGroup(result.GroupName);
+                if (result.AlreadyExists)
+                {
+                    StatusText.Text = "已存在于启动项：" + result.ItemName + "（" + result.GroupName + "）";
+                    return;
+                }
+
+                StatusText.Text = "已加入启动项：" + result.ItemName + "（" + result.GroupName + "）";
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, "加入启动项失败");
+                MessageBox.Show("加入启动项失败：" + ex.Message, "文件搜索", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
+        private void RefreshAddToStartupContextMenu()
+        {
+            if (AddToStartupMenuItem == null)
+                return;
+
+            AddToStartupMenuItem.Items.Clear();
+            foreach (var option in _startupGroupOptions)
+            {
+                var menuItem = new MenuItem
+                {
+                    Header = option.DisplayName,
+                    Tag = option.Key,
+                    IsCheckable = true,
+                    IsChecked = string.Equals(option.Key, GetSelectedStartupGroupName(), StringComparison.OrdinalIgnoreCase)
+                };
+                menuItem.Click += AddToStartupMenuItem_Click;
+                AddToStartupMenuItem.Items.Add(menuItem);
+            }
+        }
+
         private static void StartPowerShellTerminal(string targetDirectory)
         {
             var powerShellPath = ResolvePowerShell7Path();
@@ -597,10 +684,32 @@ namespace MftScanner
         {
             try
             {
-                Process.Start(new ProcessStartInfo(item.FullPath) { UseShellExecute = true, Verb = "properties" });
+                if (item == null || string.IsNullOrWhiteSpace(item.FullPath))
+                    return;
+
+                if (item.IsDirectory)
+                {
+                    if (!Directory.Exists(item.FullPath))
+                    {
+                        MessageBox.Show("文件夹不存在。", "文件搜索", MessageBoxButton.OK, MessageBoxImage.Warning);
+                        return;
+                    }
+                }
+                else if (!File.Exists(item.FullPath))
+                {
+                    MessageBox.Show("文件不存在。", "文件搜索", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                if (!ShellPropertiesDialog.Show(item.FullPath, out var errorMessage))
+                {
+                    LoggingService.LogWarning("打开属性页失败：" + errorMessage + "，Path=" + item.FullPath);
+                    MessageBox.Show("无法打开属性：" + errorMessage, "文件搜索", MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
             }
             catch (Exception ex)
             {
+                LoggingService.LogError(ex, "打开属性页失败");
                 MessageBox.Show("无法打开属性：" + ex.Message, "文件搜索", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
         }
@@ -746,6 +855,61 @@ namespace MftScanner
             textBox.Focus();
             textBox.SelectAll();
             return window.ShowDialog() == true ? textBox.Text : null;
+        }
+
+        private static class ShellPropertiesDialog
+        {
+            private const int SwShow = 5;
+            private const uint SeeMaskInvokeIdList = 0x0000000C;
+            private const uint SeeMaskUnicode = 0x00004000;
+
+            public static bool Show(string fullPath, out string errorMessage)
+            {
+                var info = new ShellExecuteInfo
+                {
+                    cbSize = Marshal.SizeOf(typeof(ShellExecuteInfo)),
+                    fMask = SeeMaskInvokeIdList | SeeMaskUnicode,
+                    lpVerb = "properties",
+                    lpFile = fullPath,
+                    nShow = SwShow
+                };
+
+                if (ShellExecuteEx(ref info))
+                {
+                    errorMessage = null;
+                    return true;
+                }
+
+                var win32Error = Marshal.GetLastWin32Error();
+                errorMessage = win32Error == 0
+                    ? "ShellExecuteEx 返回失败。"
+                    : new Win32Exception(win32Error).Message + " (Win32=" + win32Error + ")";
+                return false;
+            }
+
+            [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+            private struct ShellExecuteInfo
+            {
+                public int cbSize;
+                public uint fMask;
+                public IntPtr hwnd;
+                public string lpVerb;
+                public string lpFile;
+                public string lpParameters;
+                public string lpDirectory;
+                public int nShow;
+                public IntPtr hInstApp;
+                public IntPtr lpIDList;
+                public string lpClass;
+                public IntPtr hkeyClass;
+                public uint dwHotKey;
+                public IntPtr hIcon;
+                public IntPtr hProcess;
+            }
+
+            [DllImport("shell32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+            [return: MarshalAs(UnmanagedType.Bool)]
+            private static extern bool ShellExecuteEx(ref ShellExecuteInfo lpExecInfo);
         }
     }
 }

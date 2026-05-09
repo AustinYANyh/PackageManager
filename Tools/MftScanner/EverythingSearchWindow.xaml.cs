@@ -13,6 +13,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using MftScanner.Services;
 
 namespace MftScanner
 {
@@ -31,10 +32,12 @@ namespace MftScanner
         private readonly IncrementalFilter _filter;
         private readonly ReplaceableObservableCollection<EverythingSearchResultItem> _displayedResults = new ReplaceableObservableCollection<EverythingSearchResultItem>();
         private readonly ObservableCollection<SearchHistoryEntry> _recentSearches = new ObservableCollection<SearchHistoryEntry>();
+        private readonly ObservableCollection<ComboOption> _startupGroupOptions = new ObservableCollection<ComboOption>();
         private readonly DispatcherTimer _debounceTimer;
         private readonly DispatcherTimer _liveRefreshTimer;
         private readonly DispatcherTimer _indexChangeFlushTimer;
         private readonly SearchWindowStateStore _stateStore = new SearchWindowStateStore();
+        private readonly CommonStartupSettingsWriter _startupSettingsWriter = new CommonStartupSettingsWriter();
         private readonly Dictionary<string, FileMetadata> _metadataCache = new Dictionary<string, FileMetadata>(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> _displayedPathSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> _locallyDeletedPathSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -77,6 +80,7 @@ namespace MftScanner
         private bool _isTypeFilterKeyboardMode;
         private int _typeFilterKeyboardIndex;
         private FileSearchTypeFilter _typeFilterKeyboardOriginalType = FileSearchTypeFilter.All;
+        private string _selectedStartupGroupName = CommonStartupSettingsWriter.DefaultGroupName;
 
         public EverythingSearchWindow()
             : this(SharedIndexServiceFactory.Create("CtrlE.SearchUi"))
@@ -428,6 +432,11 @@ namespace MftScanner
             RefreshScopeOptions();
             ScopeComboBox.SelectedValue = string.Empty;
 
+            StartupGroupComboBox.ItemsSource = _startupGroupOptions;
+            StartupGroupComboBox.DisplayMemberPath = "DisplayName";
+            StartupGroupComboBox.SelectedValuePath = "Key";
+            StartupGroupComboBox.ToolTip = "选择 Ctrl+Shift+A 或“加入启动项”写入的目标分组。";
+
             SortComboBox.ItemsSource = new[]
             {
                 new ComboOption("default", "默认"),
@@ -455,6 +464,10 @@ namespace MftScanner
             SortComboBox.SelectedValue = _currentSortKey;
             RefreshScopeOptions();
             SelectScopeOption(state.ScopePath);
+            _selectedStartupGroupName = string.IsNullOrWhiteSpace(state.StartupGroupName)
+                ? CommonStartupSettingsWriter.DefaultGroupName
+                : state.StartupGroupName;
+            RefreshStartupGroupOptions(_selectedStartupGroupName);
         }
 
         private void SaveWindowState()
@@ -463,6 +476,7 @@ namespace MftScanner
             {
                 SortKey = _currentSortKey,
                 ScopePath = GetSelectedScopePath(),
+                StartupGroupName = GetSelectedStartupGroupName(),
                 ViewModeKey = "compact",
                 RecentSearches = _recentSearches.ToList()
             });
@@ -543,6 +557,8 @@ namespace MftScanner
             OpenFolderButton.IsEnabled = hasSelection;
             CopyPathButton.IsEnabled = hasSelection;
             CopyNameButton.IsEnabled = hasSelection;
+            AddToStartupButton.IsEnabled = hasSelection;
+            StartupGroupComboBox.IsEnabled = _startupGroupOptions.Count > 0;
             RunAsAdminButton.IsEnabled = hasSelection && !item.IsDirectory;
             PropertiesButton.IsEnabled = hasSelection;
             OpenTerminalButton.IsEnabled = hasSelection;
@@ -731,6 +747,55 @@ namespace MftScanner
             ScopeComboBox.SelectedValue = normalizedPath;
             if (ScopeComboBox.SelectedIndex < 0)
                 ScopeComboBox.SelectedIndex = 0;
+        }
+
+        private void RefreshStartupGroupOptions(string preferredGroupName = null)
+        {
+            var selectedGroupName = string.IsNullOrWhiteSpace(preferredGroupName)
+                ? GetSelectedStartupGroupName()
+                : preferredGroupName;
+            var groups = _startupSettingsWriter.LoadGroupNames();
+            if (groups.Count == 0)
+            {
+                groups = new[] { CommonStartupSettingsWriter.DefaultGroupName };
+            }
+
+            _startupGroupOptions.Clear();
+            foreach (var group in groups.Where(group => !string.IsNullOrWhiteSpace(group)).Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                _startupGroupOptions.Add(new ComboOption(group, group));
+            }
+
+            SelectStartupGroup(selectedGroupName);
+            if (StartupGroupComboBox.SelectedIndex < 0)
+            {
+                SelectStartupGroup(CommonStartupSettingsWriter.DefaultGroupName);
+            }
+        }
+
+        private void SelectStartupGroup(string groupName)
+        {
+            var normalizedGroupName = string.IsNullOrWhiteSpace(groupName) ? CommonStartupSettingsWriter.DefaultGroupName : groupName.Trim();
+            StartupGroupComboBox.SelectedValue = normalizedGroupName;
+            if (StartupGroupComboBox.SelectedIndex < 0 && _startupGroupOptions.Count > 0)
+            {
+                StartupGroupComboBox.SelectedIndex = 0;
+            }
+
+            _selectedStartupGroupName = GetSelectedStartupGroupName();
+        }
+
+        private string GetSelectedStartupGroupName()
+        {
+            var option = StartupGroupComboBox.SelectedItem as ComboOption;
+            if (option != null && !string.IsNullOrWhiteSpace(option.Key))
+            {
+                return option.Key;
+            }
+
+            return string.IsNullOrWhiteSpace(_selectedStartupGroupName)
+                ? CommonStartupSettingsWriter.DefaultGroupName
+                : _selectedStartupGroupName;
         }
 
         private void UpdateEmptyState()
