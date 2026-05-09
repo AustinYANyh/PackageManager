@@ -16,6 +16,29 @@ namespace MftScanner
         Canceled
     }
 
+    internal enum UsnReadBatchStatus
+    {
+        Success,
+        JournalExpired,
+        ReadFailed,
+        Canceled
+    }
+
+    internal sealed class UsnReadBatchResult
+    {
+        public static readonly UsnReadBatchResult Success = new UsnReadBatchResult(UsnReadBatchStatus.Success, 0);
+        public static readonly UsnReadBatchResult Canceled = new UsnReadBatchResult(UsnReadBatchStatus.Canceled, 0);
+
+        public UsnReadBatchResult(UsnReadBatchStatus status, int win32Error)
+        {
+            Status = status;
+            Win32Error = win32Error;
+        }
+
+        public UsnReadBatchStatus Status { get; }
+        public int Win32Error { get; }
+    }
+
     public enum UsnChangeKind
     {
         Create,
@@ -375,8 +398,9 @@ namespace MftScanner
                     JournalId = journalId
                 };
 
-                if (!ReadUsnBatch(state, handle, ref journalData, buffer, bufferSize, ct,
-                        raiseOverflowEvent: false, collectedChanges: null))
+                var readResult = ReadUsnBatch(state, handle, ref journalData, buffer, bufferSize, ct,
+                    raiseOverflowEvent: false, collectedChanges: null);
+                if (readResult.Status != UsnReadBatchStatus.Success)
                     return false;
                 nextUsn = state.NextUsn;
                 latestJournalId = state.JournalId;
@@ -436,9 +460,21 @@ namespace MftScanner
                     JournalId = journalId
                 };
 
-                if (!ReadUsnBatch(state, handle, ref journalData, buffer, bufferSize, ct,
-                        raiseOverflowEvent: false, collectedChanges: changes))
-                    return ct.IsCancellationRequested ? UsnCatchUpResult.Canceled : UsnCatchUpResult.ReadFailed;
+                var readResult = ReadUsnBatch(state, handle, ref journalData, buffer, bufferSize, ct,
+                    raiseOverflowEvent: false, collectedChanges: changes);
+                if (readResult.Status != UsnReadBatchStatus.Success)
+                {
+                    if (readResult.Status == UsnReadBatchStatus.JournalExpired)
+                    {
+                        latestJournalId = state.JournalId;
+                        nextUsn = state.NextUsn;
+                        return UsnCatchUpResult.JournalExpired;
+                    }
+
+                    return readResult.Status == UsnReadBatchStatus.Canceled
+                        ? UsnCatchUpResult.Canceled
+                        : UsnCatchUpResult.ReadFailed;
+                }
                 nextUsn = state.NextUsn;
                 latestJournalId = state.JournalId;
                 return UsnCatchUpResult.Success;
@@ -561,7 +597,7 @@ namespace MftScanner
             UsnDiagLog.Write($"[WATCHER POLL] drive={state.DriveLetter} nextUsn={state.NextUsn} journalNextUsn={journalNextUsn}");
         }
 
-        private bool ReadUsnBatch(VolumeWatchState state, IntPtr handle,
+        private UsnReadBatchResult ReadUsnBatch(VolumeWatchState state, IntPtr handle,
             ref UsnJournalData journalData, IntPtr buffer, int bufferSize, CancellationToken ct,
             bool raiseOverflowEvent, List<UsnChangeEntry> collectedChanges)
         {
@@ -589,15 +625,22 @@ namespace MftScanner
                     buffer, bufferSize, out var bytesReturned, IntPtr.Zero))
                 {
                     var err = Marshal.GetLastWin32Error();
-                    UsnDiagLog.Write($"[WATCHER READ FAIL] drive={state.DriveLetter} err={err}");
                     if (err == ERROR_JOURNAL_ENTRY_DELETED)
                     {
+                        UsnDiagLog.Write(
+                            $"[WATCHER JOURNAL EXPIRED] drive={state.DriveLetter} err={err} " +
+                            $"nextUsn={state.NextUsn} journalNextUsn={journalData.NextUsn} lowestValidUsn={journalData.LowestValidUsn}");
                         if (raiseOverflowEvent)
                             JournalOverflow?.Invoke(this, EventArgs.Empty);
                         state.NextUsn   = journalData.NextUsn;
                         state.JournalId = journalData.UsnJournalID;
+                        return new UsnReadBatchResult(UsnReadBatchStatus.JournalExpired, err);
                     }
-                    return false;
+
+                    UsnDiagLog.Write($"[WATCHER READ FAIL] drive={state.DriveLetter} err={err}");
+                    return new UsnReadBatchResult(
+                        ct.IsCancellationRequested ? UsnReadBatchStatus.Canceled : UsnReadBatchStatus.ReadFailed,
+                        err);
                 }
 
                 if (bytesReturned <= 8) break;
@@ -772,7 +815,7 @@ namespace MftScanner
                     UsnDiagLog.Write(
                         $"[WATCHER READ SLICE] drive={state.DriveLetter} records={recordsRead} elapsedMs={sliceStopwatch.ElapsedMilliseconds} " +
                         $"nextUsn={state.NextUsn} journalNextUsn={journalData.NextUsn} yielded=true");
-                    return true;
+                    return UsnReadBatchResult.Success;
                 }
 
                 if (readData.StartUsn >= journalData.NextUsn) break;
@@ -786,7 +829,7 @@ namespace MftScanner
                     $"[WATCHER READ SLICE] drive={state.DriveLetter} records={recordsRead} elapsedMs={sliceStopwatch.ElapsedMilliseconds} " +
                     $"nextUsn={state.NextUsn} journalNextUsn={journalData.NextUsn} yielded=false");
             }
-            return true;
+            return ct.IsCancellationRequested ? UsnReadBatchResult.Canceled : UsnReadBatchResult.Success;
         }
 
         private void EmitCreate(UsnChangeEntry change, List<UsnChangeEntry> collectedChanges)

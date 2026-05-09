@@ -493,6 +493,7 @@ namespace MftScanner
             try
             {
                 var indexedCount = await buildTask.ConfigureAwait(false);
+                _indexService.EnsureSearchHotStructuresReady(_cts.Token, "index-host-ready");
                 _buildState = SharedIndexBuildState.Ready;
                 PublishState(signalClients: true);
                 return indexedCount;

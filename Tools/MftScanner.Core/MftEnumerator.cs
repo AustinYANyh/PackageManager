@@ -297,6 +297,37 @@ namespace MftScanner
             }
         }
 
+        public void ReplaceVolumeFrom(char driveLetter, MftEnumerator source)
+        {
+            var dl = char.ToUpperInvariant(driveLetter);
+            if (source == null)
+                return;
+
+            source._mapsLock.EnterReadLock();
+            try
+            {
+                if (!source._frnMaps.TryGetValue(dl, out var srcMap))
+                    return;
+
+                _mapsLock.EnterWriteLock();
+                try
+                {
+                    _frnMaps[dl] = srcMap;
+                    _childDirectoryFrnsByParent[dl] = BuildChildDirectoryMap(srcMap);
+                    _pathCaches[dl] = new Dictionary<ulong, string>();
+                    _directorySubtreeCache.Clear();
+                }
+                finally
+                {
+                    _mapsLock.ExitWriteLock();
+                }
+            }
+            finally
+            {
+                source._mapsLock.ExitReadLock();
+            }
+        }
+
         public VolumeSnapshot[] CreateVolumeSnapshots((char driveLetter, long nextUsn, ulong journalId)[] checkpoints)
         {
             if (checkpoints == null || checkpoints.Length == 0)

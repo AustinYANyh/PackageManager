@@ -37,6 +37,7 @@ namespace MftScanner
         private Task _shortContainsWarmupTask;
         private CancellationTokenSource _liveDeltaCompactCts;
         private Task _liveDeltaCompactTask;
+        private long _lastLiveDeltaCompactAttemptUtcTicks;
         private readonly HashSet<string> _shortContainsWarmups = new HashSet<string>(StringComparer.Ordinal);
         private volatile bool _isBackgroundCatchUpInProgress;
         private volatile bool _isSnapshotStale;
@@ -60,13 +61,18 @@ namespace MftScanner
         private const int CatchUpApplyIdleDelayMilliseconds = 1000;
         private const int CatchUpApplyMaxDeferMilliseconds = 30000;
         private const int CatchUpLiveDeltaBatchSize = 4096;
+        private const int LiveDeltaCompactMinMutations = 65536;
         private const int LiveDeltaCompactDelayMilliseconds = 750;
+        private const int LiveDeltaCompactMinIntervalMilliseconds = 60000;
         private const int MaxIncrementalContainsCacheRecords = 2000000;
         private const int MaxPathCandidateCacheRecords = 500000;
         private const int MaxPostingsFirstPathVerifyRecords = 500000;
         private const int MaxPreferPathFirstDirectories = 10000;
         private static readonly bool BuildShortContainsBuckets = true;
         private const double SuspiciousSnapshotShrinkRatio = 0.50;
+        private const ulong TargetUsnJournalMaximumSize = 256UL * 1024UL * 1024UL;
+        private const ulong TargetUsnJournalAllocationDelta = 64UL * 1024UL * 1024UL;
+        private int _usnJournalMaintenanceStarted;
 
         // 保存 progress 引用，供 OnJournalOverflow 使用（需求 6.5）
         private IProgress<string> _progress;
@@ -78,6 +84,11 @@ namespace MftScanner
         public bool IsSnapshotStale => _isSnapshotStale;
         public string CurrentStatusMessage => _currentStatusMessage;
         public ContainsBucketStatus ContainsBucketStatus => _index?.GetContainsBucketStatus() ?? ContainsBucketStatus.Empty;
+
+        public void EnsureSearchHotStructuresReady(CancellationToken ct, string reason)
+        {
+            EnsureSearchHotStructuresReady(reason, ct);
+        }
 
         /// <summary>文件系统增量变更事件，携带变更类型和文件信息，供 UI 直接更新列表。</summary>
         public event EventHandler<IndexChangedEventArgs> IndexChanged;
@@ -102,6 +113,7 @@ namespace MftScanner
                 try
                 {
                     var result = BuildIndex(progress, ct);
+                    EnsureSearchHotStructuresReady("build-index-ready", ct);
                     stopwatch.Stop();
                     UsnDiagLog.Write($"[BUILD INDEX ASYNC] success elapsedMs={stopwatch.ElapsedMilliseconds} indexedCount={result}");
                     return result;
@@ -327,7 +339,7 @@ namespace MftScanner
                 return;
             }
 
-            if (_index.LiveDeltaCount > CatchUpLiveDeltaBatchSize)
+            if (_index.LiveDeltaCount > LiveDeltaCompactMinMutations)
                 QueueLiveDeltaCompact("usn-delete");
             ScheduleSnapshotSave();
             IndexChanged?.Invoke(this, new IndexChangedEventArgs(
@@ -2634,6 +2646,19 @@ namespace MftScanner
             return Interlocked.Increment(ref _indexGeneration);
         }
 
+        private void EnsureSearchHotStructuresReady(string reason, CancellationToken ct)
+        {
+            var index = _index;
+            if (index == null)
+                return;
+
+            var stopwatch = Stopwatch.StartNew();
+            index.EnsureShortAsciiStructuresReady(ct, reason);
+            stopwatch.Stop();
+            UsnDiagLog.Write(
+                $"[SEARCH HOT STRUCTURES READY] reason={IndexPerfLog.FormatValue(reason)} elapsedMs={stopwatch.ElapsedMilliseconds} records={index.TotalCount}");
+        }
+
         private long CurrentIndexGeneration => Interlocked.Read(ref _indexGeneration);
 
         private bool IsCurrentIndex(MemoryIndex index, long generation)
@@ -2829,6 +2854,7 @@ namespace MftScanner
             _index.QueueEnsureDerivedStructures("snapshot-restore");
             _index.QueueEnsureShortAsciiStructures("snapshot-restore");
             QueueDefaultShortContainsHotBucketWarmup(_index, "snapshot-restore", generation);
+            EnsureUsnJournalCapacityInBackground(snapshot.Volumes.Select(v => v.DriveLetter).ToArray());
             StartBackgroundCatchUp(snapshot.Volumes, progress, ct, generation);
             return true;
         }
@@ -3013,6 +3039,7 @@ namespace MftScanner
                     _usnWatcher.StartWatching(letter, nextUsn, journalId, ct);
 
                 watcherStartStopwatch.Stop();
+                EnsureUsnJournalCapacityInBackground(successfulDrives.Select(d => d.letter).ToArray());
                 QueueDefaultShortContainsHotBucketWarmup(newIndex, "post-full-build", generation);
                 QueueContainsAcceleratorWarmup("post-full-build", generation);
                 QueueSnapshotSave(allRecords, volumeSnapshots, contentFingerprint, newIndex, generation);
@@ -3099,7 +3126,9 @@ namespace MftScanner
                     {
                         DriveLetter = volume.DriveLetter,
                         StartUsn = volume.NextUsn,
-                        StartJournalId = volume.JournalId
+                        StartJournalId = volume.JournalId,
+                        NextUsn = volume.NextUsn,
+                        LatestJournalId = volume.JournalId
                     };
 
                     result.Result = _usnWatcher.TryCollectCatchUpChanges(
@@ -3128,21 +3157,39 @@ namespace MftScanner
                     var result = volumeResults[i];
                     if (result.Result != UsnCatchUpResult.Success)
                     {
-                        catchUpStopwatch.Stop();
                         UsnDiagLog.Write(
                             $"[SNAPSHOT CATCHUP] drive={result.DriveLetter} outcome={result.Result} elapsedMs={result.ElapsedMs} " +
                             $"startUsn={result.StartUsn} journalId={result.StartJournalId} latestJournalId={result.LatestJournalId}");
 
                         if (result.Result == UsnCatchUpResult.JournalExpired)
                         {
-                            PublishIndexStatus("索引快照 USN 游标已过期，后台正在重建索引；当前结果继续来自现有快照...", true);
-                            var rebuiltCount = BuildIndexFromMft(progress, ct);
+                            PublishIndexStatus($"卷 {result.DriveLetter} 的 USN 游标已过期，后台正在恢复该卷；当前结果继续来自现有快照...", true);
+                            var rebuiltCount = RecoverExpiredVolumeFromMft(
+                                result.DriveLetter,
+                                _lastVolumeSnapshots,
+                                progress,
+                                ct,
+                                generation,
+                                out var recoveredNextUsn,
+                                out var recoveredJournalId);
                             PublishIndexStatus(
                                 _isSnapshotStale
-                                    ? $"索引快照可能已过期：当前沿用 {rebuiltCount} 个对象；请以管理员身份重建索引"
-                                    : $"已重建 {rebuiltCount} 个对象",
+                                    ? $"卷 {result.DriveLetter} 恢复失败：当前沿用 {rebuiltCount} 个对象；请以管理员身份重建索引"
+                                    : $"已恢复卷 {result.DriveLetter}，共 {rebuiltCount} 个对象",
                                 false,
                                 requireSearchRefresh: true);
+                            if (!_isSnapshotStale)
+                            {
+                                index = _index;
+                                enumerator = _enumerator;
+                                generation = CurrentIndexGeneration;
+                                result.Result = UsnCatchUpResult.Success;
+                                result.Changes = new List<UsnChangeEntry>();
+                                result.NextUsn = recoveredNextUsn;
+                                result.LatestJournalId = recoveredJournalId;
+                                volumeResults[i] = result;
+                                continue;
+                            }
                         }
                         else
                         {
@@ -3315,6 +3362,322 @@ namespace MftScanner
                     $"[SNAPSHOT CATCHUP APPLY WAIT] elapsedMs={stopwatch.ElapsedMilliseconds} " +
                     $"activeSearches={Volatile.Read(ref _activeSearchCount)} totalChanges={totalChangeCount}");
             }
+        }
+
+        private int RecoverExpiredVolumeFromMft(
+            char driveLetter,
+            IReadOnlyList<VolumeSnapshot> existingVolumes,
+            IProgress<string> progress,
+            CancellationToken ct,
+            long previousGeneration,
+            out long recoveredNextUsn,
+            out ulong recoveredJournalId)
+        {
+            recoveredNextUsn = 0;
+            recoveredJournalId = 0;
+            var totalStopwatch = Stopwatch.StartNew();
+            var dl = char.ToUpperInvariant(driveLetter);
+            var oldIndex = _index;
+            var oldEnumerator = _enumerator;
+            if (!IsCurrentIndex(oldIndex, previousGeneration) || !ReferenceEquals(oldEnumerator, _enumerator))
+            {
+                UsnDiagLog.Write(
+                    $"[MFT VOLUME RECOVER] outcome=skip-stale-generation drive={dl} generation={previousGeneration} currentGeneration={CurrentIndexGeneration}");
+                return _index.TotalCount;
+            }
+
+            try
+            {
+                progress?.Report($"卷 {dl} 的 USN 游标已过期，正在恢复该卷...");
+                var enumerateStopwatch = Stopwatch.StartNew();
+                var recoveredRecords = new List<FileRecord>(300_000);
+                var recoveredEnumerator = new MftEnumerator();
+                var (count, nextUsn, journalId) = recoveredEnumerator.EnumerateVolumeIntoRecords(dl, recoveredRecords, ct);
+                recoveredNextUsn = nextUsn;
+                recoveredJournalId = journalId;
+                enumerateStopwatch.Stop();
+
+                ct.ThrowIfCancellationRequested();
+
+                var mergeStopwatch = Stopwatch.StartNew();
+                var mergedRecords = ReplaceDriveRecords(oldIndex.SortedArray, recoveredRecords, dl);
+                mergeStopwatch.Stop();
+
+                var buildStopwatch = Stopwatch.StartNew();
+                var newIndex = new MemoryIndex();
+                newIndex.LoadSortedRecords(
+                    mergedRecords,
+                    buildContainsAccelerator: true,
+                    takeOwnership: true,
+                    buildDerivedStructures: false,
+                    buildShortAsciiStructures: true);
+                var contentFingerprint = IndexSnapshotFingerprint.Compute(mergedRecords);
+                buildStopwatch.Stop();
+
+                var snapshotStopwatch = Stopwatch.StartNew();
+                var newEnumerator = new MftEnumerator();
+                newEnumerator.LoadVolumeSnapshots(existingVolumes);
+                newEnumerator.ReplaceVolumeFrom(dl, recoveredEnumerator);
+                var volumeSnapshots = CreateRecoveredVolumeSnapshots(existingVolumes, dl, nextUsn, journalId, newEnumerator);
+                snapshotStopwatch.Stop();
+
+                _index = newIndex;
+                _enumerator = newEnumerator;
+                _currentIndexContentFingerprint = contentFingerprint;
+                _lastVolumeSnapshots = CopyVolumeSnapshots(volumeSnapshots);
+                _lastStableSnapshotRecordCount = Math.Max(_lastStableSnapshotRecordCount, newIndex.TotalCount);
+                var generation = NextIndexGeneration();
+                _isSnapshotStale = false;
+                lock (_pathCandidateCacheLock)
+                {
+                    _pathCandidateCache = null;
+                }
+                _usnWatcher.StartWatching(dl, nextUsn, journalId, ct);
+
+                QueueDefaultShortContainsHotBucketWarmup(newIndex, "single-volume-recover", generation);
+                QueueContainsAcceleratorWarmup("single-volume-recover", generation);
+                QueueSnapshotSave(mergedRecords, volumeSnapshots, contentFingerprint, newIndex, generation);
+
+                totalStopwatch.Stop();
+                UsnDiagLog.Write(
+                    $"[MFT VOLUME RECOVER] outcome=success drive={dl} totalMs={totalStopwatch.ElapsedMilliseconds} " +
+                    $"enumerateMs={enumerateStopwatch.ElapsedMilliseconds} mergeMs={mergeStopwatch.ElapsedMilliseconds} " +
+                    $"buildMs={buildStopwatch.ElapsedMilliseconds} snapshotMs={snapshotStopwatch.ElapsedMilliseconds} " +
+                    $"volumeRecords={count} indexedCount={newIndex.TotalCount} nextUsn={nextUsn} journalId={journalId}");
+                return newIndex.TotalCount;
+            }
+            catch (OperationCanceledException)
+            {
+                totalStopwatch.Stop();
+                UsnDiagLog.Write($"[MFT VOLUME RECOVER] outcome=canceled drive={dl} totalMs={totalStopwatch.ElapsedMilliseconds}");
+                throw;
+            }
+            catch (Exception ex)
+            {
+                totalStopwatch.Stop();
+                _isSnapshotStale = true;
+                UsnDiagLog.Write(
+                    $"[MFT VOLUME RECOVER] outcome=failed drive={dl} totalMs={totalStopwatch.ElapsedMilliseconds} " +
+                    $"error={ex.GetType().Name}:{IndexPerfLog.FormatValue(ex.Message)}");
+                return _index.TotalCount;
+            }
+        }
+
+        private static FileRecord[] ReplaceDriveRecords(FileRecord[] existingRecords, List<FileRecord> replacementRecords, char driveLetter)
+        {
+            var dl = char.ToUpperInvariant(driveLetter);
+            existingRecords = existingRecords ?? Array.Empty<FileRecord>();
+            replacementRecords = replacementRecords ?? new List<FileRecord>();
+            var retainedCount = 0;
+            for (var i = 0; i < existingRecords.Length; i++)
+            {
+                var record = existingRecords[i];
+                if (record != null && char.ToUpperInvariant(record.DriveLetter) != dl)
+                    retainedCount++;
+            }
+
+            var merged = new FileRecord[retainedCount + replacementRecords.Count];
+            var offset = 0;
+            for (var i = 0; i < existingRecords.Length; i++)
+            {
+                var record = existingRecords[i];
+                if (record != null && char.ToUpperInvariant(record.DriveLetter) != dl)
+                    merged[offset++] = record;
+            }
+
+            replacementRecords.CopyTo(merged, offset);
+            return merged;
+        }
+
+        private static VolumeSnapshot[] CreateRecoveredVolumeSnapshots(
+            IReadOnlyList<VolumeSnapshot> existingVolumes,
+            char recoveredDrive,
+            long recoveredNextUsn,
+            ulong recoveredJournalId,
+            MftEnumerator enumerator)
+        {
+            var checkpoints = new List<(char driveLetter, long nextUsn, ulong journalId)>();
+            var dl = char.ToUpperInvariant(recoveredDrive);
+            var replaced = false;
+            if (existingVolumes != null)
+            {
+                for (var i = 0; i < existingVolumes.Count; i++)
+                {
+                    var volume = existingVolumes[i];
+                    if (volume == null)
+                        continue;
+
+                    var volumeDrive = char.ToUpperInvariant(volume.DriveLetter);
+                    if (volumeDrive == dl)
+                    {
+                        checkpoints.Add((dl, recoveredNextUsn, recoveredJournalId));
+                        replaced = true;
+                    }
+                    else
+                    {
+                        checkpoints.Add((volumeDrive, volume.NextUsn, volume.JournalId));
+                    }
+                }
+            }
+
+            if (!replaced)
+                checkpoints.Add((dl, recoveredNextUsn, recoveredJournalId));
+
+            return enumerator.CreateVolumeSnapshots(checkpoints.ToArray());
+        }
+
+        private void EnsureUsnJournalCapacityInBackground(char[] driveLetters)
+        {
+            if (driveLetters == null || driveLetters.Length == 0)
+                return;
+
+            if (Interlocked.Exchange(ref _usnJournalMaintenanceStarted, 1) != 0)
+                return;
+
+            var drives = driveLetters
+                .Select(char.ToUpperInvariant)
+                .Distinct()
+                .ToArray();
+
+            Task.Run(() =>
+            {
+                foreach (var drive in drives)
+                {
+                    try
+                    {
+                        EnsureUsnJournalCapacity(drive);
+                    }
+                    catch (Exception ex)
+                    {
+                        UsnDiagLog.Write(
+                            $"[USN JOURNAL MAINTENANCE] outcome=failed drive={drive} " +
+                            $"error={ex.GetType().Name}:{IndexPerfLog.FormatValue(ex.Message)}");
+                    }
+                }
+            });
+        }
+
+        private static void EnsureUsnJournalCapacity(char driveLetter)
+        {
+            var dl = char.ToUpperInvariant(driveLetter);
+            var driveName = dl + ":";
+            DriveInfo driveInfo;
+            try
+            {
+                driveInfo = new DriveInfo(driveName);
+            }
+            catch (Exception ex)
+            {
+                UsnDiagLog.Write(
+                    $"[USN JOURNAL MAINTENANCE] outcome=skip drive={dl} reason=drive-info-failed " +
+                    $"error={ex.GetType().Name}:{IndexPerfLog.FormatValue(ex.Message)}");
+                return;
+            }
+
+            if (driveInfo.DriveType != DriveType.Fixed)
+            {
+                UsnDiagLog.Write($"[USN JOURNAL MAINTENANCE] outcome=skip drive={dl} reason=not-fixed");
+                return;
+            }
+
+            if (!driveInfo.IsReady || !string.Equals(driveInfo.DriveFormat, "NTFS", StringComparison.OrdinalIgnoreCase))
+            {
+                UsnDiagLog.Write($"[USN JOURNAL MAINTENANCE] outcome=skip drive={dl} reason=not-ready-or-not-ntfs");
+                return;
+            }
+
+            if (!TryQueryUsnJournalSize(dl, out var maximumSize, out var allocationDelta))
+            {
+                UsnDiagLog.Write($"[USN JOURNAL MAINTENANCE] outcome=query-failed drive={dl}");
+                return;
+            }
+
+            if (maximumSize >= TargetUsnJournalMaximumSize && allocationDelta >= TargetUsnJournalAllocationDelta)
+            {
+                UsnDiagLog.Write(
+                    $"[USN JOURNAL MAINTENANCE] outcome=skip drive={dl} reason=already-large " +
+                    $"maximumSize={maximumSize} allocationDelta={allocationDelta}");
+                return;
+            }
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = "fsutil.exe",
+                Arguments = $"usn createjournal m={TargetUsnJournalMaximumSize} a={TargetUsnJournalAllocationDelta} {dl}:",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            using (var process = Process.Start(psi))
+            {
+                if (process == null)
+                {
+                    UsnDiagLog.Write($"[USN JOURNAL MAINTENANCE] outcome=start-failed drive={dl}");
+                    return;
+                }
+
+                var output = process.StandardOutput.ReadToEnd();
+                var error = process.StandardError.ReadToEnd();
+                process.WaitForExit(10000);
+                UsnDiagLog.Write(
+                    $"[USN JOURNAL MAINTENANCE] outcome={(process.ExitCode == 0 ? "updated" : "failed")} drive={dl} " +
+                    $"exitCode={process.ExitCode} oldMaximumSize={maximumSize} oldAllocationDelta={allocationDelta} " +
+                    $"targetMaximumSize={TargetUsnJournalMaximumSize} targetAllocationDelta={TargetUsnJournalAllocationDelta} " +
+                    $"stdout={IndexPerfLog.FormatValue(output)} stderr={IndexPerfLog.FormatValue(error)}");
+            }
+        }
+
+        private static bool TryQueryUsnJournalSize(char driveLetter, out ulong maximumSize, out ulong allocationDelta)
+        {
+            maximumSize = 0;
+            allocationDelta = 0;
+            var psi = new ProcessStartInfo
+            {
+                FileName = "fsutil.exe",
+                Arguments = $"usn queryjournal {char.ToUpperInvariant(driveLetter)}:",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+
+            using (var process = Process.Start(psi))
+            {
+                if (process == null)
+                    return false;
+
+                var output = process.StandardOutput.ReadToEnd();
+                var error = process.StandardError.ReadToEnd();
+                process.WaitForExit(10000);
+                if (process.ExitCode != 0)
+                {
+                    UsnDiagLog.Write(
+                        $"[USN JOURNAL MAINTENANCE] outcome=query-command-failed drive={char.ToUpperInvariant(driveLetter)} " +
+                        $"exitCode={process.ExitCode} stderr={IndexPerfLog.FormatValue(error)}");
+                    return false;
+                }
+
+                maximumSize = ParseFsutilSize(output, "Maximum Size");
+                allocationDelta = ParseFsutilSize(output, "Allocation Delta");
+                return maximumSize > 0 && allocationDelta > 0;
+            }
+        }
+
+        private static ulong ParseFsutilSize(string output, string label)
+        {
+            if (string.IsNullOrEmpty(output) || string.IsNullOrEmpty(label))
+                return 0;
+
+            var pattern = Regex.Escape(label) + @"\s*:\s*0x(?<hex>[0-9a-fA-F]+)";
+            var match = Regex.Match(output, pattern);
+            return match.Success && ulong.TryParse(
+                match.Groups["hex"].Value,
+                System.Globalization.NumberStyles.HexNumber,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var value)
+                ? value
+                : 0;
         }
 
         private void CancelBackgroundCatchUp()
@@ -3541,6 +3904,18 @@ namespace MftScanner
                         $"[LIVE DELTA COMPACT] outcome=skip-running reason={IndexPerfLog.FormatValue(reason)} liveDeltaCount={index.LiveDeltaCount}");
                     return;
                 }
+
+                var nowTicks = DateTime.UtcNow.Ticks;
+                var lastTicks = Interlocked.Read(ref _lastLiveDeltaCompactAttemptUtcTicks);
+                if (lastTicks > 0
+                    && (new TimeSpan(nowTicks - lastTicks)).TotalMilliseconds < LiveDeltaCompactMinIntervalMilliseconds)
+                {
+                    UsnDiagLog.Write(
+                        $"[LIVE DELTA COMPACT] outcome=skip-throttled reason={IndexPerfLog.FormatValue(reason)} liveDeltaCount={index.LiveDeltaCount}");
+                    return;
+                }
+
+                Interlocked.Exchange(ref _lastLiveDeltaCompactAttemptUtcTicks, nowTicks);
 
                 _liveDeltaCompactCts?.Cancel();
                 _liveDeltaCompactCts?.Dispose();

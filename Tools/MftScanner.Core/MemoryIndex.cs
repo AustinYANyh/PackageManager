@@ -63,8 +63,8 @@ namespace MftScanner
         private readonly List<PendingContainsMutation> _pendingContainsMutations = new List<PendingContainsMutation>();
         private bool _pendingContainsMutationsOverflowed;
         private const int MaxPendingContainsMutations = 65536;
-        private const int DefaultMaxLiveDeltaMutations = 2500;
-        private const int CatchUpMaxLiveDeltaMutations = 10000;
+        private const int DefaultMaxLiveDeltaMutations = 65536;
+        private const int CatchUpMaxLiveDeltaMutations = 65536;
 
         public int TotalCount
         {
@@ -151,6 +151,11 @@ namespace MftScanner
                 result.Sort(ByLowerName);
 
             return result.Count == 0 ? Array.Empty<FileRecord>() : result.ToArray();
+        }
+
+        private ContainsOverlay GetLiveOverlaySnapshot()
+        {
+            return Volatile.Read(ref _containsOverlay) ?? ContainsOverlay.Empty;
         }
 
         public bool HasContainsAccelerator
@@ -267,20 +272,15 @@ namespace MftScanner
 
             var accelerator = Volatile.Read(ref _containsAccelerator);
             var overlay = Volatile.Read(ref _containsOverlay) ?? ContainsOverlay.Empty;
+            if (TryShortAsciiSearch(query, filter, offset, maxResults, null, ct, overlay, out result))
+            {
+                return true;
+            }
+
             if (!Volatile.Read(ref _containsAcceleratorReady)
                 || accelerator == null
                 || accelerator.IsEmpty)
             {
-                if (TrySingleCharBitmapSearch(query, filter, offset, maxResults, null, ct, out result))
-                {
-                    return true;
-                }
-
-                if (TryBigramAsciiCountSearch(query, filter, offset, maxResults, null, ct, out result))
-                {
-                    return true;
-                }
-
                 if (TryShortContainsHotSearch(query, filter, offset, maxResults, ct, out result))
                 {
                     return true;
@@ -291,16 +291,6 @@ namespace MftScanner
 
             if (!accelerator.Supports(query))
             {
-                if (TrySingleCharBitmapSearch(query, filter, offset, maxResults, null, ct, out result))
-                {
-                    return true;
-                }
-
-                if (TryBigramAsciiCountSearch(query, filter, offset, maxResults, null, ct, out result))
-                {
-                    return true;
-                }
-
                 return TryShortContainsHotSearch(query, filter, offset, maxResults, ct, out result);
             }
 
@@ -1038,17 +1028,7 @@ namespace MftScanner
             out ContainsSearchResult result)
         {
             result = null;
-            if (!IsShortContainsQuery(query))
-            {
-                return false;
-            }
-
-            if (TrySingleCharBitmapSearch(query, filter, offset, maxResults, char.ToUpperInvariant(driveLetter), ct, out result))
-            {
-                return true;
-            }
-
-            if (TryBigramAsciiCountSearch(query, filter, offset, maxResults, char.ToUpperInvariant(driveLetter), ct, out result))
+            if (TryShortAsciiSearch(query, filter, offset, maxResults, char.ToUpperInvariant(driveLetter), ct, GetLiveOverlaySnapshot(), out result))
             {
                 return true;
             }
@@ -1136,6 +1116,29 @@ namespace MftScanner
             return true;
         }
 
+        private bool TryShortAsciiSearch(
+            string query,
+            SearchTypeFilter filter,
+            int offset,
+            int maxResults,
+            char? driveLetter,
+            CancellationToken ct,
+            ContainsOverlay overlay,
+            out ContainsSearchResult result)
+        {
+            overlay = overlay ?? ContainsOverlay.Empty;
+            if (TrySingleCharBitmapSearch(query, filter, offset, maxResults, driveLetter, ct, overlay, out result)
+                || TryBigramAsciiCountSearch(query, filter, offset, maxResults, driveLetter, ct, overlay, out result))
+            {
+                if (overlay.AddedCount > 0)
+                    result.IncludesLiveOverlay = true;
+
+                return true;
+            }
+
+            return false;
+        }
+
         private bool TryBigramAsciiCountSearch(
             string query,
             SearchTypeFilter filter,
@@ -1143,6 +1146,7 @@ namespace MftScanner
             int maxResults,
             char? driveLetter,
             CancellationToken ct,
+            ContainsOverlay overlay,
             out ContainsSearchResult result)
         {
             result = null;
@@ -1184,10 +1188,11 @@ namespace MftScanner
             var total = TryGetPrecomputedBigramTotal(token, dl, hasDrive, out var precomputedTotal)
                 ? precomputedTotal
                 : -1;
-            var hasDeletedOverlay = HasDeletedOverlay;
+            var activeOverlay = overlay ?? ContainsOverlay.Empty;
+            var hasDeletedOverlay = HasDeletedOverlay || activeOverlay.RemovedCount > 0;
             if (total >= 0 && hasDeletedOverlay)
             {
-                total -= CountDeletedBigramMatches(query, hasDrive ? dl : (char?)null);
+                total -= CountDeletedBigramMatches(query, hasDrive ? dl : (char?)null, activeOverlay);
                 if (total < 0)
                     total = 0;
             }
@@ -1212,7 +1217,7 @@ namespace MftScanner
                     var record = sampleRecords[sampleIndex];
                     if (record == null
                         || (hasDrive && char.ToUpperInvariant(record.DriveLetter) != dl)
-                        || (hasDeletedOverlay && IsDeleted(record))
+                        || (hasDeletedOverlay && IsDeleted(record, activeOverlay))
                         || !NameContains(record, query))
                     {
                         continue;
@@ -1242,7 +1247,7 @@ namespace MftScanner
                     var record = records[i];
                     if (record == null
                         || (hasDrive && char.ToUpperInvariant(record.DriveLetter) != dl)
-                        || (hasDeletedOverlay && IsDeleted(record))
+                        || (hasDeletedOverlay && IsDeleted(record, activeOverlay))
                         || !NameContains(record, query))
                     {
                         continue;
@@ -1261,11 +1266,13 @@ namespace MftScanner
                 }
             }
 
-            stopwatch.Stop();
             if (total < 0)
             {
                 total = pageMatched;
             }
+
+            AddShortAsciiOverlayMatches(query, filter, hasDrive ? dl : (char?)null, normalizedOffset, normalizedMaxResults, page, ref total, ct, activeOverlay);
+            stopwatch.Stop();
 
             result = new ContainsSearchResult
             {
@@ -1301,6 +1308,7 @@ namespace MftScanner
             int maxResults,
             char? driveLetter,
             CancellationToken ct,
+            ContainsOverlay overlay,
             out ContainsSearchResult result)
         {
             result = null;
@@ -1315,6 +1323,7 @@ namespace MftScanner
                 return false;
             }
 
+            var activeOverlay = overlay ?? ContainsOverlay.Empty;
             int[] bitset = null;
             FileRecord[] records;
             int recordCount;
@@ -1337,7 +1346,7 @@ namespace MftScanner
                     bitset = bitsets[ch];
                 }
 
-                if ((bitset == null || bitset.Length == 0) && counts[ch] == 0)
+                if ((bitset == null || bitset.Length == 0) && counts[ch] == 0 && activeOverlay.AddedCount == 0)
                 {
                     result = new ContainsSearchResult
                     {
@@ -1360,7 +1369,7 @@ namespace MftScanner
             var candidateCount = 0;
             var normalizedOffset = Math.Max(offset, 0);
             var normalizedMaxResults = Math.Max(maxResults, 0);
-            var hasDeletedOverlay = HasDeletedOverlay;
+            var hasDeletedOverlay = HasDeletedOverlay || activeOverlay.RemovedCount > 0;
             var filterAll = filter == SearchTypeFilter.All;
             var hasDrive = driveLetter.HasValue;
             var dl = hasDrive ? char.ToUpperInvariant(driveLetter.Value) : '\0';
@@ -1369,7 +1378,7 @@ namespace MftScanner
                 : -1;
             if (total >= 0 && hasDeletedOverlay)
             {
-                total -= CountDeletedSingleCharMatches(ch, hasDrive ? dl : (char?)null, filter);
+                total -= CountDeletedSingleCharMatches(ch, hasDrive ? dl : (char?)null, filter, activeOverlay);
                 if (total < 0)
                 {
                     total = 0;
@@ -1400,7 +1409,7 @@ namespace MftScanner
                         var record = records[index];
                         if (record == null
                             || (hasDrive && char.ToUpperInvariant(record.DriveLetter) != dl)
-                            || (hasDeletedOverlay && IsDeleted(record))
+                            || (hasDeletedOverlay && IsDeleted(record, activeOverlay))
                             || (!filterAll && !MatchesFilter(record, filter)))
                         {
                             continue;
@@ -1438,7 +1447,7 @@ namespace MftScanner
                     var record = records[index];
                     if (record == null
                         || (hasDrive && char.ToUpperInvariant(record.DriveLetter) != dl)
-                        || (hasDeletedOverlay && IsDeleted(record))
+                        || (hasDeletedOverlay && IsDeleted(record, activeOverlay))
                         || (!filterAll && !MatchesFilter(record, filter))
                         || !NameContains(record, query))
                     {
@@ -1459,11 +1468,13 @@ namespace MftScanner
                 }
             }
 
-            stopwatch.Stop();
             if (total < 0)
             {
                 total = pageMatched;
             }
+
+            AddShortAsciiOverlayMatches(query, filter, hasDrive ? dl : (char?)null, normalizedOffset, normalizedMaxResults, page, ref total, ct, activeOverlay);
+            stopwatch.Stop();
 
             result = new ContainsSearchResult
             {
@@ -1518,8 +1529,17 @@ namespace MftScanner
 
         private int CountDeletedBigramMatches(string query, char? driveLetter)
         {
+            return CountDeletedBigramMatches(query, driveLetter, null);
+        }
+
+        private int CountDeletedBigramMatches(string query, char? driveLetter, ContainsOverlay overlay)
+        {
             var keys = Volatile.Read(ref _deletedOverlayKeys);
-            if (keys == null || keys.Count == 0 || string.IsNullOrEmpty(query) || query.Length != 2)
+            var overlayRemoved = overlay?.GetRemovedKeysSnapshot();
+            if ((keys == null || keys.Count == 0)
+                && (overlayRemoved == null || overlayRemoved.Count == 0)
+                || string.IsNullOrEmpty(query)
+                || query.Length != 2)
             {
                 return 0;
             }
@@ -1527,8 +1547,21 @@ namespace MftScanner
             var total = 0;
             var hasDrive = driveLetter.HasValue;
             var dl = hasDrive ? char.ToUpperInvariant(driveLetter.Value) : '\0';
+            CountDeletedBigramMatches(keys, query, hasDrive, dl, null, ref total);
+            CountDeletedBigramMatches(overlayRemoved, query, hasDrive, dl, keys, ref total);
+            return total;
+        }
+
+        private static void CountDeletedBigramMatches(HashSet<RecordKey> keys, string query, bool hasDrive, char dl, HashSet<RecordKey> alreadyCounted, ref int total)
+        {
+            if (keys == null || keys.Count == 0)
+                return;
+
             foreach (var key in keys)
             {
+                if (alreadyCounted != null && alreadyCounted.Contains(key))
+                    continue;
+
                 if (key.LowerName == null
                     || key.LowerName.IndexOf(query, StringComparison.Ordinal) < 0
                     || (hasDrive && char.ToUpperInvariant(key.DriveLetter) != dl))
@@ -1538,8 +1571,6 @@ namespace MftScanner
 
                 total++;
             }
-
-            return total;
         }
 
         private bool TryGetPrecomputedSingleCharTotal(
@@ -1583,8 +1614,15 @@ namespace MftScanner
 
         private int CountDeletedSingleCharMatches(char ch, char? driveLetter, SearchTypeFilter filter)
         {
+            return CountDeletedSingleCharMatches(ch, driveLetter, filter, null);
+        }
+
+        private int CountDeletedSingleCharMatches(char ch, char? driveLetter, SearchTypeFilter filter, ContainsOverlay overlay)
+        {
             var keys = Volatile.Read(ref _deletedOverlayKeys);
-            if (keys == null || keys.Count == 0)
+            var overlayRemoved = overlay?.GetRemovedKeysSnapshot();
+            if ((keys == null || keys.Count == 0)
+                && (overlayRemoved == null || overlayRemoved.Count == 0))
             {
                 return 0;
             }
@@ -1593,8 +1631,21 @@ namespace MftScanner
             var filterAll = filter == SearchTypeFilter.All;
             var hasDrive = driveLetter.HasValue;
             var dl = hasDrive ? char.ToUpperInvariant(driveLetter.Value) : '\0';
+            CountDeletedSingleCharMatches(keys, ch, hasDrive, dl, filterAll, null, ref total);
+            CountDeletedSingleCharMatches(overlayRemoved, ch, hasDrive, dl, filterAll, keys, ref total);
+            return total;
+        }
+
+        private static void CountDeletedSingleCharMatches(HashSet<RecordKey> keys, char ch, bool hasDrive, char dl, bool filterAll, HashSet<RecordKey> alreadyCounted, ref int total)
+        {
+            if (keys == null || keys.Count == 0)
+                return;
+
             foreach (var key in keys)
             {
+                if (alreadyCounted != null && alreadyCounted.Contains(key))
+                    continue;
+
                 if (key.LowerName == null
                     || key.LowerName.IndexOf(ch) < 0
                     || (hasDrive && char.ToUpperInvariant(key.DriveLetter) != dl))
@@ -1609,8 +1660,53 @@ namespace MftScanner
 
                 total++;
             }
+        }
 
-            return total;
+        private bool IsDeleted(FileRecord record, ContainsOverlay overlay)
+        {
+            if (record == null)
+                return false;
+
+            var key = RecordKey.FromRecord(record);
+            return IsDeleted(record)
+                   || (overlay != null && overlay.ContainsRemoved(key));
+        }
+
+        private static void AddShortAsciiOverlayMatches(
+            string query,
+            SearchTypeFilter filter,
+            char? driveLetter,
+            int offset,
+            int maxResults,
+            List<FileRecord> page,
+            ref int total,
+            CancellationToken ct,
+            ContainsOverlay overlay)
+        {
+            if (overlay == null || overlay.AddedRecords.Count == 0)
+                return;
+
+            var hasDrive = driveLetter.HasValue;
+            var dl = hasDrive ? char.ToUpperInvariant(driveLetter.Value) : '\0';
+            for (var i = 0; i < overlay.AddedRecords.Count; i++)
+            {
+                if (((i + 1) & 0x7FF) == 0)
+                    ct.ThrowIfCancellationRequested();
+
+                var record = overlay.AddedRecords[i];
+                if (record == null
+                    || overlay.ContainsRemoved(RecordKey.FromRecord(record))
+                    || (hasDrive && char.ToUpperInvariant(record.DriveLetter) != dl)
+                    || !NameContains(record, query)
+                    || !MatchesFilter(record, filter))
+                {
+                    continue;
+                }
+
+                total++;
+                if (total > offset && page.Count < maxResults)
+                    page.Add(record);
+            }
         }
 
         private static int GetLowestSetBitIndex(uint value)
@@ -2656,6 +2752,15 @@ namespace MftScanner
             };
         }
 
+        private static void BuildShortAsciiIndexes(
+            FileRecord[] arr,
+            out SingleCharAsciiIndex singleCharAsciiIndex,
+            out BigramAsciiIndex bigramAsciiIndex)
+        {
+            singleCharAsciiIndex = BuildSingleCharAsciiIndex(arr);
+            bigramAsciiIndex = BuildBigramAsciiIndex(arr);
+        }
+
         private static FileRecord[][] BuildBigramAsciiPageSamples(FileRecord[] arr, int[] counts)
         {
             if (arr == null || arr.Length == 0 || counts == null || counts.Length != BigramAsciiTokenCount)
@@ -2838,8 +2943,12 @@ namespace MftScanner
             bool derivedStructuresReady,
             bool buildShortAsciiStructures = true)
         {
-            var singleCharAsciiIndex = buildShortAsciiStructures ? BuildSingleCharAsciiIndex(arr) : null;
-            var bigramAsciiIndex = buildShortAsciiStructures ? BuildBigramAsciiIndex(arr) : null;
+            SingleCharAsciiIndex singleCharAsciiIndex = null;
+            BigramAsciiIndex bigramAsciiIndex = null;
+            if (buildShortAsciiStructures)
+            {
+                BuildShortAsciiIndexes(arr, out singleCharAsciiIndex, out bigramAsciiIndex);
+            }
             _lock.EnterWriteLock();
             try
             {
@@ -3175,6 +3284,7 @@ namespace MftScanner
             var arr = MergeSortedRecords(survivors, survivorCount, inserted);
             var singleCharAsciiIndex = BuildSingleCharAsciiIndex(arr);
             var bigramAsciiIndex = BuildBigramAsciiIndex(arr);
+            var containsAccelerator = ContainsAccelerator.Build(arr, ContainsAcceleratorBucketKinds.All, ct);
             BuildDerivedStructures(
                 arr,
                 out var extensionMap,
@@ -3206,23 +3316,23 @@ namespace MftScanner
                 LogSortedArray = logArr;
                 ConfigSortedArray = configArr;
                 _derivedStructuresReady = true;
-                _containsAccelerator = ContainsAccelerator.Empty;
+                _containsAccelerator = containsAccelerator ?? ContainsAccelerator.Empty;
                 _containsOverlay = ContainsOverlay.Empty;
                 Volatile.Write(ref _deletedOverlayKeys, new HashSet<RecordKey>());
-                _containsAcceleratorReady = false;
+                _containsAcceleratorReady = containsAccelerator != null && !containsAccelerator.IsEmpty;
                 Interlocked.Increment(ref _containsAcceleratorEpoch);
                 _pendingContainsMutations.Clear();
                 _pendingContainsMutationsOverflowed = false;
                 Interlocked.Increment(ref _contentVersion);
                 ClearShortContainsHotBuckets();
-                _singleCharAsciiBitsets = null;
-                _singleCharAsciiCounts = null;
-                _singleCharAsciiDriveCounts = null;
-                _singleCharAsciiRecordCount = 0;
-                _bigramAsciiCounts = null;
-                _bigramAsciiDriveCounts = null;
-                _bigramAsciiPageSamples = null;
-                _bigramAsciiRecordCount = 0;
+                _singleCharAsciiBitsets = singleCharAsciiIndex.Bitsets;
+                _singleCharAsciiCounts = singleCharAsciiIndex.Counts;
+                _singleCharAsciiDriveCounts = singleCharAsciiIndex.DriveCounts;
+                _singleCharAsciiRecordCount = arr?.Length ?? 0;
+                _bigramAsciiCounts = bigramAsciiIndex.Counts;
+                _bigramAsciiDriveCounts = bigramAsciiIndex.DriveCounts;
+                _bigramAsciiPageSamples = bigramAsciiIndex.PageSamples;
+                _bigramAsciiRecordCount = arr?.Length ?? 0;
                 return true;
             }
             finally
@@ -3654,15 +3764,35 @@ namespace MftScanner
             });
         }
 
+        public void EnsureShortAsciiStructuresReady(CancellationToken ct, string reason)
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                EnsureShortAsciiStructures(ct, reason);
+
+                var recordCount = SortedArray?.Length ?? 0;
+                if (recordCount == 0
+                    || (Volatile.Read(ref _singleCharAsciiCounts) != null
+                        && Volatile.Read(ref _singleCharAsciiRecordCount) == recordCount
+                        && Volatile.Read(ref _bigramAsciiCounts) != null
+                        && Volatile.Read(ref _bigramAsciiRecordCount) == recordCount))
+                {
+                    return;
+                }
+
+                Thread.Sleep(25);
+            }
+
+            ct.ThrowIfCancellationRequested();
+        }
+
         private void EnsureShortAsciiStructures(CancellationToken ct, string reason)
         {
             FileRecord[] snapshot;
-            long contentVersion;
             _lock.EnterReadLock();
             try
             {
                 snapshot = SortedArray ?? Array.Empty<FileRecord>();
-                contentVersion = ContentVersion;
                 if (snapshot.Length == 0
                     || (Volatile.Read(ref _singleCharAsciiCounts) != null
                         && Volatile.Read(ref _singleCharAsciiRecordCount) == snapshot.Length
@@ -3686,7 +3816,7 @@ namespace MftScanner
             _lock.EnterWriteLock();
             try
             {
-                if (ContentVersion != contentVersion || !ReferenceEquals(snapshot, SortedArray))
+                if (!ReferenceEquals(snapshot, SortedArray))
                     return;
 
                 _singleCharAsciiBitsets = singleCharAsciiIndex.Bitsets;
