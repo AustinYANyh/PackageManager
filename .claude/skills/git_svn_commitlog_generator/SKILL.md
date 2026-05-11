@@ -67,7 +67,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_c
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/get-working-changes.ps1 -NonInteractive
 ```
 
-实现要点：Git 已跟踪用 `git status --porcelain=v1 -z --untracked-files=no`；SVN 已跟踪需要用 `svn status --xml -v` 建立完整路径集合，再用第二次全树 `svn status --xml` 采集 `unversioned` 候选；超大库可用 `-ScanUntrackedForNeedsAdd false`。
+实现要点：Git 已跟踪用 `git status --porcelain=v1 -z --untracked-files=no`；SVN 已跟踪用 `svn status --xml -q`，不会枚举 `normal` 文件；`NeedsAdd` 默认开启，通过 Git `??` 与 SVN `unversioned` 收集常见源码/配置候选，供步骤 1 勾选加入。极端大库只想看已管理改动时，可用 `-ScanUntrackedForNeedsAdd false`。
 
 常用参数：
 

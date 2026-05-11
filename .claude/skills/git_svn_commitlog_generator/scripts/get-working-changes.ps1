@@ -448,6 +448,60 @@ function Should-ExcludeByDefault([string]$relPath) {
   return $false
 }
 
+$CommonAddCandidateExtensions = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+foreach ($ext in @(
+  ".cs",".vb",".fs",".fsx",
+  ".c",".h",".cpp",".hpp",".cc",".cxx",".hh",".hxx",".ixx",".inl",".cu",".cuh",
+  ".m",".mm",".swift",
+  ".ts",".tsx",".js",".jsx",".mjs",".cjs",".mts",".cts",
+  ".py",".pyw",".java",".kt",".kts",".go",".rs",".php",".rb",
+  ".scala",".sc",".groovy",".dart",".lua",".r",".jl",".ex",".exs",
+  ".erl",".hrl",".clj",".cljs",".fsproj",
+  ".xaml",".axaml",".cshtml",".razor",".sql",".plsql",
+  ".glsl",".hlsl",".shader",".compute",".wgsl",
+  ".html",".htm",".css",".scss",".sass",".less",".styl",
+  ".vue",".svelte",".astro",".ejs",".hbs",".handlebars",".liquid",
+  ".twig",".jinja",".j2",".jsp",".aspx",".ascx",
+  ".ps1",".psm1",".psd1",".bat",".cmd",".sh",".bash",".zsh",
+  ".fish",".psql",".sqlcmd",".awk",".sed",
+  ".json",".jsonc",".yml",".yaml",".xml",".config",".props",".targets",
+  ".csproj",".vbproj",".vcxproj",".vcxproj.filters",".sqlproj",".shproj",".sln",".slnx",
+  ".proj",".xproj",".nuspec",".toml",".ini",".env",".properties",".gradle",".cmake",
+  ".tf",".tfvars",".hcl",".bicep",".editorconfig",
+  ".gitattributes",".gitignore",".dockerignore",".npmrc",".yarnrc",
+  ".md",".markdown",".mdx",".rst",".adoc",
+  ".proto",".graphql",".graphqls",".gql",".thrift",".avsc",".xsd",".wsdl",
+  ".resx",".rc",".manifest",".reg",".plist"
+)) {
+  [void]$CommonAddCandidateExtensions.Add($ext)
+}
+
+$CommonAddCandidateNames = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+foreach ($name in @(
+  "directory.build.props","directory.build.targets","nuget.config",
+  "packages.config","app.config","web.config","global.json","dockerfile",
+  "makefile","cmakelists.txt","package.json","package-lock.json",
+  "pnpm-lock.yaml","yarn.lock","vite.config.ts","vite.config.js",
+  "webpack.config.js","rollup.config.js","eslint.config.js",
+  ".gitignore",".gitattributes",".dockerignore",".editorconfig",
+  ".env",".env.example",".env.local"
+)) {
+  [void]$CommonAddCandidateNames.Add($name)
+}
+
+function Test-CommonAddCandidatePath([string]$path) {
+  if (-not $path) { return $false }
+
+  $path = $path -replace '\\','/'
+  if ($path.EndsWith("/")) { return $false }
+
+  $lower = $path.ToLowerInvariant()
+  $ext = [System.IO.Path]::GetExtension($lower)
+  $name = [System.IO.Path]::GetFileName($lower)
+
+  return ($CommonAddCandidateExtensions.Contains($ext) -or $CommonAddCandidateNames.Contains($name))
+}
+
 function Safe-TrimBytes([string]$text, [int]$maxBytes) {
   if (-not $text) { return "" }
   $bytes = [System.Text.Encoding]::UTF8.GetBytes($text)
@@ -528,8 +582,15 @@ function Get-GitRepoRoot([string]$rootFull) {
   return $rootFull
 }
 
-function Get-GitPorcelainChanges([string]$rootFull, [bool]$includeUntracked) {
-  $items = @()
+function Get-GitPorcelainChanges(
+  [string]$rootFull,
+  [bool]$includeUntracked,
+  [string[]]$SkipFullPathPrefixes = @(),
+  [string[]]$SkipRelPathPrefixes = @(),
+  [bool]$CommonAddCandidatesOnly = $false,
+  [bool]$UseDefaultPathExcludes = $false
+) {
+  $items = New-Object 'System.Collections.Generic.List[object]'
   try {
     $gitArgs = @("-c", "status.relativePaths=false", "status", "--porcelain=v1", "-z")
     if ($includeUntracked) {
@@ -582,19 +643,42 @@ function Get-GitPorcelainChanges([string]$rootFull, [bool]$includeUntracked) {
         }
       }
 
-      $items += [pscustomobject]@{
+      if ($includeUntracked -and $x -eq "?" -and $y -eq "?") {
+        $pn = $path -replace '\\','/'
+        $skipPath = $false
+        foreach ($prefix in $SkipRelPathPrefixes) {
+          if ($prefix -and $pn.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            $skipPath = $true
+            break
+          }
+        }
+        if (-not $skipPath -and $SkipFullPathPrefixes.Count -gt 0) {
+          $abs = [System.IO.Path]::GetFullPath((Join-Path -Path $rootFull -ChildPath ($pn -replace '/','\')))
+          foreach ($prefix in $SkipFullPathPrefixes) {
+            if ($prefix -and $abs.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+              $skipPath = $true
+              break
+            }
+          }
+        }
+        if ($skipPath) { $i += 1; continue }
+        if ($UseDefaultPathExcludes -and (Should-ExcludeByDefault -relPath $pn)) { $i += 1; continue }
+        if ($CommonAddCandidatesOnly -and -not (Test-CommonAddCandidatePath $pn)) { $i += 1; continue }
+      }
+
+      [void]$items.Add([pscustomobject]@{
         Source = "git"
-        Path = $path -replace '\\','/'
+        Path = ($path -replace '\\','/')
         IndexStatus = $x
         WorktreeStatus = $y
-        RenamedFrom = if ($renamedFrom) { $renamedFrom -replace '\\','/' } else { "" }
-      }
+        RenamedFrom = if ($renamedFrom) { ($renamedFrom -replace '\\','/') } else { "" }
+      })
       $i += 1
     }
   } catch {
     return @()
   }
-  return $items
+  return $items.ToArray()
 }
 
 function Get-GitDiffForPath([string]$rootFull, [string]$path, [bool]$cached, [int]$maxBytes) {
@@ -665,7 +749,7 @@ function Get-SvnWorkingCopyRoots([string]$rootFull) {
 }
 
 function Get-SvnStatusChanges([string]$wcRoot, [string]$rootFull, [bool]$quiet, [bool]$includeNormal = $false) {
-  $items = @()
+  $items = New-Object 'System.Collections.Generic.List[object]'
   try {
     Push-Location -LiteralPath $wcRoot
     $svnArgs = @("status", "--xml")
@@ -697,20 +781,20 @@ function Get-SvnStatusChanges([string]$wcRoot, [string]$rootFull, [bool]$quiet, 
       if ($item -eq "ignored") { continue }
       if (-not $includeNormal -and $item -eq "normal" -and $props -eq "none") { continue }
 
-      $items += [pscustomobject]@{
+      [void]$items.Add([pscustomobject]@{
         Source = "svn"
         Path = $rel
         WcRoot = $wcRoot
         SvnItem = $item
         SvnProps = $props
-      }
+      })
     }
   } catch {
     return @()
   } finally {
     Pop-Location -ErrorAction SilentlyContinue
   }
-  return $items
+  return $items.ToArray()
 }
 
 function Get-SvnStatusText([object]$value) {
@@ -734,12 +818,10 @@ function Test-SvnPendingStatus([object]$item, [object]$props) {
   return $true
 }
 
-function Get-SvnInfoForPath([string]$wcRoot, [string]$relPathFromRoot, [string]$rootFull) {
-  $abs = Join-Path -Path $rootFull -ChildPath ($relPathFromRoot -replace '/','\')
-
+function Get-SvnInfoForWorkingCopy([string]$wcRoot) {
   try {
     Push-Location -LiteralPath $wcRoot
-    $xmlText = (& svn info --xml -- $abs 2>$null) -join "`n"
+    $xmlText = (& svn info --xml 2>$null) -join "`n"
     if (-not $xmlText) { return $null }
     $xml = [xml]$xmlText
     $entry = $xml.info.entry | Select-Object -First 1
@@ -755,6 +837,28 @@ function Get-SvnInfoForPath([string]$wcRoot, [string]$relPathFromRoot, [string]$
   } finally {
     Pop-Location -ErrorAction SilentlyContinue
   }
+}
+
+function Format-PathPrefixForCompare([string]$path) {
+  if (-not $path) { return "" }
+  try {
+    $full = [System.IO.Path]::GetFullPath($path)
+    if (-not $full.EndsWith([System.IO.Path]::DirectorySeparatorChar)) {
+      $full += [System.IO.Path]::DirectorySeparatorChar
+    }
+    return $full
+  } catch {
+    return ""
+  }
+}
+
+function Format-RelPathPrefixForCompare([string]$fullPath, [string]$rootFull) {
+  if (-not $fullPath) { return "" }
+  $rel = Normalize-RelPath -fullPath $fullPath -rootFull $rootFull
+  if (-not $rel -or $rel -match '^\.\.') { return "" }
+  $rel = $rel -replace '\\','/'
+  if (-not $rel.EndsWith("/")) { $rel += "/" }
+  return $rel
 }
 
 # 同一路径同时出现在 Git 与 SVN 时保留一条，优先 Git。
@@ -851,12 +955,12 @@ if ($hasGit) {
 }
 
 # 已跟踪的待提交：Git（无 ??）+ SVN（status --xml -q，不含未版本管理，避免海量条目）
-$rawTracked = @()
+$rawTrackedList = New-Object 'System.Collections.Generic.List[object]'
 $trackedPathSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
 if ($hasGit) {
   $gitTracked = Get-GitPorcelainChanges -rootFull $gitRepoRoot -includeUntracked $false
-  $rawTracked += $gitTracked
   foreach ($g in $gitTracked) {
+    [void]$rawTrackedList.Add($g)
     if ($g.Path) { [void]$trackedPathSet.Add(($g.Path -replace '\\', '/')) }
   }
 }
@@ -865,7 +969,7 @@ $wcRoots = @()
 if ($Svn) {
   try { $wcRoots = Get-SvnWorkingCopyRoots -rootFull $rootFull } catch { $wcRoots = @() }
   foreach ($wc in $wcRoots) {
-    $svnEntries = Get-SvnStatusChanges -wcRoot $wc -rootFull $rootFull -quiet $false -includeNormal $true
+    $svnEntries = Get-SvnStatusChanges -wcRoot $wc -rootFull $rootFull -quiet $true
     foreach ($s in $svnEntries) {
       if (-not $s.Path) { continue }
       $pn = ($s.Path -replace '\\', '/')
@@ -873,21 +977,23 @@ if ($Svn) {
         [void]$trackedPathSet.Add($pn)
       }
       if (-not (Test-SvnPendingStatus -item $s.SvnItem -props $s.SvnProps)) { continue }
-      $rawTracked += $s
+      [void]$rawTrackedList.Add($s)
     }
   }
 }
+$svnWcPrefixes = @($wcRoots | ForEach-Object { Format-PathPrefixForCompare $_ } | Where-Object { $_ })
+$svnWcRelPrefixes = @($wcRoots | ForEach-Object { Format-RelPathPrefixForCompare -fullPath $_ -rootFull $gitRepoRoot } | Where-Object { $_ })
 
-$rawTracked = Merge-DuplicateSourcesByPath -rawChanges $rawTracked
+$rawTracked = Merge-DuplicateSourcesByPath -rawChanges $rawTrackedList
 
-$rawUntracked = @()
+$rawUntrackedList = New-Object 'System.Collections.Generic.List[object]'
 if ($ScanUntrackedForNeedsAdd) {
   if ($hasGit) {
-    $gitAll = Get-GitPorcelainChanges -rootFull $gitRepoRoot -includeUntracked $true
+    $gitAll = Get-GitPorcelainChanges -rootFull $gitRepoRoot -includeUntracked $true -SkipFullPathPrefixes $svnWcPrefixes -SkipRelPathPrefixes $svnWcRelPrefixes -CommonAddCandidatesOnly $true -UseDefaultPathExcludes $UseDefaultExcludes
     foreach ($g in $gitAll) {
       if ($g.IndexStatus -ne "?" -or $g.WorktreeStatus -ne "?") { continue }
       $pn = ($g.Path -replace '\\', '/')
-      if (-not $trackedPathSet.Contains($pn)) { $rawUntracked += $g }
+      if (-not $trackedPathSet.Contains($pn)) { [void]$rawUntrackedList.Add($g) }
     }
   }
   if ($Svn) {
@@ -896,12 +1002,14 @@ if ($ScanUntrackedForNeedsAdd) {
       foreach ($s in $svnFull) {
         if ($s.SvnItem -ne "unversioned") { continue }
         $pn = ($s.Path -replace '\\', '/')
-        if (-not $trackedPathSet.Contains($pn)) { $rawUntracked += $s }
+        if ($UseDefaultExcludes -and (Should-ExcludeByDefault -relPath $pn)) { continue }
+        if (-not (Test-CommonAddCandidatePath $pn)) { continue }
+        if (-not $trackedPathSet.Contains($pn)) { [void]$rawUntrackedList.Add($s) }
       }
     }
   }
-  $rawUntracked = Merge-DuplicateSourcesByPath -rawChanges $rawUntracked
 }
+$rawUntracked = Merge-DuplicateSourcesByPath -rawChanges $rawUntrackedList
 
 $orderedTracked = @($rawTracked | Sort-Object Source, Path, IndexStatus, WorktreeStatus, SvnItem, WcRoot)
 $orderedUntracked = @($rawUntracked | Sort-Object Source, Path, IndexStatus, WorktreeStatus, SvnItem, WcRoot)
@@ -924,7 +1032,7 @@ foreach ($p in $ExcludePaths) {
 # 保持「已跟踪变更」在前、「未跟踪候选」在后，便于默认提交日志与稳定 Id
 $ordered = $rawChanges
 $projectCache = @{}
-$items = @()
+$itemsList = New-Object 'System.Collections.Generic.List[object]'
 $id = 1
 foreach ($c in $ordered) {
   $path = $c.Path
@@ -934,7 +1042,7 @@ foreach ($c in $ordered) {
 
   $proj = Get-ProjectNameForPath -relPath $path -rootFull $rootFull -cache $projectCache
 
-  $items += [pscustomobject]@{
+  [void]$itemsList.Add([pscustomobject]@{
     Id = $id
     Source = $c.Source
     Path = $path
@@ -946,16 +1054,17 @@ foreach ($c in $ordered) {
     SvnWcRoot = if ($c.PSObject.Properties.Match("WcRoot").Count) { $c.WcRoot } else { "" }
     SvnRepoRootUrl = ""
     SvnRepoUuid = ""
-  }
+  })
   $id += 1
 }
+$items = $itemsList.ToArray()
 
 $svnInfoCache = @{}
 foreach ($item in @($items | Where-Object { $_.Source -eq "svn" })) {
   if (-not $item.SvnWcRoot) { continue }
-  $cacheKey = "$($item.SvnWcRoot)|$($item.Path)"
+  $cacheKey = $item.SvnWcRoot
   if (-not $svnInfoCache.ContainsKey($cacheKey)) {
-    $svnInfoCache[$cacheKey] = Get-SvnInfoForPath -wcRoot $item.SvnWcRoot -relPathFromRoot $item.Path -rootFull $rootFull
+    $svnInfoCache[$cacheKey] = Get-SvnInfoForWorkingCopy -wcRoot $item.SvnWcRoot
   }
   $info = $svnInfoCache[$cacheKey]
   if (-not $info) { continue }
@@ -994,68 +1103,7 @@ function Is-TrackedPendingChange($item) {
 
 function Is-CommonAddCandidate($item) {
   if (-not $item -or -not $item.Path) { return $false }
-
-  $path = $item.Path -replace '\\','/'
-  if ($path.EndsWith("/")) { return $false }
-
-  $lower = $path.ToLowerInvariant()
-  $ext = [System.IO.Path]::GetExtension($lower)
-  $name = [System.IO.Path]::GetFileName($lower)
-
-  $codeExts = @(
-    ".cs",".vb",".fs",".fsx",
-    ".c",".h",".cpp",".hpp",".cc",".cxx",".hh",".hxx",".ixx",".inl",".cu",".cuh",
-    ".m",".mm",".swift",
-    ".ts",".tsx",".js",".jsx",".mjs",".cjs",".mts",".cts",
-    ".py",".pyw",".java",".kt",".kts",".go",".rs",".php",".rb",
-    ".scala",".sc",".groovy",".dart",".lua",".r",".jl",".ex",".exs",
-    ".erl",".hrl",".clj",".cljs",".fsproj",
-    ".xaml",".axaml",".cshtml",".razor",".sql",".plsql",
-    ".glsl",".hlsl",".shader",".compute",".wgsl"
-  )
-  $webExts = @(
-    ".html",".htm",".css",".scss",".sass",".less",".styl",
-    ".vue",".svelte",".astro",".ejs",".hbs",".handlebars",".liquid",
-    ".twig",".jinja",".j2",".jsp",".aspx",".ascx"
-  )
-  $scriptExts = @(
-    ".ps1",".psm1",".psd1",".bat",".cmd",".sh",".bash",".zsh",
-    ".fish",".psql",".sqlcmd",".awk",".sed"
-  )
-  $configExts = @(
-    ".json",".jsonc",".yml",".yaml",".xml",".config",".props",".targets",
-    ".csproj",".vbproj",".vcxproj",".vcxproj.filters",".sqlproj",".shproj",".sln",".slnx",
-    ".proj",".xproj",".nuspec",".toml",".ini",".env",".properties",".gradle",".cmake",
-    ".tf",".tfvars",".hcl",".bicep",".editorconfig",
-    ".gitattributes",".gitignore",".dockerignore",".npmrc",".yarnrc"
-  )
-  $docExts = @(
-    ".md",".markdown",".mdx",".rst",".adoc"
-  )
-  $schemaAndDataExts = @(
-    ".proto",".graphql",".graphqls",".gql",".thrift",".avsc",".xsd",".wsdl",
-    ".resx",".rc",".manifest",".reg",".plist"
-  )
-
-  if ($codeExts -contains $ext) { return $true }
-  if ($webExts -contains $ext) { return $true }
-  if ($scriptExts -contains $ext) { return $true }
-  if ($configExts -contains $ext) { return $true }
-  if ($docExts -contains $ext) { return $true }
-  if ($schemaAndDataExts -contains $ext) { return $true }
-
-  $commonConfigNames = @(
-    "directory.build.props","directory.build.targets","nuget.config",
-    "packages.config","app.config","web.config","global.json","dockerfile",
-    "makefile","cmakelists.txt","package.json","package-lock.json",
-    "pnpm-lock.yaml","yarn.lock","vite.config.ts","vite.config.js",
-    "webpack.config.js","rollup.config.js","eslint.config.js",
-    ".gitignore",".gitattributes",".dockerignore",".editorconfig",
-    ".env",".env.example",".env.local"
-  )
-  if ($commonConfigNames -contains $name) { return $true }
-
-  return $false
+  return (Test-CommonAddCandidatePath $item.Path)
 }
 
 function Add-ToVersionControl($item, [string]$rootFull) {
@@ -1121,6 +1169,7 @@ if (-not $nonInteractiveMode -and (Test-WindowsConsoleChoice)) {
   }
 
   Write-Host ""
+  $excludeStepTitle = if ($ScanUntrackedForNeedsAdd) { "步骤 2/2" } else { "步骤 1/1" }
   $excludePromptList = @(
     $items | Where-Object {
       ((Is-TrackedPendingChange $_) -and -not (Is-ExcludedItem -item $_ -excludeIdSet $excludeIdSet -excludePathSet $excludePathSet)) -or
@@ -1129,18 +1178,22 @@ if (-not $nonInteractiveMode -and (Test-WindowsConsoleChoice)) {
     } | Sort-Object Id
   )
 
-  Write-Host ("步骤 2/2：以下是会进入本次提交日志的改动项（共 {0} 项），请确认是否要排除某些项：" -f $excludePromptList.Count) -ForegroundColor Cyan
+  Write-Host ("{0}：以下是会进入本次提交日志的已管理改动项（共 {1} 项），请确认是否要排除某些项：" -f $excludeStepTitle, $excludePromptList.Count) -ForegroundColor Cyan
   Write-Host "默认会打开勾选表格：勾选 = 排除；未勾选 = 保留。点击任意文件行可切换勾选。" -ForegroundColor Yellow
   Write-Host "点“确定”或超时都会进入下一步；未操作超时/点击“使用默认” = 全部保留，不排除任何文件。" -ForegroundColor Yellow
   Write-Host "如果 GUI 不可用，会回退为编号输入：直接按 1 = 全部保留（默认）；按 2 = 输入编号排除。" -ForegroundColor Yellow
-  Write-Host "说明：未在步骤 1 选择加入的未跟踪文件不会列在这里，也不会进入提交日志。" -ForegroundColor Yellow
+  if ($ScanUntrackedForNeedsAdd) {
+    Write-Host "说明：未在步骤 1 选择加入的未跟踪文件不会列在这里，也不会进入提交日志。" -ForegroundColor Yellow
+  } else {
+    Write-Host "说明：当前为快启动模式，只扫描已被 Git/SVN 管理且有改动的文件；未跟踪文件不会列入。" -ForegroundColor Yellow
+  }
   Write-Host "文件列表（如果这里缺少你认为应提交的文件，请先关闭窗口并重新运行 skill，确保文件已保存且 Git 状态已刷新）：" -ForegroundColor Cyan
   Write-ItemTable -Items $excludePromptList -CheckHeader "排除"
   Write-Host ""
   if ($excludePromptList.Count -eq 0) {
     Write-Host "当前没有可排除的提交日志改动项，跳过排除选择。" -ForegroundColor Yellow
   } else {
-    $dlgExclude = Invoke-ItemCheckDialog -Items $excludePromptList -Title "步骤 2/2：选择要排除的文件" -Instruction "勾选要从本次提交日志中排除的文件；未勾选表示保留。点“确定”或超时都会进入下一步；未操作超时/点击“使用默认”表示全部保留。" -CheckHeader "排除" -DefaultChecked $false -TimeoutSec $PromptTimeoutSeconds
+    $dlgExclude = Invoke-ItemCheckDialog -Items $excludePromptList -Title ("{0}：选择要排除的文件" -f $excludeStepTitle) -Instruction "勾选要从本次提交日志中排除的文件；未勾选表示保留。点“确定”或超时都会进入下一步；未操作超时/点击“使用默认”表示全部保留。" -CheckHeader "排除" -DefaultChecked $false -TimeoutSec $PromptTimeoutSeconds
     if ($dlgExclude.Used) {
       $consoleChoiceUsed = $true
       foreach ($id in @($dlgExclude.CheckedIds)) { [void]$excludeIdSet.Add([int]$id) }
