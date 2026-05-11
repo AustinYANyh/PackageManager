@@ -652,12 +652,16 @@ function Get-SvnWorkingCopyRoots([string]$rootFull) {
   return @($roots)
 }
 
-function Get-SvnStatusChanges([string]$wcRoot, [string]$rootFull, [bool]$quiet) {
+function Get-SvnStatusChanges([string]$wcRoot, [string]$rootFull, [bool]$quiet, [bool]$includeNormal = $false) {
   $items = @()
   try {
     Push-Location -LiteralPath $wcRoot
     $svnArgs = @("status", "--xml")
-    if ($quiet) { $svnArgs += "-q" }
+    if ($includeNormal) {
+      $svnArgs += "-v"
+    } elseif ($quiet) {
+      $svnArgs += "-q"
+    }
     $xmlText = (& svn @svnArgs 2>$null) -join "`n"
     if (-not $xmlText) { return @() }
     $xml = [xml]$xmlText
@@ -678,14 +682,15 @@ function Get-SvnStatusChanges([string]$wcRoot, [string]$rootFull, [bool]$quiet) 
       }
 
       # item: modified, added, deleted, unversioned, replaced, conflicted, missing, ignored, etc.
-      if ($item -eq "normal" -and $props -eq "none") { continue }
       if ($item -eq "ignored") { continue }
+      if (-not $includeNormal -and $item -eq "normal" -and $props -eq "none") { continue }
 
       $items += [pscustomobject]@{
         Source = "svn"
         Path = $rel
         WcRoot = $wcRoot
         SvnItem = $item
+        SvnProps = $props
       }
     }
   } catch {
@@ -814,24 +819,31 @@ if ($hasGit) {
 
 # 已跟踪的待提交：Git（无 ??）+ SVN（status --xml -q，不含未版本管理，避免海量条目）
 $rawTracked = @()
+$trackedPathSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
 if ($hasGit) {
-  $rawTracked += Get-GitPorcelainChanges -rootFull $gitRepoRoot -includeUntracked $false
+  $gitTracked = Get-GitPorcelainChanges -rootFull $gitRepoRoot -includeUntracked $false
+  $rawTracked += $gitTracked
+  foreach ($g in $gitTracked) {
+    if ($g.Path) { [void]$trackedPathSet.Add(($g.Path -replace '\\', '/')) }
+  }
 }
 
 $wcRoots = @()
 if ($Svn) {
   try { $wcRoots = Get-SvnWorkingCopyRoots -rootFull $rootFull } catch { $wcRoots = @() }
   foreach ($wc in $wcRoots) {
-    $rawTracked += Get-SvnStatusChanges -wcRoot $wc -rootFull $rootFull -quiet $true
+    $svnEntries = Get-SvnStatusChanges -wcRoot $wc -rootFull $rootFull -quiet $false -includeNormal $true
+    foreach ($s in $svnEntries) {
+      if (-not $s.Path) { continue }
+      $pn = ($s.Path -replace '\\', '/')
+      if (-not $trackedPathSet.Contains($pn)) { [void]$trackedPathSet.Add($pn) }
+      if ($s.SvnItem -eq "normal" -and $s.SvnProps -eq "none") { continue }
+      $rawTracked += $s
+    }
   }
 }
 
 $rawTracked = Merge-DuplicateSourcesByPath -rawChanges $rawTracked
-
-$trackedPathSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
-foreach ($t in $rawTracked) {
-  if ($t.Path) { [void]$trackedPathSet.Add(($t.Path -replace '\\', '/')) }
-}
 
 $rawUntracked = @()
 if ($ScanUntrackedForNeedsAdd) {
