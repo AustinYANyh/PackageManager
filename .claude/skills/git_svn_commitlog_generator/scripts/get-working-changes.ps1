@@ -531,17 +531,31 @@ function Get-GitRepoRoot([string]$rootFull) {
 function Get-GitPorcelainChanges([string]$rootFull, [bool]$includeUntracked) {
   $items = @()
   try {
-    Push-Location -LiteralPath $rootFull
-    $args = @("-c", "status.relativePaths=false", "status", "--porcelain=v1", "-z")
+    $gitArgs = @("-c", "status.relativePaths=false", "status", "--porcelain=v1", "-z")
     if ($includeUntracked) {
-      $args += "--untracked-files=all"
+      $gitArgs += "--untracked-files=all"
     } else {
-      $args += "--untracked-files=no"
+      $gitArgs += "--untracked-files=no"
     }
-    $raw = & git @args 2>$null
+
+    # Use ProcessStartInfo for porcelain -z output. Native redirection with
+    # NUL-delimited stdout can terminate early in some Windows PowerShell hosts.
+    $raw = Invoke-NativeText -Tool "git" -Arguments $gitArgs -WorkingDirectory $rootFull
+    if (-not $raw) {
+      Push-Location -LiteralPath $rootFull
+      try {
+        $raw = & git @gitArgs
+      } finally {
+        Pop-Location -ErrorAction SilentlyContinue
+      }
+    }
     if (-not $raw) { return @() }
 
-    $tokens = $raw -split "`0" | Where-Object { $_ -ne "" }
+    if ($raw -is [array]) {
+      $raw = [string]::Join("`0", @($raw))
+    }
+
+    $tokens = @($raw -split "`0" | Where-Object { $_ -ne "" })
     $i = 0
     while ($i -lt $tokens.Count) {
       $t = $tokens[$i]
@@ -579,8 +593,6 @@ function Get-GitPorcelainChanges([string]$rootFull, [bool]$includeUntracked) {
     }
   } catch {
     return @()
-  } finally {
-    Pop-Location -ErrorAction SilentlyContinue
   }
   return $items
 }
@@ -699,6 +711,27 @@ function Get-SvnStatusChanges([string]$wcRoot, [string]$rootFull, [bool]$quiet, 
     Pop-Location -ErrorAction SilentlyContinue
   }
   return $items
+}
+
+function Get-SvnStatusText([object]$value) {
+  if ($null -eq $value) { return "" }
+  return ([string]$value).Trim().ToLowerInvariant()
+}
+
+function Test-SvnVersionedStatus([object]$item) {
+  $s = Get-SvnStatusText $item
+  return ($s -notin @("","unversioned","ignored","external"))
+}
+
+function Test-SvnPendingStatus([object]$item, [object]$props) {
+  $itemStatus = Get-SvnStatusText $item
+  $propStatus = Get-SvnStatusText $props
+
+  if ($itemStatus -in @("","normal","none","unversioned","ignored","external")) {
+    return ($propStatus -notin @("","normal","none"))
+  }
+
+  return $true
 }
 
 function Get-SvnInfoForPath([string]$wcRoot, [string]$relPathFromRoot, [string]$rootFull) {
@@ -836,8 +869,10 @@ if ($Svn) {
     foreach ($s in $svnEntries) {
       if (-not $s.Path) { continue }
       $pn = ($s.Path -replace '\\', '/')
-      if (-not $trackedPathSet.Contains($pn)) { [void]$trackedPathSet.Add($pn) }
-      if ($s.SvnItem -eq "normal" -and $s.SvnProps -eq "none") { continue }
+      if (Test-SvnVersionedStatus $s.SvnItem -and -not $trackedPathSet.Contains($pn)) {
+        [void]$trackedPathSet.Add($pn)
+      }
+      if (-not (Test-SvnPendingStatus -item $s.SvnItem -props $s.SvnProps)) { continue }
       $rawTracked += $s
     }
   }
