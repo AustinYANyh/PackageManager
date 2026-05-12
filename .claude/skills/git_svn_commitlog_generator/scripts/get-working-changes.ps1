@@ -562,6 +562,54 @@ function Invoke-NativeText {
   }
 }
 
+function Invoke-NativeCommandCaptured([string]$tool, [string[]]$arguments, [string]$workingDirectory) {
+  try {
+    $cmd = Get-Command -Name $tool -CommandType Application -ErrorAction SilentlyContinue
+    if (-not $cmd) {
+      return [pscustomobject]@{
+        exitCode = 127
+        output = @()
+        warnings = @()
+        error = "找不到命令：$tool"
+      }
+    }
+
+    $psi = New-Object System.Diagnostics.ProcessStartInfo
+    $psi.FileName = $cmd.Source
+    $psi.Arguments = (@($arguments) | ForEach-Object { Quote-NativeArgument $_ }) -join " "
+    $psi.WorkingDirectory = $workingDirectory
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+    $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+    $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
+    [void]$proc.Start()
+    $stdoutTask = $proc.StandardOutput.ReadToEndAsync()
+    $stderrTask = $proc.StandardError.ReadToEndAsync()
+    $proc.WaitForExit()
+    $stdout = @($stdoutTask.Result -split "`r?`n" | Where-Object { $_ -ne "" })
+    $stderr = @($stderrTask.Result -split "`r?`n" | Where-Object { $_ -ne "" })
+
+    return [pscustomobject]@{
+      exitCode = [int]$proc.ExitCode
+      output = @($stdout)
+      warnings = if ($proc.ExitCode -eq 0) { @($stderr) } else { @() }
+      error = if ($proc.ExitCode -eq 0) { "" } else { (($stderr + $stdout) -join "`n") }
+    }
+  } catch {
+    return [pscustomobject]@{
+      exitCode = 1
+      output = @()
+      warnings = @()
+      error = $_.Exception.Message
+    }
+  }
+}
+
 function Test-IsGitRepo([string]$rootFull) {
   try {
     Push-Location -LiteralPath $rootFull
@@ -1106,28 +1154,113 @@ function Is-CommonAddCandidate($item) {
   return (Test-CommonAddCandidatePath $item.Path)
 }
 
-function Add-ToVersionControl($item, [string]$rootFull) {
+function Add-ToVersionControl($item, [string]$rootFull, [string]$gitRootFull) {
   if (Is-GitUntracked $item) {
-    try {
-      Push-Location -LiteralPath $rootFull
-      & git add -- $item.Path 2>$null | Out-Null
-    } finally {
-      Pop-Location -ErrorAction SilentlyContinue
+    $gitRoot = if ($gitRootFull) { $gitRootFull } else { $rootFull }
+    $result = Invoke-NativeCommandCaptured -tool "git" -arguments @("add", "--", $item.Path) -workingDirectory $gitRoot
+    return [pscustomobject]@{
+      id = [int]$item.Id
+      action = "git-add"
+      path = $item.Path
+      exitCode = [int]$result.exitCode
+      warnings = @($result.warnings)
+      output = @($result.output)
+      error = $result.error
     }
-    return
   }
 
   if (Is-SvnUnversioned $item) {
     $abs = Join-Path -Path $rootFull -ChildPath ($item.Path -replace '/','\')
     $wc = $item.SvnWcRoot
-    if (-not $wc) { return }
+    if (-not $wc) {
+      return [pscustomobject]@{
+        id = [int]$item.Id
+        action = "svn-add"
+        path = $item.Path
+        exitCode = 1
+        warnings = @()
+        output = @()
+        error = "SVN working copy root is empty."
+      }
+    }
+
+    $result = Invoke-NativeCommandCaptured -tool "svn" -arguments @("add", "--parents", "--", $abs) -workingDirectory $wc
+    return [pscustomobject]@{
+      id = [int]$item.Id
+      action = "svn-add"
+      path = $item.Path
+      exitCode = [int]$result.exitCode
+      warnings = @($result.warnings)
+      output = @($result.output)
+      error = $result.error
+    }
+  }
+}
+
+function Refresh-ItemsAfterVersionControlAdd(
+  [object[]]$items,
+  [string]$rootFull,
+  [string]$gitRootFull,
+  [bool]$hasGit,
+  [bool]$Svn,
+  [object[]]$wcRoots,
+  [object[]]$addActions) {
+
+  if (-not $items -or @($items).Count -eq 0) { return }
+
+  $fresh = @()
+  if ($hasGit) {
     try {
-      Push-Location -LiteralPath $wc
-      & svn add --parents -- $abs 2>$null | Out-Null
+      Push-Location -LiteralPath $(if ($gitRootFull) { $gitRootFull } else { $rootFull })
+      & git update-index -q --refresh 2>$null
+    } catch {
     } finally {
       Pop-Location -ErrorAction SilentlyContinue
     }
-    return
+    $fresh += Get-GitPorcelainChanges -rootFull $(if ($gitRootFull) { $gitRootFull } else { $rootFull }) -includeUntracked $true
+  }
+
+  if ($Svn) {
+    foreach ($wc in $wcRoots) {
+      $fresh += Get-SvnStatusChanges -wcRoot $wc -rootFull $rootFull -quiet $false
+    }
+  }
+
+  $fresh = Merge-DuplicateSourcesByPath -rawChanges $fresh
+  $bySourcePath = @{}
+  foreach ($change in $fresh) {
+    if (-not $change.Path -or -not $change.Source) { continue }
+    $key = ("{0}|{1}" -f $change.Source, (($change.Path -replace '\\','/').ToLowerInvariant()))
+    $bySourcePath[$key] = $change
+  }
+
+  foreach ($item in $items) {
+    if (-not $item.Path -or -not $item.Source) { continue }
+    $key = ("{0}|{1}" -f $item.Source, (($item.Path -replace '\\','/').ToLowerInvariant()))
+    if ($bySourcePath.ContainsKey($key)) {
+      $change = $bySourcePath[$key]
+      if ($item.Source -eq "git") {
+        $item.GitIndexStatus = if ($change.PSObject.Properties.Match("IndexStatus").Count) { $change.IndexStatus } else { "" }
+        $item.GitWorktreeStatus = if ($change.PSObject.Properties.Match("WorktreeStatus").Count) { $change.WorktreeStatus } else { "" }
+        $item.GitRenamedFrom = if ($change.PSObject.Properties.Match("RenamedFrom").Count) { $change.RenamedFrom } else { "" }
+      } elseif ($item.Source -eq "svn") {
+        $item.SvnItem = if ($change.PSObject.Properties.Match("SvnItem").Count) { $change.SvnItem } else { "" }
+        $item.SvnWcRoot = if ($change.PSObject.Properties.Match("WcRoot").Count) { $change.WcRoot } else { $item.SvnWcRoot }
+      }
+    }
+  }
+
+  foreach ($action in @($addActions)) {
+    if ($null -eq $action -or [int]$action.exitCode -ne 0) { continue }
+    foreach ($item in $items) {
+      if ([int]$item.Id -ne [int]$action.id) { continue }
+      if ($action.action -eq "git-add" -and (Is-GitUntracked $item)) {
+        $item.GitIndexStatus = "A"
+        $item.GitWorktreeStatus = " "
+      } elseif ($action.action -eq "svn-add" -and (Is-SvnUnversioned $item)) {
+        $item.SvnItem = "added"
+      }
+    }
   }
 }
 
@@ -1167,14 +1300,48 @@ if (-not $nonInteractiveMode -and (Test-WindowsConsoleChoice)) {
       }
     }
   }
+}
 
+$addActions = @()
+foreach ($it in $items) {
+  if ($addAllCandidates -or $addIdSet.Contains([int]$it.Id)) {
+    $kind = if (((Is-GitUntracked $it) -or (Is-SvnUnversioned $it)) -and (Is-CommonAddCandidate $it)) {
+      if (Is-GitUntracked $it) { "git-add" } else { "svn-add" }
+    } else { "" }
+    if ($kind) {
+      $action = Add-ToVersionControl -item $it -rootFull $rootFull -gitRootFull $gitRepoRoot
+      if ($null -ne $action) {
+        $addActions += $action
+        if ([int]$action.exitCode -ne 0) {
+          Write-Host ("加入版本管理失败：#{0} {1}，{2}" -f $action.id, $action.path, $action.error) -ForegroundColor Red
+        } elseif (@($action.warnings).Count -gt 0) {
+          Write-Host ("加入版本管理完成但有警告：#{0} {1}" -f $action.id, $action.path) -ForegroundColor Yellow
+          foreach ($warning in @($action.warnings)) {
+            if ($warning) { Write-Host ("  {0}" -f $warning) -ForegroundColor DarkYellow }
+          }
+        }
+      }
+    }
+  }
+}
+
+if (@($addActions).Count -gt 0) {
+  Refresh-ItemsAfterVersionControlAdd `
+    -items $items `
+    -rootFull $rootFull `
+    -gitRootFull $gitRepoRoot `
+    -hasGit $hasGit `
+    -Svn $Svn `
+    -wcRoots $wcRoots `
+    -addActions $addActions
+}
+
+if (-not $nonInteractiveMode -and (Test-WindowsConsoleChoice)) {
   Write-Host ""
   $excludeStepTitle = if ($ScanUntrackedForNeedsAdd) { "步骤 2/2" } else { "步骤 1/1" }
   $excludePromptList = @(
     $items | Where-Object {
-      ((Is-TrackedPendingChange $_) -and -not (Is-ExcludedItem -item $_ -excludeIdSet $excludeIdSet -excludePathSet $excludePathSet)) -or
-      ($addAllCandidates -and (((Is-GitUntracked $_) -or (Is-SvnUnversioned $_)) -and (Is-CommonAddCandidate $_))) -or
-      ($addIdSet.Contains([int]$_.Id))
+      (Is-TrackedPendingChange $_) -and -not (Is-ExcludedItem -item $_ -excludeIdSet $excludeIdSet -excludePathSet $excludePathSet)
     } | Sort-Object Id
   )
 
@@ -1209,19 +1376,6 @@ if (-not $nonInteractiveMode -and (Test-WindowsConsoleChoice)) {
   }
 }
 
-$addActions = @()
-foreach ($it in $items) {
-  if ($addAllCandidates -or $addIdSet.Contains([int]$it.Id)) {
-    $kind = if (((Is-GitUntracked $it) -or (Is-SvnUnversioned $it)) -and (Is-CommonAddCandidate $it)) {
-      if (Is-GitUntracked $it) { "git-add" } else { "svn-add" }
-    } else { "" }
-    if ($kind) {
-      Add-ToVersionControl -item $it -rootFull $rootFull
-      $addActions += [pscustomobject]@{ id = $it.Id; action = $kind; path = $it.Path }
-    }
-  }
-}
-
 $excluded = @()
 $included = @()
 foreach ($it in $items) {
@@ -1230,12 +1384,8 @@ foreach ($it in $items) {
 
 $needsAdd = @($included | Where-Object { ((Is-GitUntracked $_) -or (Is-SvnUnversioned $_)) -and (Is-CommonAddCandidate $_) } | Sort-Object Id)
 
-$addedIdSet = New-Object System.Collections.Generic.HashSet[int]
-foreach ($a in $addActions) {
-  if ($null -ne $a.id) { [void]$addedIdSet.Add([int]$a.id) }
-}
 $includedDefaultLog = @(
-  $included | Where-Object { (Is-TrackedPendingChange $_) -or $addedIdSet.Contains([int]$_.Id) } | Sort-Object Id
+  $included | Where-Object { Is-TrackedPendingChange $_ } | Sort-Object Id
 )
 
 # Attach diffs (limited)
@@ -1310,6 +1460,12 @@ $out = [pscustomobject]@{
   Add = [pscustomobject]@{
     AddIds = @($AddIds)
     Actions = @($addActions)
+  }
+  StateRefresh = [pscustomobject]@{
+    AfterAdd = (@($addActions).Count -gt 0)
+    AddActionCount = @($addActions).Count
+    AddSuccessCount = @($addActions | Where-Object { [int]$_.exitCode -eq 0 }).Count
+    AddFailureCount = @($addActions | Where-Object { [int]$_.exitCode -ne 0 }).Count
   }
   Exclude = [pscustomobject]@{
     ExcludeIds = @($ExcludeIds)
