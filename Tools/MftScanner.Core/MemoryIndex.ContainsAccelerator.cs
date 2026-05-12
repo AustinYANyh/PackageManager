@@ -34,9 +34,9 @@ namespace MftScanner
             public static ContainsAccelerator Empty => new ContainsAccelerator();
 
             public bool IsEmpty => _records.Length == 0;
-            public bool IsComplete => _builtBuckets == BucketKinds.All;
-            public bool HasCharBucket => (_builtBuckets & BucketKinds.Char) != 0;
-            public bool HasBigramBucket => (_builtBuckets & BucketKinds.Bigram) != 0;
+            public bool IsComplete => HasTrigramBucket;
+            public bool HasCharBucket => false;
+            public bool HasBigramBucket => false;
             public bool HasTrigramBucket => (_builtBuckets & BucketKinds.Trigram) != 0;
             public ulong ContentFingerprint => _contentFingerprint;
 
@@ -73,25 +73,13 @@ namespace MftScanner
                     return false;
                 }
 
-                if (query.Length == 1)
-                {
-                    return !IsAsciiToken(query[0])
-                           && (_builtBuckets & BucketKinds.Char) != 0;
-                }
-
-                if (query.Length == 2)
-                {
-                    return (!IsAsciiToken(query[0]) || !IsAsciiToken(query[1]))
-                           && (_builtBuckets & BucketKinds.Bigram) != 0;
-                }
-
-                return (_builtBuckets & BucketKinds.Trigram) != 0;
+                return query.Length >= 3 && HasTrigramBucket;
             }
 
             public bool Supports(ContainsAcceleratorBucketKinds requiredBuckets)
             {
                 var flags = ToBucketKinds(requiredBuckets);
-                return (_builtBuckets & flags) == flags;
+                return (flags & BucketKinds.Trigram) == 0 || HasTrigramBucket;
             }
 
             public bool ContainsRecord(RecordKey key)
@@ -151,23 +139,16 @@ namespace MftScanner
                                     && ReferenceEquals(existing._records, records);
                 if (reuseExisting)
                 {
-                    builtBuckets |= existing._builtBuckets;
+                    if (existing.HasTrigramBucket)
+                    {
+                        builtBuckets |= BucketKinds.Trigram;
+                    }
                 }
 
                 var contentFingerprint = reuseExisting && existing._contentFingerprint != 0
                     ? existing._contentFingerprint
                     : IndexSnapshotFingerprint.Compute(records);
 
-                var charBuckets = (builtBuckets & BucketKinds.Char) != 0
-                    ? (reuseExisting && existing.HasCharBucket
-                        ? existing._charBuckets
-                        : BuildBucketStore(records, "char", CountCharTokens, FillCharTokens, ct))
-                    : BucketStore<char>.Empty;
-                var bigramBuckets = (builtBuckets & BucketKinds.Bigram) != 0
-                    ? (reuseExisting && existing.HasBigramBucket
-                        ? existing._bigramBuckets
-                        : BuildBucketStore(records, "bigram", CountBigramTokens, FillBigramTokens, ct))
-                    : BucketStore<uint>.Empty;
                 var trigramBuckets = (builtBuckets & BucketKinds.Trigram) != 0
                     ? (reuseExisting && existing.HasTrigramBucket
                         ? existing._trigramBuckets
@@ -177,7 +158,13 @@ namespace MftScanner
                 totalStopwatch.Stop();
                 IndexPerfLog.Write("INDEX",
                     $"[CONTAINS BUILD] outcome=success buckets={builtBuckets} records={records.Length} elapsedMs={totalStopwatch.ElapsedMilliseconds}");
-                return new ContainsAccelerator(records, builtBuckets, charBuckets, bigramBuckets, trigramBuckets, contentFingerprint);
+                return new ContainsAccelerator(
+                    records,
+                    builtBuckets,
+                    BucketStore<char>.Empty,
+                    BucketStore<uint>.Empty,
+                    trigramBuckets,
+                    contentFingerprint);
             }
 
             public static ContainsAccelerator FromSnapshot(
@@ -195,8 +182,6 @@ namespace MftScanner
                 }
 
                 var builtBuckets = BucketKinds.None;
-                var charBuckets = BucketStore<char>.Empty;
-                var bigramBuckets = BucketStore<uint>.Empty;
                 var trigramBuckets = BucketStore<ulong>.Empty;
                 for (var i = 0; i < snapshot.Buckets.Length; i++)
                 {
@@ -208,28 +193,6 @@ namespace MftScanner
 
                     switch (bucket.Kind)
                     {
-                        case ContainsPostingsBucketKind.Char:
-                            charBuckets = BucketStore<char>.FromSnapshot(
-                                bucket.Keys,
-                                bucket.Offsets,
-                                bucket.Counts,
-                                bucket.ByteCounts,
-                                bucket.Bytes,
-                                key => (char)key);
-                            builtBuckets |= BucketKinds.Char;
-                            break;
-
-                        case ContainsPostingsBucketKind.Bigram:
-                            bigramBuckets = BucketStore<uint>.FromSnapshot(
-                                bucket.Keys,
-                                bucket.Offsets,
-                                bucket.Counts,
-                                bucket.ByteCounts,
-                                bucket.Bytes,
-                                key => (uint)key);
-                            builtBuckets |= BucketKinds.Bigram;
-                            break;
-
                         case ContainsPostingsBucketKind.Trigram:
                             trigramBuckets = BucketStore<ulong>.FromSnapshot(
                                 bucket.Keys,
@@ -251,8 +214,8 @@ namespace MftScanner
                 return new ContainsAccelerator(
                     records,
                     builtBuckets,
-                    charBuckets,
-                    bigramBuckets,
+                    BucketStore<char>.Empty,
+                    BucketStore<uint>.Empty,
                     trigramBuckets,
                     contentFingerprint != 0 ? contentFingerprint : IndexSnapshotFingerprint.Compute(records));
             }
@@ -271,25 +234,7 @@ namespace MftScanner
 
             public ContainsPostingsSnapshot ExportSnapshot()
             {
-                var sections = new List<ContainsPostingsBucketSnapshot>(3);
-                if (HasCharBucket)
-                {
-                    var snapshot = _charBuckets.ExportSnapshot(
-                        ContainsPostingsBucketKind.Char,
-                        key => key);
-                    if (snapshot != null)
-                        sections.Add(snapshot);
-                }
-
-                if (HasBigramBucket)
-                {
-                    var snapshot = _bigramBuckets.ExportSnapshot(
-                        ContainsPostingsBucketKind.Bigram,
-                        key => key);
-                    if (snapshot != null)
-                        sections.Add(snapshot);
-                }
-
+                var sections = new List<ContainsPostingsBucketSnapshot>(1);
                 if (HasTrigramBucket)
                 {
                     var snapshot = _trigramBuckets.ExportSnapshot(
@@ -301,7 +246,7 @@ namespace MftScanner
 
                 return sections.Count == 0
                     ? null
-                    : new ContainsPostingsSnapshot(_records.Length, sections.ToArray());
+                    : new ContainsPostingsSnapshot(_records.Length, sections.ToArray(), false);
             }
 
             public ContainsAccelerator WithInserted(FileRecord record)
@@ -469,6 +414,11 @@ namespace MftScanner
 
             private ContainsSearchResult BuildBucketResult(BucketPosting posting, string query, SearchTypeFilter filter, int offset, int maxResults, string mode, CancellationToken ct, ContainsOverlay overlay)
             {
+                if (filter == SearchTypeFilter.All && CanUseExactPostingCount(overlay))
+                {
+                    return BuildExactAllBucketResult(posting, query, offset, maxResults, mode, ct, overlay);
+                }
+
                 var page = new List<FileRecord>(Math.Min(maxResults, 64));
                 var total = 0;
                 var lastRecordId = int.MinValue;
@@ -511,6 +461,139 @@ namespace MftScanner
                     Total = total,
                     Page = page
                 };
+            }
+
+            private ContainsSearchResult BuildExactAllBucketResult(
+                BucketPosting posting,
+                string query,
+                int offset,
+                int maxResults,
+                string mode,
+                CancellationToken ct,
+                ContainsOverlay overlay)
+            {
+                var page = new List<FileRecord>(Math.Min(maxResults, 64));
+                var total = posting.Count;
+                var removedBeforePage = 0;
+                if (overlay != null && overlay.RemovedCount > 0)
+                {
+                    var removed = CountRemovedMatches(posting, offset, maxResults, page, out removedBeforePage, ct, overlay);
+                    total -= removed;
+                    if (total < 0)
+                    {
+                        total = 0;
+                    }
+                }
+                else
+                {
+                    FillPostingPage(posting, offset, maxResults, page, ct, overlay);
+                }
+
+                var adjustedOffset = Math.Max(0, offset - removedBeforePage);
+                AddOverlayMatches(query, SearchTypeFilter.All, adjustedOffset, maxResults, page, ref total, ct, overlay);
+                TrimPage(page, maxResults);
+
+                return new ContainsSearchResult
+                {
+                    Mode = mode,
+                    CandidateCount = total,
+                    Total = total,
+                    Page = page
+                };
+            }
+
+            private void FillPostingPage(
+                BucketPosting posting,
+                int offset,
+                int maxResults,
+                List<FileRecord> page,
+                CancellationToken ct,
+                ContainsOverlay overlay)
+            {
+                if (maxResults <= 0)
+                {
+                    return;
+                }
+
+                var start = Math.Min(Math.Max(offset, 0), posting.Count);
+                var end = Math.Min(posting.Count, start + maxResults);
+                for (var i = start; i < end; i++)
+                {
+                    if (((i - start + 1) & 0xFFF) == 0)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                    }
+
+                    var record = GetRecord(posting.Postings[posting.Offset + i]);
+                    if (record == null
+                        || (overlay != null && overlay.ContainsRemoved(RecordKey.FromRecord(record))))
+                    {
+                        continue;
+                    }
+
+                    page.Add(record);
+                }
+            }
+
+            private int CountRemovedMatches(
+                BucketPosting posting,
+                int offset,
+                int maxResults,
+                List<FileRecord> page,
+                out int removedBeforePage,
+                CancellationToken ct,
+                ContainsOverlay overlay)
+            {
+                removedBeforePage = 0;
+                var removed = 0;
+                var matched = 0;
+                for (var i = 0; i < posting.Count; i++)
+                {
+                    if (((i + 1) & 0xFFF) == 0)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                    }
+
+                    var record = GetRecord(posting.Postings[posting.Offset + i]);
+                    if (record == null)
+                    {
+                        continue;
+                    }
+
+                    if (overlay.ContainsRemoved(RecordKey.FromRecord(record)))
+                    {
+                        removed++;
+                        if (i < offset)
+                        {
+                            removedBeforePage++;
+                        }
+
+                        continue;
+                    }
+
+                    matched++;
+                    if (matched > offset && page.Count < maxResults)
+                    {
+                        page.Add(record);
+                    }
+                }
+
+                return removed;
+            }
+
+            private static bool CanUseExactPostingCount(ContainsOverlay overlay)
+            {
+                return overlay == null || !overlay.IsOverflowed;
+            }
+
+            private static void TrimPage(List<FileRecord> page, int maxResults)
+            {
+                if (page == null || maxResults < 0 || page.Count <= maxResults)
+                {
+                    return;
+                }
+
+                page.RemoveRange(maxResults, page.Count - maxResults);
             }
 
             private ContainsSearchResult BuildOverlayOnlyResult(
@@ -906,7 +989,7 @@ namespace MftScanner
                 for (var i = 0; i < lowerName.Length; i++)
                 {
                     var token = lowerName[i];
-                    if (!IsAsciiToken(token) && lowerName.IndexOf(token) == i)
+                    if (lowerName.IndexOf(token) == i)
                     {
                         IncrementCount(counts, token);
                     }
@@ -918,7 +1001,7 @@ namespace MftScanner
                 for (var i = 0; i < lowerName.Length; i++)
                 {
                     var token = lowerName[i];
-                    if (IsAsciiToken(token) || lowerName.IndexOf(token) != i)
+                    if (lowerName.IndexOf(token) != i)
                     {
                         continue;
                     }
@@ -943,11 +1026,6 @@ namespace MftScanner
 
                 for (var i = 0; i < lowerName.Length - 1; i++)
                 {
-                    if (IsAsciiToken(lowerName[i]) && IsAsciiToken(lowerName[i + 1]))
-                    {
-                        continue;
-                    }
-
                     var token = PackBigram(lowerName[i], lowerName[i + 1]);
                     if (!ContainsBigramBefore(lowerName, token, i))
                     {
@@ -965,11 +1043,6 @@ namespace MftScanner
 
                 for (var i = 0; i < lowerName.Length - 1; i++)
                 {
-                    if (IsAsciiToken(lowerName[i]) && IsAsciiToken(lowerName[i + 1]))
-                    {
-                        continue;
-                    }
-
                     var token = PackBigram(lowerName[i], lowerName[i + 1]);
                     if (ContainsBigramBefore(lowerName, token, i))
                     {

@@ -5,9 +5,12 @@ param(
     [int]$Repeat = 1,
     [int]$ReadyTimeoutSeconds = 180,
     [int]$SearchTimeoutSeconds = 60,
+    [int]$MaxHostMsThreshold = 100,
+    [int]$MaxRestoreReadyMsThreshold = 3000,
     [ValidateSet("SharedHost", "InProcess")]
     [string]$Backend = "SharedHost",
     [switch]$NoRestartHost,
+    [switch]$ForceRebuildIndex,
     [string]$OutputDirectory = ".\artifacts\mft-benchmark"
 )
 
@@ -54,6 +57,48 @@ function Stop-MftScannerHost {
                 Write-Warning "Failed to stop MftScanner.exe pid=${processId}: $($_.Exception.Message)"
             }
         }
+}
+
+function Backup-MftScannerIndexSnapshot {
+    param([string]$OutputRoot)
+
+    $snapshotRoot = Join-Path $env:LOCALAPPDATA "PackageManager\MftScannerIndex"
+    if (!(Test-Path $snapshotRoot)) {
+        return $null
+    }
+
+    $backupRoot = Join-Path $OutputRoot ("snapshot-backup-{0}" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
+    New-Item -ItemType Directory -Force -Path $backupRoot | Out-Null
+    $patterns = @(
+        "index.bin",
+        "index.records.bin",
+        "index.dirs.bin",
+        "index.postings.bin",
+        "index.bin.*.tmp",
+        "index.records.bin.*.tmp",
+        "index.dirs.bin.*.tmp",
+        "index.postings.bin.*.tmp"
+    )
+
+    $moved = 0
+    foreach ($pattern in $patterns) {
+        Get-ChildItem -LiteralPath $snapshotRoot -Filter $pattern -File -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                Move-Item -LiteralPath $_.FullName -Destination (Join-Path $backupRoot $_.Name) -Force
+                $moved++
+            }
+    }
+
+    if ($moved -eq 0) {
+        Remove-Item -LiteralPath $backupRoot -Force -ErrorAction SilentlyContinue
+        return $null
+    }
+
+    return [pscustomobject]@{
+        SnapshotRoot = $snapshotRoot
+        BackupRoot = $backupRoot
+        MovedFiles = $moved
+    }
 }
 
 function Get-ProcessMemorySnapshot {
@@ -322,7 +367,11 @@ function New-MarkdownReport {
         [string]$PathPrefix,
         [string]$Backend,
         [string]$BuildResult,
-        [string]$ReportJsonPath
+        [string]$ReportJsonPath,
+        [int]$MaxHostMsThreshold,
+        [int]$MaxRestoreReadyMsThreshold,
+        [long]$RestoreReadyMs,
+        [object[]]$Failures
     )
 
     $summary = $Rows | Group-Object Phase, Name | ForEach-Object {
@@ -390,6 +439,24 @@ function New-MarkdownReport {
 
     $lines = New-Object System.Collections.Generic.List[string]
     $lines.Add("# MftScanner 基准测试报告")
+    $lines.Add("")
+    $passed = @($Failures).Count -eq 0
+    $resultText = if ($passed) { "通过" } else { "不通过" }
+    $lines.Add("## 结论")
+    $lines.Add("")
+    $lines.Add("- 结果：$resultText")
+    $lines.Add("- 搜索宿主耗时阈值：$MaxHostMsThreshold ms")
+    $lines.Add("- 启动恢复 ready 阈值：$MaxRestoreReadyMsThreshold ms")
+    $lines.Add("- 当前恢复 ready 耗时：$RestoreReadyMs ms")
+    if (-not $passed) {
+        $lines.Add("")
+        $lines.Add("| 阶段 | 用例 | 关键词 | 类型过滤 | 客户端(ms) | 宿主(ms) | Contains模式 | 命中 | 阈值 | 原因 |")
+        $lines.Add("| --- | --- | --- | --- | ---: | ---: | --- | ---: | ---: | --- |")
+        foreach ($failure in @($Failures)) {
+            $keyword = if ($failure.Keyword) { $failure.Keyword.ToString().Replace("|", "/") } else { "" }
+            $lines.Add("| $($failure.Phase) | $($failure.Name) | ``$keyword`` | $($failure.Filter) | $($failure.ClientMs) | $($failure.HostSearchMs) | $($failure.ContainsMode) | $($failure.TotalMatchedCount) | $($failure.ThresholdMs) | $($failure.Reason) |")
+        }
+    }
     $lines.Add("")
     $lines.Add("- 测试时间：$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
     $lines.Add("- 测试后端：$Backend")
@@ -538,12 +605,23 @@ if (!(Test-Path $hostExe)) {
     throw "Host executable not found: $hostExe"
 }
 
-$correctnessScript = Join-Path $repoRoot "scripts\Test-MftScannerSearchCorrectness.ps1"
-if (Test-Path $correctnessScript) {
-    Write-Host "Running correctness precheck..."
-    & powershell -NoProfile -ExecutionPolicy Bypass -File $correctnessScript -Configuration $Configuration -Queries codex,code,c,vs -MaxResults 100 -SkipBuild
-    if ($LASTEXITCODE -ne 0) {
-        throw "Correctness precheck failed with exit code $LASTEXITCODE."
+$snapshotBackup = $null
+if ($ForceRebuildIndex) {
+    Write-Host "Force rebuild requested; stopping host and moving existing snapshot files..."
+    Stop-MftScannerHost
+    $snapshotBackup = Backup-MftScannerIndexSnapshot -OutputRoot $outputRoot
+    if ($snapshotBackup) {
+        Write-Host "Snapshot files moved to $($snapshotBackup.BackupRoot)"
+    }
+}
+else {
+    $correctnessScript = Join-Path $repoRoot "scripts\Test-MftScannerSearchCorrectness.ps1"
+    if (Test-Path $correctnessScript) {
+        Write-Host "Running correctness precheck..."
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $correctnessScript -Configuration $Configuration -Queries codex,code,c,vs,d,ve,dx,qx,zz,_d,1x,ver -MaxResults 100 -SkipBuild
+        if ($LASTEXITCODE -ne 0) {
+            throw "Correctness precheck failed with exit code $LASTEXITCODE."
+        }
     }
 }
 
@@ -677,6 +755,11 @@ try {
     $cases = @(
         [pscustomobject]@{ Name = "PathContainsSingleChar"; Keyword = "$PathPrefix d"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
         [pscustomobject]@{ Name = "PathContainsTwoChars"; Keyword = "$PathPrefix ve"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "PathSparseDx"; Keyword = "$PathPrefix dx"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "PathSparseQx"; Keyword = "$PathPrefix qx"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "PathSparseZz"; Keyword = "$PathPrefix zz"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "PathSparseUnderscoreD"; Keyword = "$PathPrefix _d"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "PathSparse1x"; Keyword = "$PathPrefix 1x"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
         [pscustomobject]@{ Name = "PathIncrementalV"; Keyword = "$PathPrefix v"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Typing"; Language = "Ascii" },
         [pscustomobject]@{ Name = "PathIncrementalVe"; Keyword = "$PathPrefix ve"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Typing"; Language = "Ascii" },
         [pscustomobject]@{ Name = "PathIncrementalVer"; Keyword = "$PathPrefix ver"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Typing"; Language = "Ascii" },
@@ -685,6 +768,11 @@ try {
         [pscustomobject]@{ Name = "PathConfigCalsupport"; Keyword = "$PathPrefix calsupport"; Filter = [MftScanner.SearchTypeFilter]::Config; Scenario = "Direct"; Language = "Ascii" },
         [pscustomobject]@{ Name = "GlobalAllSingleChar"; Keyword = "d"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
         [pscustomobject]@{ Name = "GlobalAllTwoChars"; Keyword = "ve"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "GlobalSparseDx"; Keyword = "dx"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "GlobalSparseQx"; Keyword = "qx"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "GlobalSparseZz"; Keyword = "zz"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "GlobalSparseUnderscoreD"; Keyword = "_d"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "GlobalSparse1x"; Keyword = "1x"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
         [pscustomobject]@{ Name = "GlobalIncrementalV"; Keyword = "v"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Typing"; Language = "Ascii" },
         [pscustomobject]@{ Name = "GlobalIncrementalVe"; Keyword = "ve"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Typing"; Language = "Ascii" },
         [pscustomobject]@{ Name = "GlobalIncrementalVer"; Keyword = "ver"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Typing"; Language = "Ascii" },
@@ -739,6 +827,43 @@ $prefilterEvents = @(Parse-PathPrefilterEvents -LogPath $logPath -Since $started
 $containsCacheEvents = @(Parse-ContainsCacheEvents -LogPath $logPath -Since $startedAt.AddSeconds(-1))
 $containsQueryEvents = @(Parse-ContainsQueryEvents -LogPath $logPath -Since $startedAt.AddSeconds(-1))
 $indexStageEvents = @(Parse-IndexStageEvents -LogPath $logPath -Since $startedAt.AddSeconds(-1))
+$restoreReadyMs = 0
+$restoreTotal = @($indexStageEvents | Where-Object { $_.Stage -eq "SNAPSHOT RESTORE TOTAL" } | Sort-Object Time | Select-Object -Last 1)
+if ($restoreTotal.Count -gt 0) {
+    $restoreReadyMs = [int64]$restoreTotal[0].ElapsedMs
+}
+
+$failures = New-Object System.Collections.Generic.List[object]
+if ($restoreReadyMs -gt $MaxRestoreReadyMsThreshold -or $restoreReadyMs -le 0) {
+    $failures.Add([pscustomobject]@{
+        Phase = "restore"
+        Name = "SnapshotRestoreReady"
+        Keyword = ""
+        Filter = ""
+        ClientMs = 0
+        HostSearchMs = $restoreReadyMs
+        ContainsMode = ""
+        TotalMatchedCount = 0
+        ThresholdMs = $MaxRestoreReadyMsThreshold
+        Reason = "restore-ready-timeout"
+    })
+}
+foreach ($row in @($rows.ToArray())) {
+    if ($row.HostSearchMs -gt $MaxHostMsThreshold -or $row.HostSearchMs -lt 0) {
+        $failures.Add([pscustomobject]@{
+            Phase = $row.Phase
+            Name = $row.Name
+            Keyword = $row.Keyword
+            Filter = $row.Filter
+            ClientMs = $row.ClientMs
+            HostSearchMs = $row.HostSearchMs
+            ContainsMode = $row.ContainsMode
+            TotalMatchedCount = $row.TotalMatchedCount
+            ThresholdMs = $MaxHostMsThreshold
+            Reason = "host-search-threshold"
+        })
+    }
+}
 
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $jsonPath = Join-Path $outputRoot "mft-benchmark-$timestamp.json"
@@ -751,6 +876,8 @@ $report = [ordered]@{
     MaxResults = $MaxResults
     Repeat = $Repeat
     Backend = $Backend
+    ForceRebuildIndex = [bool]$ForceRebuildIndex
+    SnapshotBackup = $snapshotBackup
     HostProcessId = if ($hostProcess) { $hostProcess.Id } else { $null }
     LogPath = $logPath
     Rows = @($rows.ToArray())
@@ -760,6 +887,10 @@ $report = [ordered]@{
     IndexStageEvents = @($indexStageEvents)
     MemoryBefore = @($memoryBefore)
     MemoryAfter = @($memoryAfter)
+    RestoreReadyMs = $restoreReadyMs
+    MaxHostMsThreshold = $MaxHostMsThreshold
+    MaxRestoreReadyMsThreshold = $MaxRestoreReadyMsThreshold
+    Failures = @($failures.ToArray())
 }
 
 $report | ConvertTo-Json -Depth 8 | Set-Content -Path $jsonPath -Encoding UTF8
@@ -774,7 +905,11 @@ New-MarkdownReport `
     -PathPrefix $PathPrefix `
     -Backend $Backend `
     -BuildResult "EnsureEmbeddedToolArtifacts succeeded" `
-    -ReportJsonPath $jsonPath |
+    -ReportJsonPath $jsonPath `
+    -MaxHostMsThreshold $MaxHostMsThreshold `
+    -MaxRestoreReadyMsThreshold $MaxRestoreReadyMsThreshold `
+    -RestoreReadyMs $restoreReadyMs `
+    -Failures @($failures.ToArray()) |
     Set-Content -Path $mdPath -Encoding UTF8
 
 Write-Host "Benchmark completed."

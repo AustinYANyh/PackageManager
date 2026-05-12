@@ -21,8 +21,12 @@ namespace MftScanner
         private const int SnapshotCompressionDeflate = 1;
         private const int PostingsSnapshotVersion1 = 1;
         private const int PostingsSnapshotVersion2 = 2;
+        private const int PostingsSnapshotVersion3 = 3;
+        private const int ShortQuerySnapshotVersion1 = 1;
+        private const int ShortQuerySidecarMagic = 0x31515253; // SQR1
         private const int RecordsSidecarMagic = 0x3752534D; // MSR7
         private const int DirsSidecarMagic = 0x3744534D; // MSD7
+        private const int ParentOrderSidecarMagic = 0x314F5053; // SPO1
         private const string SnapshotWriteMutexName = "PackageManager.MftScannerIndex.WriteLock";
         private const int SnapshotWriteLockTimeoutMilliseconds = 200;
         private static readonly TimeSpan SnapshotTempMaxAge = TimeSpan.FromHours(1);
@@ -31,7 +35,9 @@ namespace MftScanner
         private readonly string _snapshotFilePath;
         private readonly string _recordsFilePath;
         private readonly string _directoriesFilePath;
+        private readonly string _parentOrderFilePath;
         private readonly string _postingsFilePath;
+        private readonly string _shortQueryFilePath;
 
         public IndexSnapshotStore()
         {
@@ -40,7 +46,9 @@ namespace MftScanner
             _snapshotFilePath = Path.Combine(_snapshotDirectoryPath, "index.bin");
             _recordsFilePath = Path.Combine(_snapshotDirectoryPath, "index.records.bin");
             _directoriesFilePath = Path.Combine(_snapshotDirectoryPath, "index.dirs.bin");
+            _parentOrderFilePath = Path.Combine(_snapshotDirectoryPath, "index.parentorder.bin");
             _postingsFilePath = Path.Combine(_snapshotDirectoryPath, "index.postings.bin");
+            _shortQueryFilePath = Path.Combine(_snapshotDirectoryPath, "index.shortquery.bin");
         }
 
         public bool TryLoad(out IndexSnapshot snapshot, out IndexSnapshotLoadMetrics metrics)
@@ -196,6 +204,20 @@ namespace MftScanner
             return TryLoadPostingsSnapshot(expectedFingerprint, expectedRecordCount);
         }
 
+        public ShortQuerySnapshot TryLoadShortQuerySnapshot(ulong expectedFingerprint, int expectedRecordCount)
+        {
+            return TryReadShortQuerySnapshot(expectedFingerprint, expectedRecordCount, out var snapshot, out _)
+                ? snapshot
+                : null;
+        }
+
+        public int[] TryLoadParentOrderSnapshot(ulong expectedFingerprint, int expectedRecordCount)
+        {
+            return TryReadParentOrderSnapshot(expectedFingerprint, expectedRecordCount, out var parentOrder, out _)
+                ? parentOrder
+                : null;
+        }
+
         public void SaveContainsPostingsSnapshot(ulong contentFingerprint, ContainsPostingsSnapshot postings)
         {
             SavePostingsSnapshot(contentFingerprint, postings);
@@ -221,22 +243,54 @@ namespace MftScanner
                     return false;
                 recordsStopwatch.Stop();
 
-                var dirsStopwatch = System.Diagnostics.Stopwatch.StartNew();
-                if (!TryReadVersion7Directories(sidecarFingerprint, out var volumes, out var dirStringPoolCount, out var dirsBytes))
-                    return false;
-                dirsStopwatch.Stop();
+                var dirsTask = Task.Run(() =>
+                {
+                    var sw = System.Diagnostics.Stopwatch.StartNew();
+                    var success = TryReadVersion7Directories(sidecarFingerprint, out var loadedVolumes, out var poolCount, out var bytes);
+                    sw.Stop();
+                    return (success, loadedVolumes, poolCount, bytes, elapsedMs: sw.ElapsedMilliseconds);
+                });
+                var parentOrderTask = Task.Run(() =>
+                {
+                    var sw = System.Diagnostics.Stopwatch.StartNew();
+                    var success = TryReadParentOrderSnapshot(sidecarFingerprint, records.Length, out var parentOrder, out var bytes);
+                    sw.Stop();
+                    return (success, parentOrder, bytes, elapsedMs: sw.ElapsedMilliseconds);
+                });
+                var shortQueryTask = Task.Run(() =>
+                {
+                    var sw = System.Diagnostics.Stopwatch.StartNew();
+                    var success = TryReadShortQuerySnapshot(sidecarFingerprint, records.Length, out var loadedShortQuery, out var bytes);
+                    sw.Stop();
+                    return (success, loadedShortQuery, bytes, elapsedMs: sw.ElapsedMilliseconds);
+                });
 
-                snapshot = new IndexSnapshot(records, volumes, recordStringPoolCount + dirStringPoolCount, null, sidecarFingerprint);
+                var dirsResult = dirsTask.GetAwaiter().GetResult();
+                var parentOrderResult = parentOrderTask.GetAwaiter().GetResult();
+                var shortQueryResult = shortQueryTask.GetAwaiter().GetResult();
+                if (!dirsResult.success)
+                    return false;
+
+                snapshot = new IndexSnapshot(
+                    records,
+                    dirsResult.loadedVolumes,
+                    recordStringPoolCount + dirsResult.poolCount,
+                    null,
+                    sidecarFingerprint,
+                    shortQueryResult.success ? shortQueryResult.loadedShortQuery : null,
+                    parentOrderResult.success ? parentOrderResult.parentOrder : null);
                 metrics = new IndexSnapshotLoadMetrics(
                     SnapshotVersion7,
-                    recordsBytes + dirsBytes,
+                    recordsBytes + dirsResult.bytes + (parentOrderResult.success ? parentOrderResult.bytes : 0) + (shortQueryResult.success ? shortQueryResult.bytes : 0),
                     records.Length,
-                    volumes.Length,
-                    volumes.Sum(v => v.FrnEntries?.Length ?? 0),
-                    recordStringPoolCount + dirStringPoolCount);
+                    dirsResult.loadedVolumes.Length,
+                    dirsResult.loadedVolumes.Sum(v => v.FrnEntries?.Length ?? 0),
+                    recordStringPoolCount + dirsResult.poolCount);
                 UsnDiagLog.Write(
-                    $"[V7 SNAPSHOT LOAD] outcome=success recordsMs={recordsStopwatch.ElapsedMilliseconds} dirsMs={dirsStopwatch.ElapsedMilliseconds} " +
-                    $"records={records.Length} volumes={volumes.Length} fileBytes={recordsBytes + dirsBytes} " +
+                    $"[V7 SNAPSHOT LOAD] outcome=success recordsMs={recordsStopwatch.ElapsedMilliseconds} dirsMs={dirsResult.elapsedMs} " +
+                    $"parentOrderMs={parentOrderResult.elapsedMs} shortQueryMs={shortQueryResult.elapsedMs} " +
+                    $"shortQuery={(shortQueryResult.success ? "loaded" : "miss")} parentOrder={(parentOrderResult.success ? "loaded" : "miss")} " +
+                    $"records={records.Length} volumes={dirsResult.loadedVolumes.Length} fileBytes={recordsBytes + dirsResult.bytes + (parentOrderResult.success ? parentOrderResult.bytes : 0) + (shortQueryResult.success ? shortQueryResult.bytes : 0)} " +
                     $"sidecarFingerprint={sidecarFingerprint}");
                 return true;
             }
@@ -366,6 +420,71 @@ namespace MftScanner
                 }
 
                 return true;
+            }
+        }
+
+        private bool TryReadParentOrderSnapshot(
+            ulong expectedFingerprint,
+            int expectedRecordCount,
+            out int[] parentOrder,
+            out long fileBytes)
+        {
+            parentOrder = null;
+            fileBytes = 0;
+            if (!File.Exists(_parentOrderFilePath) || expectedFingerprint == 0 || expectedRecordCount <= 0)
+            {
+                UsnDiagLog.Write(
+                    $"[PARENT ORDER SNAPSHOT LOAD] outcome=miss reason=missing-or-invalid-request exists={File.Exists(_parentOrderFilePath)} " +
+                    $"expectedFingerprint={expectedFingerprint} expectedRecords={expectedRecordCount}");
+                return false;
+            }
+
+            try
+            {
+                using (var stream = new FileStream(_parentOrderFilePath, FileMode.Open, FileAccess.Read,
+                           FileShare.ReadWrite | FileShare.Delete, 1024 * 1024, FileOptions.SequentialScan))
+                using (var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: false))
+                {
+                    fileBytes = stream.Length;
+                    if (reader.ReadInt32() != ParentOrderSidecarMagic)
+                        return false;
+
+                    if (reader.ReadInt32() != SnapshotVersion7)
+                        return false;
+
+                    var fingerprint = reader.ReadUInt64();
+                    if (fingerprint != expectedFingerprint)
+                    {
+                        UsnDiagLog.Write(
+                            $"[PARENT ORDER SNAPSHOT LOAD] outcome=miss reason=fingerprint-mismatch fileBytes={fileBytes} " +
+                            $"expectedFingerprint={expectedFingerprint} actualFingerprint={fingerprint} expectedRecords={expectedRecordCount}");
+                        return false;
+                    }
+
+                    var recordCount = reader.ReadInt32();
+                    if (recordCount != expectedRecordCount)
+                    {
+                        UsnDiagLog.Write(
+                            $"[PARENT ORDER SNAPSHOT LOAD] outcome=miss reason=record-count-mismatch fileBytes={fileBytes} " +
+                            $"expectedRecords={expectedRecordCount} actualRecords={recordCount}");
+                        return false;
+                    }
+
+                    parentOrder = ReadInt32Array(reader);
+                    if (parentOrder == null || parentOrder.Length != expectedRecordCount)
+                    {
+                        return false;
+                    }
+
+                    UsnDiagLog.Write(
+                        $"[PARENT ORDER SNAPSHOT LOAD] outcome=success fileBytes={fileBytes} records={recordCount} indices={parentOrder.Length}");
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                UsnDiagLog.Write($"[PARENT ORDER SNAPSHOT LOAD] outcome=failed error={ex.GetType().Name}:{ex.Message}");
+                return false;
             }
         }
 
@@ -755,7 +874,7 @@ namespace MftScanner
             }
         }
 
-        private static ContainsPostingsSnapshot ReadContainsPostingsV2(BinaryReader reader)
+        private static ContainsPostingsSnapshot ReadContainsPostingsV2(BinaryReader reader, bool shortAsciiTokensIncluded = false)
         {
             try
             {
@@ -771,6 +890,12 @@ namespace MftScanner
                     var keyCount = reader.ReadInt32();
                     if (keyCount < 0)
                         return null;
+
+                    if (kind != ContainsPostingsBucketKind.Trigram)
+                    {
+                        SkipContainsPostingsBucket(reader, keyCount);
+                        continue;
+                    }
 
                     var keys = new ulong[keyCount];
                     var offsets = new int[keyCount];
@@ -795,7 +920,35 @@ namespace MftScanner
                     sections.Add(new ContainsPostingsBucketSnapshot(kind, keys, offsets, counts, byteCounts, bytes));
                 }
 
-                return new ContainsPostingsSnapshot(recordCount, sections.ToArray());
+                return new ContainsPostingsSnapshot(recordCount, sections.ToArray(), shortAsciiTokensIncluded);
+            }
+            catch (EndOfStreamException)
+            {
+                return null;
+            }
+        }
+
+        private static void SkipContainsPostingsBucket(BinaryReader reader, int keyCount)
+        {
+            var metadataBytes = checked(keyCount * (sizeof(ulong) + sizeof(int) + sizeof(int) + sizeof(int)));
+            if (metadataBytes > 0)
+            {
+                reader.BaseStream.Seek(metadataBytes, SeekOrigin.Current);
+            }
+
+            var byteLength = reader.ReadInt32();
+            if (byteLength > 0)
+            {
+                reader.BaseStream.Seek(byteLength, SeekOrigin.Current);
+            }
+        }
+
+        private static ContainsPostingsSnapshot ReadContainsPostingsV3(BinaryReader reader)
+        {
+            try
+            {
+                var shortAsciiTokensIncluded = reader.ReadBoolean();
+                return ReadContainsPostingsV2(reader, shortAsciiTokensIncluded);
             }
             catch (EndOfStreamException)
             {
@@ -867,6 +1020,8 @@ namespace MftScanner
                 : IndexSnapshotFingerprint.Compute(snapshot.Records);
             var recordsTempPath = _recordsFilePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
             var dirsTempPath = _directoriesFilePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            var parentOrderTempPath = _parentOrderFilePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            var shortQueryTempPath = _shortQueryFilePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
             try
             {
                 var recordsStopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -879,17 +1034,39 @@ namespace MftScanner
                 ReplaceFile(dirsTempPath, _directoriesFilePath);
                 dirsStopwatch.Stop();
 
+                var parentOrderStopwatch = System.Diagnostics.Stopwatch.StartNew();
+                WriteParentOrderSidecar(parentOrderTempPath, snapshot.ParentOrder, fingerprint, snapshot.Records.Length);
+                if (File.Exists(parentOrderTempPath))
+                {
+                    ReplaceFile(parentOrderTempPath, _parentOrderFilePath);
+                }
+                parentOrderStopwatch.Stop();
+
+                var shortQueryStopwatch = System.Diagnostics.Stopwatch.StartNew();
+                WriteShortQuerySidecar(shortQueryTempPath, snapshot.ShortQuery, fingerprint, snapshot.Records.Length);
+                if (File.Exists(shortQueryTempPath))
+                {
+                    ReplaceFile(shortQueryTempPath, _shortQueryFilePath);
+                }
+                shortQueryStopwatch.Stop();
+
                 var recordsLength = new FileInfo(_recordsFilePath).Length;
                 var dirsLength = new FileInfo(_directoriesFilePath).Length;
+                var parentOrderLength = File.Exists(_parentOrderFilePath) ? new FileInfo(_parentOrderFilePath).Length : 0;
+                var shortQueryLength = File.Exists(_shortQueryFilePath) ? new FileInfo(_shortQueryFilePath).Length : 0;
                 UsnDiagLog.Write(
                     $"[V7 SNAPSHOT SAVE] outcome=success recordsMs={recordsStopwatch.ElapsedMilliseconds} dirsMs={dirsStopwatch.ElapsedMilliseconds} " +
-                    $"recordsBytes={recordsLength} dirsBytes={dirsLength} records={snapshot.Records.Length} volumes={snapshot.Volumes.Length}");
+                    $"parentOrderMs={parentOrderStopwatch.ElapsedMilliseconds} shortQueryMs={shortQueryStopwatch.ElapsedMilliseconds} " +
+                    $"recordsBytes={recordsLength} dirsBytes={dirsLength} parentOrderBytes={parentOrderLength} shortQueryBytes={shortQueryLength} " +
+                    $"records={snapshot.Records.Length} volumes={snapshot.Volumes.Length}");
             }
             catch (Exception ex)
             {
                 UsnDiagLog.Write($"[V7 SNAPSHOT SAVE] outcome=failed error={ex.GetType().Name}:{ex.Message}");
                 TryDeleteFile(recordsTempPath);
                 TryDeleteFile(dirsTempPath);
+                TryDeleteFile(parentOrderTempPath);
+                TryDeleteFile(shortQueryTempPath);
             }
         }
 
@@ -977,6 +1154,203 @@ namespace MftScanner
             }
         }
 
+        private void WriteParentOrderSidecar(string filePath, int[] parentOrder, ulong fingerprint, int expectedRecordCount)
+        {
+            if (parentOrder == null || fingerprint == 0 || expectedRecordCount <= 0 || parentOrder.Length != expectedRecordCount)
+                return;
+
+            try
+            {
+                Directory.CreateDirectory(_snapshotDirectoryPath);
+                using (var stream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None, 1024 * 1024))
+                using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: false))
+                {
+                    writer.Write(ParentOrderSidecarMagic);
+                    writer.Write(SnapshotVersion7);
+                    writer.Write(fingerprint);
+                    writer.Write(expectedRecordCount);
+                    WriteInt32ArrayWithLength(writer, parentOrder);
+                }
+            }
+            catch (Exception ex)
+            {
+                UsnDiagLog.Write($"[PARENT ORDER SNAPSHOT SAVE] outcome=failed error={ex.GetType().Name}:{ex.Message}");
+                TryDeleteFile(filePath);
+            }
+        }
+
+        private bool TryReadShortQuerySnapshot(
+            ulong expectedFingerprint,
+            int expectedRecordCount,
+            out ShortQuerySnapshot snapshot,
+            out long fileBytes)
+        {
+            snapshot = null;
+            fileBytes = 0;
+            if (!File.Exists(_shortQueryFilePath) || expectedFingerprint == 0 || expectedRecordCount <= 0)
+            {
+                UsnDiagLog.Write(
+                    $"[SHORT QUERY SNAPSHOT LOAD] outcome=miss reason=missing-or-invalid-request exists={File.Exists(_shortQueryFilePath)} " +
+                    $"expectedFingerprint={expectedFingerprint} expectedRecords={expectedRecordCount}");
+                return false;
+            }
+
+            try
+            {
+                using (var stream = new FileStream(_shortQueryFilePath, FileMode.Open, FileAccess.Read,
+                           FileShare.ReadWrite | FileShare.Delete, 1024 * 1024, FileOptions.SequentialScan))
+                using (var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: false))
+                {
+                    fileBytes = stream.Length;
+                    if (reader.ReadInt32() != ShortQuerySidecarMagic)
+                        return false;
+
+                    if (reader.ReadInt32() != ShortQuerySnapshotVersion1)
+                        return false;
+
+                    var fingerprint = reader.ReadUInt64();
+                    if (fingerprint != expectedFingerprint)
+                    {
+                        UsnDiagLog.Write(
+                            $"[SHORT QUERY SNAPSHOT LOAD] outcome=miss reason=fingerprint-mismatch fileBytes={fileBytes} " +
+                            $"expectedFingerprint={expectedFingerprint} actualFingerprint={fingerprint} expectedRecords={expectedRecordCount}");
+                        return false;
+                    }
+
+                    var recordCount = reader.ReadInt32();
+                    if (recordCount != expectedRecordCount)
+                    {
+                        UsnDiagLog.Write(
+                            $"[SHORT QUERY SNAPSHOT LOAD] outcome=miss reason=record-count-mismatch fileBytes={fileBytes} " +
+                            $"expectedRecords={expectedRecordCount} actualRecords={recordCount}");
+                        return false;
+                    }
+
+                    var singleCounts = ReadInt32Array(reader, 128);
+                    var singleDriveCounts = ReadInt32Matrix(reader, 26, 128);
+                    var bigramCounts = ReadInt32Array(reader, 128 * 128);
+                    var bigramDriveCounts = ReadInt32Matrix(reader, 26, 128 * 128);
+                    var bigramSamples = ReadShortQueryPageSamples(reader);
+                    var nonAsciiSingles = ReadShortQueryPostings(reader);
+                    var nonAsciiBigrams = ReadShortQueryPostings(reader);
+
+                    snapshot = new ShortQuerySnapshot(
+                        recordCount,
+                        singleCounts,
+                        singleDriveCounts,
+                        bigramCounts,
+                        bigramDriveCounts,
+                        bigramSamples,
+                        nonAsciiSingles,
+                        nonAsciiBigrams);
+
+                    UsnDiagLog.Write(
+                        $"[SHORT QUERY SNAPSHOT LOAD] outcome=success fileBytes={fileBytes} records={recordCount} " +
+                        $"asciiSingles={singleCounts.Length} asciiBigrams={bigramCounts.Length} " +
+                        $"nonAsciiBuckets={snapshot.NonAsciiBucketCount} nonAsciiPostings={snapshot.NonAsciiPostingCount}");
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                UsnDiagLog.Write($"[SHORT QUERY SNAPSHOT LOAD] outcome=failed error={ex.GetType().Name}:{ex.Message}");
+                return false;
+            }
+        }
+
+        private void WriteShortQuerySidecar(
+            string filePath,
+            ShortQuerySnapshot snapshot,
+            ulong fingerprint,
+            int expectedRecordCount)
+        {
+            if (snapshot == null || fingerprint == 0 || expectedRecordCount <= 0 || snapshot.RecordCount != expectedRecordCount)
+                return;
+
+            try
+            {
+                Directory.CreateDirectory(_snapshotDirectoryPath);
+                using (var stream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None, 1024 * 1024))
+                using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: false))
+                {
+                    writer.Write(ShortQuerySidecarMagic);
+                    writer.Write(ShortQuerySnapshotVersion1);
+                    writer.Write(fingerprint);
+                    writer.Write(snapshot.RecordCount);
+                    WriteInt32Array(writer, snapshot.SingleCharAsciiCounts ?? Array.Empty<int>());
+                    WriteInt32Matrix(writer, snapshot.SingleCharAsciiDriveCounts ?? Array.Empty<int[]>(), 26, 128);
+                    WriteInt32Array(writer, snapshot.BigramAsciiCounts ?? Array.Empty<int>());
+                    WriteInt32Matrix(writer, snapshot.BigramAsciiDriveCounts ?? Array.Empty<int[]>(), 26, 128 * 128);
+                    WriteShortQueryPageSamples(writer, snapshot.BigramAsciiPageSamples);
+                    WriteShortQueryPostings(writer, snapshot.NonAsciiSingles, false);
+                    WriteShortQueryPostings(writer, snapshot.NonAsciiBigrams, true);
+                }
+            }
+            catch (Exception ex)
+            {
+                UsnDiagLog.Write($"[SHORT QUERY SNAPSHOT SAVE] outcome=failed error={ex.GetType().Name}:{ex.Message}");
+                TryDeleteFile(filePath);
+            }
+        }
+
+        private static void WriteShortQueryPageSamples(BinaryWriter writer, ShortQueryPageSampleSnapshot[] samples)
+        {
+            samples = samples ?? Array.Empty<ShortQueryPageSampleSnapshot>();
+            writer.Write(samples.Length);
+            for (var i = 0; i < samples.Length; i++)
+            {
+                var sample = samples[i];
+                writer.Write(sample?.Token ?? 0);
+                WriteInt32ArrayWithLength(writer, sample?.RecordIds ?? Array.Empty<int>());
+            }
+        }
+
+        private static ShortQueryPageSampleSnapshot[] ReadShortQueryPageSamples(BinaryReader reader)
+        {
+            var count = reader.ReadInt32();
+            if (count < 0)
+                throw new InvalidDataException("Invalid short query sample count.");
+
+            var samples = new ShortQueryPageSampleSnapshot[count];
+            for (var i = 0; i < count; i++)
+            {
+                var token = reader.ReadInt32();
+                var ids = ReadInt32Array(reader);
+                samples[i] = new ShortQueryPageSampleSnapshot(token, ids);
+            }
+
+            return samples;
+        }
+
+        private static void WriteShortQueryPostings(BinaryWriter writer, ShortQueryPostingSnapshot[] postings, bool bigram)
+        {
+            postings = postings ?? Array.Empty<ShortQueryPostingSnapshot>();
+            writer.Write(postings.Length);
+            for (var i = 0; i < postings.Length; i++)
+            {
+                var posting = postings[i];
+                writer.Write(posting == null ? 0UL : posting.Key);
+                WriteInt32ArrayWithLength(writer, posting?.RecordIds ?? Array.Empty<int>());
+            }
+        }
+
+        private static ShortQueryPostingSnapshot[] ReadShortQueryPostings(BinaryReader reader)
+        {
+            var count = reader.ReadInt32();
+            if (count < 0)
+                throw new InvalidDataException("Invalid short query postings count.");
+
+            var postings = new ShortQueryPostingSnapshot[count];
+            for (var i = 0; i < count; i++)
+            {
+                var key = reader.ReadUInt64();
+                var ids = ReadInt32Array(reader);
+                postings[i] = new ShortQueryPostingSnapshot(key, ids);
+            }
+
+            return postings;
+        }
+
         private static int GetOrAddStringIndex(string value, List<string> pool, Dictionary<string, int> indexes)
         {
             value = value ?? string.Empty;
@@ -1039,26 +1413,86 @@ namespace MftScanner
 
         private static void WriteInt32Array(BinaryWriter writer, int[] values)
         {
+            values = values ?? Array.Empty<int>();
             for (var i = 0; i < values.Length; i++)
                 writer.Write(values[i]);
         }
 
         private static void WriteUInt64Array(BinaryWriter writer, ulong[] values)
         {
+            values = values ?? Array.Empty<ulong>();
             for (var i = 0; i < values.Length; i++)
                 writer.Write(values[i]);
         }
 
-        private static int[] ReadInt32Array(BinaryReader reader, int count)
+        private static void WriteInt32ArrayWithLength(BinaryWriter writer, int[] values)
         {
+            values = values ?? Array.Empty<int>();
+            writer.Write(values.Length);
+            for (var i = 0; i < values.Length; i++)
+                writer.Write(values[i]);
+        }
+
+        private static void WriteInt32Matrix(BinaryWriter writer, int[][] values, int expectedRows, int expectedColumns)
+        {
+            values = values ?? Array.Empty<int[]>();
+            writer.Write(values.Length);
+            for (var i = 0; i < values.Length; i++)
+            {
+                var row = values[i] ?? Array.Empty<int>();
+                writer.Write(row.Length);
+                for (var j = 0; j < row.Length; j++)
+                    writer.Write(row[j]);
+            }
+        }
+
+        private static int[] ReadInt32Array(BinaryReader reader)
+        {
+            var count = reader.ReadInt32();
+            if (count < 0)
+                throw new InvalidDataException("Invalid int32 array length.");
+
             var values = new int[count];
             for (var i = 0; i < count; i++)
                 values[i] = reader.ReadInt32();
             return values;
         }
 
+        private static int[] ReadInt32Array(BinaryReader reader, int count)
+        {
+            if (count < 0)
+                throw new InvalidDataException("Invalid int32 array count.");
+
+            var values = new int[count];
+            for (var i = 0; i < count; i++)
+                values[i] = reader.ReadInt32();
+            return values;
+        }
+
+        private static int[][] ReadInt32Matrix(BinaryReader reader, int expectedRows, int expectedColumns)
+        {
+            var rows = reader.ReadInt32();
+            if (rows < 0)
+                throw new InvalidDataException("Invalid int32 matrix row count.");
+
+            var matrix = new int[rows][];
+            for (var i = 0; i < rows; i++)
+            {
+                var columns = reader.ReadInt32();
+                if (columns < 0)
+                    throw new InvalidDataException("Invalid int32 matrix column count.");
+
+                matrix[i] = ReadInt32Array(reader, columns);
+            }
+
+            return matrix;
+        }
+
         private static ulong[] ReadUInt64Array(BinaryReader reader, int count)
         {
+            if (count < 0)
+                throw new InvalidDataException("Invalid uint64 array count.");
+
             var values = new ulong[count];
             for (var i = 0; i < count; i++)
                 values[i] = reader.ReadUInt64();
@@ -1118,7 +1552,11 @@ namespace MftScanner
                     }
                     else if (version == PostingsSnapshotVersion2)
                     {
-                        postings = ReadContainsPostingsV2(reader);
+                        postings = ReadContainsPostingsV2(reader, shortAsciiTokensIncluded: false);
+                    }
+                    else if (version == PostingsSnapshotVersion3)
+                    {
+                        postings = ReadContainsPostingsV3(reader);
                     }
                     else
                     {
@@ -1137,7 +1575,7 @@ namespace MftScanner
                     }
 
                     UsnDiagLog.Write(
-                        $"[POSTINGS SNAPSHOT LOAD] outcome=success version={version} fileBytes={stream.Length} records={postings.RecordCount} buckets={postings.BucketCount} bytes={postings.TotalBytes}");
+                        $"[POSTINGS SNAPSHOT LOAD] outcome=success version={version} fileBytes={stream.Length} records={postings.RecordCount} buckets={postings.BucketCount} bytes={postings.TotalBytes} shortAscii={postings.ShortAsciiTokensIncluded}");
                     return postings;
                 }
             }
@@ -1178,8 +1616,9 @@ namespace MftScanner
                 using (var stream = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None))
                 using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: false))
                 {
-                    writer.Write(PostingsSnapshotVersion2);
+                    writer.Write(PostingsSnapshotVersion3);
                     writer.Write(fingerprint);
+                    writer.Write(postings.ShortAsciiTokensIncluded);
                     WriteContainsPostingsV2(writer, postings);
                 }
 
@@ -1190,7 +1629,7 @@ namespace MftScanner
 
                 var fileInfo = new FileInfo(_postingsFilePath);
                 UsnDiagLog.Write(
-                    $"[POSTINGS SNAPSHOT SAVE] outcome=success version={PostingsSnapshotVersion2} fileBytes={(fileInfo.Exists ? fileInfo.Length : 0)} records={postings.RecordCount} buckets={postings.BucketCount} bytes={postings.TotalBytes}");
+                    $"[POSTINGS SNAPSHOT SAVE] outcome=success version={PostingsSnapshotVersion3} fileBytes={(fileInfo.Exists ? fileInfo.Length : 0)} records={postings.RecordCount} buckets={postings.BucketCount} bytes={postings.TotalBytes} shortAscii={postings.ShortAsciiTokensIncluded}");
             }
             catch (Exception ex)
             {
@@ -1271,6 +1710,30 @@ namespace MftScanner
                 }
 
                 foreach (var file in directory.EnumerateFiles("index.dirs.bin.*.tmp"))
+                {
+                    try
+                    {
+                        if (file.LastWriteTimeUtc < cutoffUtc)
+                            file.Delete();
+                    }
+                    catch
+                    {
+                    }
+                }
+
+                foreach (var file in directory.EnumerateFiles("index.parentorder.bin.*.tmp"))
+                {
+                    try
+                    {
+                        if (file.LastWriteTimeUtc < cutoffUtc)
+                            file.Delete();
+                    }
+                    catch
+                    {
+                    }
+                }
+
+                foreach (var file in directory.EnumerateFiles("index.shortquery.bin.*.tmp"))
                 {
                     try
                     {
@@ -1410,7 +1873,9 @@ namespace MftScanner
             VolumeSnapshot[] volumes,
             int stringPoolCount = 0,
             ContainsPostingsSnapshot containsPostings = null,
-            ulong contentFingerprint = 0)
+            ulong contentFingerprint = 0,
+            ShortQuerySnapshot shortQuerySnapshot = null,
+            int[] parentOrder = null)
         {
             Records = records ?? Array.Empty<FileRecord>();
             Volumes = volumes ?? Array.Empty<VolumeSnapshot>();
@@ -1419,6 +1884,8 @@ namespace MftScanner
             ContentFingerprint = contentFingerprint == 0
                 ? IndexSnapshotFingerprint.Compute(Records)
                 : contentFingerprint;
+            ShortQuery = shortQuerySnapshot;
+            ParentOrder = parentOrder;
         }
 
         public FileRecord[] Records { get; }
@@ -1428,6 +1895,67 @@ namespace MftScanner
         public int StringPoolCount { get; }
         public ContainsPostingsSnapshot ContainsPostings { get; }
         public ulong ContentFingerprint { get; }
+        public ShortQuerySnapshot ShortQuery { get; }
+        public int[] ParentOrder { get; }
+    }
+
+    internal sealed class ShortQuerySnapshot
+    {
+        public ShortQuerySnapshot(
+            int recordCount,
+            int[] singleCharAsciiCounts,
+            int[][] singleCharAsciiDriveCounts,
+            int[] bigramAsciiCounts,
+            int[][] bigramAsciiDriveCounts,
+            ShortQueryPageSampleSnapshot[] bigramAsciiPageSamples,
+            ShortQueryPostingSnapshot[] nonAsciiSingles,
+            ShortQueryPostingSnapshot[] nonAsciiBigrams)
+        {
+            RecordCount = recordCount;
+            SingleCharAsciiCounts = singleCharAsciiCounts ?? Array.Empty<int>();
+            SingleCharAsciiDriveCounts = singleCharAsciiDriveCounts ?? Array.Empty<int[]>();
+            BigramAsciiCounts = bigramAsciiCounts ?? Array.Empty<int>();
+            BigramAsciiDriveCounts = bigramAsciiDriveCounts ?? Array.Empty<int[]>();
+            BigramAsciiPageSamples = bigramAsciiPageSamples ?? Array.Empty<ShortQueryPageSampleSnapshot>();
+            NonAsciiSingles = nonAsciiSingles ?? Array.Empty<ShortQueryPostingSnapshot>();
+            NonAsciiBigrams = nonAsciiBigrams ?? Array.Empty<ShortQueryPostingSnapshot>();
+        }
+
+        public int RecordCount { get; }
+        public int[] SingleCharAsciiCounts { get; }
+        public int[][] SingleCharAsciiDriveCounts { get; }
+        public int[] BigramAsciiCounts { get; }
+        public int[][] BigramAsciiDriveCounts { get; }
+        public ShortQueryPageSampleSnapshot[] BigramAsciiPageSamples { get; }
+        public ShortQueryPostingSnapshot[] NonAsciiSingles { get; }
+        public ShortQueryPostingSnapshot[] NonAsciiBigrams { get; }
+        public int NonAsciiBucketCount => (NonAsciiSingles?.Length ?? 0) + (NonAsciiBigrams?.Length ?? 0);
+        public int NonAsciiPostingCount => (NonAsciiSingles?.Sum(x => x?.RecordIds?.Length ?? 0) ?? 0)
+                                           + (NonAsciiBigrams?.Sum(x => x?.RecordIds?.Length ?? 0) ?? 0);
+    }
+
+    internal sealed class ShortQueryPageSampleSnapshot
+    {
+        public ShortQueryPageSampleSnapshot(int token, int[] recordIds)
+        {
+            Token = token;
+            RecordIds = recordIds ?? Array.Empty<int>();
+        }
+
+        public int Token { get; }
+        public int[] RecordIds { get; }
+    }
+
+    internal sealed class ShortQueryPostingSnapshot
+    {
+        public ShortQueryPostingSnapshot(ulong key, int[] recordIds)
+        {
+            Key = key;
+            RecordIds = recordIds ?? Array.Empty<int>();
+        }
+
+        public ulong Key { get; }
+        public int[] RecordIds { get; }
     }
 
     internal enum ContainsPostingsBucketKind
@@ -1479,7 +2007,8 @@ namespace MftScanner
                 offsets,
                 counts,
                 byteCounts,
-                bytes)
+                bytes,
+                shortAsciiTokensIncluded: false)
         {
         }
 
@@ -1490,18 +2019,20 @@ namespace MftScanner
             int[] offsets,
             int[] counts,
             int[] byteCounts,
-            byte[] bytes)
+            byte[] bytes,
+            bool shortAsciiTokensIncluded = false)
             : this(recordCount, new[]
             {
                 new ContainsPostingsBucketSnapshot(kind, keys, offsets, counts, byteCounts, bytes)
-            })
+            }, shortAsciiTokensIncluded)
         {
         }
 
-        public ContainsPostingsSnapshot(int recordCount, ContainsPostingsBucketSnapshot[] buckets)
+        public ContainsPostingsSnapshot(int recordCount, ContainsPostingsBucketSnapshot[] buckets, bool shortAsciiTokensIncluded = false)
         {
             RecordCount = recordCount;
             Buckets = buckets ?? Array.Empty<ContainsPostingsBucketSnapshot>();
+            ShortAsciiTokensIncluded = shortAsciiTokensIncluded;
             var trigram = GetBucket(ContainsPostingsBucketKind.Trigram) ?? Buckets.FirstOrDefault();
             Keys = trigram?.Keys ?? Array.Empty<ulong>();
             Offsets = trigram?.Offsets ?? Array.Empty<int>();
@@ -1512,6 +2043,7 @@ namespace MftScanner
 
         public int RecordCount { get; }
         public ContainsPostingsBucketSnapshot[] Buckets { get; }
+        public bool ShortAsciiTokensIncluded { get; }
         public ulong[] Keys { get; }
         public int[] Offsets { get; }
         public int[] Counts { get; }

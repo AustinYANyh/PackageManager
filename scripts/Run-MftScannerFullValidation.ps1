@@ -7,6 +7,8 @@ param(
     [int]$SearchTimeoutSeconds = 90,
     [int]$RealtimeUsnTimeoutSeconds = 15,
     [int]$MaxResults = 500,
+    [int]$MaxHostMsThreshold = 100,
+    [int]$MaxRestoreReadyMsThreshold = 3000,
     [switch]$NoBuild,
     [switch]$NoOpenReport
 )
@@ -345,7 +347,10 @@ function Write-MarkdownReport {
         [object[]]$MemoryAfter,
         [object]$RealtimeUsn,
         [string[]]$LogLines,
-        [string]$JsonPath
+        [string]$JsonPath,
+        [int]$MaxHostMsThreshold,
+        [int]$MaxRestoreReadyMsThreshold,
+        [object[]]$Failures
     )
 
     if ($null -eq $RealtimeUsn) {
@@ -362,9 +367,27 @@ function Write-MarkdownReport {
         }
     }
 
-    $slow = @($Rows | Where-Object { $_.Error -or $_.ClientMs -gt 60 -or $_.HostMs -gt 60 } | Sort-Object @{ Expression = "ClientMs"; Descending = $true } | Select-Object -First 30)
+    $slow = @($Rows | Where-Object { $_.Error -or $_.ClientMs -gt $MaxHostMsThreshold -or $_.HostMs -gt $MaxHostMsThreshold } | Sort-Object @{ Expression = "ClientMs"; Descending = $true } | Select-Object -First 30)
     $lines = New-Object System.Collections.Generic.List[string]
     $lines.Add("# MftScanner 一键全功能验证报告")
+    $lines.Add("")
+    $passed = @($Failures).Count -eq 0
+    $resultText = if ($passed) { "通过" } else { "不通过" }
+    $lines.Add("## 结论")
+    $lines.Add("")
+    $lines.Add("- 结果：$resultText")
+    $lines.Add("- 搜索宿主耗时阈值：$MaxHostMsThreshold ms")
+    $lines.Add("- 启动恢复 ready 阈值：$MaxRestoreReadyMsThreshold ms")
+    $lines.Add("- 当前 Build/Ready 耗时：$($Summary.ReadyMs) ms")
+    if (-not $passed) {
+        $lines.Add("")
+        $lines.Add("| 阶段 | 用例 | 关键词 | 类型过滤 | 客户端(ms) | 宿主(ms) | 命中 | 阈值 | 原因 |")
+        $lines.Add("| --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- |")
+        foreach ($failure in @($Failures)) {
+            $keyword = if ($failure.Keyword) { $failure.Keyword.ToString().Replace("|", "/") } else { "" }
+            $lines.Add("| $($failure.Phase) | $($failure.Name) | ``$keyword`` | $($failure.Filter) | $($failure.ClientMs) | $($failure.HostMs) | $($failure.Matched) | $($failure.ThresholdMs) | $($failure.Reason) |")
+        }
+    }
     $lines.Add("")
     $lines.Add("- 时间：$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
     $lines.Add("- 原始 JSON：``$JsonPath``")
@@ -514,6 +537,11 @@ try {
     $cases = @(
         [pscustomobject]@{ Name = "Global 1char d"; Keyword = "d"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
         [pscustomobject]@{ Name = "Global 2char ve"; Keyword = "ve"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "Global 2char dx"; Keyword = "dx"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "Global 2char qx"; Keyword = "qx"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "Global 2char zz"; Keyword = "zz"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "Global 2char _d"; Keyword = "_d"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "Global 2char 1x"; Keyword = "1x"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
         [pscustomobject]@{ Name = "Global 3char ver"; Keyword = "ver"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Typing"; Language = "Ascii" },
         [pscustomobject]@{ Name = "Global Chinese single"; Keyword = "我"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Chinese" },
         [pscustomobject]@{ Name = "Global Chinese bigram"; Keyword = "鱼丸"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Chinese" },
@@ -531,6 +559,11 @@ try {
         [pscustomobject]@{ Name = "Desktop ve Launchable"; Keyword = "$desktop ve"; Filter = [MftScanner.SearchTypeFilter]::Launchable; Scenario = "Direct"; Language = "Ascii" },
         [pscustomobject]@{ Name = "Croot d"; Keyword = "C:\ d"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
         [pscustomobject]@{ Name = "Croot ve"; Keyword = "C:\ ve"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "Croot dx"; Keyword = "C:\ dx"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "Croot qx"; Keyword = "C:\ qx"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "Croot zz"; Keyword = "C:\ zz"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "Croot _d"; Keyword = "C:\ _d"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "Croot 1x"; Keyword = "C:\ 1x"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
         [pscustomobject]@{ Name = "Croot ver"; Keyword = "C:\ ver"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Typing"; Language = "Ascii" },
         [pscustomobject]@{ Name = "Croot calsupport Config"; Keyword = "C:\ calsupport"; Filter = [MftScanner.SearchTypeFilter]::Config; Scenario = "Direct"; Language = "Ascii" },
         [pscustomobject]@{ Name = "Croot *.log"; Keyword = "C:\ *.log"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
@@ -543,7 +576,7 @@ try {
         $cases += [pscustomobject]@{ Name = "Croot 1char $token"; Keyword = "C:\ $token"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" }
     }
 
-    $genericBigrams = @("on", "ex", "zz", "ui", "ar")
+    $genericBigrams = @("on", "ex", "zz", "ui", "ar", "dx", "qx", "_d", "1x")
     foreach ($token in $genericBigrams) {
         $cases += [pscustomobject]@{ Name = "Generic 2char $token"; Keyword = $token; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" }
         $cases += [pscustomobject]@{ Name = "Croot 2char $token"; Keyword = "C:\ $token"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" }
@@ -613,6 +646,64 @@ try {
         RealtimeUsnHealthy = $realtimeUsn.Healthy
         RealtimeUsnMaxMs = $realtimeUsnMaxMs
         RealtimeUsnTimeoutSeconds = $RealtimeUsnTimeoutSeconds
+        MaxHostMsThreshold = $MaxHostMsThreshold
+        MaxRestoreReadyMsThreshold = $MaxRestoreReadyMsThreshold
+    }
+
+    $failures = New-Object System.Collections.Generic.List[object]
+    if ($summary.ReadyMs -gt $MaxRestoreReadyMsThreshold -or $summary.ReadyMs -le 0) {
+        $failures.Add([pscustomobject]@{
+            Phase = "restore"
+            Name = "BuildIndexReady"
+            Keyword = ""
+            Filter = ""
+            ClientMs = 0
+            HostMs = $summary.ReadyMs
+            Matched = 0
+            ThresholdMs = $MaxRestoreReadyMsThreshold
+            Reason = "restore-ready-threshold"
+        })
+    }
+    if (-not ($summary.CharReady -and $summary.BigramReady -and $summary.TrigramReady)) {
+        $failures.Add([pscustomobject]@{
+            Phase = "warmup"
+            Name = "ContainsBucketsReady"
+            Keyword = ""
+            Filter = ""
+            ClientMs = $summary.WarmupMs
+            HostMs = $summary.WarmupMs
+            Matched = 0
+            ThresholdMs = $WarmupTimeoutSeconds * 1000
+            Reason = "contains-buckets-not-ready"
+        })
+    }
+    foreach ($row in @($rows.ToArray())) {
+        if ($row.Error -or $row.HostMs -gt $MaxHostMsThreshold -or $row.HostMs -lt 0) {
+            $failures.Add([pscustomobject]@{
+                Phase = $row.Phase
+                Name = $row.Name
+                Keyword = $row.Keyword
+                Filter = $row.Filter
+                ClientMs = $row.ClientMs
+                HostMs = $row.HostMs
+                Matched = $row.Matched
+                ThresholdMs = $MaxHostMsThreshold
+                Reason = if ($row.Error) { "search-error: $($row.Error)" } else { "host-search-threshold" }
+            })
+        }
+    }
+    if (-not $summary.RealtimeUsnHealthy) {
+        $failures.Add([pscustomobject]@{
+            Phase = "realtime-usn"
+            Name = "RealtimeUsnSmoke"
+            Keyword = $realtimeUsn.Token
+            Filter = "All"
+            ClientMs = $summary.RealtimeUsnMaxMs
+            HostMs = $summary.RealtimeUsnMaxMs
+            Matched = 0
+            ThresholdMs = $RealtimeUsnTimeoutSeconds * 1000
+            Reason = "realtime-usn-unhealthy"
+        })
     }
 
     $logLines = @(Get-RecentLogLines -LogPath $logPath -Since $startedAt.AddSeconds(-1))
@@ -628,9 +719,10 @@ try {
         MemoryAfter = @($memoryAfter)
         LogPath = $logPath
         LogLines = @($logLines)
+        Failures = @($failures.ToArray())
     }
     $report | ConvertTo-Json -Depth 8 | Set-Content -Path $jsonPath -Encoding UTF8
-    Write-MarkdownReport -Path $mdPath -Summary $summary -Rows @($rows.ToArray()) -MemoryBefore $memoryBefore -MemoryAfter $memoryAfter -RealtimeUsn $realtimeUsn -LogLines $logLines -JsonPath $jsonPath
+    Write-MarkdownReport -Path $mdPath -Summary $summary -Rows @($rows.ToArray()) -MemoryBefore $memoryBefore -MemoryAfter $memoryAfter -RealtimeUsn $realtimeUsn -LogLines $logLines -JsonPath $jsonPath -MaxHostMsThreshold $MaxHostMsThreshold -MaxRestoreReadyMsThreshold $MaxRestoreReadyMsThreshold -Failures @($failures.ToArray())
     Write-Host "Report: $mdPath"
     if (!$NoOpenReport) { Invoke-Item $mdPath }
 }
@@ -646,6 +738,8 @@ catch {
         ReadyMs = 0
         WarmupMs = 0
         ShortWarmupDelayMs = 0
+        CharReady = $false
+        BigramReady = $false
         TrigramReady = $false
         HostReuse = $false
         OldHost = $false
@@ -655,8 +749,21 @@ catch {
         RealtimeUsnHealthy = $false
         RealtimeUsnMaxMs = 0
         RealtimeUsnTimeoutSeconds = $RealtimeUsnTimeoutSeconds
+        MaxHostMsThreshold = $MaxHostMsThreshold
+        MaxRestoreReadyMsThreshold = $MaxRestoreReadyMsThreshold
         Error = $failure.Exception.Message
     }
+    $failures = @([pscustomobject]@{
+        Phase = "fatal"
+        Name = "FullValidation"
+        Keyword = ""
+        Filter = ""
+        ClientMs = 0
+        HostMs = 0
+        Matched = 0
+        ThresholdMs = 0
+        Reason = $failure.Exception.Message
+    })
     $report = [ordered]@{
         StartedAt = $startedAt
         Summary = $summary
@@ -666,10 +773,11 @@ catch {
         MemoryAfter = @(Get-MftProcessMemory)
         LogPath = $logPath
         LogLines = @($logLines)
+        Failures = @($failures)
         Error = $failure.Exception.ToString()
     }
     $report | ConvertTo-Json -Depth 8 | Set-Content -Path $jsonPath -Encoding UTF8
-    Write-MarkdownReport -Path $mdPath -Summary $summary -Rows @() -MemoryBefore @() -MemoryAfter @(Get-MftProcessMemory) -RealtimeUsn $null -LogLines $logLines -JsonPath $jsonPath
+    Write-MarkdownReport -Path $mdPath -Summary $summary -Rows @() -MemoryBefore @() -MemoryAfter @(Get-MftProcessMemory) -RealtimeUsn $null -LogLines $logLines -JsonPath $jsonPath -MaxHostMsThreshold $MaxHostMsThreshold -MaxRestoreReadyMsThreshold $MaxRestoreReadyMsThreshold -Failures @($failures)
     Write-Host "Failed report: $mdPath"
     if (!$NoOpenReport) { Invoke-Item $mdPath }
     throw

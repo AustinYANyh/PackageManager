@@ -59,7 +59,7 @@ namespace MftScanner
         private const int SingleCharAsciiLimit = 128;
         private const int BigramAsciiLimit = 128;
         private const int BigramAsciiTokenCount = BigramAsciiLimit * BigramAsciiLimit;
-        private const int BigramAsciiPageSampleLimit = 4096;
+        private const int BigramAsciiPageSampleLimit = 16384;
         private readonly List<PendingContainsMutation> _pendingContainsMutations = new List<PendingContainsMutation>();
         private bool _pendingContainsMutationsOverflowed;
         private const int MaxPendingContainsMutations = 65536;
@@ -163,10 +163,10 @@ namespace MftScanner
             get
             {
                 var accelerator = Volatile.Read(ref _containsAccelerator);
-                var overlay = Volatile.Read(ref _containsOverlay) ?? ContainsOverlay.Empty;
-                return Volatile.Read(ref _containsAcceleratorReady)
-                       && accelerator != null
-                       && !accelerator.IsEmpty;
+                return HasShortAsciiStructuresReady()
+                       || (Volatile.Read(ref _containsAcceleratorReady)
+                           && accelerator != null
+                           && !accelerator.IsEmpty);
             }
         }
 
@@ -174,16 +174,16 @@ namespace MftScanner
         {
             var accelerator = Volatile.Read(ref _containsAccelerator);
             var overlay = Volatile.Read(ref _containsOverlay) ?? ContainsOverlay.Empty;
-            var recordCount = SortedArray?.Length ?? 0;
-            var ready = Volatile.Read(ref _containsAcceleratorReady)
-                        && accelerator != null
-                        && !accelerator.IsEmpty;
+            var shortReady = HasShortAsciiStructuresReady();
+            var trigramReady = Volatile.Read(ref _containsAcceleratorReady)
+                               && accelerator != null
+                               && accelerator.HasTrigramBucket;
 
             return new ContainsBucketStatus
             {
-                CharReady = ready && accelerator.HasCharBucket,
-                BigramReady = ready && accelerator.HasBigramBucket,
-                TrigramReady = ready && accelerator.HasTrigramBucket,
+                CharReady = shortReady,
+                BigramReady = shortReady,
+                TrigramReady = trigramReady,
                 IsOverlayOverflowed = overlay.IsOverflowed,
                 Epoch = Interlocked.Read(ref _containsAcceleratorEpoch)
             };
@@ -210,7 +210,17 @@ namespace MftScanner
 
         public bool IsQuerySupportedByContainsAccelerator(string query)
         {
+            if (string.IsNullOrEmpty(query))
+            {
+                return false;
+            }
+
             var accelerator = Volatile.Read(ref _containsAccelerator);
+            if (query.Length <= 2)
+            {
+                return HasShortAsciiStructuresReady();
+            }
+
             return Volatile.Read(ref _containsAcceleratorReady)
                    && accelerator != null
                    && !accelerator.IsEmpty
@@ -272,15 +282,21 @@ namespace MftScanner
 
             var accelerator = Volatile.Read(ref _containsAccelerator);
             var overlay = Volatile.Read(ref _containsOverlay) ?? ContainsOverlay.Empty;
-            if (TryShortAsciiSearch(query, filter, offset, maxResults, null, ct, overlay, out result))
-            {
-                return true;
-            }
 
             if (!Volatile.Read(ref _containsAcceleratorReady)
                 || accelerator == null
                 || accelerator.IsEmpty)
             {
+                if (TryShortAsciiSearch(query, filter, offset, maxResults, null, ct, overlay, out result))
+                {
+                    return true;
+                }
+
+                if (TryShortNonAsciiSearch(query, filter, offset, maxResults, null, ct, overlay, out result))
+                {
+                    return true;
+                }
+
                 if (TryShortContainsHotSearch(query, filter, offset, maxResults, ct, out result))
                 {
                     return true;
@@ -291,6 +307,16 @@ namespace MftScanner
 
             if (!accelerator.Supports(query))
             {
+                if (TryShortAsciiSearch(query, filter, offset, maxResults, null, ct, overlay, out result))
+                {
+                    return true;
+                }
+
+                if (TryShortNonAsciiSearch(query, filter, offset, maxResults, null, ct, overlay, out result))
+                {
+                    return true;
+                }
+
                 return TryShortContainsHotSearch(query, filter, offset, maxResults, ct, out result);
             }
 
@@ -405,13 +431,104 @@ namespace MftScanner
                 _pendingContainsMutationsOverflowed = false;
                 IndexPerfLog.Write("INDEX",
                     $"[CONTAINS SNAPSHOT LOAD] outcome=success records={SortedArray.Length} buckets={snapshot.BucketCount} bytes={snapshot.TotalBytes} " +
-                    $"char={accelerator.HasCharBucket} bigram={accelerator.HasBigramBucket} trigram={accelerator.HasTrigramBucket}");
+                    $"charReady={accelerator.HasCharBucket} bigramReady={accelerator.HasBigramBucket} trigram={accelerator.HasTrigramBucket} " +
+                    $"shortAscii={snapshot.ShortAsciiTokensIncluded}");
                 return true;
             }
             finally
             {
                 _lock.ExitWriteLock();
             }
+        }
+
+        internal int[] ExportParentOrderSnapshot(out ulong contentFingerprint)
+        {
+            contentFingerprint = 0;
+            FileRecord[] records;
+            FileRecord[] parentArr;
+            _lock.EnterReadLock();
+            try
+            {
+                records = SortedArray;
+                parentArr = ParentSortedArray;
+                if (records == null
+                    || records.Length == 0
+                    || parentArr == null
+                    || parentArr.Length != records.Length)
+                {
+                    return null;
+                }
+            }
+            finally
+            {
+                _lock.ExitReadLock();
+            }
+
+            var lookup = new Dictionary<FileRecord, int>(records.Length, ReferenceEqualityComparer<FileRecord>.Instance);
+            for (var i = 0; i < records.Length; i++)
+            {
+                if (records[i] != null)
+                    lookup[records[i]] = i;
+            }
+
+            var order = new int[parentArr.Length];
+            for (var i = 0; i < parentArr.Length; i++)
+            {
+                var record = parentArr[i];
+                if (record == null || !lookup.TryGetValue(record, out var sortedIndex))
+                    return null;
+
+                order[i] = sortedIndex;
+            }
+
+            contentFingerprint = IndexSnapshotFingerprint.Compute(records);
+            return order;
+        }
+
+        internal bool TryLoadParentOrderSnapshot(int[] parentOrder, ulong contentFingerprint = 0)
+        {
+            if (parentOrder == null || parentOrder.Length == 0)
+                return false;
+
+            _lock.EnterWriteLock();
+            try
+            {
+                var records = SortedArray;
+                if (records == null || records.Length != parentOrder.Length)
+                    return false;
+
+                var parentArr = new FileRecord[parentOrder.Length];
+                for (var i = 0; i < parentOrder.Length; i++)
+                {
+                    var sortedIndex = parentOrder[i];
+                    if ((uint)sortedIndex >= (uint)records.Length)
+                    {
+                        return false;
+                    }
+
+                    var record = records[sortedIndex];
+                    if (record == null)
+                    {
+                        return false;
+                    }
+
+                    parentArr[i] = record;
+                }
+
+                ParentSortedArray = parentArr;
+                IndexPerfLog.Write("INDEX",
+                    $"[PARENT ORDER SNAPSHOT LOAD] outcome=success records={parentArr.Length} fingerprint={contentFingerprint}");
+                return true;
+            }
+            finally
+            {
+                _lock.ExitWriteLock();
+            }
+        }
+
+        internal bool EnsureContainsAcceleratorReady(ContainsWarmupScope scope, CancellationToken ct)
+        {
+            return TryEnsureContainsAccelerator(scope, ct);
         }
 
         public FileRecord[] GetSubtreeCandidates(
@@ -429,7 +546,7 @@ namespace MftScanner
             try
             {
                 var parentArr = ParentSortedArray;
-                if (!_derivedStructuresReady || parentArr == null || parentArr.Length == 0)
+                if (parentArr == null || parentArr.Length == 0)
                 {
                     var directorySet = new HashSet<ulong>(directoryFrns);
                     var sorted = SortedArray;
@@ -534,6 +651,101 @@ namespace MftScanner
             var result = candidates.ToArray();
             Array.Sort(result, ByLowerName);
             return result;
+        }
+
+        public ContainsSearchResult SearchSubtreeContains(
+            char driveLetter,
+            IReadOnlyList<ulong> directoryFrns,
+            string query,
+            SearchTypeFilter filter,
+            int offset,
+            int maxResults,
+            CancellationToken ct)
+        {
+            var stopwatch = Stopwatch.StartNew();
+            var matched = new List<FileRecord>(Math.Min(32768, Math.Max(Math.Max(maxResults, 0), 4096)));
+            var candidateCount = 0;
+            if (directoryFrns == null || directoryFrns.Count == 0 || string.IsNullOrEmpty(query))
+            {
+                stopwatch.Stop();
+                return new ContainsSearchResult
+                {
+                    Mode = "path-subtree",
+                    CandidateCount = 0,
+                    Total = 0,
+                    Page = new List<FileRecord>(),
+                    VerifyMs = stopwatch.ElapsedMilliseconds
+                };
+            }
+
+            var dl = char.ToUpperInvariant(driveLetter);
+            _lock.EnterReadLock();
+            try
+            {
+                var parentArr = ParentSortedArray;
+                if (parentArr == null || parentArr.Length == 0)
+                {
+                    stopwatch.Stop();
+                    return new ContainsSearchResult
+                    {
+                        Mode = "path-subtree-miss",
+                        CandidateCount = 0,
+                        Total = 0,
+                        Page = new List<FileRecord>(),
+                        VerifyMs = stopwatch.ElapsedMilliseconds
+                    };
+                }
+
+                for (var i = 0; i < directoryFrns.Count; i++)
+                {
+                    if (((i + 1) & 0x3FF) == 0)
+                        ct.ThrowIfCancellationRequested();
+
+                    var parentFrn = directoryFrns[i];
+                    var start = LowerBoundByParent(parentArr, dl, parentFrn);
+                    for (var j = start; j < parentArr.Length; j++)
+                    {
+                        var record = parentArr[j];
+                        if (!IsSameParent(record, dl, parentFrn))
+                            break;
+
+                        if (IsDeleted(record) || !MatchesFilter(record, filter))
+                            continue;
+
+                        candidateCount++;
+                        if (NameContains(record, query))
+                            matched.Add(record);
+                    }
+                }
+            }
+            finally
+            {
+                _lock.ExitReadLock();
+            }
+
+            if (matched.Count > 1)
+                matched.Sort(ByLowerName);
+
+            var normalizedOffset = Math.Max(offset, 0);
+            var normalizedMaxResults = Math.Max(maxResults, 0);
+            var page = new List<FileRecord>(Math.Min(normalizedMaxResults, 64));
+            var end = normalizedMaxResults <= 0
+                ? normalizedOffset
+                : Math.Min(matched.Count, normalizedOffset + normalizedMaxResults);
+            for (var i = normalizedOffset; i < end; i++)
+            {
+                page.Add(matched[i]);
+            }
+
+            stopwatch.Stop();
+            return new ContainsSearchResult
+            {
+                Mode = query.Length <= 2 ? "path-subtree-short" : "path-subtree",
+                CandidateCount = candidateCount,
+                Total = matched.Count,
+                Page = page,
+                VerifyMs = stopwatch.ElapsedMilliseconds
+            };
         }
 
         public FileRecord[] GetDriveCandidates(
@@ -1029,6 +1241,11 @@ namespace MftScanner
         {
             result = null;
             if (TryShortAsciiSearch(query, filter, offset, maxResults, char.ToUpperInvariant(driveLetter), ct, GetLiveOverlaySnapshot(), out result))
+            {
+                return true;
+            }
+
+            if (TryShortNonAsciiSearch(query, filter, offset, maxResults, char.ToUpperInvariant(driveLetter), ct, GetLiveOverlaySnapshot(), out result))
             {
                 return true;
             }
@@ -1832,6 +2049,7 @@ namespace MftScanner
             _bigramAsciiDriveCounts = null;
             _bigramAsciiPageSamples = null;
             _bigramAsciiRecordCount = 0;
+            _nonAsciiShortQueryIndex = NonAsciiShortQueryIndex.Empty;
         }
 
         private void AddShortAsciiIndexesRecord(FileRecord record)
@@ -2755,10 +2973,10 @@ namespace MftScanner
         private static void BuildShortAsciiIndexes(
             FileRecord[] arr,
             out SingleCharAsciiIndex singleCharAsciiIndex,
-            out BigramAsciiIndex bigramAsciiIndex)
+            out BigramAsciiIndex bigramAsciiIndex,
+            out NonAsciiShortQueryIndex nonAsciiShortQueryIndex)
         {
-            singleCharAsciiIndex = BuildSingleCharAsciiIndex(arr);
-            bigramAsciiIndex = BuildBigramAsciiIndex(arr);
+            BuildShortQueryIndexes(arr, out singleCharAsciiIndex, out bigramAsciiIndex, out nonAsciiShortQueryIndex);
         }
 
         private static FileRecord[][] BuildBigramAsciiPageSamples(FileRecord[] arr, int[] counts)
@@ -2945,9 +3163,10 @@ namespace MftScanner
         {
             SingleCharAsciiIndex singleCharAsciiIndex = null;
             BigramAsciiIndex bigramAsciiIndex = null;
+            NonAsciiShortQueryIndex nonAsciiShortQueryIndex = null;
             if (buildShortAsciiStructures)
             {
-                BuildShortAsciiIndexes(arr, out singleCharAsciiIndex, out bigramAsciiIndex);
+                BuildShortAsciiIndexes(arr, out singleCharAsciiIndex, out bigramAsciiIndex, out nonAsciiShortQueryIndex);
             }
             _lock.EnterWriteLock();
             try
@@ -2982,6 +3201,7 @@ namespace MftScanner
                     _bigramAsciiDriveCounts = bigramAsciiIndex.DriveCounts;
                     _bigramAsciiPageSamples = bigramAsciiIndex.PageSamples;
                     _bigramAsciiRecordCount = arr?.Length ?? 0;
+                    _nonAsciiShortQueryIndex = nonAsciiShortQueryIndex ?? NonAsciiShortQueryIndex.Empty;
                 }
                 else
                 {
@@ -3061,6 +3281,7 @@ namespace MftScanner
             var arr = MergeSortedRecords(survivors, survivorCount, inserted);
             var singleCharAsciiIndex = BuildSingleCharAsciiIndex(arr);
             var bigramAsciiIndex = BuildBigramAsciiIndex(arr);
+            var nonAsciiShortQueryIndex = BuildNonAsciiShortQueryIndex(arr, CancellationToken.None);
             BuildDerivedStructures(
                 arr,
                 out var extensionMap,
@@ -3123,6 +3344,7 @@ namespace MftScanner
                 _bigramAsciiDriveCounts = bigramAsciiIndex.DriveCounts;
                 _bigramAsciiPageSamples = bigramAsciiIndex.PageSamples;
                 _bigramAsciiRecordCount = arr?.Length ?? 0;
+                _nonAsciiShortQueryIndex = nonAsciiShortQueryIndex ?? NonAsciiShortQueryIndex.Empty;
             }
             finally
             {
@@ -3284,6 +3506,7 @@ namespace MftScanner
             var arr = MergeSortedRecords(survivors, survivorCount, inserted);
             var singleCharAsciiIndex = BuildSingleCharAsciiIndex(arr);
             var bigramAsciiIndex = BuildBigramAsciiIndex(arr);
+            var nonAsciiShortQueryIndex = BuildNonAsciiShortQueryIndex(arr, ct);
             var containsAccelerator = ContainsAccelerator.Build(arr, ContainsAcceleratorBucketKinds.All, ct);
             BuildDerivedStructures(
                 arr,
@@ -3333,6 +3556,7 @@ namespace MftScanner
                 _bigramAsciiDriveCounts = bigramAsciiIndex.DriveCounts;
                 _bigramAsciiPageSamples = bigramAsciiIndex.PageSamples;
                 _bigramAsciiRecordCount = arr?.Length ?? 0;
+                _nonAsciiShortQueryIndex = nonAsciiShortQueryIndex ?? NonAsciiShortQueryIndex.Empty;
                 return true;
             }
             finally
@@ -3444,6 +3668,7 @@ namespace MftScanner
             var arr = MergeSortedRecords(survivors, survivorCount, inserted);
             var singleCharAsciiIndex = BuildSingleCharAsciiIndex(arr);
             var bigramAsciiIndex = BuildBigramAsciiIndex(arr);
+            var nonAsciiShortQueryIndex = BuildNonAsciiShortQueryIndex(arr, CancellationToken.None);
             BuildDerivedStructures(
                 arr,
                 out var extensionMap,
@@ -3489,6 +3714,7 @@ namespace MftScanner
             _bigramAsciiDriveCounts = bigramAsciiIndex.DriveCounts;
             _bigramAsciiPageSamples = bigramAsciiIndex.PageSamples;
             _bigramAsciiRecordCount = arr?.Length ?? 0;
+            _nonAsciiShortQueryIndex = nonAsciiShortQueryIndex ?? NonAsciiShortQueryIndex.Empty;
         }
 
         private static FileRecord[] MergeSortedRecords(FileRecord[] survivors, int survivorCount, List<FileRecord> inserted)
@@ -3543,8 +3769,41 @@ namespace MftScanner
 
         public bool TryEnsureContainsAccelerator(ContainsWarmupScope scope, CancellationToken ct)
         {
-            var requiredBuckets = ToRequiredContainsBuckets(scope);
+            switch (scope)
+            {
+                case ContainsWarmupScope.Short:
+                    EnsureShortAsciiStructuresReady(ct, "contains-short-warmup");
+                    return HasShortAsciiStructuresReady();
 
+                case ContainsWarmupScope.TrigramOnly:
+                    return TryEnsureTrigramContainsAccelerator(ct, "contains-trigram-warmup");
+
+                case ContainsWarmupScope.Full:
+                    EnsureShortAsciiStructuresReady(ct, "contains-full-warmup");
+                    return TryEnsureTrigramContainsAccelerator(ct, "contains-full-warmup");
+            }
+
+            return false;
+        }
+
+        public bool SupportsContainsAccelerator(ContainsWarmupScope scope)
+        {
+            switch (scope)
+            {
+                case ContainsWarmupScope.Short:
+                    return HasShortAsciiStructuresReady();
+                case ContainsWarmupScope.TrigramOnly:
+                    return HasTrigramContainsAcceleratorReady();
+                case ContainsWarmupScope.Full:
+                    return HasShortAsciiStructuresReady()
+                           && HasTrigramContainsAcceleratorReady();
+                default:
+                    return false;
+            }
+        }
+
+        private bool TryEnsureTrigramContainsAccelerator(CancellationToken ct, string reason)
+        {
             while (!ct.IsCancellationRequested)
             {
                 FileRecord[] snapshot;
@@ -3554,9 +3813,7 @@ namespace MftScanner
                 try
                 {
                     currentAccelerator = Volatile.Read(ref _containsAccelerator);
-                    if (_containsAcceleratorReady
-                        && currentAccelerator != null
-                        && currentAccelerator.Supports(requiredBuckets))
+                    if (HasTrigramContainsAcceleratorReady())
                     {
                         return true;
                     }
@@ -3569,14 +3826,12 @@ namespace MftScanner
                     _lock.ExitReadLock();
                 }
 
-                var accelerator = ContainsAccelerator.Build(snapshot, requiredBuckets, currentAccelerator, ct);
+                var accelerator = ContainsAccelerator.Build(snapshot, ContainsAcceleratorBucketKinds.All, currentAccelerator, ct);
 
                 _lock.EnterWriteLock();
                 try
                 {
-                    if (_containsAcceleratorReady
-                        && _containsAccelerator != null
-                        && _containsAccelerator.Supports(requiredBuckets))
+                    if (HasTrigramContainsAcceleratorReady())
                     {
                         return true;
                     }
@@ -3598,7 +3853,7 @@ namespace MftScanner
                     _pendingContainsMutationsOverflowed = false;
                     Interlocked.Increment(ref _containsAcceleratorEpoch);
                     IndexPerfLog.Write("INDEX",
-                        $"[CONTAINS PUBLISH] outcome=success scope={scope} overlayAdds={_containsOverlay.AddedCount} overlayRemoves={_containsOverlay.RemovedCount}");
+                        $"[CONTAINS PUBLISH] outcome=success scope=TrigramOnly overlayAdds={_containsOverlay.AddedCount} overlayRemoves={_containsOverlay.RemovedCount}");
                     return true;
                 }
                 finally
@@ -3611,26 +3866,18 @@ namespace MftScanner
             return false;
         }
 
-        public bool SupportsContainsAccelerator(ContainsWarmupScope scope)
+        private bool HasShortAsciiStructuresReady()
         {
-            var requiredBuckets = ToRequiredContainsBuckets(scope);
+            return HasShortQueryStructuresReady();
+        }
+
+        private bool HasTrigramContainsAcceleratorReady()
+        {
             var accelerator = Volatile.Read(ref _containsAccelerator);
             return Volatile.Read(ref _containsAcceleratorReady)
                    && accelerator != null
-                   && accelerator.Supports(requiredBuckets);
-        }
-
-        private static ContainsAcceleratorBucketKinds ToRequiredContainsBuckets(ContainsWarmupScope scope)
-        {
-            switch (scope)
-            {
-                case ContainsWarmupScope.Full:
-                    return ContainsAcceleratorBucketKinds.All;
-                case ContainsWarmupScope.Short:
-                    return ContainsAcceleratorBucketKinds.Short;
-                default:
-                    return ContainsAcceleratorBucketKinds.Trigram;
-            }
+                   && !accelerator.IsEmpty
+                   && accelerator.HasTrigramBucket;
         }
 
         private void InsertIntoFilterBuckets(FileRecord record)
@@ -3771,11 +4018,7 @@ namespace MftScanner
                 EnsureShortAsciiStructures(ct, reason);
 
                 var recordCount = SortedArray?.Length ?? 0;
-                if (recordCount == 0
-                    || (Volatile.Read(ref _singleCharAsciiCounts) != null
-                        && Volatile.Read(ref _singleCharAsciiRecordCount) == recordCount
-                        && Volatile.Read(ref _bigramAsciiCounts) != null
-                        && Volatile.Read(ref _bigramAsciiRecordCount) == recordCount))
+                if (recordCount == 0 || HasShortQueryStructuresReady())
                 {
                     return;
                 }
@@ -3793,11 +4036,7 @@ namespace MftScanner
             try
             {
                 snapshot = SortedArray ?? Array.Empty<FileRecord>();
-                if (snapshot.Length == 0
-                    || (Volatile.Read(ref _singleCharAsciiCounts) != null
-                        && Volatile.Read(ref _singleCharAsciiRecordCount) == snapshot.Length
-                        && Volatile.Read(ref _bigramAsciiCounts) != null
-                        && Volatile.Read(ref _bigramAsciiRecordCount) == snapshot.Length))
+                if (snapshot.Length == 0 || HasShortQueryStructuresReady())
                 {
                     return;
                 }
@@ -3811,6 +4050,7 @@ namespace MftScanner
             var stopwatch = Stopwatch.StartNew();
             var singleCharAsciiIndex = BuildSingleCharAsciiIndex(snapshot);
             var bigramAsciiIndex = BuildBigramAsciiIndex(snapshot);
+            var nonAsciiShortQueryIndex = BuildNonAsciiShortQueryIndex(snapshot, ct);
             stopwatch.Stop();
 
             _lock.EnterWriteLock();
@@ -3827,8 +4067,9 @@ namespace MftScanner
                 _bigramAsciiDriveCounts = bigramAsciiIndex.DriveCounts;
                 _bigramAsciiPageSamples = bigramAsciiIndex.PageSamples;
                 _bigramAsciiRecordCount = snapshot.Length;
+                _nonAsciiShortQueryIndex = nonAsciiShortQueryIndex ?? NonAsciiShortQueryIndex.Empty;
                 IndexPerfLog.Write("INDEX",
-                    $"[SHORT ASCII STRUCTURES] outcome=success reason={IndexPerfLog.FormatValue(reason)} records={snapshot.Length} elapsedMs={stopwatch.ElapsedMilliseconds}");
+                    $"[SHORT QUERY STRUCTURES] outcome=success reason={IndexPerfLog.FormatValue(reason)} records={snapshot.Length} elapsedMs={stopwatch.ElapsedMilliseconds}");
             }
             finally
             {

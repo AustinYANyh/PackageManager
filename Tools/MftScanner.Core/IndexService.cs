@@ -1508,6 +1508,75 @@ namespace MftScanner
                                     $"pathPrefix={IndexPerfLog.FormatValue(pathPrefix)}");
                             }
                         }
+                        else if (mode == MatchMode.Contains
+                                 && normalizedQuery != null
+                                 && normalizedQuery.Length <= 2
+                                 && _enumerator.TryGetDirectorySubtree(pathPrefix, out var shortPathScope)
+                                 && shortPathScope.DirectoryFrns != null
+                                 && shortPathScope.DirectoryFrns.Length <= MaxPreferPathFirstDirectories
+                                 && idx.ParentSortedArray != null
+                                 && idx.ParentSortedArray.Length > 0)
+                        {
+                            var subtreeContainsResult = idx.SearchSubtreeContains(
+                                shortPathScope.DriveLetter,
+                                shortPathScope.DirectoryFrns,
+                                normalizedQuery,
+                                filter,
+                                normalizedOffset,
+                                normalizedMaxResults,
+                                ct);
+                            pathPreMatchedApplied = true;
+                            pathPreMatchedPage = subtreeContainsResult.Page;
+                            pathPreMatchedTotal = subtreeContainsResult.Total;
+                            containsMode = subtreeContainsResult.Mode;
+                            containsQueryForWarmup = normalizedQuery;
+                            containsCandidateCount = subtreeContainsResult.CandidateCount;
+                            containsIntersectMilliseconds = 0;
+                            containsVerifyMilliseconds = subtreeContainsResult.VerifyMs;
+                            candidateSource = Array.Empty<FileRecord>();
+                            pathPrefilterApplied = true;
+                            pathStrategy = "path-subtree-short";
+                            pathStopwatch.Stop();
+                            UsnDiagLog.Write(
+                                $"[PATH PREFILTER] outcome=success strategy=path-subtree-short elapsedMs={pathStopwatch.ElapsedMilliseconds} " +
+                                $"containsMode={IndexPerfLog.FormatValue(subtreeContainsResult.Mode)} containsTotal={subtreeContainsResult.Total} " +
+                                $"candidateCount={subtreeContainsResult.CandidateCount} matched={pathPreMatchedTotal} filter={filter} " +
+                                $"pathPrefix={IndexPerfLog.FormatValue(pathPrefix)} pathDrive={shortPathScope.DriveLetter} rootFrn={shortPathScope.RootFrn}");
+                        }
+                        else if (mode == MatchMode.Contains
+                                 && normalizedQuery != null
+                                 && normalizedQuery.Length <= 2
+                                 && _enumerator.TryGetDirectorySubtree(pathPrefix, out var directShortPathScope)
+                                 && (idx.ParentSortedArray == null || idx.ParentSortedArray.Length == 0)
+                                 && idx.TryShortContainsSearchInPathScope(
+                                     normalizedQuery,
+                                     filter,
+                                     normalizedOffset,
+                                     normalizedMaxResults,
+                                     directShortPathScope.DriveLetter,
+                                     directShortPathScope.DirectoryFrns,
+                                     ct,
+                                     out var shortPathContainsResult))
+                        {
+                            pathPreMatchedApplied = true;
+                            pathPreMatchedPage = shortPathContainsResult.Page;
+                            pathPreMatchedTotal = shortPathContainsResult.Total;
+                            liveAddedAlreadyIncluded = shortPathContainsResult.IncludesLiveOverlay;
+                            containsMode = shortPathContainsResult.Mode;
+                            containsQueryForWarmup = normalizedQuery;
+                            containsCandidateCount = shortPathContainsResult.CandidateCount;
+                            containsIntersectMilliseconds = 0;
+                            containsVerifyMilliseconds = shortPathContainsResult.VerifyMs;
+                            candidateSource = Array.Empty<FileRecord>();
+                            pathPrefilterApplied = true;
+                            pathStrategy = "short-index-path";
+                            pathStopwatch.Stop();
+                            UsnDiagLog.Write(
+                                $"[PATH PREFILTER] outcome=success strategy=short-index-path elapsedMs={pathStopwatch.ElapsedMilliseconds} " +
+                                $"containsMode={IndexPerfLog.FormatValue(shortPathContainsResult.Mode)} containsTotal={shortPathContainsResult.Total} " +
+                                $"candidateCount={shortPathContainsResult.CandidateCount} matched={pathPreMatchedTotal} filter={filter} " +
+                                $"pathPrefix={IndexPerfLog.FormatValue(pathPrefix)} pathDrive={directShortPathScope.DriveLetter} rootFrn={directShortPathScope.RootFrn}");
+                        }
                         else if (_enumerator.TryGetDirectorySubtree(pathPrefix, out var preferredPathScope)
                                  && preferredPathScope.DirectoryFrns != null
                                  && preferredPathScope.DirectoryFrns.Length <= MaxPreferPathFirstDirectories)
@@ -1832,10 +1901,40 @@ namespace MftScanner
 
                     // 按需解析完整路径：用 _enumerator 的 FRN 字典（每卷独立缓存）
                     var results = new List<ScannedFileInfo>(Math.Min(matched.Count, normalizedMaxResults));
+                    var pathPrefilteredResultPageOnly = pathPrefilterApplied && !pathPostFilterRequired;
 
                     // 需求 10.2、10.3：路径前缀后置过滤（大小写不敏感）
                     // 确保路径前缀以 \ 结尾，避免误匹配同名前缀目录（如 C:\Users\Desktop2）
-                    if (pathPostFilterRequired)
+                    if (pathPrefilteredResultPageOnly)
+                    {
+                        var directoryKeys = new HashSet<MftEnumerator.DirectoryPathKey>();
+                        foreach (var record in matched)
+                        {
+                            if (record != null)
+                                directoryKeys.Add(new MftEnumerator.DirectoryPathKey(record.DriveLetter, record.ParentFrn));
+                        }
+
+                        var directoryPaths = _enumerator.ResolveDirectoryPaths(directoryKeys);
+                        foreach (var record in matched)
+                        {
+                            ct.ThrowIfCancellationRequested();
+                            var key = new MftEnumerator.DirectoryPathKey(record.DriveLetter, record.ParentFrn);
+                            if (!directoryPaths.TryGetValue(key, out var dirPath) || string.IsNullOrEmpty(dirPath))
+                                dirPath = record.DriveLetter + ":";
+                            var fullPath = dirPath + "\\" + record.OriginalName;
+                            results.Add(new ScannedFileInfo
+                            {
+                                FullPath = fullPath,
+                                FileName = record.OriginalName,
+                                SizeBytes = 0,
+                                ModifiedTimeUtc = DateTime.MinValue,
+                                RootPath = string.Empty,
+                                RootDisplayName = string.Empty,
+                                IsDirectory = record.IsDirectory
+                            });
+                        }
+                    }
+                    else if (pathPostFilterRequired)
                     {
                         var normalizedPrefix = pathPrefix.EndsWith("\\")
                             ? pathPrefix
@@ -1904,13 +2003,17 @@ namespace MftScanner
                     resolveElapsedMilliseconds = resolveStopwatch.ElapsedMilliseconds;
                     var physicalMatchedCount = totalMatched;
                     var rawReturnedCount = results.Count;
-                    var duplicatePathCount = DeduplicateResultsByFullPath(results);
+                    var duplicatePathCount = pathPrefilteredResultPageOnly
+                        ? 0
+                        : DeduplicateResultsByFullPath(results);
                     var physicalTruncated = physicalMatchedCount > normalizedOffset + rawReturnedCount;
-                    var uniqueMatchedCount = physicalTruncated
-                        ? Math.Max(results.Count, physicalMatchedCount - duplicatePathCount)
-                        : (normalizedOffset == 0
-                            ? results.Count
-                            : Math.Max(results.Count, physicalMatchedCount - duplicatePathCount));
+                    var uniqueMatchedCount = pathPrefilteredResultPageOnly
+                        ? physicalMatchedCount
+                        : (physicalTruncated
+                            ? Math.Max(results.Count, physicalMatchedCount - duplicatePathCount)
+                            : (normalizedOffset == 0
+                                ? results.Count
+                                : Math.Max(results.Count, physicalMatchedCount - duplicatePathCount)));
                     totalMatched = uniqueMatchedCount;
 
                     if (mode == MatchMode.Contains || (mode == MatchMode.Wildcard && !string.IsNullOrEmpty(containsMode)))
@@ -2136,6 +2239,7 @@ namespace MftScanner
             if (index == null
                 || string.IsNullOrEmpty(query)
                 || IsShortHotContainsMode(containsMode)
+                || (!string.IsNullOrEmpty(containsMode) && containsMode.StartsWith("short-index", StringComparison.Ordinal))
                 || string.Equals(containsMode, "trigram", StringComparison.Ordinal))
             {
                 return;
@@ -2148,7 +2252,6 @@ namespace MftScanner
                     QueueContainsAcceleratorWarmup("query-short-needed");
                 }
 
-                QueueShortContainsHotBucketWarmup(index, query, containsMode ?? "fallback");
                 return;
             }
 
@@ -2163,6 +2266,8 @@ namespace MftScanner
             return !string.IsNullOrEmpty(containsMode)
                    && (containsMode.StartsWith("short-hot-char", StringComparison.Ordinal)
                        || containsMode.StartsWith("short-hot-bigram", StringComparison.Ordinal)
+                       || containsMode.StartsWith("short-index-char", StringComparison.Ordinal)
+                       || containsMode.StartsWith("short-index-bigram", StringComparison.Ordinal)
                        || containsMode.StartsWith("single-char-", StringComparison.Ordinal)
                        || containsMode.StartsWith("bigram-count", StringComparison.Ordinal));
         }
@@ -2653,7 +2758,7 @@ namespace MftScanner
                 return;
 
             var stopwatch = Stopwatch.StartNew();
-            index.EnsureShortAsciiStructuresReady(ct, reason);
+            index.EnsureShortQueryStructuresReady(ct, reason);
             stopwatch.Stop();
             UsnDiagLog.Write(
                 $"[SEARCH HOT STRUCTURES READY] reason={IndexPerfLog.FormatValue(reason)} elapsedMs={stopwatch.ElapsedMilliseconds} records={index.TotalCount}");
@@ -2825,6 +2930,16 @@ namespace MftScanner
                                              snapshot.ContentFingerprint,
                                              snapshot.Records.Length,
                                              "snapshot-restore");
+            var parentOrderLoaded = _index.TryLoadParentOrderSnapshot(snapshot.ParentOrder, snapshot.ContentFingerprint)
+                                    || TryLoadParentOrderSnapshotSync(
+                                        snapshot.ContentFingerprint,
+                                        snapshot.Records.Length,
+                                        "snapshot-restore");
+            var shortQueryLoaded = _index.TryLoadShortQuerySnapshot(snapshot.ShortQuery, snapshot.ContentFingerprint)
+                                   || TryLoadShortQuerySnapshotSync(
+                                       snapshot.ContentFingerprint,
+                                       snapshot.Records.Length,
+                                       "snapshot-restore");
             if (!containsPostingsLoaded)
             {
                 QueueContainsPostingsSnapshotLoad(
@@ -2832,6 +2947,24 @@ namespace MftScanner
                     snapshot.Records.Length,
                     _index,
                     generation);
+            }
+            if (!_index.SupportsContainsAccelerator(MemoryIndex.ContainsWarmupScope.Full))
+            {
+                var postingsRebuildStopwatch = Stopwatch.StartNew();
+                var rebuilt = _index.EnsureContainsAcceleratorReady(MemoryIndex.ContainsWarmupScope.Full, ct);
+                postingsRebuildStopwatch.Stop();
+                UsnDiagLog.Write(
+                    $"[POSTINGS SNAPSHOT RESTORE] outcome={(rebuilt ? "rebuilt-full" : "rebuild-miss")} mode=sync " +
+                    $"reason=restore-requires-full-ascii elapsedMs={postingsRebuildStopwatch.ElapsedMilliseconds} records={snapshot.Records.Length}");
+                if (rebuilt)
+                {
+                    containsPostingsLoaded = true;
+                    SaveCurrentContainsPostings(_index, "restore-rebuilt-full-ascii", generation);
+                }
+            }
+            if (!parentOrderLoaded && !_index.AreDerivedStructuresReady)
+            {
+                _index.QueueEnsureDerivedStructures("snapshot-restore-parent-order-miss");
             }
             if (snapshotMetrics.Version < 6)
             {
@@ -2841,7 +2974,7 @@ namespace MftScanner
             restoreStopwatch.Stop();
             UsnDiagLog.Write(
                 $"[SNAPSHOT RESTORE] elapsedMs={restoreStopwatch.ElapsedMilliseconds} records={snapshot.Records.Length} " +
-                $"volumes={snapshot.Volumes.Length} containsPostingsLoaded={containsPostingsLoaded} " +
+                $"volumes={snapshot.Volumes.Length} containsPostingsLoaded={containsPostingsLoaded} parentOrderLoaded={parentOrderLoaded} shortQueryLoaded={shortQueryLoaded} " +
                 $"postingsLoadMode={(containsPostingsLoaded ? "inline" : "async")}");
 
             restoredCount = _index.TotalCount;
@@ -2852,7 +2985,7 @@ namespace MftScanner
                 $"restoreMs={restoreStopwatch.ElapsedMilliseconds} restoredCount={restoredCount}");
 
             _index.QueueEnsureDerivedStructures("snapshot-restore");
-            _index.QueueEnsureShortAsciiStructures("snapshot-restore");
+            _index.QueueEnsureShortQueryStructures("snapshot-restore");
             QueueDefaultShortContainsHotBucketWarmup(_index, "snapshot-restore", generation);
             EnsureUsnJournalCapacityInBackground(snapshot.Volumes.Select(v => v.DriveLetter).ToArray());
             StartBackgroundCatchUp(snapshot.Volumes, progress, ct, generation);
@@ -2880,6 +3013,58 @@ namespace MftScanner
                 stopwatch.Stop();
                 UsnDiagLog.Write(
                     $"[POSTINGS SNAPSHOT RESTORE] outcome=failed mode=sync reason={IndexPerfLog.FormatValue(reason)} " +
+                    $"elapsedMs={stopwatch.ElapsedMilliseconds} error={ex.GetType().Name}:{IndexPerfLog.FormatValue(ex.Message)}");
+                return false;
+            }
+        }
+
+        private bool TryLoadShortQuerySnapshotSync(ulong contentFingerprint, int recordCount, string reason)
+        {
+            if (contentFingerprint == 0 || recordCount <= 0)
+                return false;
+
+            var stopwatch = Stopwatch.StartNew();
+            try
+            {
+                var snapshot = _snapshotStore.TryLoadShortQuerySnapshot(contentFingerprint, recordCount);
+                var loaded = snapshot != null && _index.TryLoadShortQuerySnapshot(snapshot, contentFingerprint);
+                stopwatch.Stop();
+                UsnDiagLog.Write(
+                    $"[SHORT QUERY SNAPSHOT RESTORE] outcome={(loaded ? "success" : "miss")} mode=sync reason={IndexPerfLog.FormatValue(reason)} " +
+                    $"elapsedMs={stopwatch.ElapsedMilliseconds} records={recordCount}");
+                return loaded;
+            }
+            catch (Exception ex)
+            {
+                stopwatch.Stop();
+                UsnDiagLog.Write(
+                    $"[SHORT QUERY SNAPSHOT RESTORE] outcome=failed mode=sync reason={IndexPerfLog.FormatValue(reason)} " +
+                    $"elapsedMs={stopwatch.ElapsedMilliseconds} error={ex.GetType().Name}:{IndexPerfLog.FormatValue(ex.Message)}");
+                return false;
+            }
+        }
+
+        private bool TryLoadParentOrderSnapshotSync(ulong contentFingerprint, int recordCount, string reason)
+        {
+            if (contentFingerprint == 0 || recordCount <= 0)
+                return false;
+
+            var stopwatch = Stopwatch.StartNew();
+            try
+            {
+                var parentOrder = _snapshotStore.TryLoadParentOrderSnapshot(contentFingerprint, recordCount);
+                var loaded = parentOrder != null && _index.TryLoadParentOrderSnapshot(parentOrder, contentFingerprint);
+                stopwatch.Stop();
+                UsnDiagLog.Write(
+                    $"[PARENT ORDER SNAPSHOT RESTORE] outcome={(loaded ? "success" : "miss")} mode=sync reason={IndexPerfLog.FormatValue(reason)} " +
+                    $"elapsedMs={stopwatch.ElapsedMilliseconds} records={recordCount}");
+                return loaded;
+            }
+            catch (Exception ex)
+            {
+                stopwatch.Stop();
+                UsnDiagLog.Write(
+                    $"[PARENT ORDER SNAPSHOT RESTORE] outcome=failed mode=sync reason={IndexPerfLog.FormatValue(reason)} " +
                     $"elapsedMs={stopwatch.ElapsedMilliseconds} error={ex.GetType().Name}:{IndexPerfLog.FormatValue(ex.Message)}");
                 return false;
             }
@@ -4143,11 +4328,29 @@ namespace MftScanner
                         var containsPostings = expectedIndex != null
                             ? expectedIndex.ExportContainsPostingsSnapshot()
                             : _index.ExportContainsPostingsSnapshot();
+                        ulong shortQueryFingerprint;
+                        var shortQuerySnapshot = expectedIndex != null
+                            ? expectedIndex.ExportShortQuerySnapshot(out shortQueryFingerprint)
+                            : _index.ExportShortQuerySnapshot(out shortQueryFingerprint);
+                        if (shortQueryFingerprint != 0 && shortQueryFingerprint != fingerprint)
+                        {
+                            shortQuerySnapshot = null;
+                        }
+                        ulong parentOrderFingerprint;
+                        var parentOrder = expectedIndex != null
+                            ? expectedIndex.ExportParentOrderSnapshot(out parentOrderFingerprint)
+                            : _index.ExportParentOrderSnapshot(out parentOrderFingerprint);
+                        if (parentOrderFingerprint != 0 && parentOrderFingerprint != fingerprint)
+                        {
+                            parentOrder = null;
+                        }
                         metrics = _snapshotStore.Save(new IndexSnapshot(
                             recordCopy,
                             volumeCopy,
                             containsPostings: containsPostings,
-                            contentFingerprint: fingerprint));
+                            contentFingerprint: fingerprint,
+                            shortQuerySnapshot: shortQuerySnapshot,
+                            parentOrder: parentOrder));
                         saveStopwatch.Stop();
                         elapsedMilliseconds = saveStopwatch.ElapsedMilliseconds;
                     }
@@ -4388,13 +4591,25 @@ namespace MftScanner
                     if (!IsCurrentIndex(index, generation))
                         return;
                     var containsPostings = index.ExportContainsPostingsSnapshot();
+                    var shortQuerySnapshot = index.ExportShortQuerySnapshot(out var shortQueryFingerprint);
                     var fingerprint = IndexSnapshotFingerprint.Compute(recordCopy);
+                    if (shortQueryFingerprint != 0 && shortQueryFingerprint != fingerprint)
+                    {
+                        shortQuerySnapshot = null;
+                    }
+                    var parentOrder = index.ExportParentOrderSnapshot(out var parentOrderFingerprint);
+                    if (parentOrderFingerprint != 0 && parentOrderFingerprint != fingerprint)
+                    {
+                        parentOrder = null;
+                    }
                     _currentIndexContentFingerprint = fingerprint;
                     metrics = _snapshotStore.Save(new IndexSnapshot(
                         recordCopy,
                         volumeSnapshots,
                         containsPostings: containsPostings,
-                        contentFingerprint: fingerprint));
+                        contentFingerprint: fingerprint,
+                        shortQuerySnapshot: shortQuerySnapshot,
+                        parentOrder: parentOrder));
                     saveStopwatch.Stop();
                     elapsedMilliseconds = saveStopwatch.ElapsedMilliseconds;
                 }
