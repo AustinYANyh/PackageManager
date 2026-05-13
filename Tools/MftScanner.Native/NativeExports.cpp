@@ -83,6 +83,9 @@ namespace
         wchar_t driveLetter = L'\0';
         std::int64_t nextUsn = 0;
         std::uint64_t journalId = 0;
+        std::uint32_t recordCount = 0;
+        std::uint64_t maxFrn = 0;
+        bool enumerationComplete = true;
         std::unordered_map<std::uint64_t, FrnEntry> frnMap;
         std::unordered_map<std::uint64_t, std::wstring> pathCache;
         std::unordered_map<std::uint64_t, std::pair<std::wstring, std::uint64_t>> pendingRenameOldByFrn;
@@ -708,6 +711,34 @@ namespace
         return frnMapCount == 0 ? recordCount : frnMapCount;
     }
 
+    std::uint32_t CountRecordsForVolume(const std::vector<Record>& records, wchar_t driveLetter)
+    {
+        std::uint32_t count = 0;
+        for (const auto& record : records)
+        {
+            if (record.driveLetter == driveLetter && count < std::numeric_limits<std::uint32_t>::max())
+            {
+                ++count;
+            }
+        }
+
+        return count;
+    }
+
+    std::uint64_t MaxFrnForVolume(const std::vector<Record>& records, wchar_t driveLetter)
+    {
+        std::uint64_t maxFrn = 0;
+        for (const auto& record : records)
+        {
+            if (record.driveLetter == driveLetter && record.frn > maxFrn)
+            {
+                maxFrn = record.frn;
+            }
+        }
+
+        return maxFrn;
+    }
+
     const char* MatchModeToString(MatchMode mode)
     {
         switch (mode)
@@ -1056,15 +1087,20 @@ namespace
 
     private:
         static constexpr std::int32_t SnapshotVersion3 = 3;
+        static constexpr std::int32_t SnapshotVersion4 = 4;
         static constexpr std::int32_t V2RecordsSnapshotVersion1 = 1;
+        static constexpr std::int32_t V2RecordsSnapshotVersion2 = 2;
         static constexpr std::int32_t V2PostingsSnapshotVersion1 = 1;
         static constexpr std::int32_t V2RuntimeSnapshotVersion2 = 2;
         static constexpr std::int32_t V2TypeBucketsSnapshotVersion1 = 1;
         static constexpr DWORD LiveWatcherBufferSize = 256 * 1024;
         static constexpr DWORD CatchUpBufferSize = 1024 * 1024;
         static constexpr DWORD MftEnumBufferSize = 8 * 1024 * 1024;
+        static constexpr DWORD MftEnumFallbackBufferSize = 1024 * 1024;
+        static constexpr int MftEnumMaxResumeAttempts = 3;
         static constexpr unsigned long long LiveWaitMilliseconds = 1000;
         static constexpr DWORD ErrorJournalEntryDeleted = 1181;
+        static constexpr DWORD ErrorHandleEof = 38;
         static constexpr std::uint64_t NtfsRootFileReferenceNumber = 5;
         static constexpr wchar_t SnapshotWriteMutexName[] = L"PackageManager.MftScannerNativeIndex.WriteLock";
         static constexpr DWORD SnapshotWriteLockTimeoutMilliseconds = 200;
@@ -1561,11 +1597,16 @@ namespace
                             results[i].volume);
                         if (results[i].success)
                         {
+                            results[i].volume.recordCount = static_cast<std::uint32_t>(std::min<std::size_t>(
+                                results[i].records.size(),
+                                std::numeric_limits<std::uint32_t>::max()));
                             NativeLogWrite(
                                 "[NATIVE MFT ENUM] drive=" + std::string(1, static_cast<char>(results[i].driveLetter))
                                 + " success elapsedMs=" + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
                                     std::chrono::steady_clock::now() - volumeStart).count())
                                 + " records=" + std::to_string(results[i].records.size())
+                                + " maxFrn=" + std::to_string(results[i].volume.maxFrn)
+                                + " complete=" + std::string(results[i].volume.enumerationComplete ? "true" : "false")
                                 + " nextUsn=" + std::to_string(results[i].volume.nextUsn)
                                 + " journalId=" + std::to_string(results[i].volume.journalId));
                         }
@@ -1616,7 +1657,10 @@ namespace
 
                 if (!result.success)
                 {
-                    continue;
+                    throw std::runtime_error(
+                        result.error.empty()
+                            ? "native MFT enumeration failed for fixed drive"
+                            : result.error);
                 }
 
                 ++enumeratedVolumeCount;
@@ -1652,6 +1696,7 @@ namespace
 
                 volumes_[result.driveLetter] = std::move(result.volume);
             }
+            PopulateVolumeRecordMetrics_NoLock(records_, volumes_);
 
             const auto mergeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - mergeStart).count();
@@ -1673,14 +1718,35 @@ namespace
 
         bool EnumerateVolume_NoLock(wchar_t driveLetter, std::vector<Record>& outRecords, VolumeState& outVolume)
         {
+            std::string error;
+            if (EnumerateVolumeEntries_NoLock(driveLetter, outRecords, outVolume, MftEnumBufferSize, error))
+            {
+                return true;
+            }
+
+            NativeLogWrite(
+                "[NATIVE MFT ENUM] drive=" + std::string(1, static_cast<char>(driveLetter))
+                + " retry reason=" + FormatLogValue(error)
+                + " bufferBytes=" + std::to_string(MftEnumFallbackBufferSize));
+            return EnumerateVolumeEntries_NoLock(driveLetter, outRecords, outVolume, MftEnumFallbackBufferSize, error);
+        }
+
+        bool EnumerateVolumeEntries_NoLock(
+            wchar_t driveLetter,
+            std::vector<Record>& outRecords,
+            VolumeState& outVolume,
+            DWORD bufferSize,
+            std::string& error)
+        {
             const auto volumePath = BuildVolumePath(driveLetter);
-            const HANDLE handle = OpenVolumeHandle(volumePath);
+            HANDLE handle = OpenVolumeHandle(volumePath);
             if (handle == INVALID_HANDLE_VALUE)
             {
+                error = "open-volume-failed:" + std::to_string(GetLastError());
                 return false;
             }
 
-            auto* buffer = static_cast<std::byte*>(std::malloc(MftEnumBufferSize));
+            auto* buffer = static_cast<std::byte*>(std::malloc(bufferSize));
             if (buffer == nullptr)
             {
                 CloseHandle(handle);
@@ -1705,27 +1771,61 @@ namespace
             enumData.HighUsn = MAXLONGLONG;
 
             DWORD bytesReturned = 0;
-            while (DeviceIoControl(
-                handle,
-                FSCTL_ENUM_USN_DATA,
-                &enumData,
-                sizeof(enumData),
-                buffer,
-                MftEnumBufferSize,
-                &bytesReturned,
-                nullptr))
+            DWORD lastError = ERROR_SUCCESS;
+            std::uint64_t batchCount = 0;
+            std::uint64_t maxFrn = 0;
+            int resumeAttempts = 0;
+            while (true)
             {
-                if (bytesReturned <= sizeof(USN))
+                bytesReturned = 0;
+                if (!DeviceIoControl(
+                    handle,
+                    FSCTL_ENUM_USN_DATA,
+                    &enumData,
+                    sizeof(enumData),
+                    buffer,
+                    bufferSize,
+                    &bytesReturned,
+                    nullptr))
                 {
+                    lastError = GetLastError();
+                    if (lastError != ErrorHandleEof && resumeAttempts < MftEnumMaxResumeAttempts)
+                    {
+                        ++resumeAttempts;
+                        NativeLogWrite(
+                            "[NATIVE MFT ENUM] drive=" + std::string(1, static_cast<char>(driveLetter))
+                            + " resume attempt=" + std::to_string(resumeAttempts)
+                            + " lastError=" + std::to_string(lastError)
+                            + " startFrn=" + std::to_string(enumData.StartFileReferenceNumber)
+                            + " records=" + std::to_string(outRecords.size())
+                            + " bufferBytes=" + std::to_string(bufferSize));
+                        CloseHandle(handle);
+                        handle = OpenVolumeHandle(volumePath);
+                        if (handle != INVALID_HANDLE_VALUE)
+                        {
+                            continue;
+                        }
+
+                        lastError = GetLastError();
+                    }
+
                     break;
                 }
 
+                lastError = ERROR_SUCCESS;
+                if (bytesReturned <= sizeof(USN))
+                {
+                    continue;
+                }
+
+                ++batchCount;
                 enumData.StartFileReferenceNumber = *reinterpret_cast<DWORDLONG*>(buffer);
                 DWORD offset = sizeof(USN);
                 while (offset + 60 < bytesReturned)
                 {
                     const auto* recordHeader = reinterpret_cast<const USN_RECORD_V2*>(buffer + offset);
-                    if (recordHeader->RecordLength == 0)
+                    if (recordHeader->RecordLength == 0
+                        || offset + recordHeader->RecordLength > bytesReturned)
                     {
                         break;
                     }
@@ -1747,6 +1847,10 @@ namespace
                         record.isDirectory = isDirectory;
                         lastFrn = frn;
                         lastRecordIndex = static_cast<std::uint32_t>(outRecords.size());
+                        if (frn > maxFrn)
+                        {
+                            maxFrn = frn;
+                        }
                         outRecords.push_back(std::move(record));
                     }
                     else if (lastRecordIndex < outRecords.size())
@@ -1765,8 +1869,27 @@ namespace
                 }
             }
 
+            if (lastError != ErrorHandleEof)
+            {
+                error = "enum-incomplete:lastError=" + std::to_string(lastError)
+                    + ";startFrn=" + std::to_string(enumData.StartFileReferenceNumber)
+                    + ";records=" + std::to_string(outRecords.size())
+                    + ";batches=" + std::to_string(batchCount)
+                    + ";bytesReturned=" + std::to_string(bytesReturned)
+                    + ";resumeAttempts=" + std::to_string(resumeAttempts);
+                std::free(buffer);
+                if (handle != INVALID_HANDLE_VALUE)
+                {
+                    CloseHandle(handle);
+                }
+                return false;
+            }
+
             VolumeState volume;
             volume.driveLetter = driveLetter;
+            volume.recordCount = static_cast<std::uint32_t>(std::min<std::size_t>(outRecords.size(), std::numeric_limits<std::uint32_t>::max()));
+            volume.maxFrn = maxFrn;
+            volume.enumerationComplete = true;
 
             USN_JOURNAL_DATA_V0 journalData{};
             if (QueryJournal_NoLock(handle, journalData))
@@ -1778,7 +1901,11 @@ namespace
             outVolume = std::move(volume);
 
             std::free(buffer);
-            CloseHandle(handle);
+            if (handle != INVALID_HANDLE_VALUE)
+            {
+                CloseHandle(handle);
+            }
+            error.clear();
             return true;
         }
 
@@ -2626,14 +2753,13 @@ namespace
         {
             std::sort(frnRecordIndex_.begin(), frnRecordIndex_.end(), [](const auto& left, const auto& right)
             {
-                return left.key < right.key;
-            });
-            frnRecordIndex_.erase(
-                std::unique(frnRecordIndex_.begin(), frnRecordIndex_.end(), [](const auto& left, const auto& right)
+                if (left.key != right.key)
                 {
-                    return left.key == right.key;
-                }),
-                frnRecordIndex_.end());
+                    return left.key < right.key;
+                }
+
+                return left.recordId < right.recordId;
+            });
             frnRecordIndex_.shrink_to_fit();
         }
 
@@ -2673,6 +2799,83 @@ namespace
             }
 
             SortFrnRecordIndex_NoLock();
+        }
+
+        static void PopulateVolumeRecordMetrics_NoLock(
+            const std::vector<Record>& records,
+            std::unordered_map<wchar_t, VolumeState>& volumes)
+        {
+            for (auto& pair : volumes)
+            {
+                pair.second.recordCount = 0;
+                pair.second.maxFrn = 0;
+            }
+
+            for (const auto& record : records)
+            {
+                auto volumeIt = volumes.find(record.driveLetter);
+                if (volumeIt == volumes.end())
+                {
+                    continue;
+                }
+
+                auto& volume = volumeIt->second;
+                if (volume.recordCount < std::numeric_limits<std::uint32_t>::max())
+                {
+                    ++volume.recordCount;
+                }
+
+                if (record.frn > volume.maxFrn)
+                {
+                    volume.maxFrn = record.frn;
+                }
+
+                if (!record.isDirectory)
+                {
+                    continue;
+                }
+
+                const auto existing = volume.frnMap.find(record.frn);
+                if (existing == volume.frnMap.end() || record.originalName.length() > existing->second.name.length())
+                {
+                    volume.frnMap[record.frn] = FrnEntry{ record.originalName, record.parentFrn, true };
+                }
+            }
+        }
+
+        void PopulateVolumeRecordMetricsFromMapped_NoLock(std::unordered_map<wchar_t, VolumeState>& volumes) const
+        {
+            for (auto& pair : volumes)
+            {
+                pair.second.recordCount = 0;
+                pair.second.maxFrn = 0;
+            }
+
+            if (!mappedRecords_.Ready())
+            {
+                return;
+            }
+
+            for (std::uint32_t i = 0; i < mappedRecords_.recordCount; ++i)
+            {
+                const auto& compact = mappedRecords_.records[i];
+                auto volumeIt = volumes.find(static_cast<wchar_t>(compact.drive));
+                if (volumeIt == volumes.end())
+                {
+                    continue;
+                }
+
+                auto& volume = volumeIt->second;
+                if (volume.recordCount < std::numeric_limits<std::uint32_t>::max())
+                {
+                    ++volume.recordCount;
+                }
+
+                if (compact.frn > volume.maxFrn)
+                {
+                    volume.maxFrn = compact.frn;
+                }
+            }
         }
 
         void ReleaseDuplicateFrnNameStorage_NoLock()
@@ -4048,6 +4251,7 @@ namespace
                     page.push_back(recordId);
                 }
             }
+
         }
 
         void AppendOverlayMatches_NoLock(
@@ -4163,6 +4367,7 @@ namespace
                     page.push_back(recordId);
                 }
             }
+
         }
 
         bool TryMatchRecordsV2_NoLock(
@@ -4969,6 +5174,21 @@ namespace
                 return cached->second;
             }
 
+            const auto frnEntry = volume.frnMap.find(frn);
+            if (frnEntry != volume.frnMap.end())
+            {
+                auto parentPath = ResolveDirectoryPath_NoLock(volume, frnEntry->second.parentFrn);
+                if (!parentPath.empty() && parentPath.back() != L'\\')
+                {
+                    parentPath.push_back(L'\\');
+                }
+
+                auto fullPath = parentPath + frnEntry->second.name;
+                mutableVolume.pathCache[frn] = fullPath;
+                TrimPathCache_NoLock(mutableVolume);
+                return fullPath;
+            }
+
             std::uint32_t recordId = 0;
             if (!TryGetRecordIdByKey_NoLock(MakeRecordKey(volume.driveLetter, frn), recordId))
             {
@@ -5013,7 +5233,7 @@ namespace
 
             std::int32_t version = 0;
             input.read(reinterpret_cast<char*>(&version), sizeof(version));
-            if (!input.good() || version != SnapshotVersion3)
+            if (!input.good() || (version != SnapshotVersion3 && version != SnapshotVersion4))
             {
                 return false;
             }
@@ -5084,6 +5304,16 @@ namespace
                 }
                 input.read(reinterpret_cast<char*>(&volume.nextUsn), sizeof(volume.nextUsn));
                 input.read(reinterpret_cast<char*>(&volume.journalId), sizeof(volume.journalId));
+                volume.enumerationComplete = true;
+                if (version >= SnapshotVersion4)
+                {
+                    input.read(reinterpret_cast<char*>(&volume.recordCount), sizeof(volume.recordCount));
+                    input.read(reinterpret_cast<char*>(&volume.maxFrn), sizeof(volume.maxFrn));
+                    if (!ReadSnapshotBool(input, volume.enumerationComplete))
+                    {
+                        return false;
+                    }
+                }
                 std::int32_t frnCount = 0;
                 input.read(reinterpret_cast<char*>(&frnCount), sizeof(frnCount));
                 if (!input.good() || frnCount < 0)
@@ -5129,6 +5359,7 @@ namespace
                 std::chrono::steady_clock::now() - totalStart).count();
             records_ = std::move(loadedRecords);
             volumes_ = std::move(loadedVolumes);
+            PopulateVolumeRecordMetrics_NoLock(records_, volumes_);
             RebuildFrnRecordIndex_NoLock();
             ReleaseDuplicateFrnNameStorage_NoLock();
             const auto restoreStart = std::chrono::steady_clock::now();
@@ -5162,7 +5393,7 @@ namespace
                 std::chrono::steady_clock::now() - restoreStart).count();
             NativeLogWrite(
                 "[NATIVE SNAPSHOT LOAD] hit elapsedMs=" + std::to_string(snapshotReadMs)
-                + " version=" + std::to_string(SnapshotVersion3)
+                + " version=" + std::to_string(version)
                 + " fileBytes=" + std::to_string(fileSizeError ? 0 : fileBytes)
                 + " records=" + std::to_string(records_.size())
                 + " volumes=" + std::to_string(volumes_.size())
@@ -5270,7 +5501,7 @@ namespace
             input.read(reinterpret_cast<char*>(&volumeCount), sizeof(volumeCount));
             input.read(reinterpret_cast<char*>(&stringPoolChars), sizeof(stringPoolChars));
             if (!input.good()
-                || version != V2RecordsSnapshotVersion1
+                || (version != V2RecordsSnapshotVersion1 && version != V2RecordsSnapshotVersion2)
                 || recordCount == 0
                 || volumeCount == 0)
             {
@@ -5313,6 +5544,16 @@ namespace
 
                 input.read(reinterpret_cast<char*>(&volume.nextUsn), sizeof(volume.nextUsn));
                 input.read(reinterpret_cast<char*>(&volume.journalId), sizeof(volume.journalId));
+                volume.enumerationComplete = true;
+                if (version >= V2RecordsSnapshotVersion2)
+                {
+                    input.read(reinterpret_cast<char*>(&volume.recordCount), sizeof(volume.recordCount));
+                    input.read(reinterpret_cast<char*>(&volume.maxFrn), sizeof(volume.maxFrn));
+                    if (!ReadSnapshotBool(input, volume.enumerationComplete))
+                    {
+                        return false;
+                    }
+                }
                 if (!input.good())
                 {
                     return false;
@@ -5383,7 +5624,7 @@ namespace
                 std::chrono::steady_clock::now() - restoreStart).count();
             NativeLogWrite(
                 "[NATIVE V2 RECORDS LOAD] success elapsedMs=" + std::to_string(recordsLoadMs)
-                + " version=" + std::to_string(V2RecordsSnapshotVersion1)
+                + " version=" + std::to_string(version)
                 + " fileBytes=" + std::to_string(fileSizeError ? 0 : fileBytes)
                 + " records=" + std::to_string(records_.size())
                 + " volumes=" + std::to_string(volumes_.size())
@@ -5500,7 +5741,9 @@ namespace
             data += sizeof(mapped.stringPoolChars);
             remaining -= sizeof(mapped.stringPoolChars);
 
-            if (version != V2RecordsSnapshotVersion1 || mapped.recordCount == 0 || mapped.volumeCount == 0)
+            if ((version != V2RecordsSnapshotVersion1 && version != V2RecordsSnapshotVersion2)
+                || mapped.recordCount == 0
+                || mapped.volumeCount == 0)
             {
                 NativeLogWrite("[NATIVE V2 RECORDS MAP] miss reason=version-or-header");
                 return false;
@@ -5543,12 +5786,34 @@ namespace
                 std::memcpy(&volume.journalId, data, sizeof(volume.journalId));
                 data += sizeof(volume.journalId);
                 remaining -= sizeof(volume.journalId);
+                volume.enumerationComplete = true;
+                if (version >= V2RecordsSnapshotVersion2)
+                {
+                    if (remaining < sizeof(volume.recordCount) + sizeof(volume.maxFrn) + sizeof(char))
+                    {
+                        NativeLogWrite("[NATIVE V2 RECORDS MAP] miss reason=invalid-volume-metrics");
+                        return false;
+                    }
+
+                    std::memcpy(&volume.recordCount, data, sizeof(volume.recordCount));
+                    data += sizeof(volume.recordCount);
+                    remaining -= sizeof(volume.recordCount);
+                    std::memcpy(&volume.maxFrn, data, sizeof(volume.maxFrn));
+                    data += sizeof(volume.maxFrn);
+                    remaining -= sizeof(volume.maxFrn);
+                    char rawComplete = '\0';
+                    std::memcpy(&rawComplete, data, sizeof(rawComplete));
+                    data += sizeof(rawComplete);
+                    remaining -= sizeof(rawComplete);
+                    volume.enumerationComplete = rawComplete != 0;
+                }
                 loadedVolumes[volume.driveLetter] = std::move(volume);
             }
 
             recordCount = mapped.recordCount;
             stringPoolChars = mapped.stringPoolChars;
             mappedRecords_ = std::move(mapped);
+            PopulateVolumeRecordMetricsFromMapped_NoLock(loadedVolumes);
             NativeLogWrite(
                 "[NATIVE V2 RECORDS MAP] success elapsedMs="
                 + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -5598,13 +5863,16 @@ namespace
                 recordsCopy.assign(records_.begin(), records_.end());
                 volumesCopy.reserve(volumes_.size());
                 for (const auto& pair : volumes_)
-                {
-                    VolumeState volume;
-                    volume.driveLetter = pair.second.driveLetter;
-                    volume.nextUsn = pair.second.nextUsn;
-                    volume.journalId = pair.second.journalId;
-                    volumesCopy.emplace(pair.first, std::move(volume));
-                }
+            {
+                VolumeState volume;
+                volume.driveLetter = pair.second.driveLetter;
+                volume.nextUsn = pair.second.nextUsn;
+                volume.journalId = pair.second.journalId;
+                volume.recordCount = pair.second.recordCount;
+                volume.maxFrn = pair.second.maxFrn;
+                volume.enumerationComplete = pair.second.enumerationComplete;
+                volumesCopy.emplace(pair.first, std::move(volume));
+            }
                 v2Copy.trigramEntries = v2_.trigramEntries;
                 v2Copy.trigramPostings = v2_.trigramPostings;
                 v2Copy.asciiCharEntries = v2_.asciiCharEntries;
@@ -5720,7 +5988,7 @@ namespace
                 stringIndexMap[stringPool[i]] = static_cast<std::int32_t>(i);
             }
 
-            output.write(reinterpret_cast<const char*>(&SnapshotVersion3), sizeof(SnapshotVersion3));
+            output.write(reinterpret_cast<const char*>(&SnapshotVersion4), sizeof(SnapshotVersion4));
             const auto stringPoolCount = static_cast<std::int32_t>(stringPool.size());
             output.write(reinterpret_cast<const char*>(&stringPoolCount), sizeof(stringPoolCount));
             for (const auto& value : stringPool)
@@ -5768,6 +6036,19 @@ namespace
                 }
                 output.write(reinterpret_cast<const char*>(&volume->nextUsn), sizeof(volume->nextUsn));
                 output.write(reinterpret_cast<const char*>(&volume->journalId), sizeof(volume->journalId));
+                const auto volumeRecordCount = CountRecordsForVolume(records, volume->driveLetter);
+                const auto volumeMaxFrn = MaxFrnForVolume(records, volume->driveLetter);
+                output.write(reinterpret_cast<const char*>(&volumeRecordCount), sizeof(volumeRecordCount));
+                output.write(reinterpret_cast<const char*>(&volumeMaxFrn), sizeof(volumeMaxFrn));
+                const auto complete = volume->enumerationComplete;
+                if (!WriteSnapshotBool(output, complete))
+                {
+                    output.close();
+                    DeleteFileW(tempPath.c_str());
+                    ReleaseMutex(writeMutex);
+                    CloseHandle(writeMutex);
+                    return;
+                }
 
                 const auto orderedEntries = GetOrderedRecordsForVolume(records, volume->driveLetter);
                 const auto frnCount = static_cast<std::int32_t>(orderedEntries.size());
@@ -5827,7 +6108,7 @@ namespace
                 "[NATIVE SNAPSHOT SAVE] elapsedMs="
                 + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - totalStart).count())
-                + " version=" + std::to_string(SnapshotVersion3)
+                + " version=" + std::to_string(SnapshotVersion4)
                 + " fileBytes=" + std::to_string(fileSizeError ? 0 : fileBytes)
                 + " records=" + std::to_string(records.size())
                 + " volumes=" + std::to_string(volumes.size())
@@ -5902,7 +6183,7 @@ namespace
                 return;
             }
 
-            const auto version = V2RecordsSnapshotVersion1;
+            const auto version = V2RecordsSnapshotVersion2;
             const auto recordCount = static_cast<std::uint32_t>(compactRecords.size());
             const auto volumeCount = static_cast<std::uint32_t>(orderedVolumes.size());
             const auto stringPoolChars = static_cast<std::uint32_t>(stringPool.size());
@@ -5929,6 +6210,17 @@ namespace
 
                 output.write(reinterpret_cast<const char*>(&volume->nextUsn), sizeof(volume->nextUsn));
                 output.write(reinterpret_cast<const char*>(&volume->journalId), sizeof(volume->journalId));
+                const auto volumeRecordCount = CountRecordsForVolume(records, volume->driveLetter);
+                const auto volumeMaxFrn = MaxFrnForVolume(records, volume->driveLetter);
+                output.write(reinterpret_cast<const char*>(&volumeRecordCount), sizeof(volumeRecordCount));
+                output.write(reinterpret_cast<const char*>(&volumeMaxFrn), sizeof(volumeMaxFrn));
+                const auto complete = volume->enumerationComplete;
+                if (!WriteSnapshotBool(output, complete))
+                {
+                    output.close();
+                    DeleteFileW(tempPath.c_str());
+                    return;
+                }
             }
 
             output.flush();
@@ -5960,7 +6252,7 @@ namespace
                 "[NATIVE V2 RECORDS SAVE] success elapsedMs="
                 + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - totalStart).count())
-                + " version=" + std::to_string(V2RecordsSnapshotVersion1)
+                + " version=" + std::to_string(V2RecordsSnapshotVersion2)
                 + " fileBytes=" + std::to_string(fileSizeError ? 0 : fileBytes)
                 + " records=" + std::to_string(records.size())
                 + " volumes=" + std::to_string(volumes.size())
@@ -7064,7 +7356,17 @@ namespace
                 && value.compare(value.length() - suffix.length(), suffix.length(), suffix) == 0;
         }
 
+        static bool EndsWith(const std::wstring& value, std::wstring_view suffix)
+        {
+            return EndsWith(std::wstring_view(value), suffix);
+        }
+
         static bool EndsWith(std::wstring_view value, const std::wstring& suffix)
+        {
+            return EndsWith(value, std::wstring_view(suffix));
+        }
+
+        static bool EndsWith(std::wstring_view value, std::wstring_view suffix)
         {
             return value.length() >= suffix.length()
                 && value.compare(value.length() - suffix.length(), suffix.length(), suffix) == 0;
@@ -7075,7 +7377,17 @@ namespace
             return ContainsText(std::wstring_view(value), query);
         }
 
+        static bool ContainsText(const std::wstring& value, std::wstring_view query)
+        {
+            return ContainsText(std::wstring_view(value), query);
+        }
+
         static bool ContainsText(std::wstring_view value, const std::wstring& query)
+        {
+            return ContainsText(value, std::wstring_view(query));
+        }
+
+        static bool ContainsText(std::wstring_view value, std::wstring_view query)
         {
             if (query.empty())
             {
@@ -7124,7 +7436,17 @@ namespace
             return StartsWith(std::wstring_view(value), prefix);
         }
 
+        static bool StartsWith(const std::wstring& value, std::wstring_view prefix)
+        {
+            return StartsWith(std::wstring_view(value), prefix);
+        }
+
         static bool StartsWith(std::wstring_view value, const std::wstring& prefix)
+        {
+            return StartsWith(value, std::wstring_view(prefix));
+        }
+
+        static bool StartsWith(std::wstring_view value, std::wstring_view prefix)
         {
             return value.length() >= prefix.length()
                 && value.compare(0, prefix.length(), prefix) == 0;
