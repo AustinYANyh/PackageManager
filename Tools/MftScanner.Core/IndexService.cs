@@ -78,6 +78,8 @@ namespace MftScanner
         private IProgress<string> _progress;
 
         /// <summary>当前内存索引实例（供 SearchAsync 使用）。</summary>
+        public bool PreferSynchronousHostSearch => false;
+
         public MemoryIndex Index => _index;
         public int IndexedCount => _index.TotalCount;
         public bool IsBackgroundCatchUpInProgress => _isBackgroundCatchUpInProgress;

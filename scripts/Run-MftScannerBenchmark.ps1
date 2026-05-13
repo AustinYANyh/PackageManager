@@ -5,8 +5,12 @@ param(
     [int]$Repeat = 1,
     [int]$ReadyTimeoutSeconds = 180,
     [int]$SearchTimeoutSeconds = 60,
-    [int]$MaxHostMsThreshold = 100,
+    [int]$MaxHostMsThreshold = 50,
+    [int]$MaxClientMsThreshold = 50,
+    [int]$MaxLockWaitMsThreshold = 2,
     [int]$MaxRestoreReadyMsThreshold = 3000,
+    [int]$MaxWorkingSetMBThreshold = 1024,
+    [int]$MaxPrivateMBThreshold = 1024,
     [ValidateSet("SharedHost", "InProcess")]
     [string]$Backend = "SharedHost",
     [switch]$NoRestartHost,
@@ -270,6 +274,68 @@ function Get-LatestContainsQueryEvent {
     return @($events | Sort-Object Time | Select-Object -Last 1)[0]
 }
 
+function Parse-NativeSearchEvents {
+    param(
+        [string]$LogPath,
+        [datetime]$Since
+    )
+
+    if (!(Test-Path $LogPath)) {
+        return @()
+    }
+
+    $events = New-Object System.Collections.Generic.List[object]
+    foreach ($match in Select-String -Path $LogPath -Pattern "\[NATIVE SEARCH\]" -ErrorAction SilentlyContinue) {
+        $line = $match.Line
+        if ($line -notmatch "^(?<time>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)") {
+            continue
+        }
+
+        $time = [datetime]$Matches.time
+        if ($time -lt $Since) {
+            continue
+        }
+
+        $events.Add([pscustomobject]@{
+            Time = $time
+            Outcome = if ($line -match "outcome=(?<v>\S+)") { $Matches.v } else { "" }
+            TotalMs = if ($line -match "totalMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+            LockWaitMs = if ($line -match "lockWaitMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+            MatchMs = if ($line -match "matchMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+            ResolveMs = if ($line -match "resolveMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+            JsonMs = if ($line -match "jsonMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+            Plan = if ($line -match "plan=(?<v>\S+)") { $Matches.v } else { "" }
+            Accelerator = if ($line -match "accelerator=(?<v>\S+)") { $Matches.v } else { "" }
+            Matched = if ($line -match "matched=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+            Keyword = if ($line -match "keyword=(?<v>'[^']*'|\S+)") { $Matches.v } else { "" }
+            Raw = $line
+        })
+    }
+
+    return $events
+}
+
+function Get-LatestNativeSearchEvent {
+    param(
+        [string]$LogPath,
+        [datetime]$Since,
+        [string]$Keyword
+    )
+
+    $events = @(Parse-NativeSearchEvents -LogPath $LogPath -Since $Since)
+    if ($events.Count -eq 0) {
+        return $null
+    }
+
+    $escaped = "'" + $Keyword + "'"
+    $matched = @($events | Where-Object { $_.Keyword -eq $escaped -or $_.Raw.Contains("keyword=$escaped") })
+    if ($matched.Count -gt 0) {
+        return @($matched | Sort-Object Time | Select-Object -Last 1)[0]
+    }
+
+    return @($events | Sort-Object Time | Select-Object -Last 1)[0]
+}
+
 function Parse-IndexStageEvents {
     param(
         [string]$LogPath,
@@ -362,7 +428,11 @@ function New-MarkdownReport {
         [string]$BuildResult,
         [string]$ReportJsonPath,
         [int]$MaxHostMsThreshold,
+        [int]$MaxClientMsThreshold,
+        [int]$MaxLockWaitMsThreshold,
         [int]$MaxRestoreReadyMsThreshold,
+        [int]$MaxWorkingSetMBThreshold,
+        [int]$MaxPrivateMBThreshold,
         [long]$RestoreReadyMs,
         [object[]]$Failures
     )
@@ -439,7 +509,11 @@ function New-MarkdownReport {
     $lines.Add("")
     $lines.Add("- 结果：$resultText")
     $lines.Add("- 搜索宿主耗时阈值：$MaxHostMsThreshold ms")
+    $lines.Add("- 搜索客户端端到端阈值：$MaxClientMsThreshold ms")
+    $lines.Add("- Native 锁等待阈值：$MaxLockWaitMsThreshold ms")
     $lines.Add("- 启动恢复 ready 阈值：$MaxRestoreReadyMsThreshold ms")
+    $lines.Add("- WorkingSet 阈值：$MaxWorkingSetMBThreshold MB")
+    $lines.Add("- Private Memory 阈值：$MaxPrivateMBThreshold MB")
     $lines.Add("- 当前恢复 ready 耗时：$RestoreReadyMs ms")
     if (-not $passed) {
         $lines.Add("")
@@ -519,14 +593,14 @@ function New-MarkdownReport {
     $lines.Add("")
     $lines.Add("## 查询明细")
     $lines.Add("")
-    $lines.Add("| 阶段 | 场景 | 用例 | 类型过滤 | 关键词 | 客户端耗时(ms) | 宿主耗时(ms) | Contains模式 | UI命中数 | 物理命中数 | 唯一路径数 | 重复路径数 | 返回数 | 错配返回 | stale | 桶状态 | 是否截断 |")
-    $lines.Add("| --- | --- | --- | --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |")
+    $lines.Add("| 阶段 | 场景 | 用例 | 类型过滤 | 关键词 | 客户端耗时(ms) | 宿主耗时(ms) | Native总耗时(ms) | 锁等待(ms) | Plan | Accelerator | Contains模式 | UI命中数 | 物理命中数 | 唯一路径数 | 重复路径数 | 返回数 | 错配返回 | stale | 桶状态 | 是否截断 |")
+    $lines.Add("| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |")
     foreach ($row in $Rows) {
         $keyword = ($row.Keyword -replace "\|", "\|")
         $truncated = Convert-BoolToChinese $row.IsTruncated
         $stale = Convert-BoolToChinese $row.IsSnapshotStale
         $bucket = "C=$($row.CharBucketReady),B=$($row.BigramBucketReady),T=$($row.TrigramBucketReady)"
-        $lines.Add("| $($row.Phase) | $($row.Scenario) | $($row.Name) | $($row.Filter) | ``$keyword`` | $($row.ClientMs) | $($row.HostSearchMs) | $($row.ContainsMode) | $($row.TotalMatchedCount) | $($row.PhysicalMatchedCount) | $($row.UniqueMatchedCount) | $($row.DuplicatePathCount) | $($row.ReturnedCount) | $($row.BadReturnedCount) | $stale | $bucket | $truncated |")
+        $lines.Add("| $($row.Phase) | $($row.Scenario) | $($row.Name) | $($row.Filter) | ``$keyword`` | $($row.ClientMs) | $($row.HostSearchMs) | $($row.NativeTotalMs) | $($row.NativeLockWaitMs) | $($row.NativePlan) | $($row.NativeAccelerator) | $($row.ContainsMode) | $($row.TotalMatchedCount) | $($row.PhysicalMatchedCount) | $($row.UniqueMatchedCount) | $($row.DuplicatePathCount) | $($row.ReturnedCount) | $($row.BadReturnedCount) | $stale | $bucket | $truncated |")
     }
 
     $lines.Add("")
@@ -591,6 +665,9 @@ if (![string]::IsNullOrWhiteSpace($SnapshotDirectory)) {
     Write-Host "Using isolated snapshot directory: $resolvedSnapshotDirectory"
 }
 
+$env:PM_ENABLE_NATIVE_INDEX = "1"
+$env:PM_DISABLE_NATIVE_INDEX = "0"
+
 if ($ForceRebuildIndex) {
     $resolvedSnapshotDirectory = Assert-IsolatedSnapshotDirectory -SnapshotRoot $resolvedSnapshotDirectory -OutputRoot $outputRoot
     $env:PM_MFT_INDEX_SNAPSHOT_DIR = $resolvedSnapshotDirectory
@@ -602,6 +679,12 @@ $hostExe = Join-Path $repoRoot "Assets\Tools\MftScanner.exe"
 $coreDll = Join-Path $repoRoot "Tools\MftScanner.Core\bin\$Configuration\MftScanner.Core.dll"
 $newtonsoftDll = Join-Path $repoRoot "Tools\MftScanner.Core\bin\$Configuration\Newtonsoft.Json.dll"
 $logPath = Join-Path $env:LOCALAPPDATA "PackageManager\logs\index-service-diagnostics\$(Get-Date -Format 'yyyyMMdd').log"
+
+if ($Backend -eq "SharedHost" -and !$NoRestartHost) {
+    Write-Host "Stopping existing MftScanner.exe processes before build..."
+    Stop-MftScannerHost
+    Start-Sleep -Milliseconds 500
+}
 
 Write-Host "Building MftScanner artifacts..."
 & $msbuild $project /t:EnsureEmbeddedToolArtifacts "/p:Configuration=$Configuration" /v:minimal
@@ -717,6 +800,7 @@ function Invoke-BenchmarkCase {
         $result = $Client.SearchAsync($Case.Keyword, $MaxResults, 0, $Case.Filter, $null, $searchCts.Token).GetAwaiter().GetResult()
         $sw.Stop()
         $event = Get-LatestContainsQueryEvent -LogPath $logPath -Since $searchStartedAt.AddMilliseconds(-100) -Keyword $Case.Keyword
+        $nativeEvent = Get-LatestNativeSearchEvent -LogPath $logPath -Since $searchStartedAt.AddMilliseconds(-100) -Keyword $Case.Keyword
         $rows.Add([pscustomobject]@{
             Phase = $Phase
             Scenario = $Case.Scenario
@@ -727,6 +811,10 @@ function Invoke-BenchmarkCase {
             Filter = $Case.Filter.ToString()
             ClientMs = $sw.ElapsedMilliseconds
             HostSearchMs = $result.HostSearchMs
+            NativeTotalMs = if ($nativeEvent) { $nativeEvent.TotalMs } else { 0 }
+            NativeLockWaitMs = if ($nativeEvent) { $nativeEvent.LockWaitMs } else { 0 }
+            NativePlan = if ($nativeEvent) { $nativeEvent.Plan } else { "" }
+            NativeAccelerator = if ($nativeEvent) { $nativeEvent.Accelerator } else { "" }
             ContainsMode = if ($event) { $event.Mode } else { "" }
             ContainsCandidateCount = if ($event) { $event.CandidateCount } else { 0 }
             ContainsVerifyMs = if ($event) { $event.VerifyMs } else { 0 }
@@ -771,6 +859,7 @@ try {
         [pscustomobject]@{ Name = "PathIncrementalVe"; Keyword = "$PathPrefix ve"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Typing"; Language = "Ascii" },
         [pscustomobject]@{ Name = "PathIncrementalVer"; Keyword = "$PathPrefix ver"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Typing"; Language = "Ascii" },
         [pscustomobject]@{ Name = "PathWildcardExe"; Keyword = "$PathPrefix *.exe"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "PathWildcardLiteral"; Keyword = "$PathPrefix *ver*"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
         [pscustomobject]@{ Name = "PathLaunchableContains"; Keyword = "$PathPrefix ve"; Filter = [MftScanner.SearchTypeFilter]::Launchable; Scenario = "Direct"; Language = "Ascii" },
         [pscustomobject]@{ Name = "PathConfigCalsupport"; Keyword = "$PathPrefix calsupport"; Filter = [MftScanner.SearchTypeFilter]::Config; Scenario = "Direct"; Language = "Ascii" },
         [pscustomobject]@{ Name = "GlobalAllSingleChar"; Keyword = "d"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
@@ -787,6 +876,11 @@ try {
         [pscustomobject]@{ Name = "GlobalChineseBigram"; Keyword = "鱼丸"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Chinese" },
         [pscustomobject]@{ Name = "GlobalChineseSearch"; Keyword = "搜索"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Typing"; Language = "Chinese" },
         [pscustomobject]@{ Name = "GlobalChineseTypingSou"; Keyword = "搜"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Typing"; Language = "Chinese" },
+        [pscustomobject]@{ Name = "GlobalPrefixCode"; Keyword = "^code"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "GlobalSuffixJson"; Keyword = ".json$"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "GlobalWildcardExtensionExe"; Keyword = "*.exe"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "GlobalWildcardLiteral"; Keyword = "*code*"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "GlobalRegexLiteral"; Keyword = "/code.*/"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Regex"; Language = "Ascii" },
         [pscustomobject]@{ Name = "GlobalConfigCalsupport"; Keyword = "calsupport"; Filter = [MftScanner.SearchTypeFilter]::Config; Scenario = "Direct"; Language = "Ascii" },
         [pscustomobject]@{ Name = "GlobalLaunchableContains"; Keyword = "workbench"; Filter = [MftScanner.SearchTypeFilter]::Launchable; Scenario = "Direct"; Language = "Ascii" },
         [pscustomobject]@{ Name = "ChineseSeed"; Keyword = "中"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Seed"; Language = "ChineseSeed" }
@@ -847,7 +941,7 @@ $containsCacheEvents = @(Parse-ContainsCacheEvents -LogPath $logPath -Since $sta
 $containsQueryEvents = @(Parse-ContainsQueryEvents -LogPath $logPath -Since $startedAt.AddSeconds(-1))
 $indexStageEvents = @(Parse-IndexStageEvents -LogPath $logPath -Since $startedAt.AddSeconds(-1))
 $restoreReadyMs = 0
-$restoreTotal = @($indexStageEvents | Where-Object { $_.Stage -eq "SNAPSHOT RESTORE TOTAL" } | Sort-Object Time | Select-Object -Last 1)
+$restoreTotal = @($indexStageEvents | Where-Object { $_.Stage -eq "NATIVE SNAPSHOT RESTORE TOTAL" -or $_.Stage -eq "SNAPSHOT RESTORE TOTAL" } | Sort-Object Time | Select-Object -Last 1)
 if ($restoreTotal.Count -gt 0) {
     $restoreReadyMs = [int64]$restoreTotal[0].ElapsedMs
 }
@@ -868,7 +962,29 @@ if ($restoreReadyMs -gt $MaxRestoreReadyMsThreshold -or $restoreReadyMs -le 0) {
     })
 }
 foreach ($row in @($rows.ToArray())) {
+    $isObservedOnly = $row.Scenario -eq "Regex"
+    if ($row.ClientMs -gt $MaxClientMsThreshold -or $row.ClientMs -lt 0) {
+        if ($isObservedOnly) {
+            continue
+        }
+        $failures.Add([pscustomobject]@{
+            Phase = $row.Phase
+            Name = $row.Name
+            Keyword = $row.Keyword
+            Filter = $row.Filter
+            ClientMs = $row.ClientMs
+            HostSearchMs = $row.HostSearchMs
+            ContainsMode = $row.ContainsMode
+            TotalMatchedCount = $row.TotalMatchedCount
+            ThresholdMs = $MaxClientMsThreshold
+            Reason = "client-total-threshold"
+        })
+    }
+
     if ($row.HostSearchMs -gt $MaxHostMsThreshold -or $row.HostSearchMs -lt 0) {
+        if ($isObservedOnly) {
+            continue
+        }
         $failures.Add([pscustomobject]@{
             Phase = $row.Phase
             Name = $row.Name
@@ -880,6 +996,75 @@ foreach ($row in @($rows.ToArray())) {
             TotalMatchedCount = $row.TotalMatchedCount
             ThresholdMs = $MaxHostMsThreshold
             Reason = "host-search-threshold"
+        })
+    }
+
+    if ($row.NativeLockWaitMs -gt $MaxLockWaitMsThreshold) {
+        if ($isObservedOnly) {
+            continue
+        }
+        $failures.Add([pscustomobject]@{
+            Phase = $row.Phase
+            Name = $row.Name
+            Keyword = $row.Keyword
+            Filter = $row.Filter
+            ClientMs = $row.ClientMs
+            HostSearchMs = $row.NativeLockWaitMs
+            ContainsMode = $row.NativeAccelerator
+            TotalMatchedCount = $row.TotalMatchedCount
+            ThresholdMs = $MaxLockWaitMsThreshold
+            Reason = "native-lock-wait-threshold"
+        })
+    }
+
+    if ($row.NativeAccelerator -eq "legacy" -or $row.NativeAccelerator -eq "none") {
+        if ($isObservedOnly) {
+            continue
+        }
+        $failures.Add([pscustomobject]@{
+            Phase = $row.Phase
+            Name = $row.Name
+            Keyword = $row.Keyword
+            Filter = $row.Filter
+            ClientMs = $row.ClientMs
+            HostSearchMs = $row.HostSearchMs
+            ContainsMode = $row.NativeAccelerator
+            TotalMatchedCount = $row.TotalMatchedCount
+            ThresholdMs = 0
+            Reason = "native-unindexed-success"
+        })
+    }
+}
+
+$hostMemoryAfter = @($memoryAfter | Where-Object { $_.ProcessName -eq "MftScanner" -or $_.ProcessName -eq "PackageManager" })
+foreach ($processMemory in $hostMemoryAfter) {
+    if ($processMemory.WorkingSetMB -gt $MaxWorkingSetMBThreshold) {
+        $failures.Add([pscustomobject]@{
+            Phase = "memory"
+            Name = $processMemory.ProcessName
+            Keyword = ""
+            Filter = ""
+            ClientMs = 0
+            HostSearchMs = [int][math]::Ceiling($processMemory.WorkingSetMB)
+            ContainsMode = ""
+            TotalMatchedCount = 0
+            ThresholdMs = $MaxWorkingSetMBThreshold
+            Reason = "working-set-threshold"
+        })
+    }
+
+    if ($processMemory.PrivateMB -gt $MaxPrivateMBThreshold) {
+        $failures.Add([pscustomobject]@{
+            Phase = "memory"
+            Name = $processMemory.ProcessName
+            Keyword = ""
+            Filter = ""
+            ClientMs = 0
+            HostSearchMs = [int][math]::Ceiling($processMemory.PrivateMB)
+            ContainsMode = ""
+            TotalMatchedCount = 0
+            ThresholdMs = $MaxPrivateMBThreshold
+            Reason = "private-memory-threshold"
         })
     }
 }
@@ -909,7 +1094,11 @@ $report = [ordered]@{
     MemoryAfter = @($memoryAfter)
     RestoreReadyMs = $restoreReadyMs
     MaxHostMsThreshold = $MaxHostMsThreshold
+    MaxClientMsThreshold = $MaxClientMsThreshold
+    MaxLockWaitMsThreshold = $MaxLockWaitMsThreshold
     MaxRestoreReadyMsThreshold = $MaxRestoreReadyMsThreshold
+    MaxWorkingSetMBThreshold = $MaxWorkingSetMBThreshold
+    MaxPrivateMBThreshold = $MaxPrivateMBThreshold
     Failures = @($failures.ToArray())
 }
 
@@ -927,7 +1116,10 @@ New-MarkdownReport `
     -BuildResult "EnsureEmbeddedToolArtifacts succeeded" `
     -ReportJsonPath $jsonPath `
     -MaxHostMsThreshold $MaxHostMsThreshold `
+    -MaxClientMsThreshold $MaxClientMsThreshold `
     -MaxRestoreReadyMsThreshold $MaxRestoreReadyMsThreshold `
+    -MaxWorkingSetMBThreshold $MaxWorkingSetMBThreshold `
+    -MaxPrivateMBThreshold $MaxPrivateMBThreshold `
     -RestoreReadyMs $restoreReadyMs `
     -Failures @($failures.ToArray()) |
     Set-Content -Path $mdPath -Encoding UTF8

@@ -496,10 +496,16 @@ namespace MftScanner
             long readMs = 0;
             long queuedMs = 0;
             var requestBytes = 0;
-            await EnsureResourcesAvailableAsync(ct).ConfigureAwait(false);
-            EnsureConnectedHostIsAlive();
-            await EnsureResourcesAvailableAsync(ct).ConfigureAwait(false);
-            await EnsureConnectedHostGenerationAsync(ct).ConfigureAwait(false);
+            var fastSearchPath = request != null
+                && request.CommandType == SharedIndexCommandType.Search
+                && GetSlotResources() != null;
+            if (!fastSearchPath)
+            {
+                await EnsureResourcesAvailableAsync(ct).ConfigureAwait(false);
+                EnsureConnectedHostIsAlive();
+                await EnsureResourcesAvailableAsync(ct).ConfigureAwait(false);
+                await EnsureConnectedHostGenerationAsync(ct).ConfigureAwait(false);
+            }
             if (request != null && request.CommandType == SharedIndexCommandType.Search)
             {
                 SignalInFlightSearchCancellation();
@@ -531,7 +537,7 @@ namespace MftScanner
                 writeMs = stageStopwatch.ElapsedMilliseconds;
 
                 stageStopwatch.Restart();
-                await WaitForResponseAsync(slotResources, ct).ConfigureAwait(false);
+                WaitForResponse(slotResources, ct);
                 waitMs = stageStopwatch.ElapsedMilliseconds;
 
                 SharedIndexIpcResponse response;
@@ -560,7 +566,7 @@ namespace MftScanner
                         $"expectedRequestId={request.RequestId} actualRequestId={response.RequestId}");
 
                     stageStopwatch.Restart();
-                    await WaitForResponseAsync(slotResources, ct).ConfigureAwait(false);
+                    WaitForResponse(slotResources, ct);
                     waitMs += stageStopwatch.ElapsedMilliseconds;
                 }
 
@@ -606,34 +612,23 @@ namespace MftScanner
             }
         }
 
-        private static async Task WaitForResponseAsync(SharedIndexClientSlotResources slotResources, CancellationToken ct)
+        private static void WaitForResponse(SharedIndexClientSlotResources slotResources, CancellationToken ct)
         {
             if (slotResources.ResponseReadyEvent.WaitOne(0))
             {
                 return;
             }
 
-            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            RegisteredWaitHandle responseRegistration = null;
-            CancellationTokenRegistration cancellationRegistration = default(CancellationTokenRegistration);
-
             try
             {
-                responseRegistration = ThreadPool.RegisterWaitForSingleObject(
-                    slotResources.ResponseReadyEvent,
-                    (state, timedOut) =>
-                    {
-                        if (!timedOut)
-                        {
-                            ((TaskCompletionSource<bool>)state).TrySetResult(true);
-                        }
-                    },
-                    tcs,
-                    Timeout.Infinite,
-                    executeOnlyOnce: true);
+                var waitHandles = new WaitHandle[] { slotResources.ResponseReadyEvent, ct.WaitHandle };
+                var waitIndex = WaitHandle.WaitAny(waitHandles);
+                if (waitIndex == 0)
+                {
+                    return;
+                }
 
-                cancellationRegistration = ct.Register(() => tcs.TrySetCanceled());
-                await tcs.Task.ConfigureAwait(false);
+                throw new OperationCanceledException(ct);
             }
             catch (OperationCanceledException)
             {
@@ -648,18 +643,6 @@ namespace MftScanner
                 IndexPerfLog.Write("IPC", "[MMF] outcome=cancel-signal-sent drain=false");
                 ct.ThrowIfCancellationRequested();
                 throw;
-            }
-            finally
-            {
-                try
-                {
-                    responseRegistration?.Unregister(null);
-                }
-                catch
-                {
-                }
-
-                cancellationRegistration.Dispose();
             }
         }
 

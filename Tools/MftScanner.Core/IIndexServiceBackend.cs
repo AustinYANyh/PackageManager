@@ -11,6 +11,7 @@ namespace MftScanner
         bool IsBackgroundCatchUpInProgress { get; }
         string CurrentStatusMessage { get; }
         ContainsBucketStatus ContainsBucketStatus { get; }
+        bool PreferSynchronousHostSearch { get; }
 
         event EventHandler<IndexChangedEventArgs> IndexChanged;
         event EventHandler<IndexStatusChangedEventArgs> IndexStatusChanged;

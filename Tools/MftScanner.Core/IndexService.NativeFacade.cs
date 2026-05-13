@@ -29,6 +29,7 @@ namespace MftScanner
         public bool IsBackgroundCatchUpInProgress => _backend.IsBackgroundCatchUpInProgress;
         public string CurrentStatusMessage => _backend.CurrentStatusMessage;
         public ContainsBucketStatus ContainsBucketStatus => _backend.ContainsBucketStatus;
+        public bool PreferSynchronousHostSearch => _backend.PreferSynchronousHostSearch;
 
         public event EventHandler<IndexChangedEventArgs> IndexChanged
         {
@@ -197,6 +198,7 @@ namespace MftScanner
         public MemoryIndex Index => _index;
         public int IndexedCount => _indexedCount;
         public ContainsBucketStatus ContainsBucketStatus => ContainsBucketStatus.Empty;
+        public bool PreferSynchronousHostSearch => true;
 
         public bool IsBackgroundCatchUpInProgress
         {
@@ -233,7 +235,7 @@ namespace MftScanner
 
         public Task<SearchQueryResult> SearchAsync(string keyword, int maxResults, int offset, SearchTypeFilter filter, IProgress<string> progress, CancellationToken ct)
         {
-            return SearchNativeAsync(keyword, maxResults, offset, filter, progress, ct);
+            return Task.FromResult(SearchNative(keyword, maxResults, offset, filter, progress, ct));
         }
 
         public Task NotifyDeletedAsync(string fullPath, bool isDirectory, CancellationToken ct)
@@ -266,42 +268,67 @@ namespace MftScanner
             return Task.Run(() => InvokeBuild(rebuild, progress, ct), ct);
         }
 
-        private Task<SearchQueryResult> SearchNativeAsync(string keyword, int maxResults, int offset, SearchTypeFilter filter, IProgress<string> progress, CancellationToken ct)
+        private SearchQueryResult SearchNative(string keyword, int maxResults, int offset, SearchTypeFilter filter, IProgress<string> progress, CancellationToken ct)
         {
-            return Task.Run(() =>
-            {
-                var stopwatch = Stopwatch.StartNew();
-                ct.ThrowIfCancellationRequested();
-                var request = JsonConvert.SerializeObject(new NativeSearchRequest
-                {
-                    keyword = keyword ?? string.Empty,
-                    maxResults = maxResults,
-                    offset = offset,
-                    filter = filter.ToString()
-                });
+            var stopwatch = Stopwatch.StartNew();
+            ct.ThrowIfCancellationRequested();
 
-                progress?.Report("正在通过 native v2 索引搜索...");
-                var responseJson = InvokeJsonCall(NativeMethods.pm_index_search, request);
-                var response = JsonConvert.DeserializeObject<NativeSearchResponse>(responseJson) ?? new NativeSearchResponse();
-                if (!string.IsNullOrWhiteSpace(response.error))
+            progress?.Report("正在通过 native v2 索引搜索...");
+            var response = InvokeBinarySearch(keyword ?? string.Empty, maxResults, offset, filter);
+
+            _indexedCount = response.totalIndexedCount;
+            stopwatch.Stop();
+            return new SearchQueryResult
+            {
+                TotalIndexedCount = response.totalIndexedCount,
+                TotalMatchedCount = response.totalMatchedCount,
+                PhysicalMatchedCount = response.physicalMatchedCount > 0 ? response.physicalMatchedCount : response.totalMatchedCount,
+                UniqueMatchedCount = response.uniqueMatchedCount > 0 ? response.uniqueMatchedCount : response.totalMatchedCount,
+                DuplicatePathCount = response.duplicatePathCount,
+                IsTruncated = response.isTruncated,
+                HostSearchMs = stopwatch.ElapsedMilliseconds,
+                Results = response.results ?? new List<ScannedFileInfo>()
+            };
+        }
+
+        private NativeSearchResponse InvokeBinarySearch(string keyword, int maxResults, int offset, SearchTypeFilter filter)
+        {
+            if (_nativeHandle == IntPtr.Zero)
+                throw new ObjectDisposedException(nameof(NativeIndexServiceBackend));
+
+            IntPtr keywordPtr = IntPtr.Zero;
+            IntPtr responsePtr = IntPtr.Zero;
+            IntPtr errorPtr = IntPtr.Zero;
+            try
+            {
+                keywordPtr = Utf8Interop.Alloc(keyword ?? string.Empty);
+                int responseLength;
+                var result = NativeMethods.pm_index_search_binary(
+                    _nativeHandle,
+                    keywordPtr,
+                    maxResults,
+                    offset,
+                    (int)filter,
+                    out responsePtr,
+                    out responseLength,
+                    out errorPtr);
+                if (result == 0)
                 {
-                    throw new InvalidOperationException(response.error);
+                    var error = Utf8Interop.ReadAndFree(errorPtr);
+                    errorPtr = IntPtr.Zero;
+                    throw new InvalidOperationException(string.IsNullOrWhiteSpace(error) ? "native binary search failed" : error);
                 }
 
-                _indexedCount = response.totalIndexedCount;
-                stopwatch.Stop();
-                return new SearchQueryResult
-                {
-                    TotalIndexedCount = response.totalIndexedCount,
-                    TotalMatchedCount = response.totalMatchedCount,
-                    PhysicalMatchedCount = response.physicalMatchedCount > 0 ? response.physicalMatchedCount : response.totalMatchedCount,
-                    UniqueMatchedCount = response.uniqueMatchedCount > 0 ? response.uniqueMatchedCount : response.totalMatchedCount,
-                    DuplicatePathCount = response.duplicatePathCount,
-                    IsTruncated = response.isTruncated,
-                    HostSearchMs = stopwatch.ElapsedMilliseconds,
-                    Results = response.results ?? new List<ScannedFileInfo>()
-                };
-            }, ct);
+                return NativeSearchBinaryCodec.Read(responsePtr, responseLength);
+            }
+            finally
+            {
+                Utf8Interop.Free(keywordPtr);
+                if (responsePtr != IntPtr.Zero)
+                    NativeMethods.pm_index_free_bytes(responsePtr);
+                if (errorPtr != IntPtr.Zero)
+                    NativeMethods.pm_index_free_string(errorPtr);
+            }
         }
 
         private int InvokeBuild(bool rebuild, IProgress<string> progress, CancellationToken ct)
@@ -508,7 +535,7 @@ namespace MftScanner
             public string filter { get; set; }
         }
 
-        private sealed class NativeSearchResponse
+        internal sealed class NativeSearchResponse
         {
             public int totalIndexedCount { get; set; }
             public int totalMatchedCount { get; set; }
@@ -555,6 +582,17 @@ namespace MftScanner
         [DllImport("MftScanner.Native.dll", CallingConvention = CallingConvention.Cdecl, EntryPoint = "pm_index_search")]
         internal static extern int pm_index_search(IntPtr handle, IntPtr requestJsonUtf8, out IntPtr responseJsonUtf8);
 
+        [DllImport("MftScanner.Native.dll", CallingConvention = CallingConvention.Cdecl, EntryPoint = "pm_index_search_binary")]
+        internal static extern int pm_index_search_binary(
+            IntPtr handle,
+            IntPtr keywordUtf8,
+            int maxResults,
+            int offset,
+            int filterValue,
+            out IntPtr responseBytes,
+            out int responseLength,
+            out IntPtr errorUtf8);
+
         [DllImport("MftScanner.Native.dll", CallingConvention = CallingConvention.Cdecl, EntryPoint = "pm_index_get_state")]
         internal static extern int pm_index_get_state(IntPtr handle, IntPtr requestJsonUtf8, out IntPtr responseJsonUtf8);
 
@@ -563,6 +601,80 @@ namespace MftScanner
 
         [DllImport("MftScanner.Native.dll", CallingConvention = CallingConvention.Cdecl, EntryPoint = "pm_index_free_string")]
         internal static extern void pm_index_free_string(IntPtr value);
+
+        [DllImport("MftScanner.Native.dll", CallingConvention = CallingConvention.Cdecl, EntryPoint = "pm_index_free_bytes")]
+        internal static extern void pm_index_free_bytes(IntPtr value);
+    }
+
+    internal static class NativeSearchBinaryCodec
+    {
+        public static NativeIndexServiceBackend.NativeSearchResponse Read(IntPtr ptr, int length)
+        {
+            if (ptr == IntPtr.Zero || length <= 0)
+                return new NativeIndexServiceBackend.NativeSearchResponse();
+
+            var bytes = new byte[length];
+            Marshal.Copy(ptr, bytes, 0, length);
+            using (var stream = new MemoryStream(bytes, writable: false))
+            using (var reader = new BinaryReader(stream, Encoding.Unicode, leaveOpen: false))
+            {
+                var version = reader.ReadInt32();
+                if (version != 1)
+                    throw new InvalidOperationException("native binary search payload version mismatch");
+
+                var response = new NativeIndexServiceBackend.NativeSearchResponse
+                {
+                    totalIndexedCount = reader.ReadInt32(),
+                    totalMatchedCount = reader.ReadInt32(),
+                    physicalMatchedCount = reader.ReadInt32(),
+                    uniqueMatchedCount = reader.ReadInt32(),
+                    duplicatePathCount = reader.ReadInt32(),
+                    isTruncated = reader.ReadByte() != 0
+                };
+
+                var count = reader.ReadInt32();
+                if (count < 0)
+                    throw new InvalidOperationException("native binary search result count is invalid");
+
+                response.results = new List<ScannedFileInfo>(count);
+                for (var i = 0; i < count; i++)
+                {
+                    response.results.Add(new ScannedFileInfo
+                    {
+                        FullPath = ReadUtf16String(reader),
+                        FileName = ReadUtf16String(reader),
+                        SizeBytes = reader.ReadInt64(),
+                        ModifiedTimeUtc = ReadUtcTicks(reader.ReadInt64()),
+                        RootPath = ReadUtf16String(reader),
+                        RootDisplayName = ReadUtf16String(reader),
+                        IsDirectory = reader.ReadByte() != 0
+                    });
+                }
+
+                return response;
+            }
+        }
+
+        private static DateTime ReadUtcTicks(long ticks)
+        {
+            return ticks <= 0 ? DateTime.MinValue : new DateTime(ticks, DateTimeKind.Utc);
+        }
+
+        private static string ReadUtf16String(BinaryReader reader)
+        {
+            var byteLength = reader.ReadInt32();
+            if (byteLength <= 0)
+                return string.Empty;
+
+            if ((byteLength & 1) != 0)
+                throw new InvalidOperationException("native binary search string length is invalid");
+
+            var bytes = reader.ReadBytes(byteLength);
+            if (bytes.Length != byteLength)
+                throw new EndOfStreamException("native binary search string is truncated");
+
+            return Encoding.Unicode.GetString(bytes);
+        }
     }
 
     internal static class Utf8Interop

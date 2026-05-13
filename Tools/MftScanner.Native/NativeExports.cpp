@@ -95,6 +95,17 @@ namespace
         bool isDirectory = false;
     };
 
+    struct SearchBinaryPayload
+    {
+        int totalIndexedCount = 0;
+        int totalMatchedCount = 0;
+        int physicalMatchedCount = 0;
+        int uniqueMatchedCount = 0;
+        int duplicatePathCount = 0;
+        bool isTruncated = false;
+        std::vector<SearchResultRow> rows;
+    };
+
     struct NativeChange
     {
         ChangeKind kind = ChangeKind::Create;
@@ -140,11 +151,212 @@ namespace
         std::uint32_t byteCount = 0;
     };
 
+    struct NativeV2ChildBucketEntry
+    {
+        std::uint64_t key = 0;
+        std::uint32_t offset = 0;
+        std::uint32_t count = 0;
+    };
+
+    struct FrnRecordIndexEntry
+    {
+        std::uint64_t key = 0;
+        std::uint32_t recordId = 0;
+    };
+
+    struct NativeV2CompactRecord
+    {
+        std::uint64_t frn = 0;
+        std::uint64_t parentFrn = 0;
+        std::uint32_t originalOffset = 0;
+        std::uint32_t lowerOffset = 0;
+        std::uint16_t originalLength = 0;
+        std::uint16_t lowerLength = 0;
+        std::uint8_t drive = 0;
+        std::uint8_t flags = 0;
+        std::uint16_t reserved = 0;
+    };
+
+    class MappedFile
+    {
+    public:
+        MappedFile() = default;
+
+        MappedFile(const MappedFile&) = delete;
+        MappedFile& operator=(const MappedFile&) = delete;
+
+        MappedFile(MappedFile&& other) noexcept
+        {
+            MoveFrom(std::move(other));
+        }
+
+        MappedFile& operator=(MappedFile&& other) noexcept
+        {
+            if (this != &other)
+            {
+                Close();
+                MoveFrom(std::move(other));
+            }
+
+            return *this;
+        }
+
+        ~MappedFile()
+        {
+            Close();
+        }
+
+        bool Open(const std::filesystem::path& path)
+        {
+            Close();
+            std::error_code sizeError;
+            const auto fileBytes = std::filesystem::file_size(path, sizeError);
+            if (sizeError || fileBytes == 0 || fileBytes > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()))
+            {
+                return false;
+            }
+
+            file_ = CreateFileW(
+                path.c_str(),
+                GENERIC_READ,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                nullptr,
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                nullptr);
+            if (file_ == INVALID_HANDLE_VALUE)
+            {
+                file_ = nullptr;
+                return false;
+            }
+
+            mapping_ = CreateFileMappingW(file_, nullptr, PAGE_READONLY, 0, 0, nullptr);
+            if (mapping_ == nullptr)
+            {
+                Close();
+                return false;
+            }
+
+            view_ = static_cast<const std::uint8_t*>(MapViewOfFile(mapping_, FILE_MAP_READ, 0, 0, 0));
+            if (view_ == nullptr)
+            {
+                Close();
+                return false;
+            }
+
+            size_ = static_cast<std::size_t>(fileBytes);
+            return true;
+        }
+
+        void Close()
+        {
+            if (view_ != nullptr)
+            {
+                UnmapViewOfFile(view_);
+                view_ = nullptr;
+            }
+
+            if (mapping_ != nullptr)
+            {
+                CloseHandle(mapping_);
+                mapping_ = nullptr;
+            }
+
+            if (file_ != nullptr && file_ != INVALID_HANDLE_VALUE)
+            {
+                CloseHandle(file_);
+                file_ = nullptr;
+            }
+
+            size_ = 0;
+        }
+
+        const std::uint8_t* Data() const noexcept
+        {
+            return view_;
+        }
+
+        std::size_t Size() const noexcept
+        {
+            return size_;
+        }
+
+        bool IsOpen() const noexcept
+        {
+            return view_ != nullptr && size_ > 0;
+        }
+
+    private:
+        void MoveFrom(MappedFile&& other) noexcept
+        {
+            file_ = other.file_;
+            mapping_ = other.mapping_;
+            view_ = other.view_;
+            size_ = other.size_;
+            other.file_ = nullptr;
+            other.mapping_ = nullptr;
+            other.view_ = nullptr;
+            other.size_ = 0;
+        }
+
+        HANDLE file_ = nullptr;
+        HANDLE mapping_ = nullptr;
+        const std::uint8_t* view_ = nullptr;
+        std::size_t size_ = 0;
+    };
+
+    struct NativeV2MappedRecords
+    {
+        MappedFile file;
+        const NativeV2CompactRecord* records = nullptr;
+        const wchar_t* stringPool = nullptr;
+        std::uint32_t recordCount = 0;
+        std::uint32_t volumeCount = 0;
+        std::uint32_t stringPoolChars = 0;
+
+        void Clear()
+        {
+            file.Close();
+            records = nullptr;
+            stringPool = nullptr;
+            recordCount = 0;
+            volumeCount = 0;
+            stringPoolChars = 0;
+        }
+
+        bool Ready() const
+        {
+            return records != nullptr && stringPool != nullptr && recordCount > 0;
+        }
+    };
+
     struct NativeV2CandidateResult
     {
         std::vector<std::uint32_t> ids;
         const char* mode = "none";
         bool accelerated = false;
+    };
+
+    enum class QueryPlanKind
+    {
+        Contains,
+        Prefix,
+        Suffix,
+        ExtensionWildcard,
+        WildcardLiteral,
+        RegexLiteral,
+        RegexScan
+    };
+
+    struct QueryPlan
+    {
+        QueryPlanKind kind = QueryPlanKind::Contains;
+        MatchMode mode = MatchMode::Contains;
+        std::wstring query;
+        std::wstring pattern;
+        std::wstring requiredLiteral;
+        std::wstring extension;
+        const char* name = "contains";
     };
 
     struct NativeV2Accelerator
@@ -161,7 +373,8 @@ namespace
         std::vector<std::uint8_t> asciiBigramCompressedPostings;
         std::vector<std::uint8_t> nonAsciiShortCompressedPostings;
         std::vector<std::uint32_t> parentOrder;
-        std::unordered_map<std::uint64_t, std::vector<std::uint32_t>> childIds;
+        std::vector<NativeV2ChildBucketEntry> childEntries;
+        std::vector<std::uint32_t> childRecordIds;
         bool ready = false;
         std::uint64_t buildMs = 0;
         std::uint64_t postingsBytes = 0;
@@ -194,7 +407,8 @@ namespace
             nonAsciiShortCompressedPostings.clear();
             nonAsciiShortCompressedPostings.shrink_to_fit();
             parentOrder.clear();
-            childIds.clear();
+            childEntries.clear();
+            childRecordIds.clear();
             ready = false;
             buildMs = 0;
             postingsBytes = 0;
@@ -206,6 +420,12 @@ namespace
         std::array<std::vector<std::uint32_t>, 128> chars;
         std::array<std::vector<std::uint32_t>, 128 * 128> bigrams;
         std::unordered_map<std::uint64_t, std::vector<std::uint32_t>> nonAscii;
+    };
+
+    struct NativeV2BuildLocal
+    {
+        std::unordered_map<std::uint64_t, std::vector<std::uint32_t>> trigrams;
+        NativeV2ShortQueryLocal shortQuery;
     };
 
     struct WStringViewHash
@@ -480,6 +700,14 @@ namespace
         return total;
     }
 
+    std::size_t CountLiveFrnEntries(
+        const std::unordered_map<wchar_t, VolumeState>& volumes,
+        std::size_t recordCount)
+    {
+        const auto frnMapCount = CountFrnEntries(volumes);
+        return frnMapCount == 0 ? recordCount : frnMapCount;
+    }
+
     const char* MatchModeToString(MatchMode mode)
     {
         switch (mode)
@@ -553,31 +781,89 @@ namespace
                     "[NATIVE BUILD] mode=snapshot-restore totalMs="
                     + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
                         std::chrono::steady_clock::now() - totalStart).count())
-                    + " indexedCount=" + std::to_string(records_.size())
+                    + " indexedCount=" + std::to_string(GetRecordCount_NoLock())
                     + " isBackgroundCatchUpInProgress=true");
                 return BuildStateJson(false);
             }
 
             BuildFromMft();
+            bool generationSidecarsWritten = false;
+            if (WriteCurrentGenerationSidecars_NoLock())
+            {
+                generationSidecarsWritten = RemapCurrentSidecars_NoLock();
+            }
             const auto watcherStart = std::chrono::steady_clock::now();
             currentStatusMessage_ = L"已通过 native 内核构建索引";
             isBackgroundCatchUpInProgress_ = false;
             StartWatchers_NoLock();
             const auto watcherStartMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - watcherStart).count();
-            QueueSnapshotSave_NoLock();
+            if (!generationSidecarsWritten)
+            {
+                QueueSnapshotSave_NoLock();
+            }
             PublishStatus(true);
             NativeLogWrite(
                 "[NATIVE BUILD] mode=full totalMs="
                 + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - totalStart).count())
                 + " watcherStartMs=" + std::to_string(watcherStartMs)
-                + " indexedCount=" + std::to_string(records_.size())
+                + " indexedCount=" + std::to_string(GetRecordCount_NoLock())
                 + " isBackgroundCatchUpInProgress=false");
             return BuildStateJson(true);
         }
 
         std::string Search(const std::string& requestJson)
+        {
+            std::string keywordUtf8;
+            std::string filterText;
+            int maxResults = 0;
+            int offset = 0;
+            TryReadJsonStringField(requestJson, "keyword", keywordUtf8);
+            TryReadJsonStringField(requestJson, "filter", filterText);
+            TryReadJsonIntField(requestJson, "maxResults", maxResults);
+            TryReadJsonIntField(requestJson, "offset", offset);
+            return SearchCore(
+                keywordUtf8,
+                ParseFilter(filterText),
+                maxResults,
+                offset,
+                nullptr,
+                true);
+        }
+
+        bool SearchBinary(
+            const char* keywordUtf8,
+            int maxResults,
+            int offset,
+            int filterValue,
+            std::vector<std::uint8_t>& payload,
+            std::string& error)
+        {
+            SearchBinaryPayload result;
+            const auto json = SearchCore(
+                keywordUtf8 == nullptr ? std::string() : std::string(keywordUtf8),
+                ParseFilterValue(filterValue),
+                maxResults,
+                offset,
+                &result,
+                false);
+            if (TryExtractErrorJson(json, error))
+            {
+                return false;
+            }
+
+            payload = BuildSearchBinaryPayload(result);
+            return true;
+        }
+
+        std::string SearchCore(
+            const std::string& keywordUtf8,
+            SearchFilter filter,
+            int maxResults,
+            int offset,
+            SearchBinaryPayload* binaryPayload,
+            bool buildJson)
         {
             const auto totalStart = std::chrono::steady_clock::now();
             const auto lockWaitStart = std::chrono::steady_clock::now();
@@ -589,18 +875,8 @@ namespace
                 return BuildErrorJson("native v2 search accelerator is not ready");
             }
 
-            std::string keywordUtf8;
-            std::string filterText;
-            int maxResults = 0;
-            int offset = 0;
             const auto parseStart = std::chrono::steady_clock::now();
-            TryReadJsonStringField(requestJson, "keyword", keywordUtf8);
-            TryReadJsonStringField(requestJson, "filter", filterText);
-            TryReadJsonIntField(requestJson, "maxResults", maxResults);
-            TryReadJsonIntField(requestJson, "offset", offset);
-
             const auto keyword = Utf8ToWide(keywordUtf8);
-            const auto filter = ParseFilter(filterText);
             const int safeOffset = std::max(offset, 0);
             const int safeMaxResults = std::max(maxResults, 0);
             const auto parseMs = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -612,7 +888,7 @@ namespace
                     + std::string(SearchFilterToString(filter))
                     + " offset=" + std::to_string(offset)
                     + " maxResults=" + std::to_string(maxResults));
-                return BuildSearchJson(0, false, {});
+                return BuildSearchResponse(0, false, {}, binaryPayload, buildJson);
             }
 
             std::wstring pathPrefix;
@@ -625,7 +901,7 @@ namespace
                     + " offset=" + std::to_string(offset)
                     + " maxResults=" + std::to_string(maxResults)
                     + " keyword=" + FormatLogValue(keywordUtf8));
-                return BuildSearchJson(0, false, {});
+                return BuildSearchResponse(0, false, {}, binaryPayload, buildJson);
             }
 
             MatchMode mode = MatchMode::Contains;
@@ -641,62 +917,64 @@ namespace
                     + " candidateCount=0 keyword=" + FormatLogValue(keywordUtf8)
                     + " searchTerm=" + FormatLogValue(WideToUtf8(searchTerm))
                     + " normalized=" + FormatLogValue(WideToUtf8(normalizedQuery)));
-                return BuildSearchJson(0, false, {});
+                return BuildSearchResponse(0, false, {}, binaryPayload, buildJson);
             }
 
             const bool pathScoped = !pathPrefix.empty();
-            const int fetchOffset = pathScoped ? 0 : safeOffset;
-            const int fetchLimit = pathScoped ? static_cast<int>(source->size()) : safeMaxResults;
             const auto candidateCount = source->size();
 
-            std::vector<const Record*> matchedPage;
+            std::vector<std::uint32_t> matchedPage;
             int totalMatched = 0;
-            const char* acceleratorMode = "legacy";
-            bool pathScopeHandledByV2 = false;
+            const char* acceleratorMode = "none";
+            QueryPlan plan;
+            std::string unsupportedReason;
+            if (!TryBuildQueryPlan(mode, normalizedQuery, plan, unsupportedReason))
+            {
+                NativeLogWrite(
+                    "[NATIVE SEARCH] outcome=unsupported-pattern totalMs="
+                    + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - totalStart).count())
+                    + " lockWaitMs=" + std::to_string(lockWaitMs)
+                    + " filter=" + SearchFilterToString(filter)
+                    + " mode=" + MatchModeToString(mode)
+                    + " reason=" + unsupportedReason
+                    + " keyword=" + FormatLogValue(keywordUtf8)
+                    + " normalized=" + FormatLogValue(WideToUtf8(normalizedQuery)));
+                return BuildErrorJson("unsupported-pattern:" + unsupportedReason);
+            }
+
             const auto matchStart = std::chrono::steady_clock::now();
-            if (mode == MatchMode::Wildcard)
+            if (!ExecuteQueryPlan_NoLock(
+                plan,
+                filter,
+                pathPrefix,
+                safeOffset,
+                safeMaxResults,
+                matchedPage,
+                totalMatched,
+                acceleratorMode))
             {
-                std::wstring extension;
-                MatchMode simplifiedMode = MatchMode::Wildcard;
-                std::wstring simplifiedQuery;
-                if (filter == SearchFilter::All && TryGetSimpleExtensionWildcard(normalizedQuery, extension))
-                {
-                    ExtensionMatch_NoLock(extension, fetchOffset, fetchLimit, matchedPage, totalMatched);
-                }
-                else if (TrySimplifyWildcard(normalizedQuery, simplifiedMode, simplifiedQuery))
-                {
-                    if (simplifiedMode == MatchMode::Contains)
-                    {
-                        if (!TryMatchRecordsV2_NoLock(simplifiedMode, simplifiedQuery, filter, pathPrefix, safeOffset, safeMaxResults, matchedPage, totalMatched, acceleratorMode))
-                        {
-                            return BuildErrorJson("native v2 contains accelerator is not ready");
-                        }
-
-                        pathScopeHandledByV2 = pathScoped;
-                    }
-                    else
-                    {
-                        MatchRecords_NoLock(simplifiedMode, simplifiedQuery, filter, *source, fetchOffset, fetchLimit, matchedPage, totalMatched);
-                    }
-                }
-                else
-                {
-                    MatchRecords_NoLock(mode, normalizedQuery, filter, *source, fetchOffset, fetchLimit, matchedPage, totalMatched);
-                }
+                NativeLogWrite(
+                    "[NATIVE SEARCH] outcome=unsupported-pattern totalMs="
+                    + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - totalStart).count())
+                    + " lockWaitMs=" + std::to_string(lockWaitMs)
+                    + " filter=" + SearchFilterToString(filter)
+                    + " mode=" + MatchModeToString(plan.mode)
+                    + " plan=" + plan.name
+                    + " reason=no-index-entry"
+                    + " keyword=" + FormatLogValue(keywordUtf8)
+                    + " normalized=" + FormatLogValue(WideToUtf8(plan.query)));
+                return BuildErrorJson("unsupported-pattern:no-index-entry");
             }
-            else if (mode == MatchMode::Contains)
-            {
-                if (!TryMatchRecordsV2_NoLock(mode, normalizedQuery, filter, pathPrefix, safeOffset, safeMaxResults, matchedPage, totalMatched, acceleratorMode))
-                {
-                    return BuildErrorJson("native v2 contains accelerator is not ready");
-                }
-
-                pathScopeHandledByV2 = pathScoped;
-            }
-            else
-            {
-                MatchRecords_NoLock(mode, normalizedQuery, filter, *source, fetchOffset, fetchLimit, matchedPage, totalMatched);
-            }
+            AppendOverlayMatches_NoLock(
+                plan,
+                filter,
+                pathPrefix,
+                safeOffset,
+                safeMaxResults,
+                matchedPage,
+                totalMatched);
             const auto matchMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - matchStart).count();
 
@@ -704,42 +982,20 @@ namespace
             rows.reserve(matchedPage.size());
             const auto resolveStart = std::chrono::steady_clock::now();
 
-            if (pathScoped && !pathScopeHandledByV2)
+            for (const auto recordId : matchedPage)
             {
-                const auto normalizedPrefix = EnsureTrailingSlash(pathPrefix);
-                int filteredTotal = 0;
-                for (const auto* record : matchedPage)
-                {
-                    const auto fullPath = ResolveFullPath_NoLock(*record);
-                    if (!StartsWithI(fullPath, normalizedPrefix))
-                    {
-                        continue;
-                    }
-
-                    ++filteredTotal;
-                    if (filteredTotal <= safeOffset || static_cast<int>(rows.size()) >= safeMaxResults)
-                    {
-                        continue;
-                    }
-
-                    rows.push_back({ fullPath, record->originalName, record->isDirectory });
-                }
-
-                totalMatched = filteredTotal;
-            }
-            else
-            {
-                for (const auto* record : matchedPage)
-                {
-                    rows.push_back({ ResolveFullPath_NoLock(*record), record->originalName, record->isDirectory });
-                }
+                rows.push_back({
+                    ResolveFullPathById_NoLock(recordId),
+                    std::wstring(GetOriginalNameView_NoLock(recordId)),
+                    IsDirectoryRecord_NoLock(recordId)
+                });
             }
             const auto resolveMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - resolveStart).count();
 
             const bool isTruncated = totalMatched > safeOffset + static_cast<int>(rows.size());
             const auto jsonStart = std::chrono::steady_clock::now();
-            auto json = BuildSearchJson(totalMatched, isTruncated, rows);
+            auto json = BuildSearchResponse(totalMatched, isTruncated, rows, binaryPayload, buildJson);
             const auto jsonMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - jsonStart).count();
             const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -754,13 +1010,14 @@ namespace
                 + " jsonMs=" + std::to_string(jsonMs)
                 + " filter=" + SearchFilterToString(filter)
                 + " mode=" + MatchModeToString(mode)
+                + " plan=" + plan.name
                 + " offset=" + std::to_string(safeOffset)
                 + " maxResults=" + std::to_string(safeMaxResults)
                 + " candidateCount=" + std::to_string(candidateCount)
                 + " matched=" + std::to_string(totalMatched)
                 + " returned=" + std::to_string(rows.size())
                 + " truncated=" + std::string(isTruncated ? "true" : "false")
-                + " indexed=" + std::to_string(records_.size())
+                + " indexed=" + std::to_string(GetRecordCount_NoLock())
                 + " accelerator=" + acceleratorMode
                 + " pathScoped=" + std::string(pathScoped ? "true" : "false")
                 + " keyword=" + FormatLogValue(keywordUtf8)
@@ -799,21 +1056,31 @@ namespace
 
     private:
         static constexpr std::int32_t SnapshotVersion3 = 3;
+        static constexpr std::int32_t V2RecordsSnapshotVersion1 = 1;
         static constexpr std::int32_t V2PostingsSnapshotVersion1 = 1;
-        static constexpr std::int32_t V2RuntimeSnapshotVersion1 = 1;
+        static constexpr std::int32_t V2RuntimeSnapshotVersion2 = 2;
         static constexpr std::int32_t V2TypeBucketsSnapshotVersion1 = 1;
         static constexpr DWORD LiveWatcherBufferSize = 256 * 1024;
         static constexpr DWORD CatchUpBufferSize = 1024 * 1024;
+        static constexpr DWORD MftEnumBufferSize = 8 * 1024 * 1024;
         static constexpr unsigned long long LiveWaitMilliseconds = 1000;
         static constexpr DWORD ErrorJournalEntryDeleted = 1181;
         static constexpr std::uint64_t NtfsRootFileReferenceNumber = 5;
         static constexpr wchar_t SnapshotWriteMutexName[] = L"PackageManager.MftScannerNativeIndex.WriteLock";
         static constexpr DWORD SnapshotWriteLockTimeoutMilliseconds = 200;
         static constexpr auto SnapshotSaveDebounceMilliseconds = std::chrono::milliseconds(1000);
+        static constexpr auto SnapshotSaveStartupDelayMilliseconds = std::chrono::milliseconds(8000);
+        static constexpr std::uint32_t OverlayRecordIdMask = 0x80000000u;
+        static constexpr std::size_t OverlayCompactionThreshold = 65536;
+        static constexpr std::size_t MaxPathCacheEntriesPerVolume = 32768;
 
         mutable std::shared_mutex mutex_;
         std::vector<Record> records_;
+        std::vector<Record> overlayRecords_;
+        std::unordered_map<std::uint64_t, std::uint32_t> overlayIndexByKey_;
+        std::unordered_set<std::uint64_t> overlayDeletedKeys_;
         std::unordered_map<std::uint64_t, std::size_t> recordIndexByKey_;
+        std::vector<FrnRecordIndexEntry> frnRecordIndex_;
         std::vector<std::uint32_t> allIds_;
         std::vector<std::uint32_t> directoryIds_;
         std::vector<std::uint32_t> launchableIds_;
@@ -823,6 +1090,7 @@ namespace
         std::unordered_map<std::wstring, std::vector<std::uint32_t>> extensionIds_;
         std::unordered_map<std::wstring_view, std::vector<std::uint32_t>, WStringViewHash, WStringViewEqual> exactNameIds_;
         NativeV2Accelerator v2_;
+        NativeV2MappedRecords mappedRecords_;
         std::unordered_map<wchar_t, VolumeState> volumes_;
         std::wstring currentStatusMessage_;
         bool isBackgroundCatchUpInProgress_ = false;
@@ -940,7 +1208,19 @@ namespace
 
                 if (shouldSave)
                 {
-                    SaveSnapshot();
+                    if (hasShutdown_)
+                    {
+                        break;
+                    }
+
+                    if (!SaveSnapshot())
+                    {
+                        std::lock_guard<std::mutex> guard(snapshotRequestMutex_);
+                        if (!snapshotWorkerStop_)
+                        {
+                            snapshotSavePending_ = true;
+                        }
+                    }
                 }
 
                 if (shouldStop)
@@ -1078,7 +1358,7 @@ namespace
                     }
 
                     bool publishRefresh = false;
-                    bool deferredChanges = false;
+                    bool appliedChanges = false;
                     {
                         std::unique_lock<std::shared_mutex> guard(mutex_);
                         if (token->load() || hasShutdown_)
@@ -1115,15 +1395,32 @@ namespace
 
                             if (totalChangeCount > 0)
                             {
-                                deferredChanges = true;
+                                std::vector<std::string> appliedPayloads;
+                                appliedPayloads.reserve(totalChangeCount);
+                                for (const auto& result : catchUpResults)
+                                {
+                                    if (!result.success || result.changes.empty())
+                                    {
+                                        continue;
+                                    }
+
+                                    ApplyCollectedChanges_NoLock(result.changes, &appliedPayloads);
+                                }
+
+                                payloadsToPublish.insert(
+                                    payloadsToPublish.end(),
+                                    std::make_move_iterator(appliedPayloads.begin()),
+                                    std::make_move_iterator(appliedPayloads.end()));
+                                appliedChanges = true;
                                 publishRefresh = true;
                                 NativeLogWrite(
-                                    "[NATIVE SNAPSHOT CATCHUP DEFERRED] changes="
+                                    "[NATIVE SNAPSHOT CATCHUP OVERLAY] changes="
                                     + std::to_string(totalChangeCount)
-                                    + " reason=preserve-ready-v2-generation");
+                                    + " overlayRecords=" + std::to_string(overlayRecords_.size())
+                                    + " overlayDeletes=" + std::to_string(overlayDeletedKeys_.size()));
                             }
 
-                            currentStatusMessage_ = L"已索引 " + std::to_wstring(records_.size()) + L" 个对象";
+                            currentStatusMessage_ = L"已索引 " + std::to_wstring(GetRecordCount_NoLock()) + L" 个对象";
                         }
 
                         isBackgroundCatchUpInProgress_ = false;
@@ -1134,7 +1431,7 @@ namespace
                         }
                         const auto watcherStartMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                             std::chrono::steady_clock::now() - watcherStart).count();
-                        if (!journalReset && !deferredChanges)
+                        if (!journalReset && appliedChanges)
                         {
                             QueueSnapshotSave_NoLock();
                         }
@@ -1144,7 +1441,7 @@ namespace
                             + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now() - catchUpStart).count())
                             + " watcherStartMs=" + std::to_string(watcherStartMs)
-                            + " indexedCount=" + std::to_string(records_.size()));
+                            + " indexedCount=" + std::to_string(GetRecordCount_NoLock()));
                     }
 
                     if (publishRefresh)
@@ -1206,7 +1503,12 @@ namespace
         {
             const auto totalStart = std::chrono::steady_clock::now();
             records_.clear();
+            mappedRecords_.Clear();
+            overlayRecords_.clear();
+            overlayIndexByKey_.clear();
+            overlayDeletedKeys_.clear();
             recordIndexByKey_.clear();
+            frnRecordIndex_.clear();
             volumes_.clear();
             derivedDirty_ = false;
 
@@ -1378,7 +1680,7 @@ namespace
                 return false;
             }
 
-            auto* buffer = static_cast<std::byte*>(std::malloc(CatchUpBufferSize));
+            auto* buffer = static_cast<std::byte*>(std::malloc(MftEnumBufferSize));
             if (buffer == nullptr)
             {
                 CloseHandle(handle);
@@ -1392,8 +1694,10 @@ namespace
                 USN HighUsn;
             };
 
-            std::unordered_map<std::uint64_t, FrnEntry> frnMap;
-            frnMap.reserve(300000);
+            outRecords.clear();
+            outRecords.reserve(300000);
+            std::uint64_t lastFrn = std::numeric_limits<std::uint64_t>::max();
+            std::uint32_t lastRecordIndex = std::numeric_limits<std::uint32_t>::max();
 
             MftEnumDataV0Native enumData{};
             enumData.StartFileReferenceNumber = 0;
@@ -1407,7 +1711,7 @@ namespace
                 &enumData,
                 sizeof(enumData),
                 buffer,
-                CatchUpBufferSize,
+                MftEnumBufferSize,
                 &bytesReturned,
                 nullptr))
             {
@@ -1430,13 +1734,31 @@ namespace
                     const auto parentFrn = static_cast<std::uint64_t>(recordHeader->ParentFileReferenceNumber & 0x0000FFFFFFFFFFFFull);
                     const auto* fileNamePtr = reinterpret_cast<const wchar_t*>(reinterpret_cast<const std::byte*>(recordHeader) + recordHeader->FileNameOffset);
                     const auto fileNameLength = recordHeader->FileNameLength / sizeof(wchar_t);
-                    std::wstring fileName(fileNamePtr, fileNamePtr + fileNameLength);
                     const bool isDirectory = (recordHeader->FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 
-                    const auto existing = frnMap.find(frn);
-                    if (existing == frnMap.end() || fileName.length() > existing->second.name.length())
+                    if (frn != lastFrn)
                     {
-                        frnMap[frn] = FrnEntry{ fileName, parentFrn, isDirectory };
+                        Record record;
+                        record.frn = frn;
+                        record.parentFrn = parentFrn;
+                        record.driveLetter = driveLetter;
+                        record.originalName.assign(fileNamePtr, fileNamePtr + fileNameLength);
+                        record.lowerName = ToLower(record.originalName);
+                        record.isDirectory = isDirectory;
+                        lastFrn = frn;
+                        lastRecordIndex = static_cast<std::uint32_t>(outRecords.size());
+                        outRecords.push_back(std::move(record));
+                    }
+                    else if (lastRecordIndex < outRecords.size())
+                    {
+                        auto& record = outRecords[lastRecordIndex];
+                        if (fileNameLength > record.originalName.length())
+                        {
+                            record.parentFrn = parentFrn;
+                            record.originalName.assign(fileNamePtr, fileNamePtr + fileNameLength);
+                            record.lowerName = ToLower(record.originalName);
+                            record.isDirectory = isDirectory;
+                        }
                     }
 
                     offset += recordHeader->RecordLength;
@@ -1445,27 +1767,12 @@ namespace
 
             VolumeState volume;
             volume.driveLetter = driveLetter;
-            volume.frnMap = std::move(frnMap);
 
             USN_JOURNAL_DATA_V0 journalData{};
             if (QueryJournal_NoLock(handle, journalData))
             {
                 volume.nextUsn = journalData.NextUsn;
                 volume.journalId = journalData.UsnJournalID;
-            }
-
-            outRecords.clear();
-            outRecords.reserve(volume.frnMap.size());
-            for (const auto& pair : volume.frnMap)
-            {
-                Record record;
-                record.frn = pair.first;
-                record.parentFrn = pair.second.parentFrn;
-                record.driveLetter = driveLetter;
-                record.originalName = pair.second.name;
-                record.lowerName = ToLower(record.originalName);
-                record.isDirectory = pair.second.isDirectory;
-                outRecords.push_back(std::move(record));
             }
 
             outVolume = std::move(volume);
@@ -1479,52 +1786,33 @@ namespace
         {
             const auto totalStart = std::chrono::steady_clock::now();
             long long sortMs = 0;
-            if (!recordsAlreadySorted)
-            {
-                const auto sortStart = totalStart;
-                std::sort(records_.begin(), records_.end(), [](const Record& left, const Record& right)
-                {
-                    if (left.lowerName != right.lowerName)
-                    {
-                        return left.lowerName < right.lowerName;
-                    }
-
-                    if (left.driveLetter != right.driveLetter)
-                    {
-                        return left.driveLetter < right.driveLetter;
-                    }
-
-                    return left.frn < right.frn;
-                });
-                sortMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - sortStart).count();
-            }
+            (void)recordsAlreadySorted;
 
             recordIndexByKey_.clear();
+            frnRecordIndex_.clear();
             allIds_.clear();
             directoryIds_.clear();
             launchableIds_.clear();
             scriptIds_.clear();
             logIds_.clear();
             configIds_.clear();
-            exactNameIds_.clear();
             extensionIds_.clear();
             v2_.Clear();
 
-            recordIndexByKey_.reserve(records_.size());
+            frnRecordIndex_.reserve(records_.size());
             allIds_.reserve(records_.size());
             directoryIds_.reserve(records_.size() / 8);
             launchableIds_.reserve(records_.size() / 8);
-            exactNameIds_.reserve(records_.size());
             extensionIds_.reserve(records_.size() / 8);
 
             const auto bucketStart = std::chrono::steady_clock::now();
+            const auto baseBucketStart = bucketStart;
             for (std::uint32_t i = 0; i < records_.size(); ++i)
             {
                 const auto& record = records_[i];
-                recordIndexByKey_[MakeRecordKey(record.driveLetter, record.frn)] = i;
+                const auto key = MakeRecordKey(record.driveLetter, record.frn);
+                frnRecordIndex_.push_back(FrnRecordIndexEntry{ key, i });
                 allIds_.push_back(i);
-                exactNameIds_[std::wstring_view(record.lowerName)].push_back(i);
                 if (record.isDirectory)
                 {
                     directoryIds_.push_back(i);
@@ -1553,6 +1841,14 @@ namespace
                     configIds_.push_back(i);
                 }
             }
+            const auto baseBucketMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - baseBucketStart).count();
+
+            const auto frnSortStart = std::chrono::steady_clock::now();
+            SortFrnRecordIndex_NoLock();
+            ReleaseDuplicateFrnNameStorage_NoLock();
+            const auto frnSortMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - frnSortStart).count();
 
             long long v2Ms = 0;
             if (buildV2)
@@ -1574,8 +1870,10 @@ namespace
                     + " totalMs=" + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
                         std::chrono::steady_clock::now() - totalStart).count())
                     + " sortMs=" + std::to_string(sortMs)
-                    + " sortSkipped=" + std::string(recordsAlreadySorted ? "true" : "false")
+                    + " sortSkipped=true"
                     + " bucketMs=" + std::to_string(bucketMs)
+                    + " baseBucketMs=" + std::to_string(baseBucketMs)
+                    + " frnSortMs=" + std::to_string(frnSortMs)
                     + " v2Ms=" + std::to_string(v2Ms)
                     + " v2Ready=" + std::string(v2_.ready ? "true" : "false")
                     + " v2TrigramBuckets=" + std::to_string(v2_.trigramEntries.size())
@@ -1611,6 +1909,7 @@ namespace
             }
 
             recordIndexByKey_.clear();
+            frnRecordIndex_.clear();
             allIds_.clear();
             directoryIds_.clear();
             launchableIds_.clear();
@@ -1620,7 +1919,7 @@ namespace
             exactNameIds_.clear();
             extensionIds_.clear();
 
-            recordIndexByKey_.reserve(records_.size());
+            frnRecordIndex_.reserve(records_.size());
             allIds_.reserve(records_.size());
             directoryIds_.reserve(records_.size() / 8);
             launchableIds_.reserve(records_.size() / 8);
@@ -1630,7 +1929,8 @@ namespace
             for (std::uint32_t i = 0; i < records_.size(); ++i)
             {
                 const auto& record = records_[i];
-                recordIndexByKey_[MakeRecordKey(record.driveLetter, record.frn)] = i;
+                const auto key = MakeRecordKey(record.driveLetter, record.frn);
+                frnRecordIndex_.push_back(FrnRecordIndexEntry{ key, i });
                 allIds_.push_back(i);
                 if (record.isDirectory)
                 {
@@ -1661,6 +1961,9 @@ namespace
                 }
             }
 
+            SortFrnRecordIndex_NoLock();
+            ReleaseDuplicateFrnNameStorage_NoLock();
+
             derivedDirty_ = false;
             generationId_.fetch_add(1, std::memory_order_relaxed);
             if (reason != nullptr)
@@ -1689,48 +1992,55 @@ namespace
         void BuildV2Accelerator_NoLock()
         {
             const auto totalStart = std::chrono::steady_clock::now();
-            std::unordered_map<std::uint64_t, std::uint32_t> trigramCounts;
-            trigramCounts.reserve(131072);
+            long long emitMs = 0;
+            long long entryBuildMs = 0;
+            long long encodeMs = 0;
+            long long shortCompressMs = 0;
+            long long parentMs = 0;
             const auto workerCount = GetV2WorkerCount(records_.size());
             auto ranges = BuildV2WorkerRanges(records_.size(), workerCount);
-            std::vector<std::unordered_map<std::uint64_t, std::uint32_t>> localCounts(workerCount);
-            std::vector<std::future<void>> countTasks;
-            countTasks.reserve(workerCount);
+            std::vector<std::unique_ptr<NativeV2BuildLocal>> locals(workerCount);
+            std::vector<std::future<void>> emitTasks;
+            emitTasks.reserve(workerCount);
+            const auto emitStart = std::chrono::steady_clock::now();
             for (std::size_t worker = 0; worker < workerCount; ++worker)
             {
-                countTasks.emplace_back(std::async(std::launch::async, [this, &ranges, &localCounts, worker]()
+                locals[worker] = std::make_unique<NativeV2BuildLocal>();
+                emitTasks.emplace_back(std::async(std::launch::async, [this, &ranges, &locals, worker]()
                 {
-                    auto& counts = localCounts[worker];
-                    counts.reserve(32768);
+                    auto& local = *locals[worker];
+                    local.trigrams.reserve(32768);
                     std::vector<std::uint64_t> uniqueKeys;
                     for (std::uint32_t recordId = ranges[worker].first; recordId < ranges[worker].second; ++recordId)
                     {
-                        BuildUniqueTrigramKeys_NoLock(records_[recordId].lowerName, uniqueKeys);
+                        const auto& name = records_[recordId].lowerName;
+                        BuildUniqueTrigramKeys_NoLock(name, uniqueKeys);
                         for (const auto key : uniqueKeys)
                         {
-                            ++counts[key];
+                            local.trigrams[key].push_back(recordId);
                         }
+
+                        AddShortQueryTokensToLocal_NoLock(name, recordId, local.shortQuery);
                     }
                 }));
             }
 
-            for (auto& task : countTasks)
+            for (auto& task : emitTasks)
             {
                 task.get();
             }
+            emitMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - emitStart).count();
 
-            for (auto& counts : localCounts)
+            const auto entryBuildStart = std::chrono::steady_clock::now();
+            std::unordered_map<std::uint64_t, std::uint32_t> trigramCounts;
+            trigramCounts.reserve(131072);
+            for (const auto& local : locals)
             {
-                for (const auto& pair : counts)
+                for (const auto& pair : local->trigrams)
                 {
-                    trigramCounts[pair.first] += pair.second;
+                    trigramCounts[pair.first] += static_cast<std::uint32_t>(pair.second.size());
                 }
-            }
-
-            for (std::uint32_t recordId = 0; recordId < records_.size(); ++recordId)
-            {
-                const auto& name = records_[recordId].lowerName;
-                AddShortQueryTokens_NoLock(name, recordId);
             }
 
             v2_.trigramEntries.clear();
@@ -1747,75 +2057,34 @@ namespace
             {
                 return left.key < right.key;
             });
+            entryBuildMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - entryBuildStart).count();
 
-            std::unordered_map<std::uint64_t, std::uint32_t> bucketIndexes;
-            bucketIndexes.reserve(v2_.trigramEntries.size());
-            std::vector<std::atomic<std::uint32_t>> writePositions(v2_.trigramEntries.size());
-            for (std::uint32_t i = 0; i < v2_.trigramEntries.size(); ++i)
-            {
-                bucketIndexes[v2_.trigramEntries[i].key] = i;
-                writePositions[i].store(v2_.trigramEntries[i].offset, std::memory_order_relaxed);
-            }
-
-            if (totalPostings > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()))
-            {
-                throw std::bad_alloc();
-            }
-
-            std::vector<std::uint32_t> rawPostings(static_cast<std::size_t>(totalPostings));
-            std::vector<std::future<void>> fillTasks;
-            fillTasks.reserve(workerCount);
-            for (std::size_t worker = 0; worker < workerCount; ++worker)
-            {
-                fillTasks.emplace_back(std::async(std::launch::async, [this, &ranges, &bucketIndexes, &writePositions, &rawPostings, worker]()
-                {
-                    std::vector<std::uint64_t> uniqueKeys;
-                    for (std::uint32_t recordId = ranges[worker].first; recordId < ranges[worker].second; ++recordId)
-                    {
-                        BuildUniqueTrigramKeys_NoLock(records_[recordId].lowerName, uniqueKeys);
-                        for (const auto key : uniqueKeys)
-                        {
-                            const auto bucketIt = bucketIndexes.find(key);
-                            if (bucketIt == bucketIndexes.end())
-                            {
-                                continue;
-                            }
-
-                            const auto pos = writePositions[bucketIt->second].fetch_add(1, std::memory_order_relaxed);
-                            rawPostings[pos] = recordId;
-                        }
-                    }
-                }));
-            }
-
-            for (auto& task : fillTasks)
-            {
-                task.get();
-            }
-
-            for (const auto& entry : v2_.trigramEntries)
-            {
-                auto begin = rawPostings.begin() + entry.offset;
-                auto end = begin + entry.count;
-                std::sort(begin, end);
-            }
-
+            const auto encodeStart = std::chrono::steady_clock::now();
             v2_.trigramPostings.reserve(static_cast<std::size_t>(std::min<std::uint64_t>(
                 totalPostings * 2,
                 static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()))));
             for (auto& entry : v2_.trigramEntries)
             {
-                const auto rawOffset = entry.offset;
                 const auto byteOffset = static_cast<std::uint32_t>(v2_.trigramPostings.size());
-                EncodeDeltaPosting_NoLock(rawPostings, rawOffset, entry.count, v2_.trigramPostings);
+                EncodeMergedLocalTrigramPosting_NoLock(entry.key, locals, v2_.trigramPostings);
                 entry.offset = byteOffset;
                 entry.byteCount = static_cast<std::uint32_t>(v2_.trigramPostings.size() - byteOffset);
             }
             v2_.trigramPostings.shrink_to_fit();
+            encodeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - encodeStart).count();
 
+            const auto shortCompressStart = std::chrono::steady_clock::now();
+            MergeShortQueryLocals_NoLock(locals);
             CompressShortPostings_NoLock();
+            shortCompressMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - shortCompressStart).count();
 
+            const auto parentStart = std::chrono::steady_clock::now();
             BuildParentOrder_NoLock();
+            parentMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - parentStart).count();
             v2_.buildMs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - totalStart).count());
             v2_.postingsBytes =
@@ -1824,6 +2093,21 @@ namespace
                 + EstimateShortPostingBytes_NoLock()
                 + (static_cast<std::uint64_t>(v2_.parentOrder.size()) * sizeof(std::uint32_t));
             v2_.ready = true;
+            NativeLogWrite(
+                "[NATIVE V2 BUILD] totalMs=" + std::to_string(v2_.buildMs)
+                + " workerCount=" + std::to_string(workerCount)
+                + " trigramCountMs=" + std::to_string(emitMs)
+                + " shortBuildMs=" + std::to_string(emitMs)
+                + " entryBuildMs=" + std::to_string(entryBuildMs)
+                + " fillMs=0"
+                + " sortBucketsMs=0"
+                + " encodeMs=" + std::to_string(encodeMs)
+                + " shortCompressMs=" + std::to_string(shortCompressMs)
+                + " parentMs=" + std::to_string(parentMs)
+                + " trigramBuckets=" + std::to_string(v2_.trigramEntries.size())
+                + " trigramBytes=" + std::to_string(v2_.trigramPostings.size())
+                + " totalPostings=" + std::to_string(totalPostings)
+                + " shortBytes=" + std::to_string(EstimateShortPostingBytes_NoLock()));
         }
 
         void BuildV2RuntimeStructures_NoLock()
@@ -2019,6 +2303,30 @@ namespace
             }
         }
 
+        static void EncodeMergedLocalTrigramPosting_NoLock(
+            std::uint64_t key,
+            const std::vector<std::unique_ptr<NativeV2BuildLocal>>& locals,
+            std::vector<std::uint8_t>& output)
+        {
+            bool hasPrevious = false;
+            std::uint32_t previous = 0;
+            for (const auto& local : locals)
+            {
+                const auto it = local->trigrams.find(key);
+                if (it == local->trigrams.end())
+                {
+                    continue;
+                }
+
+                for (const auto value : it->second)
+                {
+                    WriteVarUInt(hasPrevious ? value - previous : value, output);
+                    previous = value;
+                    hasPrevious = true;
+                }
+            }
+        }
+
         static void DecodeDeltaPosting_NoLock(
             const std::vector<std::uint8_t>& bytes,
             const NativeV2BucketEntry& entry,
@@ -2066,6 +2374,32 @@ namespace
             posting.shrink_to_fit();
         }
 
+        void MergeShortQueryLocals_NoLock(const std::vector<std::unique_ptr<NativeV2BuildLocal>>& locals)
+        {
+            for (const auto& local : locals)
+            {
+                for (std::size_t i = 0; i < v2_.asciiCharPostings.size(); ++i)
+                {
+                    auto& target = v2_.asciiCharPostings[i];
+                    const auto& source = local->shortQuery.chars[i];
+                    target.insert(target.end(), source.begin(), source.end());
+                }
+
+                for (std::size_t i = 0; i < v2_.asciiBigramPostings.size(); ++i)
+                {
+                    auto& target = v2_.asciiBigramPostings[i];
+                    const auto& source = local->shortQuery.bigrams[i];
+                    target.insert(target.end(), source.begin(), source.end());
+                }
+
+                for (const auto& pair : local->shortQuery.nonAscii)
+                {
+                    auto& target = v2_.nonAsciiShortPostings[pair.first];
+                    target.insert(target.end(), pair.second.begin(), pair.second.end());
+                }
+            }
+        }
+
         static void DecodeShortPosting_NoLock(
             const std::vector<std::uint8_t>& bytes,
             const NativeV2ShortBucketEntry& entry,
@@ -2088,6 +2422,48 @@ namespace
                 const auto value = i == 0 ? delta : previous + delta;
                 output.push_back(value);
                 previous = value;
+            }
+        }
+
+        static void DecodeShortPostingPage_NoLock(
+            const std::vector<std::uint8_t>& bytes,
+            const NativeV2ShortBucketEntry& entry,
+            int offset,
+            int maxResults,
+            std::vector<std::uint32_t>& page)
+        {
+            page.clear();
+            if (entry.count == 0 || maxResults <= 0)
+            {
+                return;
+            }
+
+            page.reserve(static_cast<std::size_t>(std::min(maxResults, 64)));
+            std::size_t byteOffset = entry.offset;
+            const std::size_t end = static_cast<std::size_t>(entry.offset) + entry.byteCount;
+            std::uint32_t previous = 0;
+            const auto safeOffset = static_cast<std::uint32_t>(std::max(offset, 0));
+            for (std::uint32_t i = 0; i < entry.count && byteOffset < end; ++i)
+            {
+                std::uint32_t delta = 0;
+                if (!ReadVarUInt(bytes, byteOffset, end, delta))
+                {
+                    page.clear();
+                    return;
+                }
+
+                const auto value = i == 0 ? delta : previous + delta;
+                previous = value;
+                if (i < safeOffset)
+                {
+                    continue;
+                }
+
+                page.push_back(value);
+                if (static_cast<int>(page.size()) >= maxResults)
+                {
+                    break;
+                }
             }
         }
 
@@ -2169,12 +2545,11 @@ namespace
         void BuildParentOrder_NoLock()
         {
             v2_.parentOrder.resize(records_.size());
-            v2_.childIds.clear();
-            v2_.childIds.reserve(records_.size() / 4);
+            v2_.childEntries.clear();
+            v2_.childRecordIds.clear();
             for (std::uint32_t i = 0; i < records_.size(); ++i)
             {
                 v2_.parentOrder[i] = i;
-                v2_.childIds[MakeRecordKey(records_[i].driveLetter, records_[i].parentFrn)].push_back(i);
             }
 
             std::sort(v2_.parentOrder.begin(), v2_.parentOrder.end(), [this](std::uint32_t left, std::uint32_t right)
@@ -2194,13 +2569,45 @@ namespace
                 return left < right;
             });
 
-            for (auto& pair : v2_.childIds)
+            v2_.childEntries.reserve(records_.size() / 4);
+            v2_.childRecordIds.reserve(records_.size());
+            std::uint64_t currentKey = 0;
+            std::uint32_t currentOffset = 0;
+            std::uint32_t currentCount = 0;
+            bool hasCurrent = false;
+            for (const auto recordId : v2_.parentOrder)
             {
-                auto& ids = pair.second;
-                std::sort(ids.begin(), ids.end());
-                ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
-                ids.shrink_to_fit();
+                if (recordId >= records_.size())
+                {
+                    continue;
+                }
+
+                const auto& record = records_[recordId];
+                const auto key = MakeRecordKey(record.driveLetter, record.parentFrn);
+                if (!hasCurrent || key != currentKey)
+                {
+                    if (hasCurrent)
+                    {
+                        v2_.childEntries.push_back(NativeV2ChildBucketEntry{ currentKey, currentOffset, currentCount });
+                    }
+
+                    hasCurrent = true;
+                    currentKey = key;
+                    currentOffset = static_cast<std::uint32_t>(v2_.childRecordIds.size());
+                    currentCount = 0;
+                }
+
+                v2_.childRecordIds.push_back(recordId);
+                ++currentCount;
             }
+
+            if (hasCurrent)
+            {
+                v2_.childEntries.push_back(NativeV2ChildBucketEntry{ currentKey, currentOffset, currentCount });
+            }
+
+            v2_.childEntries.shrink_to_fit();
+            v2_.childRecordIds.shrink_to_fit();
         }
 
         std::uint64_t EstimateShortPostingBytes_NoLock() const
@@ -2215,12 +2622,340 @@ namespace
             return bytes;
         }
 
+        void SortFrnRecordIndex_NoLock()
+        {
+            std::sort(frnRecordIndex_.begin(), frnRecordIndex_.end(), [](const auto& left, const auto& right)
+            {
+                return left.key < right.key;
+            });
+            frnRecordIndex_.erase(
+                std::unique(frnRecordIndex_.begin(), frnRecordIndex_.end(), [](const auto& left, const auto& right)
+                {
+                    return left.key == right.key;
+                }),
+                frnRecordIndex_.end());
+            frnRecordIndex_.shrink_to_fit();
+        }
+
+        void RebuildFrnRecordIndex_NoLock()
+        {
+            recordIndexByKey_.clear();
+            frnRecordIndex_.clear();
+            frnRecordIndex_.reserve(records_.size());
+            for (std::uint32_t i = 0; i < records_.size(); ++i)
+            {
+                const auto& record = records_[i];
+                const auto key = MakeRecordKey(record.driveLetter, record.frn);
+                frnRecordIndex_.push_back(FrnRecordIndexEntry{ key, i });
+            }
+
+            SortFrnRecordIndex_NoLock();
+        }
+
+        void RebuildFrnRecordIndexFromMapped_NoLock()
+        {
+            recordIndexByKey_.clear();
+            frnRecordIndex_.clear();
+            overlayRecords_.clear();
+            overlayIndexByKey_.clear();
+            overlayDeletedKeys_.clear();
+            if (!mappedRecords_.Ready())
+            {
+                return;
+            }
+
+            frnRecordIndex_.reserve(mappedRecords_.recordCount);
+            for (std::uint32_t i = 0; i < mappedRecords_.recordCount; ++i)
+            {
+                const auto& record = mappedRecords_.records[i];
+                const auto key = MakeRecordKey(static_cast<wchar_t>(record.drive), record.frn);
+                frnRecordIndex_.push_back(FrnRecordIndexEntry{ key, i });
+            }
+
+            SortFrnRecordIndex_NoLock();
+        }
+
+        void ReleaseDuplicateFrnNameStorage_NoLock()
+        {
+            for (auto& pair : volumes_)
+            {
+                pair.second.frnMap.clear();
+                pair.second.frnMap.rehash(0);
+                pair.second.pathCache.clear();
+                pair.second.pathCache.rehash(0);
+            }
+        }
+
+        void TrimPathCache_NoLock(VolumeState& volume) const
+        {
+            if (volume.pathCache.size() <= MaxPathCacheEntriesPerVolume)
+            {
+                return;
+            }
+
+            volume.pathCache.clear();
+            volume.pathCache.rehash(MaxPathCacheEntriesPerVolume / 2);
+        }
+
+        bool TryGetRecordIdByKey_NoLock(std::uint64_t key, std::uint32_t& recordId) const
+        {
+            const auto overlayIt = overlayIndexByKey_.find(key);
+            if (overlayIt != overlayIndexByKey_.end())
+            {
+                recordId = MakeOverlayRecordId(overlayIt->second);
+                return true;
+            }
+
+            if (overlayDeletedKeys_.find(key) != overlayDeletedKeys_.end())
+            {
+                return false;
+            }
+
+            auto lo = frnRecordIndex_.begin();
+            auto hi = frnRecordIndex_.end();
+            while (lo < hi)
+            {
+                auto mid = lo + ((hi - lo) / 2);
+                if (mid->key < key)
+                {
+                    lo = mid + 1;
+                }
+                else
+                {
+                    hi = mid;
+                }
+            }
+
+            if (lo == frnRecordIndex_.end() || lo->key != key || lo->recordId >= GetRecordCount_NoLock())
+            {
+                return false;
+            }
+
+            recordId = lo->recordId;
+            return true;
+        }
+
+        std::uint32_t GetRecordCount_NoLock() const
+        {
+            return mappedRecords_.Ready()
+                ? mappedRecords_.recordCount
+                : static_cast<std::uint32_t>(records_.size());
+        }
+
+        static bool IsOverlayRecordId(std::uint32_t recordId)
+        {
+            return (recordId & OverlayRecordIdMask) != 0;
+        }
+
+        static std::uint32_t MakeOverlayRecordId(std::uint32_t overlayIndex)
+        {
+            return OverlayRecordIdMask | overlayIndex;
+        }
+
+        static std::uint32_t GetOverlayIndex(std::uint32_t recordId)
+        {
+            return recordId & ~OverlayRecordIdMask;
+        }
+
+        bool TryGetOverlayRecord_NoLock(std::uint32_t recordId, const Record*& record) const
+        {
+            record = nullptr;
+            if (!IsOverlayRecordId(recordId))
+            {
+                return false;
+            }
+
+            const auto overlayIndex = GetOverlayIndex(recordId);
+            if (overlayIndex >= overlayRecords_.size())
+            {
+                return false;
+            }
+
+            record = &overlayRecords_[overlayIndex];
+            return true;
+        }
+
+        bool IsRecordDeletedByOverlay_NoLock(std::uint32_t recordId) const
+        {
+            if (IsOverlayRecordId(recordId) || overlayDeletedKeys_.empty())
+            {
+                return false;
+            }
+
+            return overlayDeletedKeys_.find(MakeRecordKey(GetRecordDrive_NoLock(recordId), GetRecordFrn_NoLock(recordId))) != overlayDeletedKeys_.end();
+        }
+
+        bool TryGetCompactRecord_NoLock(std::uint32_t recordId, const NativeV2CompactRecord*& record) const
+        {
+            record = nullptr;
+            if (!mappedRecords_.Ready() || recordId >= mappedRecords_.recordCount)
+            {
+                return false;
+            }
+
+            record = &mappedRecords_.records[recordId];
+            return true;
+        }
+
+        std::wstring_view GetLowerNameView_NoLock(std::uint32_t recordId) const
+        {
+            const NativeV2CompactRecord* compact = nullptr;
+            const Record* overlay = nullptr;
+            if (TryGetOverlayRecord_NoLock(recordId, overlay))
+            {
+                return std::wstring_view(overlay->lowerName);
+            }
+
+            if (TryGetCompactRecord_NoLock(recordId, compact))
+            {
+                if (static_cast<std::size_t>(compact->lowerOffset) + compact->lowerLength <= mappedRecords_.stringPoolChars)
+                {
+                    return std::wstring_view(mappedRecords_.stringPool + compact->lowerOffset, compact->lowerLength);
+                }
+
+                return {};
+            }
+
+            if (recordId >= records_.size())
+            {
+                return {};
+            }
+
+            return std::wstring_view(records_[recordId].lowerName);
+        }
+
+        std::wstring_view GetOriginalNameView_NoLock(std::uint32_t recordId) const
+        {
+            const NativeV2CompactRecord* compact = nullptr;
+            const Record* overlay = nullptr;
+            if (TryGetOverlayRecord_NoLock(recordId, overlay))
+            {
+                return std::wstring_view(overlay->originalName);
+            }
+
+            if (TryGetCompactRecord_NoLock(recordId, compact))
+            {
+                if (static_cast<std::size_t>(compact->originalOffset) + compact->originalLength <= mappedRecords_.stringPoolChars)
+                {
+                    return std::wstring_view(mappedRecords_.stringPool + compact->originalOffset, compact->originalLength);
+                }
+
+                return {};
+            }
+
+            if (recordId >= records_.size())
+            {
+                return {};
+            }
+
+            return std::wstring_view(records_[recordId].originalName);
+        }
+
+        std::uint64_t GetRecordFrn_NoLock(std::uint32_t recordId) const
+        {
+            const NativeV2CompactRecord* compact = nullptr;
+            const Record* overlay = nullptr;
+            if (TryGetOverlayRecord_NoLock(recordId, overlay))
+            {
+                return overlay->frn;
+            }
+
+            if (TryGetCompactRecord_NoLock(recordId, compact))
+            {
+                return compact->frn;
+            }
+
+            return recordId < records_.size() ? records_[recordId].frn : 0;
+        }
+
+        std::uint64_t GetRecordParentFrn_NoLock(std::uint32_t recordId) const
+        {
+            const NativeV2CompactRecord* compact = nullptr;
+            const Record* overlay = nullptr;
+            if (TryGetOverlayRecord_NoLock(recordId, overlay))
+            {
+                return overlay->parentFrn;
+            }
+
+            if (TryGetCompactRecord_NoLock(recordId, compact))
+            {
+                return compact->parentFrn;
+            }
+
+            return recordId < records_.size() ? records_[recordId].parentFrn : 0;
+        }
+
+        wchar_t GetRecordDrive_NoLock(std::uint32_t recordId) const
+        {
+            const NativeV2CompactRecord* compact = nullptr;
+            const Record* overlay = nullptr;
+            if (TryGetOverlayRecord_NoLock(recordId, overlay))
+            {
+                return overlay->driveLetter;
+            }
+
+            if (TryGetCompactRecord_NoLock(recordId, compact))
+            {
+                return static_cast<wchar_t>(compact->drive);
+            }
+
+            return recordId < records_.size() ? records_[recordId].driveLetter : L'\0';
+        }
+
+        bool IsDirectoryRecord_NoLock(std::uint32_t recordId) const
+        {
+            const NativeV2CompactRecord* compact = nullptr;
+            const Record* overlay = nullptr;
+            if (TryGetOverlayRecord_NoLock(recordId, overlay))
+            {
+                return overlay->isDirectory;
+            }
+
+            if (TryGetCompactRecord_NoLock(recordId, compact))
+            {
+                return (compact->flags & 0x1) != 0;
+            }
+
+            return recordId < records_.size() && records_[recordId].isDirectory;
+        }
+
+        bool TryGetChildRange_NoLock(std::uint64_t key, std::uint32_t& offset, std::uint32_t& count) const
+        {
+            auto lo = v2_.childEntries.begin();
+            auto hi = v2_.childEntries.end();
+            while (lo < hi)
+            {
+                auto mid = lo + ((hi - lo) / 2);
+                if (mid->key < key)
+                {
+                    lo = mid + 1;
+                }
+                else
+                {
+                    hi = mid;
+                }
+            }
+
+            if (lo == v2_.childEntries.end() || lo->key != key)
+            {
+                return false;
+            }
+
+            offset = lo->offset;
+            count = lo->count;
+            return true;
+        }
+
         std::uint64_t EstimateNativeMemoryBytes_NoLock() const
         {
             std::uint64_t bytes = static_cast<std::uint64_t>(records_.capacity()) * sizeof(Record);
             for (const auto& record : records_)
             {
                 bytes += (static_cast<std::uint64_t>(record.lowerName.capacity()) + record.originalName.capacity()) * sizeof(wchar_t);
+            }
+            if (mappedRecords_.Ready())
+            {
+                bytes += mappedRecords_.file.Size();
             }
 
             bytes += static_cast<std::uint64_t>(allIds_.capacity()
@@ -2230,8 +2965,11 @@ namespace
                 + logIds_.capacity()
                 + configIds_.capacity()
                 + v2_.trigramPostings.capacity()
-                + v2_.parentOrder.capacity()) * sizeof(std::uint32_t);
+                + v2_.parentOrder.capacity()
+                + v2_.childRecordIds.capacity()) * sizeof(std::uint32_t);
             bytes += static_cast<std::uint64_t>(v2_.trigramEntries.capacity()) * sizeof(NativeV2BucketEntry);
+            bytes += static_cast<std::uint64_t>(v2_.childEntries.capacity()) * sizeof(NativeV2ChildBucketEntry);
+            bytes += static_cast<std::uint64_t>(frnRecordIndex_.capacity()) * sizeof(FrnRecordIndexEntry);
             bytes += EstimateShortPostingBytes_NoLock();
             return bytes;
         }
@@ -2421,11 +3159,16 @@ namespace
 
                     if (!journalReset && !changes.empty())
                     {
-                        publishRefresh = true;
-                        NativeLogWrite(
-                            "[NATIVE LIVE WATCH DEFERRED] changes="
-                            + std::to_string(changes.size())
-                            + " reason=preserve-ready-v2-generation");
+                        if (ApplyCollectedChanges_NoLock(changes, &payloads))
+                        {
+                            shouldSave = true;
+                            publishRefresh = true;
+                            NativeLogWrite(
+                                "[NATIVE LIVE WATCH OVERLAY] changes="
+                                + std::to_string(changes.size())
+                                + " overlayRecords=" + std::to_string(overlayRecords_.size())
+                                + " overlayDeletes=" + std::to_string(overlayDeletedKeys_.size()));
+                        }
                     }
 
                 }
@@ -2694,20 +3437,19 @@ namespace
             record.lowerName = change.lowerName;
 
             const auto key = MakeRecordKey(record.driveLetter, record.frn);
-            const auto existing = recordIndexByKey_.find(key);
-            if (existing != recordIndexByKey_.end())
+            const auto existingOverlay = overlayIndexByKey_.find(key);
+            if (existingOverlay != overlayIndexByKey_.end())
             {
-                records_[existing->second] = record;
+                overlayRecords_[existingOverlay->second] = record;
             }
             else
             {
-                recordIndexByKey_[key] = records_.size();
-                records_.push_back(record);
+                overlayIndexByKey_[key] = static_cast<std::uint32_t>(overlayRecords_.size());
+                overlayRecords_.push_back(record);
             }
 
-            volume.frnMap[record.frn] = FrnEntry{ record.originalName, record.parentFrn, record.isDirectory };
+            overlayDeletedKeys_.erase(key);
             volume.pathCache.erase(record.frn);
-            derivedDirty_ = true;
 
             if (payload != nullptr)
             {
@@ -2727,20 +3469,24 @@ namespace
         bool ApplyDelete_NoLock(VolumeState& volume, const NativeChange& change, std::string* payload)
         {
             const auto key = MakeRecordKey(change.driveLetter, change.frn);
-            const auto existing = recordIndexByKey_.find(key);
-            if (existing == recordIndexByKey_.end())
+            std::uint32_t recordId = 0;
+            if (!TryGetRecordIdByKey_NoLock(key, recordId))
             {
-                volume.frnMap.erase(change.frn);
                 volume.pathCache.erase(change.frn);
                 return false;
             }
 
-            const auto removedRecord = records_[existing->second];
-            const auto fullPath = ResolveFullPath_NoLock(removedRecord);
-            RemoveRecordAt_NoLock(existing->second);
-            volume.frnMap.erase(change.frn);
+            Record removedRecord;
+            removedRecord.frn = GetRecordFrn_NoLock(recordId);
+            removedRecord.parentFrn = GetRecordParentFrn_NoLock(recordId);
+            removedRecord.driveLetter = GetRecordDrive_NoLock(recordId);
+            removedRecord.isDirectory = IsDirectoryRecord_NoLock(recordId);
+            removedRecord.originalName = std::wstring(GetOriginalNameView_NoLock(recordId));
+            removedRecord.lowerName = std::wstring(GetLowerNameView_NoLock(recordId));
+            const auto fullPath = ResolveFullPathById_NoLock(recordId);
+            overlayIndexByKey_.erase(key);
+            overlayDeletedKeys_.insert(key);
             volume.pathCache.erase(change.frn);
-            derivedDirty_ = true;
 
             if (payload != nullptr)
             {
@@ -2770,21 +3516,25 @@ namespace
             record.lowerName = change.lowerName;
 
             std::wstring oldFullPath = ResolveFullPath_NoLock(change.driveLetter, change.oldParentFrn, change.oldLowerName);
-            const auto existing = recordIndexByKey_.find(key);
-            if (existing != recordIndexByKey_.end())
+            std::uint32_t existingRecordId = 0;
+            if (TryGetRecordIdByKey_NoLock(key, existingRecordId))
             {
-                oldFullPath = ResolveFullPath_NoLock(records_[existing->second]);
-                records_[existing->second] = record;
+                oldFullPath = ResolveFullPathById_NoLock(existingRecordId);
+            }
+
+            const auto existingOverlay = overlayIndexByKey_.find(key);
+            if (existingOverlay != overlayIndexByKey_.end())
+            {
+                overlayRecords_[existingOverlay->second] = record;
             }
             else
             {
-                recordIndexByKey_[key] = records_.size();
-                records_.push_back(record);
+                overlayIndexByKey_[key] = static_cast<std::uint32_t>(overlayRecords_.size());
+                overlayRecords_.push_back(record);
             }
 
-            volume.frnMap[record.frn] = FrnEntry{ record.originalName, record.parentFrn, record.isDirectory };
+            overlayDeletedKeys_.erase(key);
             volume.pathCache.erase(record.frn);
-            derivedDirty_ = true;
 
             if (payload != nullptr)
             {
@@ -2803,16 +3553,14 @@ namespace
 
         void RemoveRecordAt_NoLock(std::size_t index)
         {
-            const auto removedKey = MakeRecordKey(records_[index].driveLetter, records_[index].frn);
             const auto lastIndex = records_.size() - 1;
             if (index != lastIndex)
             {
                 records_[index] = std::move(records_[lastIndex]);
-                recordIndexByKey_[MakeRecordKey(records_[index].driveLetter, records_[index].frn)] = index;
             }
 
             records_.pop_back();
-            recordIndexByKey_.erase(removedKey);
+            derivedDirty_ = true;
         }
 
         void MatchRecords_NoLock(
@@ -2822,7 +3570,7 @@ namespace
             const std::vector<std::uint32_t>& source,
             int offset,
             int maxResults,
-            std::vector<const Record*>& page,
+            std::vector<std::uint32_t>& page,
             int& totalMatched) const
         {
             page.clear();
@@ -2873,7 +3621,7 @@ namespace
 
             for (const auto recordIndex : source)
             {
-                const auto& record = records_[recordIndex];
+                const auto lowerName = GetLowerNameView_NoLock(recordIndex);
                 bool matched = false;
 
                 try
@@ -2881,16 +3629,16 @@ namespace
                     switch (mode)
                     {
                     case MatchMode::Prefix:
-                        matched = record.lowerName.rfind(query, 0) == 0;
+                        matched = StartsWith(lowerName, query);
                         break;
                     case MatchMode::Suffix:
-                        matched = EndsWith(record.lowerName, query);
+                        matched = EndsWith(lowerName, query);
                         break;
                     case MatchMode::Regex:
-                        matched = std::regex_search(record.lowerName, regex);
+                        matched = std::regex_search(lowerName.begin(), lowerName.end(), regex);
                         break;
                     case MatchMode::Wildcard:
-                        matched = std::regex_search(record.lowerName, regex);
+                        matched = std::regex_search(lowerName.begin(), lowerName.end(), regex);
                         break;
                     default:
                         matched = false;
@@ -2912,7 +3660,507 @@ namespace
                 ++totalMatched;
                 if (totalMatched > offset && static_cast<int>(page.size()) < maxResults)
                 {
-                    page.push_back(&record);
+                    page.push_back(recordIndex);
+                }
+            }
+        }
+
+        bool ExecuteQueryPlan_NoLock(
+            const QueryPlan& plan,
+            SearchFilter filter,
+            const std::wstring& pathPrefix,
+            int offset,
+            int maxResults,
+            std::vector<std::uint32_t>& page,
+            int& totalMatched,
+            const char*& acceleratorMode) const
+        {
+            page.clear();
+            totalMatched = 0;
+
+            switch (plan.kind)
+            {
+            case QueryPlanKind::Contains:
+                return TryMatchRecordsV2_NoLock(
+                    MatchMode::Contains,
+                    plan.query,
+                    filter,
+                    pathPrefix,
+                    offset,
+                    maxResults,
+                    page,
+                    totalMatched,
+                    acceleratorMode);
+
+            case QueryPlanKind::Prefix:
+                return PrefixMatchIndexed_NoLock(
+                    plan.query,
+                    filter,
+                    pathPrefix,
+                    offset,
+                    maxResults,
+                    page,
+                    totalMatched,
+                    acceleratorMode);
+
+            case QueryPlanKind::Suffix:
+                return TryMatchVerifiedLiteral_NoLock(
+                    MatchMode::Suffix,
+                    plan.query,
+                    plan.query,
+                    filter,
+                    pathPrefix,
+                    offset,
+                    maxResults,
+                    page,
+                    totalMatched,
+                    acceleratorMode);
+
+            case QueryPlanKind::ExtensionWildcard:
+                return ExtensionMatchIndexed_NoLock(
+                    plan.extension,
+                    filter,
+                    pathPrefix,
+                    offset,
+                    maxResults,
+                    page,
+                    totalMatched,
+                    acceleratorMode);
+
+            case QueryPlanKind::WildcardLiteral:
+                return TryMatchVerifiedLiteral_NoLock(
+                    MatchMode::Wildcard,
+                    plan.pattern,
+                    plan.requiredLiteral,
+                    filter,
+                    pathPrefix,
+                    offset,
+                    maxResults,
+                    page,
+                    totalMatched,
+                    acceleratorMode);
+
+            case QueryPlanKind::RegexLiteral:
+                return TryMatchVerifiedLiteral_NoLock(
+                    MatchMode::Regex,
+                    plan.pattern,
+                    plan.requiredLiteral,
+                    filter,
+                    pathPrefix,
+                    offset,
+                    maxResults,
+                    page,
+                    totalMatched,
+                    acceleratorMode);
+
+            case QueryPlanKind::RegexScan:
+                return RegexScan_NoLock(
+                    plan.pattern,
+                    filter,
+                    pathPrefix,
+                    offset,
+                    maxResults,
+                    page,
+                    totalMatched,
+                    acceleratorMode);
+
+            default:
+                return false;
+            }
+        }
+
+        bool PrefixMatchIndexed_NoLock(
+            const std::wstring& prefix,
+            SearchFilter filter,
+            const std::wstring& pathPrefix,
+            int offset,
+            int maxResults,
+            std::vector<std::uint32_t>& page,
+            int& totalMatched,
+            const char*& acceleratorMode) const
+        {
+            page.clear();
+            totalMatched = 0;
+            acceleratorMode = pathPrefix.empty() && filter == SearchFilter::All ? "prefix-sorted" : "prefix-sorted+filter";
+            if (prefix.empty())
+            {
+                return false;
+            }
+
+            std::vector<std::uint32_t> candidates;
+            if (!TryBuildLiteralCandidates_NoLock(prefix, candidates))
+            {
+                acceleratorMode = "prefix-literal-empty";
+                return true;
+            }
+
+            ApplyFilterToCandidates_NoLock(candidates, filter);
+            if (!pathPrefix.empty())
+            {
+                ApplyPathScopeToCandidates_NoLock(candidates, pathPrefix);
+                acceleratorMode = "prefix-sorted+path";
+            }
+
+            FillPageFromCandidateIds_NoLock(
+                candidates,
+                offset,
+                maxResults,
+                page,
+                totalMatched,
+                nullptr,
+                MatchMode::Prefix,
+                prefix);
+            return true;
+        }
+
+        bool ExtensionMatchIndexed_NoLock(
+            const std::wstring& extension,
+            SearchFilter filter,
+            const std::wstring& pathPrefix,
+            int offset,
+            int maxResults,
+            std::vector<std::uint32_t>& page,
+            int& totalMatched,
+            const char*& acceleratorMode) const
+        {
+            page.clear();
+            totalMatched = 0;
+            const auto bucketIt = extensionIds_.find(extension);
+            if (bucketIt == extensionIds_.end())
+            {
+                acceleratorMode = pathPrefix.empty() ? "extension-bucket" : "extension-bucket+path";
+                return true;
+            }
+
+            auto candidates = bucketIt->second;
+            ApplyFilterToCandidates_NoLock(candidates, filter);
+            if (!pathPrefix.empty())
+            {
+                ApplyPathScopeToCandidates_NoLock(candidates, pathPrefix);
+                acceleratorMode = "extension-bucket+path";
+            }
+            else
+            {
+                acceleratorMode = filter == SearchFilter::All ? "extension-bucket" : "extension-bucket+filter";
+            }
+
+            FillPageFromCandidateIds_NoLock(
+                candidates,
+                offset,
+                maxResults,
+                page,
+                totalMatched,
+                nullptr,
+                MatchMode::Wildcard,
+                L"");
+            return true;
+        }
+
+        bool TryMatchVerifiedLiteral_NoLock(
+            MatchMode verifyMode,
+            const std::wstring& verifyPattern,
+            const std::wstring& requiredLiteral,
+            SearchFilter filter,
+            const std::wstring& pathPrefix,
+            int offset,
+            int maxResults,
+            std::vector<std::uint32_t>& page,
+            int& totalMatched,
+            const char*& acceleratorMode) const
+        {
+            if (requiredLiteral.empty())
+            {
+                return false;
+            }
+
+            auto candidates = BuildV2ContainsCandidates_NoLock(requiredLiteral);
+            if (!candidates.accelerated)
+            {
+                return false;
+            }
+            acceleratorMode = verifyMode == MatchMode::Suffix ? "v2-literal+suffix-verify" : "v2-literal+wildcard-verify";
+            ApplyFilterToCandidates_NoLock(candidates.ids, filter);
+            if (!pathPrefix.empty())
+            {
+                ApplyPathScopeToCandidates_NoLock(candidates.ids, pathPrefix);
+                acceleratorMode = verifyMode == MatchMode::Suffix ? "v2-literal+suffix-verify+path" : "v2-literal+wildcard-verify+path";
+            }
+
+            std::wregex wildcardRegex;
+            std::wregex* regexPtr = nullptr;
+            if (verifyMode == MatchMode::Wildcard || verifyMode == MatchMode::Regex)
+            {
+                try
+                {
+                    wildcardRegex = verifyMode == MatchMode::Wildcard
+                        ? std::wregex(WildcardToRegex(verifyPattern), std::regex_constants::icase)
+                        : std::wregex(verifyPattern, std::regex_constants::icase);
+                    regexPtr = &wildcardRegex;
+                }
+                catch (const std::regex_error&)
+                {
+                    return false;
+                }
+            }
+
+            FillPageFromCandidateIds_NoLock(
+                candidates.ids,
+                offset,
+                maxResults,
+                page,
+                totalMatched,
+                regexPtr,
+                verifyMode,
+                verifyPattern);
+            return true;
+        }
+
+        bool RegexScan_NoLock(
+            const std::wstring& pattern,
+            SearchFilter filter,
+            const std::wstring& pathPrefix,
+            int offset,
+            int maxResults,
+            std::vector<std::uint32_t>& page,
+            int& totalMatched,
+            const char*& acceleratorMode) const
+        {
+            page.clear();
+            totalMatched = 0;
+            acceleratorMode = pathPrefix.empty() ? "regex-scan" : "regex-scan+path";
+
+            std::wregex regex;
+            try
+            {
+                regex = std::wregex(pattern, std::regex_constants::icase);
+            }
+            catch (const std::regex_error&)
+            {
+                return false;
+            }
+
+            const auto* source = GetCandidateSource(filter);
+            if (source == nullptr)
+            {
+                return true;
+            }
+
+            page.reserve(static_cast<std::size_t>(std::min(maxResults, 64)));
+            for (const auto recordId : *source)
+            {
+                if (recordId >= GetRecordCount_NoLock())
+                {
+                    continue;
+                }
+                if (IsRecordDeletedByOverlay_NoLock(recordId))
+                {
+                    continue;
+                }
+                if (!pathPrefix.empty() && !RecordPassesPathScope_NoLock(recordId, pathPrefix))
+                {
+                    continue;
+                }
+
+                const auto lowerName = GetLowerNameView_NoLock(recordId);
+                bool matched = false;
+                try
+                {
+                    matched = std::regex_search(lowerName.begin(), lowerName.end(), regex);
+                }
+                catch (const std::regex_error&)
+                {
+                    return false;
+                }
+
+                if (!matched)
+                {
+                    continue;
+                }
+
+                ++totalMatched;
+                if (totalMatched > offset && static_cast<int>(page.size()) < maxResults)
+                {
+                    page.push_back(recordId);
+                }
+            }
+
+            return true;
+        }
+
+        void FillPageFromCandidateIds_NoLock(
+            const std::vector<std::uint32_t>& candidates,
+            int offset,
+            int maxResults,
+            std::vector<std::uint32_t>& page,
+            int& totalMatched,
+            const std::wregex* regex,
+            MatchMode verifyMode,
+            const std::wstring& verifyPattern) const
+        {
+            page.clear();
+            totalMatched = 0;
+            page.reserve(static_cast<std::size_t>(std::min(maxResults, 64)));
+            for (const auto recordId : candidates)
+            {
+                if (recordId >= GetRecordCount_NoLock())
+                {
+                    continue;
+                }
+                if (IsRecordDeletedByOverlay_NoLock(recordId))
+                {
+                    continue;
+                }
+
+                const auto lowerName = GetLowerNameView_NoLock(recordId);
+                bool matched = true;
+                if (verifyMode == MatchMode::Contains)
+                {
+                    matched = ContainsText(lowerName, verifyPattern);
+                }
+                else if (verifyMode == MatchMode::Prefix)
+                {
+                    matched = StartsWith(lowerName, verifyPattern);
+                }
+                else if (verifyMode == MatchMode::Suffix)
+                {
+                    matched = EndsWith(lowerName, verifyPattern);
+                }
+                else if ((verifyMode == MatchMode::Wildcard || verifyMode == MatchMode::Regex) && regex != nullptr)
+                {
+                    try
+                    {
+                        matched = std::regex_search(lowerName.begin(), lowerName.end(), *regex);
+                    }
+                    catch (const std::regex_error&)
+                    {
+                        matched = false;
+                    }
+                }
+
+                if (!matched)
+                {
+                    continue;
+                }
+
+                ++totalMatched;
+                if (totalMatched > offset && static_cast<int>(page.size()) < maxResults)
+                {
+                    page.push_back(recordId);
+                }
+            }
+        }
+
+        void AppendOverlayMatches_NoLock(
+            const QueryPlan& plan,
+            SearchFilter filter,
+            const std::wstring& pathPrefix,
+            int offset,
+            int maxResults,
+            std::vector<std::uint32_t>& page,
+            int& totalMatched) const
+        {
+            if (overlayRecords_.empty())
+            {
+                return;
+            }
+
+            std::wregex regex;
+            const bool needsRegex = plan.kind == QueryPlanKind::WildcardLiteral
+                || plan.kind == QueryPlanKind::RegexLiteral
+                || plan.kind == QueryPlanKind::RegexScan;
+            if (needsRegex)
+            {
+                try
+                {
+                    regex = plan.kind == QueryPlanKind::WildcardLiteral
+                        ? std::wregex(WildcardToRegex(plan.pattern), std::regex_constants::icase)
+                        : std::wregex(plan.pattern, std::regex_constants::icase);
+                }
+                catch (const std::regex_error&)
+                {
+                    return;
+                }
+            }
+
+            for (std::uint32_t i = 0; i < overlayRecords_.size(); ++i)
+            {
+                const auto& record = overlayRecords_[i];
+                const auto key = MakeRecordKey(record.driveLetter, record.frn);
+                const auto liveOverlay = overlayIndexByKey_.find(key);
+                if (liveOverlay == overlayIndexByKey_.end() || liveOverlay->second != i)
+                {
+                    continue;
+                }
+
+                if (overlayDeletedKeys_.find(key) != overlayDeletedKeys_.end())
+                {
+                    continue;
+                }
+
+                if (!RecordPassesFilter(record, filter))
+                {
+                    continue;
+                }
+
+                const auto recordId = MakeOverlayRecordId(i);
+                if (!pathPrefix.empty() && !RecordPassesPathScope_NoLock(recordId, pathPrefix))
+                {
+                    continue;
+                }
+
+                bool matched = false;
+                switch (plan.kind)
+                {
+                case QueryPlanKind::Contains:
+                    matched = ContainsText(record.lowerName, plan.query);
+                    break;
+                case QueryPlanKind::Prefix:
+                    matched = StartsWith(record.lowerName, plan.query);
+                    break;
+                case QueryPlanKind::Suffix:
+                    matched = EndsWith(record.lowerName, plan.query);
+                    break;
+                case QueryPlanKind::ExtensionWildcard:
+                    matched = GetExtension(record.lowerName) == plan.extension;
+                    break;
+                case QueryPlanKind::WildcardLiteral:
+                case QueryPlanKind::RegexLiteral:
+                    if (ContainsText(record.lowerName, plan.requiredLiteral))
+                    {
+                        try
+                        {
+                            matched = std::regex_search(record.lowerName, regex);
+                        }
+                        catch (const std::regex_error&)
+                        {
+                            matched = false;
+                        }
+                    }
+                    break;
+                case QueryPlanKind::RegexScan:
+                    try
+                    {
+                        matched = std::regex_search(record.lowerName, regex);
+                    }
+                    catch (const std::regex_error&)
+                    {
+                        matched = false;
+                    }
+                    break;
+                default:
+                    matched = false;
+                    break;
+                }
+
+                if (!matched)
+                {
+                    continue;
+                }
+
+                ++totalMatched;
+                if (totalMatched > offset && static_cast<int>(page.size()) < maxResults)
+                {
+                    page.push_back(recordId);
                 }
             }
         }
@@ -2924,7 +4172,7 @@ namespace
             const std::wstring& pathPrefix,
             int offset,
             int maxResults,
-            std::vector<const Record*>& page,
+            std::vector<std::uint32_t>& page,
             int& totalMatched,
             const char*& acceleratorMode) const
         {
@@ -2939,6 +4187,38 @@ namespace
             if (mode != MatchMode::Contains)
             {
                 return false;
+            }
+
+            if (pathPrefix.empty() && filter == SearchFilter::All && query.length() <= 2)
+            {
+                if (TryMatchShortQueryPage_NoLock(
+                    query,
+                    offset,
+                    maxResults,
+                    page,
+                    totalMatched,
+                    acceleratorMode))
+                {
+                    return true;
+                }
+            }
+
+            if (!pathPrefix.empty() && query.length() <= 2)
+            {
+                if (!TryMatchPathScopedShortQuery_NoLock(
+                    query,
+                    filter,
+                    pathPrefix,
+                    offset,
+                    maxResults,
+                    page,
+                    totalMatched,
+                    acceleratorMode))
+                {
+                    return false;
+                }
+
+                return true;
             }
 
             auto candidates = BuildV2ContainsCandidates_NoLock(query);
@@ -2956,17 +4236,16 @@ namespace
                     : (query.length() == 2 ? "v2-short-bigram+path" : "v2-trigram+path");
             }
 
-            const bool requiresContainsVerify = query.length() >= 3;
+            const bool requiresContainsVerify = query.length() > 3;
             page.reserve(static_cast<std::size_t>(std::min(maxResults, 64)));
             for (const auto recordId : candidates.ids)
             {
-                if (recordId >= records_.size())
+                if (recordId >= GetRecordCount_NoLock())
                 {
                     continue;
                 }
 
-                const auto& record = records_[recordId];
-                if (requiresContainsVerify && !ContainsText(record.lowerName, query))
+                if (requiresContainsVerify && !ContainsText(GetLowerNameView_NoLock(recordId), query))
                 {
                     continue;
                 }
@@ -2974,10 +4253,139 @@ namespace
                 ++totalMatched;
                 if (totalMatched > offset && static_cast<int>(page.size()) < maxResults)
                 {
-                    page.push_back(&record);
+                    page.push_back(recordId);
                 }
             }
 
+            return true;
+        }
+
+        bool TryMatchShortQueryPage_NoLock(
+            const std::wstring& query,
+            int offset,
+            int maxResults,
+            std::vector<std::uint32_t>& page,
+            int& totalMatched,
+            const char*& acceleratorMode) const
+        {
+            page.clear();
+            totalMatched = 0;
+            if (query.length() == 1)
+            {
+                const auto ch = query[0];
+                const NativeV2ShortBucketEntry* entry = nullptr;
+                const std::vector<std::uint8_t>* bytes = nullptr;
+                if (ch >= 0 && ch < 128)
+                {
+                    entry = &v2_.asciiCharEntries[static_cast<std::size_t>(ch)];
+                    bytes = &v2_.asciiCharCompressedPostings;
+                }
+                else
+                {
+                    const auto it = v2_.nonAsciiShortEntries.find(PackShortToken(ch, 0, 1));
+                    if (it != v2_.nonAsciiShortEntries.end())
+                    {
+                        entry = &it->second;
+                        bytes = &v2_.nonAsciiShortCompressedPostings;
+                    }
+                }
+
+                acceleratorMode = "v2-short-char-page";
+                if (entry == nullptr || bytes == nullptr)
+                {
+                    return true;
+                }
+
+                totalMatched = static_cast<int>(entry->count);
+                DecodeShortPostingPage_NoLock(*bytes, *entry, offset, maxResults, page);
+                return true;
+            }
+
+            if (query.length() == 2)
+            {
+                const auto first = query[0];
+                const auto second = query[1];
+                const NativeV2ShortBucketEntry* entry = nullptr;
+                const std::vector<std::uint8_t>* bytes = nullptr;
+                if (first >= 0 && first < 128 && second >= 0 && second < 128)
+                {
+                    const auto index = (static_cast<std::size_t>(first) << 7) | static_cast<std::size_t>(second);
+                    entry = &v2_.asciiBigramEntries[index];
+                    bytes = &v2_.asciiBigramCompressedPostings;
+                }
+                else
+                {
+                    const auto it = v2_.nonAsciiShortEntries.find(PackShortToken(first, second, 2));
+                    if (it != v2_.nonAsciiShortEntries.end())
+                    {
+                        entry = &it->second;
+                        bytes = &v2_.nonAsciiShortCompressedPostings;
+                    }
+                }
+
+                acceleratorMode = "v2-short-bigram-page";
+                if (entry == nullptr || bytes == nullptr)
+                {
+                    return true;
+                }
+
+                totalMatched = static_cast<int>(entry->count);
+                DecodeShortPostingPage_NoLock(*bytes, *entry, offset, maxResults, page);
+                return true;
+            }
+
+            return false;
+        }
+
+        bool TryMatchPathScopedShortQuery_NoLock(
+            const std::wstring& query,
+            SearchFilter filter,
+            const std::wstring& pathPrefix,
+            int offset,
+            int maxResults,
+            std::vector<std::uint32_t>& page,
+            int& totalMatched,
+            const char*& acceleratorMode) const
+        {
+            page.clear();
+            totalMatched = 0;
+            const auto directoryId = TryResolveDirectoryRecordId_NoLock(pathPrefix);
+            if (directoryId == std::numeric_limits<std::uint32_t>::max())
+            {
+                acceleratorMode = query.length() == 1 ? "path-subtree-short-char" : "path-subtree-short-bigram";
+                return true;
+            }
+
+            std::vector<std::uint32_t> subtree;
+            BuildSubtreeRecordIds_NoLock(directoryId, subtree);
+            if (subtree.empty())
+            {
+                acceleratorMode = query.length() == 1 ? "path-subtree-short-char" : "path-subtree-short-bigram";
+                return true;
+            }
+
+            ApplyFilterToCandidates_NoLock(subtree, filter);
+            page.reserve(static_cast<std::size_t>(std::min(maxResults, 64)));
+            for (const auto recordId : subtree)
+            {
+                if (recordId >= GetRecordCount_NoLock())
+                {
+                    continue;
+                }
+
+                if (!ContainsText(GetLowerNameView_NoLock(recordId), query))
+                {
+                    continue;
+                }
+
+                ++totalMatched;
+                if (totalMatched > offset && static_cast<int>(page.size()) < maxResults)
+                {
+                    page.push_back(recordId);
+                }
+            }
+
+            acceleratorMode = query.length() == 1 ? "path-subtree-short-char" : "path-subtree-short-bigram";
             return true;
         }
 
@@ -3095,6 +4503,57 @@ namespace
             return result;
         }
 
+        bool TryBuildLiteralCandidates_NoLock(const std::wstring& literal, std::vector<std::uint32_t>& ids) const
+        {
+            ids.clear();
+            if (literal.empty())
+            {
+                return false;
+            }
+
+            if (literal.length() <= 2)
+            {
+                auto candidates = BuildV2ContainsCandidates_NoLock(literal);
+                if (!candidates.accelerated)
+                {
+                    return false;
+                }
+
+                ids = std::move(candidates.ids);
+                return true;
+            }
+
+            std::uint64_t bestKey = 0;
+            NativeV2BucketEntry bestEntry;
+            bool hasBestEntry = false;
+            for (std::size_t i = 0; i + 2 < literal.length(); ++i)
+            {
+                const auto key = PackTrigram(literal[i], literal[i + 1], literal[i + 2]);
+                NativeV2BucketEntry entry;
+                if (!TryGetTrigramPosting_NoLock(key, entry) || entry.count == 0)
+                {
+                    ids.clear();
+                    return true;
+                }
+
+                if (!hasBestEntry || entry.count < bestEntry.count)
+                {
+                    bestKey = key;
+                    bestEntry = entry;
+                    hasBestEntry = true;
+                }
+            }
+
+            (void)bestKey;
+            if (!hasBestEntry)
+            {
+                return false;
+            }
+
+            DecodeDeltaPosting_NoLock(v2_.trigramPostings, bestEntry, ids);
+            return true;
+        }
+
         bool TryGetTrigramPosting_NoLock(std::uint64_t key, NativeV2BucketEntry& entry) const
         {
             auto lo = v2_.trigramEntries.begin();
@@ -3166,6 +4625,39 @@ namespace
             IntersectSortedVectors(ids, *filterIds);
         }
 
+        static bool RecordPassesFilter(const Record& record, SearchFilter filter)
+        {
+            if (filter == SearchFilter::All)
+            {
+                return true;
+            }
+
+            if (filter == SearchFilter::Folder)
+            {
+                return record.isDirectory;
+            }
+
+            if (record.isDirectory)
+            {
+                return false;
+            }
+
+            const auto extension = GetExtension(record.lowerName);
+            switch (filter)
+            {
+            case SearchFilter::Launchable:
+                return IsLaunchableExtension(extension);
+            case SearchFilter::Script:
+                return IsScriptExtension(extension);
+            case SearchFilter::Log:
+                return IsLogExtension(extension);
+            case SearchFilter::Config:
+                return IsConfigExtension(extension);
+            default:
+                return true;
+            }
+        }
+
         void ApplyPathScopeToCandidates_NoLock(std::vector<std::uint32_t>& ids, const std::wstring& pathPrefix) const
         {
             const auto directoryId = TryResolveDirectoryRecordId_NoLock(pathPrefix);
@@ -3178,6 +4670,17 @@ namespace
             std::vector<std::uint32_t> subtree;
             BuildSubtreeRecordIds_NoLock(directoryId, subtree);
             IntersectSortedVectors(ids, subtree);
+        }
+
+        bool RecordPassesPathScope_NoLock(std::uint32_t recordId, const std::wstring& pathPrefix) const
+        {
+            if (pathPrefix.empty())
+            {
+                return true;
+            }
+
+            const auto normalizedPrefix = EnsureTrailingSlash(pathPrefix);
+            return StartsWithI(ResolveFullPathById_NoLock(recordId), normalizedPrefix);
         }
 
         std::uint32_t TryResolveDirectoryRecordId_NoLock(const std::wstring& pathPrefix) const
@@ -3207,29 +4710,32 @@ namespace
                 }
 
                 const auto segment = ToLower(normalized.substr(segmentStart, segmentEnd - segmentStart));
-                auto childIt = v2_.childIds.find(MakeRecordKey(drive, currentParent));
-                if (childIt == v2_.childIds.end() && currentParent == NtfsRootFileReferenceNumber)
+                std::uint32_t childOffset = 0;
+                std::uint32_t childCount = 0;
+                auto hasChildren = TryGetChildRange_NoLock(MakeRecordKey(drive, currentParent), childOffset, childCount);
+                if (!hasChildren && currentParent == NtfsRootFileReferenceNumber)
                 {
-                    childIt = v2_.childIds.find(MakeRecordKey(drive, 0));
+                    hasChildren = TryGetChildRange_NoLock(MakeRecordKey(drive, 0), childOffset, childCount);
                 }
 
-                if (childIt == v2_.childIds.end())
+                if (!hasChildren)
                 {
                     return std::numeric_limits<std::uint32_t>::max();
                 }
 
                 bool found = false;
-                for (const auto childId : childIt->second)
+                const auto childEnd = static_cast<std::size_t>(childOffset) + childCount;
+                for (std::size_t i = childOffset; i < childEnd && i < v2_.childRecordIds.size(); ++i)
                 {
-                    if (childId >= records_.size())
+                    const auto childId = v2_.childRecordIds[i];
+                    if (childId >= GetRecordCount_NoLock())
                     {
                         continue;
                     }
 
-                    const auto& child = records_[childId];
-                    if (child.isDirectory && child.lowerName == segment)
+                    if (IsDirectoryRecord_NoLock(childId) && GetLowerNameView_NoLock(childId) == segment)
                     {
-                        currentParent = child.frn;
+                        currentParent = GetRecordFrn_NoLock(childId);
                         currentRecordId = childId;
                         found = true;
                         break;
@@ -3250,7 +4756,7 @@ namespace
         void BuildSubtreeRecordIds_NoLock(std::uint32_t directoryId, std::vector<std::uint32_t>& ids) const
         {
             ids.clear();
-            if (directoryId >= records_.size())
+            if (directoryId >= GetRecordCount_NoLock())
             {
                 return;
             }
@@ -3262,16 +4768,18 @@ namespace
                 const auto current = stack.back();
                 stack.pop_back();
                 ids.push_back(current);
-                const auto& record = records_[current];
-                const auto children = v2_.childIds.find(MakeRecordKey(record.driveLetter, record.frn));
-                if (children == v2_.childIds.end())
+                std::uint32_t childOffset = 0;
+                std::uint32_t childCount = 0;
+                if (!TryGetChildRange_NoLock(MakeRecordKey(GetRecordDrive_NoLock(current), GetRecordFrn_NoLock(current)), childOffset, childCount))
                 {
                     continue;
                 }
 
-                for (const auto childId : children->second)
+                const auto childEnd = static_cast<std::size_t>(childOffset) + childCount;
+                for (std::size_t i = childOffset; i < childEnd && i < v2_.childRecordIds.size(); ++i)
                 {
-                    if (childId < records_.size())
+                    const auto childId = v2_.childRecordIds[i];
+                    if (childId < GetRecordCount_NoLock())
                     {
                         stack.push_back(childId);
                     }
@@ -3284,19 +4792,16 @@ namespace
 
         static void IntersectSortedVectors(std::vector<std::uint32_t>& ids, const std::vector<std::uint32_t>& filterIds)
         {
-            std::vector<std::uint32_t> sortedFilter = filterIds;
             std::sort(ids.begin(), ids.end());
             ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
-            std::sort(sortedFilter.begin(), sortedFilter.end());
-            sortedFilter.erase(std::unique(sortedFilter.begin(), sortedFilter.end()), sortedFilter.end());
 
             std::vector<std::uint32_t> intersection;
-            intersection.reserve(std::min(ids.size(), sortedFilter.size()));
+            intersection.reserve(std::min(ids.size(), filterIds.size()));
             std::set_intersection(
                 ids.begin(),
                 ids.end(),
-                sortedFilter.begin(),
-                sortedFilter.end(),
+                filterIds.begin(),
+                filterIds.end(),
                 std::back_inserter(intersection));
             ids.swap(intersection);
         }
@@ -3306,7 +4811,7 @@ namespace
             const std::vector<std::uint32_t>& source,
             int offset,
             int maxResults,
-            std::vector<const Record*>& page,
+            std::vector<std::uint32_t>& page,
             int& totalMatched) const
         {
             totalMatched = 0;
@@ -3320,7 +4825,7 @@ namespace
             while (lo < hi)
             {
                 const auto mid = lo + ((hi - lo) / 2);
-                const auto& name = records_[source[mid]].lowerName;
+                const auto name = GetLowerNameView_NoLock(source[mid]);
                 if (name < prefix)
                 {
                     lo = mid + 1;
@@ -3333,8 +4838,7 @@ namespace
 
             for (auto i = lo; i < source.size(); ++i)
             {
-                const auto& record = records_[source[i]];
-                if (!StartsWith(record.lowerName, prefix))
+                if (!StartsWith(GetLowerNameView_NoLock(source[i]), prefix))
                 {
                     break;
                 }
@@ -3342,7 +4846,7 @@ namespace
                 ++totalMatched;
                 if (totalMatched > offset && static_cast<int>(page.size()) < maxResults)
                 {
-                    page.push_back(&record);
+                    page.push_back(source[i]);
                 }
             }
         }
@@ -3352,14 +4856,13 @@ namespace
             const std::vector<std::uint32_t>& source,
             int offset,
             int maxResults,
-            std::vector<const Record*>& page,
+            std::vector<std::uint32_t>& page,
             int& totalMatched) const
         {
             totalMatched = 0;
             for (const auto recordIndex : source)
             {
-                const auto& record = records_[recordIndex];
-                if (!EndsWith(record.lowerName, suffix))
+                if (!EndsWith(GetLowerNameView_NoLock(recordIndex), suffix))
                 {
                     continue;
                 }
@@ -3367,7 +4870,7 @@ namespace
                 ++totalMatched;
                 if (totalMatched > offset && static_cast<int>(page.size()) < maxResults)
                 {
-                    page.push_back(&record);
+                    page.push_back(recordIndex);
                 }
             }
         }
@@ -3376,7 +4879,7 @@ namespace
             const std::wstring& extension,
             int offset,
             int maxResults,
-            std::vector<const Record*>& page,
+            std::vector<std::uint32_t>& page,
             int& totalMatched) const
         {
             totalMatched = 0;
@@ -3389,7 +4892,7 @@ namespace
             totalMatched = static_cast<int>(bucketIt->second.size());
             for (auto i = std::max(offset, 0); i < totalMatched && static_cast<int>(page.size()) < maxResults; ++i)
             {
-                page.push_back(&records_[bucketIt->second[static_cast<std::size_t>(i)]]);
+                page.push_back(bucketIt->second[static_cast<std::size_t>(i)]);
             }
         }
 
@@ -3399,38 +4902,14 @@ namespace
             const std::vector<std::uint32_t>& source,
             int offset,
             int maxResults,
-            std::vector<const Record*>& page,
+            std::vector<std::uint32_t>& page,
             int& totalMatched) const
         {
             totalMatched = 0;
-            bool hasExactBucket = false;
-
-            if (filter == SearchFilter::All)
-            {
-            const auto exactIt = exactNameIds_.find(std::wstring_view(query));
-                if (exactIt != exactNameIds_.end())
-                {
-                    hasExactBucket = true;
-                    for (const auto recordIndex : exactIt->second)
-                    {
-                        ++totalMatched;
-                        if (totalMatched > offset && static_cast<int>(page.size()) < maxResults)
-                        {
-                            page.push_back(&records_[recordIndex]);
-                        }
-                    }
-                }
-            }
-
             for (const auto recordIndex : source)
             {
-                const auto& record = records_[recordIndex];
-                if (hasExactBucket && record.lowerName == query)
-                {
-                    continue;
-                }
-
-                if (record.lowerName.find(query) == std::wstring::npos)
+                const auto lowerName = GetLowerNameView_NoLock(recordIndex);
+                if (lowerName.find(query) == std::wstring_view::npos)
                 {
                     continue;
                 }
@@ -3438,7 +4917,7 @@ namespace
                 ++totalMatched;
                 if (totalMatched > offset && static_cast<int>(page.size()) < maxResults)
                 {
-                    page.push_back(&record);
+                    page.push_back(recordIndex);
                 }
             }
         }
@@ -3448,7 +4927,15 @@ namespace
             return ResolveFullPath_NoLock(record.driveLetter, record.parentFrn, record.originalName);
         }
 
-        std::wstring ResolveFullPath_NoLock(wchar_t driveLetter, std::uint64_t parentFrn, const std::wstring& name)
+        std::wstring ResolveFullPathById_NoLock(std::uint32_t recordId) const
+        {
+            return ResolveFullPath_NoLock(
+                GetRecordDrive_NoLock(recordId),
+                GetRecordParentFrn_NoLock(recordId),
+                std::wstring(GetOriginalNameView_NoLock(recordId)));
+        }
+
+        std::wstring ResolveFullPath_NoLock(wchar_t driveLetter, std::uint64_t parentFrn, const std::wstring& name) const
         {
             auto volumeIt = volumes_.find(driveLetter);
             if (volumeIt == volumes_.end())
@@ -3468,39 +4955,46 @@ namespace
             return directoryPath + name;
         }
 
-        std::wstring ResolveDirectoryPath_NoLock(VolumeState& volume, std::uint64_t frn)
+        std::wstring ResolveDirectoryPath_NoLock(const VolumeState& volume, std::uint64_t frn) const
         {
-            if (frn == 0)
+            if (frn == 0 || frn == NtfsRootFileReferenceNumber)
             {
                 return std::wstring(1, volume.driveLetter) + L":\\";
             }
 
-            const auto cached = volume.pathCache.find(frn);
-            if (cached != volume.pathCache.end())
+            auto& mutableVolume = const_cast<VolumeState&>(volume);
+            const auto cached = mutableVolume.pathCache.find(frn);
+            if (cached != mutableVolume.pathCache.end())
             {
                 return cached->second;
             }
 
-            const auto entry = volume.frnMap.find(frn);
-            if (entry == volume.frnMap.end())
+            std::uint32_t recordId = 0;
+            if (!TryGetRecordIdByKey_NoLock(MakeRecordKey(volume.driveLetter, frn), recordId))
             {
                 return std::wstring(1, volume.driveLetter) + L":\\";
             }
 
-            auto parentPath = ResolveDirectoryPath_NoLock(volume, entry->second.parentFrn);
+            auto parentPath = ResolveDirectoryPath_NoLock(volume, GetRecordParentFrn_NoLock(recordId));
             if (!parentPath.empty() && parentPath.back() != L'\\')
             {
                 parentPath.push_back(L'\\');
             }
 
-            auto fullPath = parentPath + entry->second.name;
-            volume.pathCache[frn] = fullPath;
+            auto fullPath = parentPath + std::wstring(GetOriginalNameView_NoLock(recordId));
+            mutableVolume.pathCache[frn] = fullPath;
+            TrimPathCache_NoLock(mutableVolume);
             return fullPath;
         }
 
         bool TryLoadSnapshot()
         {
             const auto totalStart = std::chrono::steady_clock::now();
+            if (TryLoadV2RecordsSnapshot_NoLock(totalStart))
+            {
+                return true;
+            }
+
             const auto snapshotPath = GetSnapshotPath();
             if (!std::filesystem::exists(snapshotPath))
             {
@@ -3635,6 +5129,8 @@ namespace
                 std::chrono::steady_clock::now() - totalStart).count();
             records_ = std::move(loadedRecords);
             volumes_ = std::move(loadedVolumes);
+            RebuildFrnRecordIndex_NoLock();
+            ReleaseDuplicateFrnNameStorage_NoLock();
             const auto restoreStart = std::chrono::steady_clock::now();
             const auto v2SidecarLoaded = TryLoadV2PostingsSnapshot_NoLock();
             const auto runtimeSidecarLoaded = v2SidecarLoaded && TryLoadV2RuntimeSnapshot_NoLock();
@@ -3670,7 +5166,7 @@ namespace
                 + " fileBytes=" + std::to_string(fileSizeError ? 0 : fileBytes)
                 + " records=" + std::to_string(records_.size())
                 + " volumes=" + std::to_string(volumes_.size())
-                + " frnEntries=" + std::to_string(CountFrnEntries(volumes_)));
+                + " frnEntries=" + std::to_string(CountLiveFrnEntries(volumes_, records_.size())));
             NativeLogWrite(
                 "[NATIVE SNAPSHOT RESTORE] elapsedMs=" + std::to_string(restoreMs)
                 + " records=" + std::to_string(records_.size())
@@ -3688,21 +5184,427 @@ namespace
             return true;
         }
 
-        void SaveSnapshot() const
+        bool TryLoadV2RecordsSnapshot_NoLock(const std::chrono::steady_clock::time_point& totalStart)
+        {
+            std::unordered_map<wchar_t, VolumeState> mappedVolumes;
+            std::uint32_t mappedRecordCount = 0;
+            std::uint32_t mappedStringPoolChars = 0;
+            std::uint64_t mappedFileBytes = 0;
+            if (TryMapV2RecordsSnapshot_NoLock(
+                totalStart,
+                mappedVolumes,
+                mappedRecordCount,
+                mappedStringPoolChars,
+                mappedFileBytes))
+            {
+                records_.clear();
+                records_.shrink_to_fit();
+                volumes_ = std::move(mappedVolumes);
+                RebuildFrnRecordIndexFromMapped_NoLock();
+                ReleaseDuplicateFrnNameStorage_NoLock();
+
+                const auto restoreStart = std::chrono::steady_clock::now();
+                const auto v2SidecarLoaded = TryLoadV2PostingsSnapshot_NoLock();
+                const auto runtimeSidecarLoaded = v2SidecarLoaded && TryLoadV2RuntimeSnapshot_NoLock();
+                const auto typeBucketsLoaded = TryLoadV2TypeBucketsSnapshot_NoLock();
+                if (!v2SidecarLoaded || !runtimeSidecarLoaded || !typeBucketsLoaded)
+                {
+                    NativeLogWrite(
+                        "[NATIVE SNAPSHOT RESTORE] failed reason=incomplete-v2-sidecar"
+                        + std::string(" v2SidecarLoaded=") + (v2SidecarLoaded ? "true" : "false")
+                        + " runtimeSidecarLoaded=" + (runtimeSidecarLoaded ? "true" : "false")
+                        + " typeBucketsLoaded=" + (typeBucketsLoaded ? "true" : "false"));
+                    v2_.ready = false;
+                    return false;
+                }
+
+                v2_.postingsBytes =
+                    (static_cast<std::uint64_t>(v2_.trigramEntries.size()) * sizeof(NativeV2BucketEntry))
+                    + static_cast<std::uint64_t>(v2_.trigramPostings.size())
+                    + EstimateShortPostingBytes_NoLock()
+                    + (static_cast<std::uint64_t>(v2_.parentOrder.size() + v2_.childRecordIds.size()) * sizeof(std::uint32_t))
+                    + (static_cast<std::uint64_t>(v2_.childEntries.size()) * sizeof(NativeV2ChildBucketEntry));
+                v2_.ready = true;
+                derivedDirty_ = false;
+                generationId_.fetch_add(1, std::memory_order_relaxed);
+
+                const auto restoreMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - restoreStart).count();
+                NativeLogWrite(
+                    "[NATIVE SNAPSHOT RESTORE] elapsedMs=" + std::to_string(restoreMs)
+                    + " records=" + std::to_string(mappedRecordCount)
+                    + " volumes=" + std::to_string(volumes_.size())
+                    + " v2SidecarLoaded=true runtimeSidecarLoaded=true typeBucketsLoaded=true mappedRecords=true");
+                NativeLogWrite(
+                    "[NATIVE SNAPSHOT RESTORE TOTAL] totalMs="
+                    + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - totalStart).count())
+                    + " snapshotReadMs=0"
+                    + " restoreMs=" + std::to_string(restoreMs)
+                    + " restoredCount=" + std::to_string(mappedRecordCount)
+                    + " source=v2-mmap");
+                return true;
+            }
+
+            const auto path = GetV2RecordsSnapshotPath();
+            if (!std::filesystem::exists(path))
+            {
+                NativeLogWrite("[NATIVE V2 RECORDS LOAD] miss reason=missing");
+                return false;
+            }
+
+            std::error_code fileSizeError;
+            const auto fileBytes = std::filesystem::file_size(path, fileSizeError);
+            std::ifstream input(path, std::ios::binary);
+            if (!input)
+            {
+                return false;
+            }
+
+            std::int32_t version = 0;
+            std::uint32_t recordCount = 0;
+            std::uint32_t volumeCount = 0;
+            std::uint32_t stringPoolChars = 0;
+            input.read(reinterpret_cast<char*>(&version), sizeof(version));
+            input.read(reinterpret_cast<char*>(&recordCount), sizeof(recordCount));
+            input.read(reinterpret_cast<char*>(&volumeCount), sizeof(volumeCount));
+            input.read(reinterpret_cast<char*>(&stringPoolChars), sizeof(stringPoolChars));
+            if (!input.good()
+                || version != V2RecordsSnapshotVersion1
+                || recordCount == 0
+                || volumeCount == 0)
+            {
+                NativeLogWrite("[NATIVE V2 RECORDS LOAD] miss reason=version-or-header");
+                return false;
+            }
+
+            std::vector<NativeV2CompactRecord> compactRecords(recordCount);
+            if (recordCount > 0)
+            {
+                input.read(reinterpret_cast<char*>(compactRecords.data()),
+                    static_cast<std::streamsize>(recordCount * sizeof(NativeV2CompactRecord)));
+                if (!input.good())
+                {
+                    return false;
+                }
+            }
+
+            std::wstring stringPool;
+            stringPool.resize(stringPoolChars);
+            if (stringPoolChars > 0)
+            {
+                input.read(reinterpret_cast<char*>(stringPool.data()),
+                    static_cast<std::streamsize>(stringPoolChars * sizeof(wchar_t)));
+                if (!input.good())
+                {
+                    return false;
+                }
+            }
+
+            std::unordered_map<wchar_t, VolumeState> loadedVolumes;
+            loadedVolumes.reserve(volumeCount);
+            for (std::uint32_t i = 0; i < volumeCount; ++i)
+            {
+                VolumeState volume;
+                if (!ReadSnapshotChar(input, volume.driveLetter))
+                {
+                    return false;
+                }
+
+                input.read(reinterpret_cast<char*>(&volume.nextUsn), sizeof(volume.nextUsn));
+                input.read(reinterpret_cast<char*>(&volume.journalId), sizeof(volume.journalId));
+                if (!input.good())
+                {
+                    return false;
+                }
+
+                loadedVolumes[volume.driveLetter] = std::move(volume);
+            }
+
+            std::vector<Record> loadedRecords;
+            loadedRecords.reserve(recordCount);
+            for (const auto& compact : compactRecords)
+            {
+                if (compact.originalOffset > stringPool.size()
+                    || compact.lowerOffset > stringPool.size()
+                    || static_cast<std::size_t>(compact.originalOffset) + compact.originalLength > stringPool.size()
+                    || static_cast<std::size_t>(compact.lowerOffset) + compact.lowerLength > stringPool.size())
+                {
+                    return false;
+                }
+
+                Record record;
+                record.frn = compact.frn;
+                record.parentFrn = compact.parentFrn;
+                record.driveLetter = static_cast<wchar_t>(compact.drive);
+                record.isDirectory = (compact.flags & 0x1) != 0;
+                record.originalName.assign(stringPool.data() + compact.originalOffset, compact.originalLength);
+                record.lowerName.assign(stringPool.data() + compact.lowerOffset, compact.lowerLength);
+                loadedRecords.push_back(std::move(record));
+            }
+
+            const auto recordsLoadMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - totalStart).count();
+            records_ = std::move(loadedRecords);
+            volumes_ = std::move(loadedVolumes);
+            RebuildFrnRecordIndex_NoLock();
+            ReleaseDuplicateFrnNameStorage_NoLock();
+
+            const auto restoreStart = std::chrono::steady_clock::now();
+            const auto v2SidecarLoaded = TryLoadV2PostingsSnapshot_NoLock();
+            const auto runtimeSidecarLoaded = v2SidecarLoaded && TryLoadV2RuntimeSnapshot_NoLock();
+            const auto typeBucketsLoaded = TryLoadV2TypeBucketsSnapshot_NoLock();
+            if (!typeBucketsLoaded)
+            {
+                BuildBaseBuckets_NoLock("v2-records-restore-base", true);
+            }
+            if (runtimeSidecarLoaded)
+            {
+                v2_.postingsBytes =
+                    (static_cast<std::uint64_t>(v2_.trigramEntries.size()) * sizeof(NativeV2BucketEntry))
+                    + static_cast<std::uint64_t>(v2_.trigramPostings.size())
+                    + EstimateShortPostingBytes_NoLock()
+                    + (static_cast<std::uint64_t>(v2_.parentOrder.size() + v2_.childRecordIds.size()) * sizeof(std::uint32_t))
+                    + (static_cast<std::uint64_t>(v2_.childEntries.size()) * sizeof(NativeV2ChildBucketEntry));
+                v2_.ready = true;
+                derivedDirty_ = false;
+                generationId_.fetch_add(1, std::memory_order_relaxed);
+            }
+            else if (v2SidecarLoaded)
+            {
+                BuildV2RuntimeStructures_NoLock();
+            }
+            else
+            {
+                BuildV2Accelerator_NoLock();
+            }
+
+            const auto restoreMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - restoreStart).count();
+            NativeLogWrite(
+                "[NATIVE V2 RECORDS LOAD] success elapsedMs=" + std::to_string(recordsLoadMs)
+                + " version=" + std::to_string(V2RecordsSnapshotVersion1)
+                + " fileBytes=" + std::to_string(fileSizeError ? 0 : fileBytes)
+                + " records=" + std::to_string(records_.size())
+                + " volumes=" + std::to_string(volumes_.size())
+                + " stringPoolChars=" + std::to_string(stringPoolChars));
+            NativeLogWrite(
+                "[NATIVE SNAPSHOT RESTORE] elapsedMs=" + std::to_string(restoreMs)
+                + " records=" + std::to_string(records_.size())
+                + " volumes=" + std::to_string(volumes_.size())
+                + " v2SidecarLoaded=" + std::string(v2SidecarLoaded ? "true" : "false")
+                + " runtimeSidecarLoaded=" + std::string(runtimeSidecarLoaded ? "true" : "false")
+                + " typeBucketsLoaded=" + std::string(typeBucketsLoaded ? "true" : "false"));
+            NativeLogWrite(
+                "[NATIVE SNAPSHOT RESTORE TOTAL] totalMs="
+                + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - totalStart).count())
+                + " snapshotReadMs=" + std::to_string(recordsLoadMs)
+                + " restoreMs=" + std::to_string(restoreMs)
+                + " restoredCount=" + std::to_string(records_.size())
+                + " source=v2-records");
+            return true;
+        }
+
+        bool RemapCurrentSidecars_NoLock()
+        {
+            mappedRecords_.Clear();
+            v2_.Clear();
+            allIds_.clear();
+            directoryIds_.clear();
+            launchableIds_.clear();
+            scriptIds_.clear();
+            logIds_.clear();
+            configIds_.clear();
+            extensionIds_.clear();
+            exactNameIds_.clear();
+
+            std::unordered_map<wchar_t, VolumeState> mappedVolumes;
+            std::uint32_t mappedRecordCount = 0;
+            std::uint32_t mappedStringPoolChars = 0;
+            std::uint64_t mappedFileBytes = 0;
+            const auto start = std::chrono::steady_clock::now();
+            if (!TryMapV2RecordsSnapshot_NoLock(start, mappedVolumes, mappedRecordCount, mappedStringPoolChars, mappedFileBytes))
+            {
+                return false;
+            }
+
+            records_.clear();
+            records_.shrink_to_fit();
+            volumes_ = std::move(mappedVolumes);
+            RebuildFrnRecordIndexFromMapped_NoLock();
+            if (!TryLoadV2PostingsSnapshot_NoLock()
+                || !TryLoadV2RuntimeSnapshot_NoLock()
+                || !TryLoadV2TypeBucketsSnapshot_NoLock())
+            {
+                return false;
+            }
+
+            v2_.ready = true;
+            derivedDirty_ = false;
+            generationId_.fetch_add(1, std::memory_order_relaxed);
+            NativeLogWrite(
+                "[NATIVE GENERATION REMAP] success elapsedMs="
+                + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - start).count())
+                + " records=" + std::to_string(mappedRecordCount));
+            return true;
+        }
+
+        bool TryMapV2RecordsSnapshot_NoLock(
+            const std::chrono::steady_clock::time_point& totalStart,
+            std::unordered_map<wchar_t, VolumeState>& loadedVolumes,
+            std::uint32_t& recordCount,
+            std::uint32_t& stringPoolChars,
+            std::uint64_t& fileBytes)
+        {
+            loadedVolumes.clear();
+            recordCount = 0;
+            stringPoolChars = 0;
+            fileBytes = 0;
+
+            const auto path = GetV2RecordsSnapshotPath();
+            if (!std::filesystem::exists(path))
+            {
+                NativeLogWrite("[NATIVE V2 RECORDS MAP] miss reason=missing");
+                return false;
+            }
+
+            NativeV2MappedRecords mapped;
+            if (!mapped.file.Open(path))
+            {
+                NativeLogWrite("[NATIVE V2 RECORDS MAP] miss reason=open-failed");
+                return false;
+            }
+
+            fileBytes = mapped.file.Size();
+            const auto* data = mapped.file.Data();
+            auto remaining = mapped.file.Size();
+            if (remaining < sizeof(std::int32_t) + (sizeof(std::uint32_t) * 3))
+            {
+                NativeLogWrite("[NATIVE V2 RECORDS MAP] miss reason=short-header");
+                return false;
+            }
+
+            std::int32_t version = 0;
+            std::memcpy(&version, data, sizeof(version));
+            data += sizeof(version);
+            remaining -= sizeof(version);
+            std::memcpy(&mapped.recordCount, data, sizeof(mapped.recordCount));
+            data += sizeof(mapped.recordCount);
+            remaining -= sizeof(mapped.recordCount);
+            std::memcpy(&mapped.volumeCount, data, sizeof(mapped.volumeCount));
+            data += sizeof(mapped.volumeCount);
+            remaining -= sizeof(mapped.volumeCount);
+            std::memcpy(&mapped.stringPoolChars, data, sizeof(mapped.stringPoolChars));
+            data += sizeof(mapped.stringPoolChars);
+            remaining -= sizeof(mapped.stringPoolChars);
+
+            if (version != V2RecordsSnapshotVersion1 || mapped.recordCount == 0 || mapped.volumeCount == 0)
+            {
+                NativeLogWrite("[NATIVE V2 RECORDS MAP] miss reason=version-or-header");
+                return false;
+            }
+
+            const auto recordsBytes = static_cast<std::uint64_t>(mapped.recordCount) * sizeof(NativeV2CompactRecord);
+            const auto stringBytes = static_cast<std::uint64_t>(mapped.stringPoolChars) * sizeof(wchar_t);
+            if (recordsBytes > remaining || stringBytes > remaining - static_cast<std::size_t>(recordsBytes))
+            {
+                NativeLogWrite("[NATIVE V2 RECORDS MAP] miss reason=invalid-size");
+                return false;
+            }
+
+            mapped.records = reinterpret_cast<const NativeV2CompactRecord*>(data);
+            data += static_cast<std::size_t>(recordsBytes);
+            remaining -= static_cast<std::size_t>(recordsBytes);
+            mapped.stringPool = reinterpret_cast<const wchar_t*>(data);
+            data += static_cast<std::size_t>(stringBytes);
+            remaining -= static_cast<std::size_t>(stringBytes);
+
+            loadedVolumes.reserve(mapped.volumeCount);
+            for (std::uint32_t i = 0; i < mapped.volumeCount; ++i)
+            {
+                if (remaining < sizeof(char) + sizeof(std::int64_t) + sizeof(std::uint64_t))
+                {
+                    NativeLogWrite("[NATIVE V2 RECORDS MAP] miss reason=invalid-volume");
+                    return false;
+                }
+
+                char rawDrive = '\0';
+                std::memcpy(&rawDrive, data, sizeof(rawDrive));
+                data += sizeof(rawDrive);
+                remaining -= sizeof(rawDrive);
+
+                VolumeState volume;
+                volume.driveLetter = static_cast<unsigned char>(rawDrive);
+                std::memcpy(&volume.nextUsn, data, sizeof(volume.nextUsn));
+                data += sizeof(volume.nextUsn);
+                remaining -= sizeof(volume.nextUsn);
+                std::memcpy(&volume.journalId, data, sizeof(volume.journalId));
+                data += sizeof(volume.journalId);
+                remaining -= sizeof(volume.journalId);
+                loadedVolumes[volume.driveLetter] = std::move(volume);
+            }
+
+            recordCount = mapped.recordCount;
+            stringPoolChars = mapped.stringPoolChars;
+            mappedRecords_ = std::move(mapped);
+            NativeLogWrite(
+                "[NATIVE V2 RECORDS MAP] success elapsedMs="
+                + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - totalStart).count())
+                + " fileBytes=" + std::to_string(fileBytes)
+                + " records=" + std::to_string(recordCount)
+                + " volumes=" + std::to_string(loadedVolumes.size())
+                + " stringPoolChars=" + std::to_string(stringPoolChars));
+            return true;
+        }
+
+        bool SaveSnapshot() const
         {
             std::vector<Record> recordsCopy;
             std::unordered_map<wchar_t, VolumeState> volumesCopy;
             NativeV2Accelerator v2Copy;
+            std::vector<std::uint32_t> allIdsCopy;
+            std::vector<std::uint32_t> directoryIdsCopy;
+            std::vector<std::uint32_t> launchableIdsCopy;
+            std::vector<std::uint32_t> scriptIdsCopy;
+            std::vector<std::uint32_t> logIdsCopy;
+            std::vector<std::uint32_t> configIdsCopy;
+            std::unordered_map<std::wstring, std::vector<std::uint32_t>> extensionIdsCopy;
 
             {
-                std::shared_lock<std::shared_mutex> guard(mutex_);
-                if (records_.empty() || volumes_.empty())
+                std::shared_lock<std::shared_mutex> guard(mutex_, std::try_to_lock);
+                if (!guard.owns_lock())
                 {
-                    return;
+                    NativeLogWrite("[NATIVE SNAPSHOT SAVE] skipped reason=index-lock-busy");
+                    return false;
                 }
 
-                recordsCopy = records_;
-                volumesCopy = volumes_;
+                if (records_.empty() && mappedRecords_.Ready())
+                {
+                    NativeLogWrite(
+                        "[NATIVE SNAPSHOT SAVE] skipped reason=mmap-generation-immutable"
+                        " overlayRecords=" + std::to_string(overlayRecords_.size())
+                        + " overlayDeletes=" + std::to_string(overlayDeletedKeys_.size()));
+                    return true;
+                }
+
+                if (records_.empty() || volumes_.empty())
+                {
+                    return true;
+                }
+
+                recordsCopy.assign(records_.begin(), records_.end());
+                volumesCopy.reserve(volumes_.size());
+                for (const auto& pair : volumes_)
+                {
+                    VolumeState volume;
+                    volume.driveLetter = pair.second.driveLetter;
+                    volume.nextUsn = pair.second.nextUsn;
+                    volume.journalId = pair.second.journalId;
+                    volumesCopy.emplace(pair.first, std::move(volume));
+                }
                 v2Copy.trigramEntries = v2_.trigramEntries;
                 v2Copy.trigramPostings = v2_.trigramPostings;
                 v2Copy.asciiCharEntries = v2_.asciiCharEntries;
@@ -3712,16 +5614,39 @@ namespace
                 v2Copy.asciiBigramCompressedPostings = v2_.asciiBigramCompressedPostings;
                 v2Copy.nonAsciiShortCompressedPostings = v2_.nonAsciiShortCompressedPostings;
                 v2Copy.parentOrder = v2_.parentOrder;
-                v2Copy.childIds = v2_.childIds;
-                v2Copy.ready = v2_.ready;
-                v2Copy.buildMs = v2_.buildMs;
-                v2Copy.postingsBytes = v2_.postingsBytes;
+                v2Copy.childEntries = v2_.childEntries;
+                v2Copy.childRecordIds = v2_.childRecordIds;
+            v2Copy.ready = v2_.ready;
+            v2Copy.buildMs = v2_.buildMs;
+            v2Copy.postingsBytes = v2_.postingsBytes;
+            allIdsCopy = allIds_;
+                directoryIdsCopy = directoryIds_;
+                launchableIdsCopy = launchableIds_;
+                scriptIdsCopy = scriptIds_;
+                logIdsCopy = logIds_;
+                configIdsCopy = configIds_;
+                extensionIdsCopy = extensionIds_;
             }
 
-            WriteSnapshotFile(recordsCopy, volumesCopy);
+            WriteV2RecordsSnapshotFile(recordsCopy, volumesCopy);
             WriteV2PostingsSnapshotFile(recordsCopy.size(), v2Copy);
             WriteV2RuntimeSnapshotFile(recordsCopy.size(), v2Copy);
-            WriteV2TypeBucketsSnapshotFile(recordsCopy.size(), allIds_, directoryIds_, launchableIds_, scriptIds_, logIds_, configIds_, extensionIds_);
+            WriteV2TypeBucketsSnapshotFile(recordsCopy.size(), allIdsCopy, directoryIdsCopy, launchableIdsCopy, scriptIdsCopy, logIdsCopy, configIdsCopy, extensionIdsCopy);
+            return true;
+        }
+
+        bool WriteCurrentGenerationSidecars_NoLock() const
+        {
+            if (records_.empty() || volumes_.empty() || !v2_.ready)
+            {
+                return false;
+            }
+
+            WriteV2RecordsSnapshotFile(records_, volumes_);
+            WriteV2PostingsSnapshotFile(records_.size(), v2_);
+            WriteV2RuntimeSnapshotFile(records_.size(), v2_);
+            WriteV2TypeBucketsSnapshotFile(records_.size(), allIds_, directoryIds_, launchableIds_, scriptIds_, logIds_, configIds_, extensionIds_);
+            return true;
         }
 
         void QueueSnapshotSave()
@@ -3732,7 +5657,7 @@ namespace
 
         void QueueSnapshotSave_NoLock() const
         {
-            if (records_.empty() || volumes_.empty() || hasShutdown_)
+            if (GetRecordCount_NoLock() == 0 || volumes_.empty() || hasShutdown_)
             {
                 return;
             }
@@ -3844,17 +5769,17 @@ namespace
                 output.write(reinterpret_cast<const char*>(&volume->nextUsn), sizeof(volume->nextUsn));
                 output.write(reinterpret_cast<const char*>(&volume->journalId), sizeof(volume->journalId));
 
-                const auto orderedEntries = GetOrderedFrnEntries(volume->frnMap);
+                const auto orderedEntries = GetOrderedRecordsForVolume(records, volume->driveLetter);
                 const auto frnCount = static_cast<std::int32_t>(orderedEntries.size());
                 output.write(reinterpret_cast<const char*>(&frnCount), sizeof(frnCount));
-                for (const auto* frnPair : orderedEntries)
+                for (const auto* record : orderedEntries)
                 {
-                    const auto it = stringIndexMap.find(frnPair->second.name);
+                    const auto it = stringIndexMap.find(record->originalName);
                     const auto nameIndex = it == stringIndexMap.end() ? 0 : it->second;
                     output.write(reinterpret_cast<const char*>(&nameIndex), sizeof(nameIndex));
-                    output.write(reinterpret_cast<const char*>(&frnPair->first), sizeof(frnPair->first));
-                    output.write(reinterpret_cast<const char*>(&frnPair->second.parentFrn), sizeof(frnPair->second.parentFrn));
-                    if (!WriteSnapshotBool(output, frnPair->second.isDirectory))
+                    output.write(reinterpret_cast<const char*>(&record->frn), sizeof(record->frn));
+                    output.write(reinterpret_cast<const char*>(&record->parentFrn), sizeof(record->parentFrn));
+                    if (!WriteSnapshotBool(output, record->isDirectory))
                     {
                         output.close();
                         DeleteFileW(tempPath.c_str());
@@ -3906,7 +5831,140 @@ namespace
                 + " fileBytes=" + std::to_string(fileSizeError ? 0 : fileBytes)
                 + " records=" + std::to_string(records.size())
                 + " volumes=" + std::to_string(volumes.size())
-                + " frnEntries=" + std::to_string(CountFrnEntries(volumes)));
+                + " frnEntries=" + std::to_string(CountLiveFrnEntries(volumes, records.size())));
+        }
+
+        static void WriteV2RecordsSnapshotFile(
+            const std::vector<Record>& records,
+            const std::unordered_map<wchar_t, VolumeState>& volumes)
+        {
+            const auto totalStart = std::chrono::steady_clock::now();
+            if (records.empty() || volumes.empty())
+            {
+                return;
+            }
+
+            const auto path = GetV2RecordsSnapshotPath();
+            std::filesystem::create_directories(path.parent_path());
+            const auto tempPath = path.wstring()
+                + L"."
+                + std::to_wstring(GetCurrentProcessId())
+                + L"."
+                + std::to_wstring(GetTickCount64())
+                + L".tmp";
+
+            std::vector<NativeV2CompactRecord> compactRecords;
+            compactRecords.reserve(records.size());
+            std::wstring stringPool;
+            std::uint64_t maxChars = 0;
+            for (const auto& record : records)
+            {
+                maxChars += record.originalName.size() + record.lowerName.size();
+            }
+
+            if (maxChars <= static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()))
+            {
+                stringPool.reserve(static_cast<std::size_t>(maxChars));
+            }
+
+            for (const auto& record : records)
+            {
+                if (record.originalName.size() > std::numeric_limits<std::uint16_t>::max()
+                    || record.lowerName.size() > std::numeric_limits<std::uint16_t>::max()
+                    || stringPool.size() > std::numeric_limits<std::uint32_t>::max())
+                {
+                    return;
+                }
+
+                NativeV2CompactRecord compact;
+                compact.frn = record.frn;
+                compact.parentFrn = record.parentFrn;
+                compact.originalOffset = static_cast<std::uint32_t>(stringPool.size());
+                compact.originalLength = static_cast<std::uint16_t>(record.originalName.size());
+                stringPool.append(record.originalName);
+                if (stringPool.size() > std::numeric_limits<std::uint32_t>::max())
+                {
+                    return;
+                }
+
+                compact.lowerOffset = static_cast<std::uint32_t>(stringPool.size());
+                compact.lowerLength = static_cast<std::uint16_t>(record.lowerName.size());
+                stringPool.append(record.lowerName);
+                compact.drive = static_cast<std::uint8_t>(record.driveLetter & 0xFF);
+                compact.flags = record.isDirectory ? 0x1 : 0x0;
+                compactRecords.push_back(compact);
+            }
+
+            const auto orderedVolumes = GetOrderedVolumes(volumes);
+            std::ofstream output(tempPath, std::ios::binary | std::ios::trunc);
+            if (!output)
+            {
+                return;
+            }
+
+            const auto version = V2RecordsSnapshotVersion1;
+            const auto recordCount = static_cast<std::uint32_t>(compactRecords.size());
+            const auto volumeCount = static_cast<std::uint32_t>(orderedVolumes.size());
+            const auto stringPoolChars = static_cast<std::uint32_t>(stringPool.size());
+            output.write(reinterpret_cast<const char*>(&version), sizeof(version));
+            output.write(reinterpret_cast<const char*>(&recordCount), sizeof(recordCount));
+            output.write(reinterpret_cast<const char*>(&volumeCount), sizeof(volumeCount));
+            output.write(reinterpret_cast<const char*>(&stringPoolChars), sizeof(stringPoolChars));
+            output.write(reinterpret_cast<const char*>(compactRecords.data()),
+                static_cast<std::streamsize>(compactRecords.size() * sizeof(NativeV2CompactRecord)));
+            if (!stringPool.empty())
+            {
+                output.write(reinterpret_cast<const char*>(stringPool.data()),
+                    static_cast<std::streamsize>(stringPool.size() * sizeof(wchar_t)));
+            }
+
+            for (const auto* volume : orderedVolumes)
+            {
+                if (!WriteSnapshotChar(output, volume->driveLetter))
+                {
+                    output.close();
+                    DeleteFileW(tempPath.c_str());
+                    return;
+                }
+
+                output.write(reinterpret_cast<const char*>(&volume->nextUsn), sizeof(volume->nextUsn));
+                output.write(reinterpret_cast<const char*>(&volume->journalId), sizeof(volume->journalId));
+            }
+
+            output.flush();
+            const auto ok = output.good();
+            output.close();
+            if (!ok)
+            {
+                DeleteFileW(tempPath.c_str());
+                return;
+            }
+
+            if (std::filesystem::exists(path))
+            {
+                if (!ReplaceFileW(path.c_str(), tempPath.c_str(), nullptr, REPLACEFILE_IGNORE_MERGE_ERRORS, nullptr, nullptr))
+                {
+                    DeleteFileW(tempPath.c_str());
+                    return;
+                }
+            }
+            else if (!MoveFileExW(tempPath.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING))
+            {
+                DeleteFileW(tempPath.c_str());
+                return;
+            }
+
+            std::error_code fileSizeError;
+            const auto fileBytes = std::filesystem::file_size(path, fileSizeError);
+            NativeLogWrite(
+                "[NATIVE V2 RECORDS SAVE] success elapsedMs="
+                + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - totalStart).count())
+                + " version=" + std::to_string(V2RecordsSnapshotVersion1)
+                + " fileBytes=" + std::to_string(fileSizeError ? 0 : fileBytes)
+                + " records=" + std::to_string(records.size())
+                + " volumes=" + std::to_string(volumes.size())
+                + " stringPoolChars=" + std::to_string(stringPool.size()));
         }
 
         bool TryLoadV2PostingsSnapshot_NoLock()
@@ -3931,7 +5989,7 @@ namespace
             input.read(reinterpret_cast<char*>(&recordCount), sizeof(recordCount));
             if (!input.good()
                 || version != V2PostingsSnapshotVersion1
-                || recordCount != static_cast<std::int32_t>(records_.size()))
+                || recordCount != static_cast<std::int32_t>(GetRecordCount_NoLock()))
             {
                 NativeLogWrite("[NATIVE V2 POSTINGS LOAD] miss reason=version-or-record-count");
                 return false;
@@ -4085,8 +6143,8 @@ namespace
             input.read(reinterpret_cast<char*>(&version), sizeof(version));
             input.read(reinterpret_cast<char*>(&recordCount), sizeof(recordCount));
             if (!input.good()
-                || version != V2RuntimeSnapshotVersion1
-                || recordCount != static_cast<std::int32_t>(records_.size()))
+                || version != V2RuntimeSnapshotVersion2
+                || recordCount != static_cast<std::int32_t>(GetRecordCount_NoLock()))
             {
                 NativeLogWrite("[NATIVE V2 RUNTIME LOAD] miss reason=version-or-record-count");
                 return false;
@@ -4128,26 +6186,10 @@ namespace
                 v2_.nonAsciiShortEntries[key] = entry;
             }
 
-            std::uint32_t childBucketCount = 0;
-            input.read(reinterpret_cast<char*>(&childBucketCount), sizeof(childBucketCount));
-            if (!input.good())
+            if (!ReadChildBucketEntries(input, v2_.childEntries)
+                || !ReadUInt32Vector(input, v2_.childRecordIds))
             {
                 return false;
-            }
-
-            v2_.childIds.clear();
-            v2_.childIds.reserve(childBucketCount);
-            for (std::uint32_t i = 0; i < childBucketCount; ++i)
-            {
-                std::uint64_t key = 0;
-                input.read(reinterpret_cast<char*>(&key), sizeof(key));
-                std::vector<std::uint32_t> ids;
-                if (!input.good() || !ReadUInt32Vector(input, ids))
-                {
-                    return false;
-                }
-
-                v2_.childIds.emplace(key, std::move(ids));
             }
 
             NativeLogWrite(
@@ -4159,7 +6201,8 @@ namespace
                     + v2_.asciiBigramCompressedPostings.size()
                     + v2_.nonAsciiShortCompressedPostings.size())
                 + " parentOrder=" + std::to_string(v2_.parentOrder.size())
-                + " childBuckets=" + std::to_string(v2_.childIds.size()));
+                + " childBuckets=" + std::to_string(v2_.childEntries.size())
+                + " childIds=" + std::to_string(v2_.childRecordIds.size()));
             return true;
         }
 
@@ -4186,7 +6229,7 @@ namespace
                 return;
             }
 
-            const auto version = V2RuntimeSnapshotVersion1;
+            const auto version = V2RuntimeSnapshotVersion2;
             const auto count = static_cast<std::int32_t>(recordCount);
             output.write(reinterpret_cast<const char*>(&version), sizeof(version));
             output.write(reinterpret_cast<const char*>(&count), sizeof(count));
@@ -4207,13 +6250,8 @@ namespace
                 output.write(reinterpret_cast<const char*>(&pair.second), sizeof(pair.second));
             }
 
-            const auto childBucketCount = static_cast<std::uint32_t>(v2.childIds.size());
-            output.write(reinterpret_cast<const char*>(&childBucketCount), sizeof(childBucketCount));
-            for (const auto& pair : v2.childIds)
-            {
-                output.write(reinterpret_cast<const char*>(&pair.first), sizeof(pair.first));
-                WriteUInt32Vector(output, pair.second);
-            }
+            WriteChildBucketEntries(output, v2.childEntries);
+            WriteUInt32Vector(output, v2.childRecordIds);
 
             output.flush();
             const auto ok = output.good();
@@ -4247,7 +6285,8 @@ namespace
                     + v2.asciiBigramCompressedPostings.size()
                     + v2.nonAsciiShortCompressedPostings.size())
                 + " parentOrder=" + std::to_string(v2.parentOrder.size())
-                + " childBuckets=" + std::to_string(v2.childIds.size()));
+                + " childBuckets=" + std::to_string(v2.childEntries.size())
+                + " childIds=" + std::to_string(v2.childRecordIds.size()));
         }
 
         bool TryLoadV2TypeBucketsSnapshot_NoLock()
@@ -4272,7 +6311,7 @@ namespace
             input.read(reinterpret_cast<char*>(&recordCount), sizeof(recordCount));
             if (!input.good()
                 || version != V2TypeBucketsSnapshotVersion1
-                || recordCount != static_cast<std::int32_t>(records_.size()))
+                || recordCount != static_cast<std::int32_t>(GetRecordCount_NoLock()))
             {
                 NativeLogWrite("[NATIVE V2 TYPE BUCKETS LOAD] miss reason=version-or-record-count");
                 return false;
@@ -4413,14 +6452,14 @@ namespace
         {
             std::ostringstream ss;
             ss << "{";
-            ss << "\"indexedCount\":" << records_.size() << ",";
+            ss << "\"indexedCount\":" << GetRecordCount_NoLock() << ",";
             ss << "\"currentStatusMessage\":\"" << EscapeJson(WideToUtf8(currentStatusMessage_)) << "\",";
             ss << "\"isBackgroundCatchUpInProgress\":" << (isBackgroundCatchUpInProgress_ ? "true" : "false") << ",";
             ss << "\"requireSearchRefresh\":" << (requireSearchRefresh ? "true" : "false") << ",";
             ss << "\"engineVersion\":\"native-v2\",";
             ss << "\"readyStage\":\"" << (v2_.ready ? "records+trigram+shortQuery+pathOrder+typeBuckets" : "not-ready") << "\",";
             ss << "\"capabilities\":{";
-            ss << "\"records\":" << (!records_.empty() ? "true" : "false") << ",";
+            ss << "\"records\":" << (GetRecordCount_NoLock() > 0 ? "true" : "false") << ",";
             ss << "\"trigram\":" << (v2_.ready ? "true" : "false") << ",";
             ss << "\"shortQuery\":" << (v2_.ready ? "true" : "false") << ",";
             ss << "\"pathOrder\":" << (v2_.ready ? "true" : "false") << ",";
@@ -4436,9 +6475,16 @@ namespace
                 + v2_.asciiBigramCompressedPostings.size()
                 + v2_.nonAsciiShortCompressedPostings.size()) << ",";
             ss << "\"pathOrderBytes\":" << (
-                static_cast<std::uint64_t>(v2_.parentOrder.size()) * sizeof(std::uint32_t)) << ",";
+                (static_cast<std::uint64_t>(v2_.parentOrder.size() + v2_.childRecordIds.size()) * sizeof(std::uint32_t))
+                + (static_cast<std::uint64_t>(v2_.childEntries.size()) * sizeof(NativeV2ChildBucketEntry))) << ",";
+            ss << "\"recordObjectBytes\":" << (static_cast<std::uint64_t>(records_.capacity()) * sizeof(Record)) << ",";
+            ss << "\"mappedRecordBytes\":" << (mappedRecords_.Ready() ? mappedRecords_.file.Size() : 0) << ",";
+            ss << "\"frnIndexBytes\":" << (static_cast<std::uint64_t>(frnRecordIndex_.capacity()) * sizeof(FrnRecordIndexEntry)) << ",";
+            ss << "\"childCsrBytes\":" << (
+                (static_cast<std::uint64_t>(v2_.childRecordIds.capacity()) * sizeof(std::uint32_t))
+                + (static_cast<std::uint64_t>(v2_.childEntries.capacity()) * sizeof(NativeV2ChildBucketEntry))) << ",";
             ss << "\"generationId\":" << generationId_.load(std::memory_order_relaxed) << ",";
-            ss << "\"snapshotFormatVersion\":" << V2RuntimeSnapshotVersion1 << ",";
+            ss << "\"snapshotFormatVersion\":" << V2RuntimeSnapshotVersion2 << ",";
             ss << "\"restoreMappedBytes\":0";
             ss << "},";
             ss << "\"memoryBytes\":" << EstimateNativeMemoryBytes_NoLock() << ",";
@@ -4451,7 +6497,7 @@ namespace
         {
             std::ostringstream ss;
             ss << "{";
-            ss << "\"totalIndexedCount\":" << records_.size() << ",";
+            ss << "\"totalIndexedCount\":" << GetRecordCount_NoLock() << ",";
             ss << "\"totalMatchedCount\":" << totalMatchedCount << ",";
             ss << "\"isTruncated\":" << (isTruncated ? "true" : "false") << ",";
             ss << "\"results\":[";
@@ -4475,6 +6521,27 @@ namespace
             ss << "]";
             ss << "}";
             return ss.str();
+        }
+
+        std::string BuildSearchResponse(
+            int totalMatchedCount,
+            bool isTruncated,
+            const std::vector<SearchResultRow>& rows,
+            SearchBinaryPayload* binaryPayload,
+            bool buildJson) const
+        {
+            if (binaryPayload != nullptr)
+            {
+                binaryPayload->totalIndexedCount = static_cast<int>(GetRecordCount_NoLock());
+                binaryPayload->totalMatchedCount = totalMatchedCount;
+                binaryPayload->physicalMatchedCount = totalMatchedCount;
+                binaryPayload->uniqueMatchedCount = totalMatchedCount;
+                binaryPayload->duplicatePathCount = 0;
+                binaryPayload->isTruncated = isTruncated;
+                binaryPayload->rows = rows;
+            }
+
+            return buildJson ? BuildSearchJson(totalMatchedCount, isTruncated, rows) : std::string();
         }
 
         static std::string BuildErrorJson(const std::string& error)
@@ -4570,6 +6637,25 @@ namespace
             return SearchFilter::All;
         }
 
+        static SearchFilter ParseFilterValue(int filterValue)
+        {
+            switch (filterValue)
+            {
+            case 1:
+                return SearchFilter::Launchable;
+            case 2:
+                return SearchFilter::Folder;
+            case 3:
+                return SearchFilter::Script;
+            case 4:
+                return SearchFilter::Log;
+            case 5:
+                return SearchFilter::Config;
+            default:
+                return SearchFilter::All;
+            }
+        }
+
         static void ParsePathScope(const std::wstring& keyword, std::wstring& pathPrefix, std::wstring& searchTerm)
         {
             const auto spaceIndex = keyword.find(L' ');
@@ -4622,6 +6708,140 @@ namespace
 
             mode = MatchMode::Contains;
             return ToLower(keyword);
+        }
+
+        static bool TryBuildQueryPlan(
+            MatchMode mode,
+            const std::wstring& normalizedQuery,
+            QueryPlan& plan,
+            std::string& unsupportedReason)
+        {
+            unsupportedReason.clear();
+            plan = QueryPlan{};
+            plan.mode = mode;
+            plan.query = normalizedQuery;
+
+            if (normalizedQuery.empty())
+            {
+                unsupportedReason = "empty-query";
+                return false;
+            }
+
+            if (mode == MatchMode::Contains)
+            {
+                plan.kind = QueryPlanKind::Contains;
+                plan.name = "contains-v2";
+                return true;
+            }
+
+            if (mode == MatchMode::Prefix)
+            {
+                plan.kind = QueryPlanKind::Prefix;
+                plan.name = "prefix-sorted";
+                return !plan.query.empty();
+            }
+
+            if (mode == MatchMode::Suffix)
+            {
+                if (plan.query.empty())
+                {
+                    unsupportedReason = "empty-suffix";
+                    return false;
+                }
+
+                if (IsPlainExtensionSuffix(plan.query))
+                {
+                    plan.kind = QueryPlanKind::ExtensionWildcard;
+                    plan.extension = plan.query;
+                    plan.name = "suffix-extension";
+                    return true;
+                }
+
+                plan.kind = QueryPlanKind::Suffix;
+                plan.requiredLiteral = plan.query;
+                plan.name = "suffix-literal";
+                return true;
+            }
+
+            if (mode == MatchMode::Wildcard)
+            {
+                std::wstring extension;
+                if (TryGetSimpleExtensionWildcard(normalizedQuery, extension))
+                {
+                    plan.kind = QueryPlanKind::ExtensionWildcard;
+                    plan.extension = extension;
+                    plan.pattern = normalizedQuery;
+                    plan.name = "wildcard-extension";
+                    return true;
+                }
+
+                MatchMode simplifiedMode = MatchMode::Wildcard;
+                std::wstring simplifiedQuery;
+                if (TrySimplifyWildcard(normalizedQuery, simplifiedMode, simplifiedQuery))
+                {
+                    if (simplifiedMode == MatchMode::Contains)
+                    {
+                        plan.kind = QueryPlanKind::Contains;
+                        plan.mode = MatchMode::Contains;
+                        plan.query = simplifiedQuery;
+                        plan.name = "wildcard-contains-v2";
+                        return !plan.query.empty();
+                    }
+
+                    if (simplifiedMode == MatchMode::Prefix)
+                    {
+                        plan.kind = QueryPlanKind::Prefix;
+                        plan.mode = MatchMode::Prefix;
+                        plan.query = simplifiedQuery;
+                        plan.name = "wildcard-prefix";
+                        return !plan.query.empty();
+                    }
+
+                    if (simplifiedMode == MatchMode::Suffix)
+                    {
+                        plan.kind = QueryPlanKind::Suffix;
+                        plan.mode = MatchMode::Suffix;
+                        plan.query = simplifiedQuery;
+                        plan.requiredLiteral = simplifiedQuery;
+                        plan.name = "wildcard-suffix-literal";
+                        return !plan.query.empty();
+                    }
+                }
+
+                std::wstring literal;
+                if (TryExtractRequiredWildcardLiteral(normalizedQuery, literal))
+                {
+                    plan.kind = QueryPlanKind::WildcardLiteral;
+                    plan.pattern = normalizedQuery;
+                    plan.requiredLiteral = literal;
+                    plan.name = "wildcard-literal";
+                    return true;
+                }
+
+                unsupportedReason = "wildcard-without-required-literal";
+                return false;
+            }
+
+            if (mode == MatchMode::Regex)
+            {
+                std::wstring literal;
+                if (TryExtractRequiredRegexLiteral(normalizedQuery, literal))
+                {
+                    plan.kind = QueryPlanKind::RegexLiteral;
+                    plan.pattern = normalizedQuery;
+                    plan.requiredLiteral = literal;
+                    plan.name = "regex-literal";
+                    return true;
+                }
+
+                plan.kind = QueryPlanKind::RegexScan;
+                plan.pattern = normalizedQuery;
+                plan.name = "regex-scan";
+                return true;
+            }
+
+            unsupportedReason = "unknown-mode";
+            return false;
         }
 
         static bool TryGetSimpleExtensionWildcard(const std::wstring& pattern, std::wstring& extension)
@@ -4688,6 +6908,130 @@ namespace
             return false;
         }
 
+        static bool TryExtractRequiredWildcardLiteral(const std::wstring& pattern, std::wstring& literal)
+        {
+            literal.clear();
+            std::wstring current;
+            for (const auto ch : pattern)
+            {
+                if (ch == L'*' || ch == L'?')
+                {
+                    if (current.length() > literal.length())
+                    {
+                        literal = current;
+                    }
+
+                    current.clear();
+                    continue;
+                }
+
+                current.push_back(ch);
+            }
+
+            if (current.length() > literal.length())
+            {
+                literal = current;
+            }
+
+            return !literal.empty();
+        }
+
+        static bool TryExtractRequiredRegexLiteral(const std::wstring& pattern, std::wstring& literal)
+        {
+            literal.clear();
+            std::wstring current;
+            bool escaping = false;
+            for (const auto ch : pattern)
+            {
+                if (escaping)
+                {
+                    if (IsRegexEscapedLiteral(ch))
+                    {
+                        current.push_back(static_cast<wchar_t>(std::towlower(ch)));
+                    }
+                    else
+                    {
+                        if (current.length() > literal.length())
+                        {
+                            literal = current;
+                        }
+
+                        current.clear();
+                    }
+
+                    escaping = false;
+                    continue;
+                }
+
+                if (ch == L'\\')
+                {
+                    escaping = true;
+                    continue;
+                }
+
+                if (IsRegexMetaCharacter(ch))
+                {
+                    if (current.length() > literal.length())
+                    {
+                        literal = current;
+                    }
+
+                    current.clear();
+                    continue;
+                }
+
+                current.push_back(static_cast<wchar_t>(std::towlower(ch)));
+            }
+
+            if (current.length() > literal.length())
+            {
+                literal = current;
+            }
+
+            return !literal.empty();
+        }
+
+        static bool IsRegexMetaCharacter(wchar_t ch)
+        {
+            switch (ch)
+            {
+            case L'.':
+            case L'^':
+            case L'$':
+            case L'*':
+            case L'+':
+            case L'?':
+            case L'(':
+            case L')':
+            case L'[':
+            case L']':
+            case L'{':
+            case L'}':
+            case L'|':
+                return true;
+            default:
+                return false;
+            }
+        }
+
+        static bool IsRegexEscapedLiteral(wchar_t ch)
+        {
+            switch (ch)
+            {
+            case L'd':
+            case L'D':
+            case L's':
+            case L'S':
+            case L'w':
+            case L'W':
+            case L'b':
+            case L'B':
+                return false;
+            default:
+                return true;
+            }
+        }
+
         static std::wstring WildcardToRegex(const std::wstring& pattern)
         {
             std::wstring regex = L"^";
@@ -4720,7 +7064,18 @@ namespace
                 && value.compare(value.length() - suffix.length(), suffix.length(), suffix) == 0;
         }
 
+        static bool EndsWith(std::wstring_view value, const std::wstring& suffix)
+        {
+            return value.length() >= suffix.length()
+                && value.compare(value.length() - suffix.length(), suffix.length(), suffix) == 0;
+        }
+
         static bool ContainsText(const std::wstring& value, const std::wstring& query)
+        {
+            return ContainsText(std::wstring_view(value), query);
+        }
+
+        static bool ContainsText(std::wstring_view value, const std::wstring& query)
         {
             if (query.empty())
             {
@@ -4729,7 +7084,7 @@ namespace
 
             if (query.length() == 1)
             {
-                return value.find(query[0]) != std::wstring::npos;
+                return value.find(query[0]) != std::wstring_view::npos;
             }
 
             if (query.length() == 2)
@@ -4747,7 +7102,7 @@ namespace
                 return false;
             }
 
-            return value.find(query) != std::wstring::npos;
+            return value.find(query) != std::wstring_view::npos;
         }
 
         static std::uint64_t PackTrigram(wchar_t a, wchar_t b, wchar_t c)
@@ -4765,6 +7120,11 @@ namespace
         }
 
         static bool StartsWith(const std::wstring& value, const std::wstring& prefix)
+        {
+            return StartsWith(std::wstring_view(value), prefix);
+        }
+
+        static bool StartsWith(std::wstring_view value, const std::wstring& prefix)
         {
             return value.length() >= prefix.length()
                 && value.compare(0, prefix.length(), prefix) == 0;
@@ -4807,6 +7167,25 @@ namespace
             }
 
             return lowerName.substr(dotIndex);
+        }
+
+        static bool IsPlainExtensionSuffix(const std::wstring& value)
+        {
+            if (value.length() < 2 || value[0] != L'.')
+            {
+                return false;
+            }
+
+            for (std::size_t i = 1; i < value.length(); ++i)
+            {
+                const auto ch = value[i];
+                if (!std::iswalnum(ch) && ch != L'_' && ch != L'-')
+                {
+                    return false;
+                }
+            }
+
+            return true;
         }
 
         static bool IsLaunchableExtension(const std::wstring& extension)
@@ -4869,6 +7248,11 @@ namespace
         static std::filesystem::path GetV2PostingsSnapshotPath()
         {
             return GetSnapshotDirectoryPath() / L"index-native-v2.postings.bin";
+        }
+
+        static std::filesystem::path GetV2RecordsSnapshotPath()
+        {
+            return GetSnapshotDirectoryPath() / L"index-native-v2.records.bin";
         }
 
         static std::filesystem::path GetV2RuntimeSnapshotPath()
@@ -5002,6 +7386,72 @@ namespace
             return true;
         }
 
+        static void AppendUInt8(std::vector<std::uint8_t>& payload, std::uint8_t value)
+        {
+            payload.push_back(value);
+        }
+
+        static void AppendInt32(std::vector<std::uint8_t>& payload, std::int32_t value)
+        {
+            for (int i = 0; i < 4; ++i)
+            {
+                payload.push_back(static_cast<std::uint8_t>((static_cast<std::uint32_t>(value) >> (i * 8)) & 0xFFu));
+            }
+        }
+
+        static void AppendInt64(std::vector<std::uint8_t>& payload, std::int64_t value)
+        {
+            for (int i = 0; i < 8; ++i)
+            {
+                payload.push_back(static_cast<std::uint8_t>((static_cast<std::uint64_t>(value) >> (i * 8)) & 0xFFu));
+            }
+        }
+
+        static void AppendUtf16String(std::vector<std::uint8_t>& payload, const std::wstring& value)
+        {
+            const auto byteLength = static_cast<std::int32_t>(value.size() * sizeof(wchar_t));
+            AppendInt32(payload, byteLength);
+            if (byteLength <= 0)
+            {
+                return;
+            }
+
+            const auto* bytes = reinterpret_cast<const std::uint8_t*>(value.data());
+            payload.insert(payload.end(), bytes, bytes + byteLength);
+        }
+
+        static std::vector<std::uint8_t> BuildSearchBinaryPayload(const SearchBinaryPayload& result)
+        {
+            std::vector<std::uint8_t> payload;
+            payload.reserve(128 + result.rows.size() * 256);
+            AppendInt32(payload, 1);
+            AppendInt32(payload, result.totalIndexedCount);
+            AppendInt32(payload, result.totalMatchedCount);
+            AppendInt32(payload, result.physicalMatchedCount);
+            AppendInt32(payload, result.uniqueMatchedCount);
+            AppendInt32(payload, result.duplicatePathCount);
+            AppendUInt8(payload, result.isTruncated ? 1 : 0);
+            AppendInt32(payload, static_cast<std::int32_t>(result.rows.size()));
+            for (const auto& row : result.rows)
+            {
+                AppendUtf16String(payload, row.fullPath);
+                AppendUtf16String(payload, row.fileName);
+                AppendInt64(payload, 0);
+                AppendInt64(payload, 0);
+                AppendUtf16String(payload, std::wstring());
+                AppendUtf16String(payload, std::wstring());
+                AppendUInt8(payload, row.isDirectory ? 1 : 0);
+            }
+
+            return payload;
+        }
+
+        static bool TryExtractErrorJson(const std::string& json, std::string& error)
+        {
+            error.clear();
+            return TryReadJsonStringField(json, "error", error) && !error.empty();
+        }
+
         static bool WriteSnapshotChar(std::ofstream& output, wchar_t value)
         {
             const auto raw = static_cast<char>(value & 0xFF);
@@ -5108,6 +7558,41 @@ namespace
             return true;
         }
 
+        static void WriteChildBucketEntries(std::ofstream& output, const std::vector<NativeV2ChildBucketEntry>& values)
+        {
+            const auto count = static_cast<std::uint32_t>(values.size());
+            output.write(reinterpret_cast<const char*>(&count), sizeof(count));
+            if (count > 0)
+            {
+                output.write(reinterpret_cast<const char*>(values.data()),
+                    static_cast<std::streamsize>(count * sizeof(NativeV2ChildBucketEntry)));
+            }
+        }
+
+        static bool ReadChildBucketEntries(std::ifstream& input, std::vector<NativeV2ChildBucketEntry>& values)
+        {
+            std::uint32_t count = 0;
+            input.read(reinterpret_cast<char*>(&count), sizeof(count));
+            if (!input.good())
+            {
+                return false;
+            }
+
+            values.resize(count);
+            if (count > 0)
+            {
+                input.read(reinterpret_cast<char*>(values.data()),
+                    static_cast<std::streamsize>(count * sizeof(NativeV2ChildBucketEntry)));
+                if (!input.good())
+                {
+                    return false;
+                }
+            }
+
+            values.shrink_to_fit();
+            return true;
+        }
+
         static void AppendCollectedChange(std::vector<NativeChange>& changes, const NativeChange& change)
         {
             if (!changes.empty())
@@ -5162,6 +7647,26 @@ namespace
             return ordered;
         }
 
+        static std::vector<const Record*> GetOrderedRecordsForVolume(const std::vector<Record>& records, wchar_t driveLetter)
+        {
+            std::vector<const Record*> ordered;
+            ordered.reserve(records.size() / 3);
+            for (const auto& record : records)
+            {
+                if (record.driveLetter == driveLetter)
+                {
+                    ordered.push_back(&record);
+                }
+            }
+
+            std::sort(ordered.begin(), ordered.end(), [](const auto* left, const auto* right)
+            {
+                return left->frn < right->frn;
+            });
+
+            return ordered;
+        }
+
         static std::vector<std::wstring> BuildSnapshotStringPool(
             const std::vector<Record>& records,
             const std::vector<const VolumeState*>& volumes)
@@ -5183,14 +7688,6 @@ namespace
             for (const auto& record : records)
             {
                 add(record.originalName);
-            }
-
-            for (const auto* volume : volumes)
-            {
-                for (const auto& pair : volume->frnMap)
-                {
-                    add(pair.second.name);
-                }
             }
 
             return pool;
@@ -5432,6 +7929,101 @@ extern "C"
         });
     }
 
+    __declspec(dllexport) int __cdecl pm_index_search_binary(
+        void* handle,
+        const char* keywordUtf8,
+        int maxResults,
+        int offset,
+        int filterValue,
+        unsigned char** responseBytes,
+        int* responseLength,
+        char** errorUtf8)
+    {
+        if (responseBytes == nullptr || responseLength == nullptr)
+        {
+            return 0;
+        }
+
+        *responseBytes = nullptr;
+        *responseLength = 0;
+        if (errorUtf8 != nullptr)
+        {
+            *errorUtf8 = nullptr;
+        }
+
+        if (handle == nullptr)
+        {
+            if (errorUtf8 != nullptr)
+            {
+                *errorUtf8 = DuplicateUtf8("native handle is null");
+            }
+            return 0;
+        }
+
+        try
+        {
+            std::vector<std::uint8_t> payload;
+            std::string error;
+            if (!static_cast<NativeIndex*>(handle)->SearchBinary(
+                keywordUtf8,
+                maxResults,
+                offset,
+                filterValue,
+                payload,
+                error))
+            {
+                if (errorUtf8 != nullptr)
+                {
+                    *errorUtf8 = DuplicateUtf8(error.empty() ? "native search failed" : error);
+                }
+                return 0;
+            }
+
+            if (payload.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+            {
+                if (errorUtf8 != nullptr)
+                {
+                    *errorUtf8 = DuplicateUtf8("native binary search payload is too large");
+                }
+                return 0;
+            }
+
+            auto* buffer = static_cast<unsigned char*>(std::malloc(payload.size()));
+            if (buffer == nullptr && !payload.empty())
+            {
+                if (errorUtf8 != nullptr)
+                {
+                    *errorUtf8 = DuplicateUtf8("native binary search allocation failed");
+                }
+                return 0;
+            }
+
+            if (!payload.empty())
+            {
+                std::memcpy(buffer, payload.data(), payload.size());
+            }
+            *responseBytes = buffer;
+            *responseLength = static_cast<int>(payload.size());
+            return 1;
+        }
+        catch (const std::exception& ex)
+        {
+            if (errorUtf8 != nullptr)
+            {
+                *errorUtf8 = DuplicateUtf8(ex.what());
+            }
+            return 0;
+        }
+        catch (...)
+        {
+            if (errorUtf8 != nullptr)
+            {
+                *errorUtf8 = DuplicateUtf8("unknown native failure");
+            }
+            return 0;
+        }
+    }
+
     __declspec(dllexport) int __cdecl pm_index_get_state(void* handle, const char* requestJsonUtf8, char** responseJsonUtf8)
     {
         (void)requestJsonUtf8;
@@ -5450,6 +8042,11 @@ extern "C"
     }
 
     __declspec(dllexport) void __cdecl pm_index_free_string(char* value)
+    {
+        std::free(value);
+    }
+
+    __declspec(dllexport) void __cdecl pm_index_free_bytes(unsigned char* value)
     {
         std::free(value);
     }

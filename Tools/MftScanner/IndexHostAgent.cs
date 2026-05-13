@@ -192,17 +192,31 @@ namespace MftScanner
 
                     if ((request?.CommandType ?? SharedIndexCommandType.None) == SharedIndexCommandType.Search)
                     {
-                        DispatchSearchRequest(slotResources, request, readRequestMs, ct);
-                        continue;
+                        if (_indexService.PreferSynchronousHostSearch)
+                        {
+                            CancelActiveSlotSearch(slotResources.SlotId);
+                            stageStopwatch.Restart();
+                            response = ExecuteRequestAsync(request, slotResources, ct).GetAwaiter().GetResult();
+                            stageStopwatch.Stop();
+                            executeMs = stageStopwatch.ElapsedMilliseconds;
+                            response.Status = SharedIndexResponseStatus.Success;
+                        }
+                        else
+                        {
+                            DispatchSearchRequest(slotResources, request, readRequestMs, ct);
+                            continue;
+                        }
                     }
+                    else
+                    {
+                        CancelActiveSlotSearch(slotResources.SlotId);
 
-                    CancelActiveSlotSearch(slotResources.SlotId);
-
-                    stageStopwatch.Restart();
-                    response = ExecuteRequestAsync(request, slotResources, ct).GetAwaiter().GetResult();
-                    stageStopwatch.Stop();
-                    executeMs = stageStopwatch.ElapsedMilliseconds;
-                    response.Status = SharedIndexResponseStatus.Success;
+                        stageStopwatch.Restart();
+                        response = ExecuteRequestAsync(request, slotResources, ct).GetAwaiter().GetResult();
+                        stageStopwatch.Stop();
+                        executeMs = stageStopwatch.ElapsedMilliseconds;
+                        response.Status = SharedIndexResponseStatus.Success;
+                    }
                 }
                 catch (OperationCanceledException)
                 {
