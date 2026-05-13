@@ -14,7 +14,7 @@ namespace MftScanner
     /// 替代 <see cref="MftScanService"/> 的索引构建层。
     /// 需求：1.1、1.4、1.5
     /// </summary>
-    public sealed class IndexService : ISharedIndexService
+    internal sealed class ManagedIndexServiceBackend : IIndexServiceBackend
     {
         private MftEnumerator _enumerator = new MftEnumerator();
         private readonly IndexSnapshotStore _snapshotStore = new IndexSnapshotStore();

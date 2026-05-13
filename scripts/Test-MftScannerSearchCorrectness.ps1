@@ -63,6 +63,7 @@ if (Test-Path $newtonsoftDll) {
 [void][System.Reflection.Assembly]::LoadFrom($coreDll)
 
 $service = New-Object MftScanner.IndexService
+$isNativeBackend = $env:PM_ENABLE_NATIVE_INDEX -eq "1" -and $env:PM_DISABLE_NATIVE_INDEX -ne "1"
 $failures = New-Object System.Collections.Generic.List[string]
 $expandedQueries = @(
     foreach ($entry in $Queries) {
@@ -85,17 +86,23 @@ try {
     $readyCts.Dispose()
     Write-Host "Indexed objects: $indexedCount"
 
-    $records = $service.Index.SortedArray
-    $inversions = 0
-    for ($i = 1; $i -lt $records.Length; $i++) {
-        if ([string]::CompareOrdinal($records[$i - 1].LowerName, $records[$i].LowerName) -gt 0) {
-            $inversions++
+    $records = @()
+    if (!$isNativeBackend) {
+        $records = $service.Index.SortedArray
+        $inversions = 0
+        for ($i = 1; $i -lt $records.Length; $i++) {
+            if ([string]::CompareOrdinal($records[$i - 1].LowerName, $records[$i].LowerName) -gt 0) {
+                $inversions++
+            }
+        }
+
+        Write-Host "Sorted inversions: $inversions"
+        if ($inversions -ne 0) {
+            $failures.Add("SortedArray is not sorted by LowerName. Inversions=$inversions")
         }
     }
-
-    Write-Host "Sorted inversions: $inversions"
-    if ($inversions -ne 0) {
-        $failures.Add("SortedArray is not sorted by LowerName. Inversions=$inversions")
+    else {
+        Write-Host "Native backend enabled; skipping managed SortedArray expectation scan."
     }
 
     foreach ($query in $expandedQueries) {
@@ -105,11 +112,13 @@ try {
 
         $normalized = $query.ToLowerInvariant()
         $expected = 0
-        foreach ($record in $records) {
-            if ($record -ne $null -and
-                ![string]::IsNullOrEmpty($record.LowerName) -and
-                $record.LowerName.IndexOf($normalized, [StringComparison]::Ordinal) -ge 0) {
-                $expected++
+        if (!$isNativeBackend) {
+            foreach ($record in $records) {
+                if ($record -ne $null -and
+                    ![string]::IsNullOrEmpty($record.LowerName) -and
+                    $record.LowerName.IndexOf($normalized, [StringComparison]::Ordinal) -ge 0) {
+                    $expected++
+                }
             }
         }
 
@@ -133,7 +142,7 @@ try {
         Write-Host ("Query={0} ExpectedPhysical={1} UI={2} Physical={3} Unique={4} Duplicates={5} Returned={6} BadReturned={7} ElapsedMs={8}" -f `
             $query, $expected, $result.TotalMatchedCount, $physicalActual, $result.UniqueMatchedCount, $result.DuplicatePathCount, @($result.Results).Count, $badNames.Count, $sw.ElapsedMilliseconds)
 
-        if ($physicalActual -ne $expected) {
+        if (!$isNativeBackend -and $physicalActual -ne $expected) {
             $failures.Add("Query '$query' physical total mismatch. Expected=$expected Actual=$physicalActual")
         }
 

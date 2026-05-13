@@ -38,6 +38,7 @@
       <Link>Properties\MftScannerToolAssemblyInfo.cs</Link>
     </Compile>
     <Compile Include="FileRecord.cs" />
+    <Compile Include="IIndexServiceBackend.cs" />
     <Compile Include="ISharedIndexService.cs" />
     <Compile Include="SearchTypeFilter.cs" />
     <Compile Include="IndexPerfLog.cs" />
@@ -48,6 +49,7 @@
     <Compile Include="MemoryIndex.ShortQueryIndex.cs" />
     <Compile Include="MftEnumerator.cs" />
     <Compile Include="IndexService.cs" />
+    <Compile Include="IndexService.NativeFacade.cs" />
     <Compile Include="IncrementalFilter.cs" />
     <Compile Include="UsnWatcher.cs" />
     <Compile Include="MftScanService.cs" />

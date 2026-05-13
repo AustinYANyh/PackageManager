@@ -33,6 +33,7 @@ namespace MftScanner
         private long _lastStateSequence;
         private long _lastRefreshSequence;
         private long _lastChangeSequence;
+        private int _connectedHostProcessId;
         private int _indexedCount;
         private string _currentStatusMessage = string.Empty;
         private bool _isBackgroundCatchUpInProgress;
@@ -239,11 +240,6 @@ namespace MftScanner
 
         private async Task<int> ExecuteHostIntCommandAsync(SharedIndexCommandType commandType, IProgress<string> progress, CancellationToken ct, bool allowHostWarmupRetry)
         {
-            if (commandType == SharedIndexCommandType.Build)
-            {
-                return await WaitForSharedIndexReadyAsync(progress, ct).ConfigureAwait(false);
-            }
-
             try
             {
                 var response = await SendRequestAsync(new SharedIndexIpcRequest
@@ -259,6 +255,11 @@ namespace MftScanner
                 if (!string.IsNullOrWhiteSpace(response.CurrentStatusMessage))
                 {
                     progress?.Report(response.CurrentStatusMessage);
+                }
+
+                if (commandType == SharedIndexCommandType.Build)
+                {
+                    return response.IndexedCount > 0 ? response.IndexedCount : response.TotalIndexedCount;
                 }
 
                 return response.IndexedCount;
@@ -496,6 +497,9 @@ namespace MftScanner
             long queuedMs = 0;
             var requestBytes = 0;
             await EnsureResourcesAvailableAsync(ct).ConfigureAwait(false);
+            EnsureConnectedHostIsAlive();
+            await EnsureResourcesAvailableAsync(ct).ConfigureAwait(false);
+            await EnsureConnectedHostGenerationAsync(ct).ConfigureAwait(false);
             if (request != null && request.CommandType == SharedIndexCommandType.Search)
             {
                 SignalInFlightSearchCancellation();
@@ -683,12 +687,7 @@ namespace MftScanner
                         var snapshot = SharedIndexMemoryProtocol.ReadState(stateMap);
                         SharedIndexMemoryProtocol.ResetClientChangeCursor(slotResources.ChangeMap, snapshot.LastCommittedChangeSequence);
                         SharedIndexMemoryProtocol.WriteClientHeartbeatTicks(slotResources.ChangeMap, DateTime.UtcNow.Ticks);
-                        _lastChangeSequence = snapshot.LastCommittedChangeSequence;
-                        _lastRefreshSequence = snapshot.RefreshSequence;
-                        _lastStateSequence = snapshot.StateSequence;
-                        _indexedCount = snapshot.IndexedCount;
-                        _currentStatusMessage = snapshot.StatusMessage ?? string.Empty;
-                        _isBackgroundCatchUpInProgress = snapshot.IsBackgroundCatchUpInProgress;
+                        AdoptHostSnapshotAfterConnect(snapshot);
                         _stateMap = stateMap;
                         _slotResources = slotResources;
                     }
@@ -716,12 +715,73 @@ namespace MftScanner
             }, ct).ConfigureAwait(false);
         }
 
+        private async Task EnsureConnectedHostGenerationAsync(CancellationToken ct)
+        {
+            var snapshot = ReadCurrentStateSnapshot();
+            if (snapshot == null || snapshot.HostProcessId <= 0)
+            {
+                return;
+            }
+
+            bool reconnect;
+            lock (_resourceLock)
+            {
+                reconnect = _slotResources == null ||
+                    _stateMap == null ||
+                    (_connectedHostProcessId > 0 && _connectedHostProcessId != snapshot.HostProcessId);
+            }
+
+            if (!reconnect)
+            {
+                lock (_stateLock)
+                {
+                    ApplySnapshotState(snapshot);
+                }
+
+                return;
+            }
+
+            ResetResources();
+            await EnsureResourcesAvailableAsync(ct).ConfigureAwait(false);
+        }
+
+        private void AdoptHostSnapshotAfterConnect(SharedIndexStateSnapshot snapshot)
+        {
+            lock (_stateLock)
+            {
+                _lastChangeSequence = snapshot.LastCommittedChangeSequence;
+                _lastRefreshSequence = snapshot.RefreshSequence;
+                _lastStateSequence = snapshot.StateSequence;
+                _connectedHostProcessId = snapshot.HostProcessId;
+                _nextRequestId = 0;
+                ApplySnapshotState(snapshot);
+            }
+        }
+
         private SharedIndexClientSlotResources GetSlotResources()
         {
             lock (_resourceLock)
             {
                 return _slotResources;
             }
+        }
+
+        private void EnsureConnectedHostIsAlive()
+        {
+            lock (_resourceLock)
+            {
+                if (_slotResources == null || _connectedHostProcessId <= 0)
+                {
+                    return;
+                }
+
+                if (IsProcessAlive(_connectedHostProcessId))
+                {
+                    return;
+                }
+            }
+
+            ResetResources();
         }
 
         private void ResetResources()
@@ -746,6 +806,8 @@ namespace MftScanner
 
                 _slotResources = null;
                 _stateMap = null;
+                _connectedHostProcessId = 0;
+                _nextRequestId = 0;
             }
         }
 
@@ -778,6 +840,7 @@ namespace MftScanner
             }
 
             await EnsureResourcesAvailableAsync(ct).ConfigureAwait(false);
+            var buildStarted = false;
             while (!ct.IsCancellationRequested)
             {
                 var snapshot = ReadCurrentStateSnapshot();
@@ -806,6 +869,12 @@ namespace MftScanner
                     if (snapshot.BuildState == SharedIndexBuildState.Ready)
                     {
                         return snapshot.IndexedCount;
+                    }
+
+                    if (!buildStarted && snapshot.BuildState != SharedIndexBuildState.Building)
+                    {
+                        buildStarted = true;
+                        return await ExecuteHostIntCommandAsync(SharedIndexCommandType.Build, progress, ct, allowHostWarmupRetry: false).ConfigureAwait(false);
                     }
                 }
 
@@ -878,7 +947,7 @@ namespace MftScanner
                     using (var stateMap = SharedIndexMemoryProtocol.OpenStateMapForRead())
                     {
                         var snapshot = SharedIndexMemoryProtocol.ReadState(stateMap);
-                        if (snapshot.HostProcessId > 0)
+                        if (snapshot.HostProcessId > 0 && IsProcessAlive(snapshot.HostProcessId))
                         {
                             return true;
                         }
@@ -896,6 +965,21 @@ namespace MftScanner
             }
 
             return false;
+        }
+
+        private static bool IsProcessAlive(int processId)
+        {
+            try
+            {
+                using (var process = Process.GetProcessById(processId))
+                {
+                    return !process.HasExited;
+                }
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private static async Task<SharedIndexResponse> SendControlRequestAsyncStatic(SharedIndexRequest request, CancellationToken ct)

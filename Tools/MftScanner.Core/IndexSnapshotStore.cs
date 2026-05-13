@@ -41,8 +41,17 @@ namespace MftScanner
 
         public IndexSnapshotStore()
         {
-            var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-            _snapshotDirectoryPath = Path.Combine(appDataPath, "PackageManager", "MftScannerIndex");
+            var snapshotDirectoryOverride = Environment.GetEnvironmentVariable("PM_MFT_INDEX_SNAPSHOT_DIR");
+            if (!string.IsNullOrWhiteSpace(snapshotDirectoryOverride))
+            {
+                _snapshotDirectoryPath = snapshotDirectoryOverride;
+            }
+            else
+            {
+                var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+                _snapshotDirectoryPath = Path.Combine(appDataPath, "PackageManager", "MftScannerIndex");
+            }
+
             _snapshotFilePath = Path.Combine(_snapshotDirectoryPath, "index.bin");
             _recordsFilePath = Path.Combine(_snapshotDirectoryPath, "index.records.bin");
             _directoriesFilePath = Path.Combine(_snapshotDirectoryPath, "index.dirs.bin");

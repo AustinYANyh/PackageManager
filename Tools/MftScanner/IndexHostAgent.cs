@@ -113,8 +113,14 @@ namespace MftScanner
             foreach (var slotId in SharedIndexMemoryProtocol.EnumerateSlots())
             {
                 var slotResources = SharedIndexMemoryProtocol.CreateHostSlotResources(slotId);
+                SharedIndexMemoryProtocol.InitializeRequestMap(slotResources.RequestMap);
+                SharedIndexMemoryProtocol.InitializeResponseMap(slotResources.ResponseMap);
                 SharedIndexMemoryProtocol.InitializeChangeMap(slotResources.ChangeMap);
+                slotResources.RequestReadyEvent.Reset();
+                slotResources.ResponseReadyEvent.Reset();
                 slotResources.CancelEvent.Reset();
+                slotResources.StatusChangedEvent.Reset();
+                slotResources.ChangeAvailableEvent.Reset();
                 _slotResources[slotId] = slotResources;
                 _slotSearchStates[slotId] = new SlotSearchState();
             }

@@ -12,7 +12,8 @@ namespace MftScanner
     public enum SharedIndexClientSlotId
     {
         CtrlE = 1,
-        CtrlQ = 2
+        CtrlQ = 2,
+        Benchmark = 3
     }
 
     public enum SharedIndexCommandType
@@ -185,6 +186,7 @@ namespace MftScanner
         {
             yield return SharedIndexClientSlotId.CtrlE;
             yield return SharedIndexClientSlotId.CtrlQ;
+            yield return SharedIndexClientSlotId.Benchmark;
         }
 
         public static bool TryResolveClientSlot(string consumerName, out SharedIndexClientSlotId slotId)
@@ -201,6 +203,12 @@ namespace MftScanner
                 if (normalized.StartsWith("CtrlQ", StringComparison.OrdinalIgnoreCase))
                 {
                     slotId = SharedIndexClientSlotId.CtrlQ;
+                    return true;
+                }
+
+                if (normalized.StartsWith("Benchmark", StringComparison.OrdinalIgnoreCase))
+                {
+                    slotId = SharedIndexClientSlotId.Benchmark;
                     return true;
                 }
             }
@@ -280,6 +288,34 @@ namespace MftScanner
                 EventWaitHandle.OpenExisting(BuildCancelEventName(slotId)),
                 EventWaitHandle.OpenExisting(BuildStatusChangedEventName(slotId)),
                 EventWaitHandle.OpenExisting(BuildChangeAvailableEventName(slotId)));
+        }
+
+        public static void InitializeRequestMap(MemoryMappedFile requestMap)
+        {
+            WriteRequest(requestMap, new SharedIndexIpcRequest
+            {
+                RequestId = 0,
+                CommandType = SharedIndexCommandType.None,
+                Filter = SearchTypeFilter.All,
+                MaxResults = 0,
+                Offset = 0,
+                Flags = 0,
+                Keyword = string.Empty
+            });
+        }
+
+        public static void InitializeResponseMap(MemoryMappedFile responseMap)
+        {
+            WriteResponse(responseMap, new SharedIndexIpcResponse
+            {
+                RequestId = 0,
+                Status = SharedIndexResponseStatus.Success,
+                IndexedCount = 0,
+                CurrentStatusMessage = string.Empty,
+                ErrorMessage = string.Empty,
+                ContainsBucketStatus = ContainsBucketStatus.Empty,
+                Results = new List<ScannedFileInfo>()
+            });
         }
 
         public static MemoryMappedFile CreateStateMap()

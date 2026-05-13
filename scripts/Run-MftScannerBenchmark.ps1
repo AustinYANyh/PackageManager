@@ -10,7 +10,10 @@ param(
     [ValidateSet("SharedHost", "InProcess")]
     [string]$Backend = "SharedHost",
     [switch]$NoRestartHost,
+    [switch]$SkipCorrectnessPrecheck,
     [switch]$ForceRebuildIndex,
+    [string]$SnapshotDirectory,
+    [string]$SharedHostConsumer = "Benchmark",
     [string]$OutputDirectory = ".\artifacts\mft-benchmark"
 )
 
@@ -59,46 +62,31 @@ function Stop-MftScannerHost {
         }
 }
 
-function Backup-MftScannerIndexSnapshot {
-    param([string]$OutputRoot)
-
-    $snapshotRoot = Join-Path $env:LOCALAPPDATA "PackageManager\MftScannerIndex"
-    if (!(Test-Path $snapshotRoot)) {
-        return $null
-    }
-
-    $backupRoot = Join-Path $OutputRoot ("snapshot-backup-{0}" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
-    New-Item -ItemType Directory -Force -Path $backupRoot | Out-Null
-    $patterns = @(
-        "index.bin",
-        "index.records.bin",
-        "index.dirs.bin",
-        "index.postings.bin",
-        "index.bin.*.tmp",
-        "index.records.bin.*.tmp",
-        "index.dirs.bin.*.tmp",
-        "index.postings.bin.*.tmp"
+function Assert-IsolatedSnapshotDirectory {
+    param(
+        [string]$SnapshotRoot,
+        [string]$OutputRoot
     )
 
-    $moved = 0
-    foreach ($pattern in $patterns) {
-        Get-ChildItem -LiteralPath $snapshotRoot -Filter $pattern -File -ErrorAction SilentlyContinue |
-            ForEach-Object {
-                Move-Item -LiteralPath $_.FullName -Destination (Join-Path $backupRoot $_.Name) -Force
-                $moved++
-            }
+    if ([string]::IsNullOrWhiteSpace($SnapshotRoot)) {
+        throw "ForceRebuildIndex requires -SnapshotDirectory. Refusing to touch the real MftScanner index."
     }
 
-    if ($moved -eq 0) {
-        Remove-Item -LiteralPath $backupRoot -Force -ErrorAction SilentlyContinue
-        return $null
+    $resolvedSnapshot = [System.IO.Path]::GetFullPath($SnapshotRoot)
+    $resolvedOutput = [System.IO.Path]::GetFullPath($OutputRoot)
+    $realLocal = [System.IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA "PackageManager\MftScannerIndex"))
+    $realRoaming = [System.IO.Path]::GetFullPath((Join-Path $env:APPDATA "PackageManager\MftScannerIndex"))
+
+    if ($resolvedSnapshot.TrimEnd('\') -ieq $realLocal.TrimEnd('\') -or
+        $resolvedSnapshot.TrimEnd('\') -ieq $realRoaming.TrimEnd('\')) {
+        throw "SnapshotDirectory points at the real MftScanner index: $resolvedSnapshot"
     }
 
-    return [pscustomobject]@{
-        SnapshotRoot = $snapshotRoot
-        BackupRoot = $backupRoot
-        MovedFiles = $moved
+    if (!$resolvedSnapshot.StartsWith($resolvedOutput.TrimEnd('\') + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "SnapshotDirectory must be under OutputDirectory for destructive benchmark isolation. SnapshotDirectory=$resolvedSnapshot OutputDirectory=$resolvedOutput"
     }
+
+    return $resolvedSnapshot
 }
 
 function Get-ProcessMemorySnapshot {
@@ -292,7 +280,7 @@ function Parse-IndexStageEvents {
         return @()
     }
 
-    $patterns = "\[V7 SNAPSHOT LOAD\]|\[V7 SNAPSHOT SAVE\]|\[SNAPSHOT LOAD\]|\[SNAPSHOT RESTORE\]|\[SNAPSHOT RESTORE TOTAL\]|\[SNAPSHOT CATCHUP TOTAL\]|\[SNAPSHOT CATCHUP APPLY WAIT\]|\[MFT BUILD\]|\[CONTAINS WARMUP\]|\[CONTAINS SHORT HOT WARMUP\]|\[CONTAINS SHORT HOT BUILD\]|\[DERIVED STRUCTURES\]|\[POSTINGS SNAPSHOT LOAD\]|\[POSTINGS SNAPSHOT RESTORE\]|\[POSTINGS SNAPSHOT SAVE\]|\[CONTAINS SNAPSHOT LOAD\]"
+    $patterns = "\[V7 SNAPSHOT LOAD\]|\[V7 SNAPSHOT SAVE\]|\[SNAPSHOT LOAD\]|\[SNAPSHOT RESTORE\]|\[SNAPSHOT RESTORE TOTAL\]|\[SNAPSHOT CATCHUP TOTAL\]|\[SNAPSHOT CATCHUP APPLY WAIT\]|\[MFT BUILD\]|\[CONTAINS WARMUP\]|\[CONTAINS SHORT HOT WARMUP\]|\[CONTAINS SHORT HOT BUILD\]|\[DERIVED STRUCTURES\]|\[POSTINGS SNAPSHOT LOAD\]|\[POSTINGS SNAPSHOT RESTORE\]|\[POSTINGS SNAPSHOT SAVE\]|\[CONTAINS SNAPSHOT LOAD\]|\[NATIVE DERIVED BUILD\]|\[NATIVE BASE BUCKET BUILD\]|\[NATIVE MFT BUILD\]|\[NATIVE SNAPSHOT LOAD\]|\[NATIVE SNAPSHOT RESTORE\]|\[NATIVE SNAPSHOT RESTORE TOTAL\]|\[NATIVE V2 POSTINGS LOAD\]|\[NATIVE V2 POSTINGS SAVE\]|\[NATIVE V2 RUNTIME LOAD\]|\[NATIVE V2 RUNTIME SAVE\]|\[NATIVE V2 TYPE BUCKETS LOAD\]|\[NATIVE V2 TYPE BUCKETS SAVE\]"
     $events = New-Object System.Collections.Generic.List[object]
     foreach ($match in Select-String -Path $LogPath -Pattern $patterns -ErrorAction SilentlyContinue) {
         $line = $match.Line
@@ -315,6 +303,7 @@ function Parse-IndexStageEvents {
             LoadMs = if ($line -match "loadMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
             RestoreMs = if ($line -match "restoreMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
             ApplyMs = if ($line -match "applyMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+            V2Ms = if ($line -match "v2Ms=(?<v>\d+)") { [int]$Matches.v } else { 0 }
             RecordsMs = if ($line -match "recordsMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
             DirsMs = if ($line -match "dirsMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
             TotalChanges = if ($line -match "totalChanges=(?<v>\d+)") { [int]$Matches.v } else { 0 }
@@ -322,6 +311,10 @@ function Parse-IndexStageEvents {
             Records = if ($line -match "records=(?<v>\d+)") { [int]$Matches.v } else { 0 }
             Buckets = if ($line -match "buckets=(?<v>\d+)") { [int]$Matches.v } else { 0 }
             Bytes = if ($line -match "bytes=(?<v>\d+)") { [long]$Matches.v } else { 0 }
+            V2Bytes = if ($line -match "v2Bytes=(?<v>\d+)") { [long]$Matches.v } else { 0 }
+            ShortBytes = if ($line -match "shortBytes=(?<v>\d+)") { [long]$Matches.v } else { 0 }
+            ParentOrder = if ($line -match "parentOrder=(?<v>\d+)") { [long]$Matches.v } else { 0 }
+            ChildBuckets = if ($line -match "childBuckets=(?<v>\d+)") { [long]$Matches.v } else { 0 }
             Stale = if ($line -match "stale=(?<v>true|false)") { [bool]::Parse($Matches.v) } else { $false }
             Raw = $line
         })
@@ -513,12 +506,14 @@ function New-MarkdownReport {
     $lines.Add("")
     $lines.Add("## 索引加载与后台阶段")
     $lines.Add("")
-    $lines.Add("| 时间 | 阶段 | 结果 | 耗时(ms) | load(ms) | restore(ms) | records(ms) | dirs(ms) | apply(ms) | 记录数 | 文件(MB) | buckets | bytes(MB) | 变更数 | stale |")
-    $lines.Add("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
+    $lines.Add("| 时间 | 阶段 | 结果 | 耗时(ms) | load(ms) | restore(ms) | v2(ms) | records(ms) | dirs(ms) | apply(ms) | 记录数 | 文件(MB) | buckets | bytes(MB) | v2(MB) | short(MB) | parentOrder | childBuckets | 变更数 | stale |")
+    $lines.Add("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
     foreach ($item in $IndexStageEvents) {
         $fileMb = if ($item.FileBytes -gt 0) { [math]::Round($item.FileBytes / 1MB, 1) } else { 0 }
         $bytesMb = if ($item.Bytes -gt 0) { [math]::Round($item.Bytes / 1MB, 1) } else { 0 }
-        $lines.Add("| $($item.Time.ToString('HH:mm:ss.fff')) | $($item.Stage) | $($item.Outcome) | $($item.ElapsedMs) | $($item.LoadMs) | $($item.RestoreMs) | $($item.RecordsMs) | $($item.DirsMs) | $($item.ApplyMs) | $($item.Records) | $fileMb | $($item.Buckets) | $bytesMb | $($item.TotalChanges) | $(Convert-BoolToChinese $item.Stale) |")
+        $v2Mb = if ($item.V2Bytes -gt 0) { [math]::Round($item.V2Bytes / 1MB, 1) } else { 0 }
+        $shortMb = if ($item.ShortBytes -gt 0) { [math]::Round($item.ShortBytes / 1MB, 1) } else { 0 }
+        $lines.Add("| $($item.Time.ToString('HH:mm:ss.fff')) | $($item.Stage) | $($item.Outcome) | $($item.ElapsedMs) | $($item.LoadMs) | $($item.RestoreMs) | $($item.V2Ms) | $($item.RecordsMs) | $($item.DirsMs) | $($item.ApplyMs) | $($item.Records) | $fileMb | $($item.Buckets) | $bytesMb | $v2Mb | $shortMb | $($item.ParentOrder) | $($item.ChildBuckets) | $($item.TotalChanges) | $(Convert-BoolToChinese $item.Stale) |")
     }
 
     $lines.Add("")
@@ -588,6 +583,19 @@ else {
 }
 New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
 
+$resolvedSnapshotDirectory = $null
+if (![string]::IsNullOrWhiteSpace($SnapshotDirectory)) {
+    $resolvedSnapshotDirectory = [System.IO.Path]::GetFullPath($SnapshotDirectory)
+    New-Item -ItemType Directory -Force -Path $resolvedSnapshotDirectory | Out-Null
+    $env:PM_MFT_INDEX_SNAPSHOT_DIR = $resolvedSnapshotDirectory
+    Write-Host "Using isolated snapshot directory: $resolvedSnapshotDirectory"
+}
+
+if ($ForceRebuildIndex) {
+    $resolvedSnapshotDirectory = Assert-IsolatedSnapshotDirectory -SnapshotRoot $resolvedSnapshotDirectory -OutputRoot $outputRoot
+    $env:PM_MFT_INDEX_SNAPSHOT_DIR = $resolvedSnapshotDirectory
+}
+
 $msbuild = Resolve-MSBuild
 $project = Join-Path $repoRoot "PackageManager.csproj"
 $hostExe = Join-Path $repoRoot "Assets\Tools\MftScanner.exe"
@@ -607,21 +615,20 @@ if (!(Test-Path $hostExe)) {
 
 $snapshotBackup = $null
 if ($ForceRebuildIndex) {
-    Write-Host "Force rebuild requested; stopping host and moving existing snapshot files..."
+    Write-Host "Force rebuild requested with isolated snapshot directory; stopping host without touching the real index..."
     Stop-MftScannerHost
-    $snapshotBackup = Backup-MftScannerIndexSnapshot -OutputRoot $outputRoot
-    if ($snapshotBackup) {
-        Write-Host "Snapshot files moved to $($snapshotBackup.BackupRoot)"
-    }
 }
 else {
     $correctnessScript = Join-Path $repoRoot "scripts\Test-MftScannerSearchCorrectness.ps1"
-    if (Test-Path $correctnessScript) {
+    if (!$SkipCorrectnessPrecheck -and (Test-Path $correctnessScript)) {
         Write-Host "Running correctness precheck..."
         & powershell -NoProfile -ExecutionPolicy Bypass -File $correctnessScript -Configuration $Configuration -Queries codex,code,c,vs,d,ve,dx,qx,zz,_d,1x,ver -MaxResults 100 -SkipBuild
         if ($LASTEXITCODE -ne 0) {
             throw "Correctness precheck failed with exit code $LASTEXITCODE."
         }
+    }
+    elseif ($SkipCorrectnessPrecheck) {
+        Write-Host "Skipping correctness precheck."
     }
 }
 
@@ -645,7 +652,7 @@ if (Test-Path $newtonsoftDll) {
 [void][System.Reflection.Assembly]::LoadFrom($coreDll)
 
 $client = if ($Backend -eq "SharedHost") {
-    New-Object MftScanner.SharedIndexServiceClient "CtrlQBenchmark"
+    New-Object MftScanner.SharedIndexServiceClient $SharedHostConsumer
 }
 else {
     New-Object MftScanner.IndexService
@@ -785,6 +792,18 @@ try {
         [pscustomobject]@{ Name = "ChineseSeed"; Keyword = "中"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Seed"; Language = "ChineseSeed" }
     )
 
+    if ($Backend -eq "SharedHost") {
+        Write-Host "Warming shared-host IPC path..."
+        $warmupCase = [pscustomobject]@{ Name = "WarmupPathContainsSingleChar"; Keyword = "$PathPrefix d"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Warmup"; Language = "Ascii" }
+        $warmupCts = New-Object System.Threading.CancellationTokenSource ([TimeSpan]::FromSeconds($SearchTimeoutSeconds))
+        try {
+            [void]$client.SearchAsync($warmupCase.Keyword, $MaxResults, 0, $warmupCase.Filter, $null, $warmupCts.Token).GetAwaiter().GetResult()
+        }
+        finally {
+            $warmupCts.Dispose()
+        }
+    }
+
     foreach ($case in $cases) {
         for ($i = 1; $i -le $Repeat; $i++) {
             Invoke-BenchmarkCase -Client $client -Case $case -Phase "just-built" -Iteration $i
@@ -877,6 +896,7 @@ $report = [ordered]@{
     Repeat = $Repeat
     Backend = $Backend
     ForceRebuildIndex = [bool]$ForceRebuildIndex
+    SnapshotDirectory = $resolvedSnapshotDirectory
     SnapshotBackup = $snapshotBackup
     HostProcessId = if ($hostProcess) { $hostProcess.Id } else { $null }
     LogPath = $logPath
@@ -919,4 +939,4 @@ Write-Host "Markdown: $mdPath"
 @($prefilterEvents) | Format-Table Outcome, ElapsedMs, CandidateCount, DirectoryCount, PathPrefix -AutoSize
 @($containsCacheEvents) | Format-Table Outcome, ElapsedMs, SourceCount, Matched, Query -AutoSize
 @($containsQueryEvents) | Format-Table Mode, CandidateCount, IntersectMs, VerifyMs, Matched, Normalized -AutoSize
-@($indexStageEvents) | Format-Table Stage, Outcome, ElapsedMs, LoadMs, RestoreMs, RecordsMs, DirsMs, ApplyMs, TotalChanges, Stale -AutoSize
+@($indexStageEvents) | Format-Table Stage, Outcome, ElapsedMs, LoadMs, RestoreMs, V2Ms, RecordsMs, DirsMs, ApplyMs, TotalChanges, Stale -AutoSize
