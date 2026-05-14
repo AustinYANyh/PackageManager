@@ -445,6 +445,7 @@
       <EmbeddedResource Include="Assets\Tools\MftScanner.exe" />
       <EmbeddedResource Include="Assets\Tools\MftScanner.Service.exe" />
       <EmbeddedResource Include="Assets\Tools\MftScanner.Core.dll" />
+      <EmbeddedResource Include="Assets\Tools\MftScanner.Native.dll" />
       <EmbeddedResource Include="Assets\Tools\CommonStartupTool.exe" />
       <EmbeddedResource Include="Assets\Tools\UnlockProcessAdmin.exe" />
       <Content Include="Assets\Icons\README.txt" />
@@ -455,6 +456,9 @@
       <Content Include="Folder.DotSettings.user" />
     </ItemGroup>
     <Target Name="EnsureEmbeddedToolArtifacts" BeforeTargets="BeforeBuild">
+      <MSBuild Projects="Tools\MftScanner.Native\MftScanner.Native.vcxproj"
+               Targets="Build"
+               Properties="Configuration=$(Configuration);Platform=x64" />
       <MSBuild Projects="Tools\MftScanner.Core\MftScanner.Core.csproj"
                Targets="Build"
                Properties="Configuration=$(Configuration);Platform=AnyCPU;OutDir=" />

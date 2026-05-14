@@ -762,8 +762,45 @@ namespace MftScanner
                 EnsureSearchUiShown();
             }
 
+            if (string.Equals(command, "native-test-control", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!string.Equals(Environment.GetEnvironmentVariable("PM_MFT_INDEX_TEST_HOOKS"), "1", StringComparison.Ordinal))
+                {
+                    return Task.FromResult(new SharedIndexResponse
+                    {
+                        success = false,
+                        error = "native test hooks are disabled"
+                    });
+                }
+
+                try
+                {
+                    var raw = _indexService.InvokeNativeTestControl(request?.keyword ?? "{}");
+                    return Task.FromResult(new SharedIndexResponse
+                    {
+                        success = true,
+                        error = raw,
+                        indexedCount = _indexService.IndexedCount,
+                        currentStatusMessage = _indexService.CurrentStatusMessage,
+                        isBackgroundCatchUpInProgress = _indexService.IsBackgroundCatchUpInProgress,
+                        containsBucketStatus = _indexService.ContainsBucketStatus,
+                        totalIndexedCount = _indexService.IndexedCount,
+                        results = new List<ScannedFileInfo>()
+                    });
+                }
+                catch (Exception ex)
+                {
+                    return Task.FromResult(new SharedIndexResponse
+                    {
+                        success = false,
+                        error = ex.GetType().Name + ":" + ex.Message
+                    });
+                }
+            }
+
             return Task.FromResult(new SharedIndexResponse
             {
+                success = true,
                 indexedCount = _indexService.IndexedCount,
                 currentStatusMessage = _indexService.CurrentStatusMessage,
                 isBackgroundCatchUpInProgress = _indexService.IsBackgroundCatchUpInProgress,

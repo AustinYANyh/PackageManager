@@ -92,6 +92,11 @@ namespace MftScanner
             EnsureSearchHotStructuresReady(reason, ct);
         }
 
+        public string InvokeNativeTestControl(string requestJson)
+        {
+            throw new NotSupportedException("Native test control is only available for the native backend.");
+        }
+
         /// <summary>文件系统增量变更事件，携带变更类型和文件信息，供 UI 直接更新列表。</summary>
         public event EventHandler<IndexChangedEventArgs> IndexChanged;
         public event EventHandler<IndexStatusChangedEventArgs> IndexStatusChanged;

@@ -1064,6 +1064,32 @@ namespace
             return BuildStateJson(false);
         }
 
+        std::string TestControl(const std::string& requestJson)
+        {
+            if (!IsTestHooksEnabled())
+            {
+                return BuildErrorJson("test-hooks-disabled");
+            }
+
+            std::string action;
+            TryReadJsonStringField(requestJson, "action", action);
+            if (action == "injectSyntheticUsnBacklog")
+            {
+                int count = 0;
+                int seed = 0;
+                TryReadJsonIntField(requestJson, "count", count);
+                TryReadJsonIntField(requestJson, "seed", seed);
+                return InjectSyntheticUsnBacklog(count, seed);
+            }
+
+            if (action == "waitForDeltaIndexed" || action == "getDeltaState")
+            {
+                return BuildDeltaStateJson(true, 0);
+            }
+
+            return BuildErrorJson("unknown-test-action");
+        }
+
         void Shutdown()
         {
             {
@@ -3627,6 +3653,171 @@ namespace
             }
 
             return changed;
+        }
+
+        std::string InjectSyntheticUsnBacklog(int requestedCount, int seed)
+        {
+            const auto totalStart = std::chrono::steady_clock::now();
+            if (requestedCount <= 0)
+            {
+                return BuildDeltaStateJson(true, 0);
+            }
+
+            auto count = std::min(requestedCount, 1000000);
+            std::vector<NativeChange> changes;
+            changes.reserve(static_cast<std::size_t>(count));
+
+            {
+                std::shared_lock<std::shared_mutex> guard(mutex_);
+                const auto drive = SelectSyntheticDrive_NoLock();
+                const auto parent = SelectSyntheticParentFrn_NoLock(drive);
+                const auto baseFrn = SelectSyntheticBaseFrn_NoLock(drive, static_cast<std::uint64_t>(seed));
+
+                const auto createCount = (count * 60) / 100;
+                const auto renameCount = (count * 20) / 100;
+                const auto deleteCount = count - createCount - renameCount;
+                for (int i = 0; i < createCount; ++i)
+                {
+                    changes.push_back(BuildSyntheticChange(
+                        ChangeKind::Create,
+                        drive,
+                        baseFrn + static_cast<std::uint64_t>(i),
+                        parent,
+                        L"__pm_delta_create_" + std::to_wstring(seed) + L"_" + std::to_wstring(i) + L".txt"));
+                }
+
+                for (int i = 0; i < renameCount; ++i)
+                {
+                    auto change = BuildSyntheticChange(
+                        ChangeKind::Rename,
+                        drive,
+                        baseFrn + static_cast<std::uint64_t>(createCount + i),
+                        parent,
+                        L"__pm_delta_rename_new_" + std::to_wstring(seed) + L"_" + std::to_wstring(i) + L".txt");
+                    change.oldParentFrn = parent;
+                    change.oldLowerName = L"__pm_delta_rename_old_" + std::to_wstring(seed) + L"_" + std::to_wstring(i) + L".txt";
+                    changes.push_back(std::move(change));
+                }
+
+                for (int i = 0; i < deleteCount; ++i)
+                {
+                    auto change = BuildSyntheticChange(
+                        ChangeKind::Delete,
+                        drive,
+                        baseFrn + static_cast<std::uint64_t>(createCount + renameCount + i),
+                        parent,
+                        L"__pm_delta_delete_" + std::to_wstring(seed) + L"_" + std::to_wstring(i) + L".txt");
+                    changes.push_back(std::move(change));
+                }
+            }
+
+            const auto emitMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - totalStart).count();
+            const auto applyStart = std::chrono::steady_clock::now();
+            bool changed = false;
+            {
+                std::unique_lock<std::shared_mutex> guard(mutex_);
+                changed = ApplyCollectedChanges_NoLock(changes, nullptr);
+                if (changed)
+                {
+                    currentStatusMessage_ = L"已应用 synthetic USN delta";
+                    generationId_.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+
+            const auto applyMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - applyStart).count();
+            if (changed)
+            {
+                PublishStatus(true);
+            }
+
+            const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - totalStart).count();
+            NativeLogWrite(
+                "[NATIVE TEST DELTA] changes=" + std::to_string(count)
+                + " emitMs=" + std::to_string(emitMs)
+                + " applyMs=" + std::to_string(applyMs)
+                + " totalMs=" + std::to_string(totalMs));
+            return BuildDeltaStateJson(true, totalMs, emitMs, applyMs);
+        }
+
+        std::string BuildDeltaStateJson(bool success, long long totalMs, long long emitMs = 0, long long applyMs = 0) const
+        {
+            std::shared_lock<std::shared_mutex> guard(mutex_);
+            std::ostringstream ss;
+            ss << "{";
+            ss << "\"success\":" << (success ? "true" : "false") << ",";
+            ss << "\"ready\":true,";
+            ss << "\"totalMs\":" << totalMs << ",";
+            ss << "\"deltaBuildMs\":" << totalMs << ",";
+            ss << "\"readUsnMs\":0,";
+            ss << "\"coalesceMs\":0,";
+            ss << "\"applyMs\":" << applyMs << ",";
+            ss << "\"tokenEmitMs\":" << emitMs << ",";
+            ss << "\"sortMs\":0,";
+            ss << "\"publishLockMs\":" << applyMs << ",";
+            ss << "\"deltaRecordCount\":" << overlayRecords_.size() << ",";
+            ss << "\"tombstoneCount\":" << overlayDeletedKeys_.size() << ",";
+            ss << "\"segmentCount\":" << (overlayRecords_.empty() && overlayDeletedKeys_.empty() ? 0 : 1);
+            ss << "}";
+            return ss.str();
+        }
+
+        static NativeChange BuildSyntheticChange(
+            ChangeKind kind,
+            wchar_t drive,
+            std::uint64_t frn,
+            std::uint64_t parent,
+            const std::wstring& originalName)
+        {
+            NativeChange change;
+            change.kind = kind;
+            change.driveLetter = drive;
+            change.frn = frn;
+            change.parentFrn = parent;
+            change.oldParentFrn = parent;
+            change.isDirectory = false;
+            change.originalName = originalName;
+            change.lowerName = ToLower(originalName);
+            change.oldLowerName = change.lowerName;
+            return change;
+        }
+
+        wchar_t SelectSyntheticDrive_NoLock() const
+        {
+            if (!volumes_.empty())
+            {
+                return volumes_.begin()->first;
+            }
+
+            return L'C';
+        }
+
+        std::uint64_t SelectSyntheticParentFrn_NoLock(wchar_t drive) const
+        {
+            const auto* source = !directoryIds_.empty() ? &directoryIds_ : &allIds_;
+            for (const auto recordId : *source)
+            {
+                if (recordId < GetRecordCount_NoLock() && GetRecordDrive_NoLock(recordId) == drive)
+                {
+                    return GetRecordFrn_NoLock(recordId);
+                }
+            }
+
+            return NtfsRootFileReferenceNumber;
+        }
+
+        std::uint64_t SelectSyntheticBaseFrn_NoLock(wchar_t drive, std::uint64_t seed) const
+        {
+            std::uint64_t maxFrn = 0;
+            const auto volumeIt = volumes_.find(drive);
+            if (volumeIt != volumes_.end())
+            {
+                maxFrn = volumeIt->second.maxFrn;
+            }
+
+            return maxFrn + 1000000ull + (seed * 1000000ull);
         }
 
         bool ApplyCreate_NoLock(VolumeState& volume, const NativeChange& change, std::string* payload)
@@ -8136,6 +8327,13 @@ namespace
             value = std::atoi(json.substr(colonPos, endPos - colonPos).c_str());
             return true;
         }
+
+        static bool IsTestHooksEnabled()
+        {
+            char value[16]{};
+            const auto length = GetEnvironmentVariableA("PM_MFT_INDEX_TEST_HOOKS", value, static_cast<DWORD>(sizeof(value)));
+            return length == 1 && value[0] == '1';
+        }
     };
 
     char* DuplicateUtf8(const std::string& value)
@@ -8352,6 +8550,15 @@ extern "C"
         return ExecuteOperation(static_cast<NativeIndex*>(handle), responseJsonUtf8, [handle]()
         {
             return static_cast<NativeIndex*>(handle)->GetState();
+        });
+    }
+
+    __declspec(dllexport) int __cdecl pm_index_test_control(void* handle, const char* requestJsonUtf8, char** responseJsonUtf8)
+    {
+        const std::string request = requestJsonUtf8 == nullptr ? std::string("{}") : std::string(requestJsonUtf8);
+        return ExecuteOperation(static_cast<NativeIndex*>(handle), responseJsonUtf8, [handle, &request]()
+        {
+            return static_cast<NativeIndex*>(handle)->TestControl(request);
         });
     }
 

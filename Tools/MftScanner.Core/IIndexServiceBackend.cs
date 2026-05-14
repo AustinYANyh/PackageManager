@@ -22,6 +22,7 @@ namespace MftScanner
         Task<SearchQueryResult> SearchAsync(string keyword, int maxResults, int offset, SearchTypeFilter filter, IProgress<string> progress, CancellationToken ct);
         Task NotifyDeletedAsync(string fullPath, bool isDirectory, CancellationToken ct);
         void EnsureSearchHotStructuresReady(CancellationToken ct, string reason);
+        string InvokeNativeTestControl(string requestJson);
         void Shutdown();
     }
 }

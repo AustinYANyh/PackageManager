@@ -77,6 +77,11 @@ namespace MftScanner
         {
             _backend.EnsureSearchHotStructuresReady(ct, reason);
         }
+
+        public string InvokeNativeTestControl(string requestJson)
+        {
+            return _backend.InvokeNativeTestControl(requestJson);
+        }
     }
 
     internal static class IndexServiceBackendFactory
@@ -246,6 +251,16 @@ namespace MftScanner
         public void EnsureSearchHotStructuresReady(CancellationToken ct, string reason)
         {
             ct.ThrowIfCancellationRequested();
+        }
+
+        public string InvokeNativeTestControl(string requestJson)
+        {
+            if (!string.Equals(Environment.GetEnvironmentVariable("PM_MFT_INDEX_TEST_HOOKS"), "1", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("Native test hooks are disabled.");
+            }
+
+            return InvokeJsonCall(NativeMethods.pm_index_test_control, requestJson ?? "{}");
         }
 
         public void Shutdown()
@@ -595,6 +610,9 @@ namespace MftScanner
 
         [DllImport("MftScanner.Native.dll", CallingConvention = CallingConvention.Cdecl, EntryPoint = "pm_index_get_state")]
         internal static extern int pm_index_get_state(IntPtr handle, IntPtr requestJsonUtf8, out IntPtr responseJsonUtf8);
+
+        [DllImport("MftScanner.Native.dll", CallingConvention = CallingConvention.Cdecl, EntryPoint = "pm_index_test_control")]
+        internal static extern int pm_index_test_control(IntPtr handle, IntPtr requestJsonUtf8, out IntPtr responseJsonUtf8);
 
         [DllImport("MftScanner.Native.dll", CallingConvention = CallingConvention.Cdecl, EntryPoint = "pm_index_shutdown")]
         internal static extern void pm_index_shutdown(IntPtr handle);

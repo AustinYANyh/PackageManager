@@ -141,6 +141,18 @@ namespace MftScanner
             }
         }
 
+        public async Task<string> SendTestControlAsync(string requestJson, CancellationToken ct)
+        {
+            var response = await SendControlRequestAsyncStatic(new SharedIndexRequest
+            {
+                command = "native-test-control",
+                consumer = _consumerName,
+                keyword = requestJson ?? "{}"
+            }, ct).ConfigureAwait(false);
+
+            return response?.error;
+        }
+
         public void Shutdown()
         {
             try
