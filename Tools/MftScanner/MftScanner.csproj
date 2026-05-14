@@ -112,5 +112,13 @@
     <Copy SourceFiles="$(TargetPath)"
           DestinationFiles="$(MSBuildProjectDirectory)\..\..\Assets\Tools\MftScanner.exe"
           SkipUnchangedFiles="false" />
+    <Copy SourceFiles="$(TargetDir)MftScanner.Core.dll"
+          DestinationFiles="$(MSBuildProjectDirectory)\..\..\Assets\Tools\MftScanner.Core.dll"
+          SkipUnchangedFiles="false"
+          Condition="Exists('$(TargetDir)MftScanner.Core.dll')" />
+    <Copy SourceFiles="$(TargetDir)MftScanner.Core.pdb"
+          DestinationFiles="$(MSBuildProjectDirectory)\..\..\Assets\Tools\MftScanner.Core.pdb"
+          SkipUnchangedFiles="false"
+          Condition="Exists('$(TargetDir)MftScanner.Core.pdb')" />
   </Target>
 </Project>

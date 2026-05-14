@@ -23,7 +23,8 @@ namespace MftScanner
         Rebuild = 2,
         State = 3,
         Search = 4,
-        MarkDeleted = 5
+        MarkDeleted = 5,
+        TestControl = 6
     }
 
     public enum SharedIndexResponseStatus

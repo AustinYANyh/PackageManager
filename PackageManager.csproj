@@ -165,8 +165,9 @@
         <Compile Include="Models\VisibilityItem.cs" />
         <Compile Include="Services\AdminElevationService.cs" />
         <Compile Include="Services\ConfigPresetStore.cs" />
-        <Compile Include="Services\CommonStartupHotkeyService.cs" />
-        <Compile Include="Services\CommonStartupWindowManager.cs" />
+    <Compile Include="Services\CommonStartupHotkeyService.cs" />
+    <Compile Include="Services\CommonStartupWindowManager.cs" />
+    <Compile Include="Services\MftIndexServiceManager.cs" />
         <Compile Include="Services\FileSearchWindowManager.cs" />
         <Compile Include="Services\PinyinMatcher.cs" />
         <Compile Include="Services\RawInputHotkeySource.cs" />
@@ -395,7 +396,7 @@
     <Sign_StoreName>My</Sign_StoreName>
     <Sign_SignToolPath></Sign_SignToolPath>
     <SelfSign_Enabled>false</SelfSign_Enabled>
-    <SelfSign_AutoForRelease>true</SelfSign_AutoForRelease>
+    <SelfSign_AutoForRelease>false</SelfSign_AutoForRelease>
     <SelfSign_ScriptPath>$(MSBuildProjectDirectory)\scripts\SelfSignExe.ps1</SelfSign_ScriptPath>
     <SelfSign_SubjectName>CN=PackageManager Self-Signed</SelfSign_SubjectName>
     <SelfSign_ValidYears>3</SelfSign_ValidYears>
@@ -442,6 +443,7 @@
       <Content Include="UpdateSummary.txt" />
       <EmbeddedResource Include="Assets\Tools\LogViewPro.exe" />
       <EmbeddedResource Include="Assets\Tools\MftScanner.exe" />
+      <EmbeddedResource Include="Assets\Tools\MftScanner.Service.exe" />
       <EmbeddedResource Include="Assets\Tools\MftScanner.Core.dll" />
       <EmbeddedResource Include="Assets\Tools\CommonStartupTool.exe" />
       <EmbeddedResource Include="Assets\Tools\UnlockProcessAdmin.exe" />
@@ -469,6 +471,14 @@
                Properties="Configuration=$(Configuration);Platform=AnyCPU;OutDir=">
         <Output TaskParameter="TargetOutputs" ItemName="EmbeddedMftScannerTarget" />
       </MSBuild>
+      <MSBuild Projects="Tools\MftScanner.Service\MftScanner.Service.csproj"
+               Targets="Build"
+               Properties="Configuration=$(Configuration);Platform=AnyCPU;OutDir=" />
+      <MSBuild Projects="Tools\MftScanner.Service\MftScanner.Service.csproj"
+               Targets="GetTargetPath"
+               Properties="Configuration=$(Configuration);Platform=AnyCPU;OutDir=">
+        <Output TaskParameter="TargetOutputs" ItemName="EmbeddedMftScannerServiceTarget" />
+      </MSBuild>
       <MSBuild Projects="Tools\CommonStartupTool\CommonStartupTool.csproj"
                Targets="Build"
                Properties="Configuration=$(Configuration);Platform=AnyCPU;OutDir=" />
@@ -480,6 +490,9 @@
       <MakeDir Directories="Assets\Tools" />
       <Copy SourceFiles="@(EmbeddedMftScannerTarget)"
             DestinationFiles="Assets\Tools\MftScanner.exe"
+            SkipUnchangedFiles="false" />
+      <Copy SourceFiles="@(EmbeddedMftScannerServiceTarget)"
+            DestinationFiles="Assets\Tools\MftScanner.Service.exe"
             SkipUnchangedFiles="false" />
       <Copy SourceFiles="@(EmbeddedMftScannerCoreTarget)"
             DestinationFiles="Assets\Tools\MftScanner.Core.dll"

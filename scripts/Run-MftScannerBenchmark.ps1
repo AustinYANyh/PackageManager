@@ -18,6 +18,16 @@ param(
     [switch]$ForceRebuildIndex,
     [string]$SnapshotDirectory,
     [string]$SharedHostConsumer = "Benchmark",
+    [switch]$SimulateUsnBacklog,
+    [int[]]$BacklogChangeCounts = @(10000, 60000, 200000),
+    [ValidateSet("CreateRenameDeleteMixed")]
+    [string]$BacklogMode = "CreateRenameDeleteMixed",
+    [int]$RequireBacklogRestoreReadyMs = 1000,
+    [int]$RequireBacklogClientMs = 50,
+    [int]$RequireServiceReadyMs = 3000,
+    [switch]$SimulateServiceStoppedBacklog,
+    [int]$RequireServiceCatchupPublishMs = 3000,
+    [int]$RequireClientMs = 50,
     [string]$OutputDirectory = ".\artifacts\mft-benchmark"
 )
 
@@ -54,6 +64,7 @@ function Resolve-MSBuild {
 }
 
 function Stop-MftScannerHost {
+    $failed = New-Object System.Collections.Generic.List[string]
     Get-CimInstance Win32_Process -Filter "Name = 'MftScanner.exe'" -ErrorAction SilentlyContinue |
         ForEach-Object {
             $processId = $_.ProcessId
@@ -62,8 +73,13 @@ function Stop-MftScannerHost {
             }
             catch {
                 Write-Warning "Failed to stop MftScanner.exe pid=${processId}: $($_.Exception.Message)"
+                $failed.Add([string]$processId)
             }
         }
+
+    if ($failed.Count -gt 0 -and ($ForceRebuildIndex -or $SimulateUsnBacklog -or ![string]::IsNullOrWhiteSpace($SnapshotDirectory))) {
+        throw "Cannot stop existing MftScanner.exe process(es): $($failed -join ', '). Isolated benchmark cannot safely continue while shared MMF host may point at another snapshot."
+    }
 }
 
 function Assert-IsolatedSnapshotDirectory {
@@ -98,6 +114,92 @@ function Get-ProcessMemorySnapshot {
         Select-Object Id, ProcessName, Path,
             @{ Name = "WorkingSetMB"; Expression = { [math]::Round($_.WorkingSet64 / 1MB, 1) } },
             @{ Name = "PrivateMB"; Expression = { [math]::Round($_.PrivateMemorySize64 / 1MB, 1) } }
+}
+
+function Get-MftIndexServiceStatus {
+    param([string]$RepoRoot)
+
+    $serviceExe = Join-Path $RepoRoot "Assets\Tools\MftScanner.exe"
+    if (!(Test-Path $serviceExe)) {
+        return $null
+    }
+
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $serviceExe
+        $psi.Arguments = "--service-status"
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.CreateNoWindow = $true
+
+        $process = [System.Diagnostics.Process]::Start($psi)
+        if (!$process.WaitForExit(3000)) {
+            try {
+                $process.Kill()
+            }
+            catch {
+            }
+
+            return $null
+        }
+
+        $raw = $process.StandardOutput.ReadToEnd()
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            return $null
+        }
+
+        return $raw | ConvertFrom-Json
+    }
+    catch {
+        return $null
+    }
+}
+
+function Get-MftScannerProcesses {
+    @(Get-CimInstance Win32_Process -Filter "Name = 'MftScanner.exe'" -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            $executablePath = $_.ExecutablePath
+            if ([string]::IsNullOrWhiteSpace($executablePath)) {
+                try {
+                    $proc = Get-Process -Id $_.ProcessId -ErrorAction Stop
+                    $executablePath = $proc.Path
+                }
+                catch {
+                }
+            }
+
+            [pscustomobject]@{
+                ProcessId = $_.ProcessId
+                ExecutablePath = $executablePath
+                CommandLine = $_.CommandLine
+                CreationDate = $_.CreationDate
+            }
+        })
+}
+
+function Assert-SingleIndexAgentHost {
+    param(
+        [string]$ExpectedExe,
+        [int]$ExpectedProcessId = 0
+    )
+
+    $processes = @(Get-MftScannerProcesses)
+    $agents = @($processes | Where-Object {
+        ($ExpectedProcessId -gt 0 -and $_.ProcessId -eq $ExpectedProcessId) -or
+        ($_.CommandLine -match '--index-agent') -or
+        ([string]::IsNullOrWhiteSpace($_.CommandLine) -and ![string]::IsNullOrWhiteSpace($_.ExecutablePath) -and $_.ExecutablePath -ieq $ExpectedExe)
+    })
+    $interactive = @($processes | Where-Object {
+        !($ExpectedProcessId -gt 0 -and $_.ProcessId -eq $ExpectedProcessId) -and
+        $_.CommandLine -notmatch '--index-agent' -and
+        -not [string]::IsNullOrWhiteSpace($_.CommandLine)
+    })
+
+    if ($agents.Count -ne 1 -or $interactive.Count -gt 0) {
+        $details = ($processes | ForEach-Object { "pid=$($_.ProcessId) exe=$($_.ExecutablePath) cmd=$($_.CommandLine)" }) -join "`n"
+        throw "Benchmark requires exactly one --index-agent host and no interactive MftScanner.exe process. Current processes:`n$details"
+    }
 }
 
 function Parse-PathPrefilterEvents {
@@ -420,6 +522,7 @@ function New-MarkdownReport {
         [object[]]$PrefilterEvents,
         [object[]]$ContainsCacheEvents,
         [object[]]$ContainsQueryEvents,
+        [object[]]$BacklogRows,
         [object[]]$IndexStageEvents,
         [object[]]$MemoryBefore,
         [object[]]$MemoryAfter,
@@ -577,6 +680,17 @@ function New-MarkdownReport {
         $lines.Add("| $($item.Mode) | $($item.Count) | $($item.AvgCandidateCount) | $($item.AvgIntersectMs) | $($item.AvgVerifyMs) | $($item.AvgMatched) |")
     }
 
+    if (@($BacklogRows).Count -gt 0) {
+        $lines.Add("")
+        $lines.Add("## Synthetic USN Backlog")
+        $lines.Add("")
+        $lines.Add("| 阶段 | 变更数 | Seed | 总耗时(ms) | Delta构建(ms) | Apply(ms) | Token(ms) | Sort(ms) | Lock(ms) | Delta记录数 | Tombstone数 | Segment数 | Ready(ms) |")
+        $lines.Add("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+        foreach ($item in @($BacklogRows)) {
+            $lines.Add("| $($item.Phase) | $($item.ChangeCount) | $($item.Seed) | $($item.TotalMs) | $($item.DeltaBuildMs) | $($item.ApplyMs) | $($item.TokenEmitMs) | $($item.SortMs) | $($item.PublishLockMs) | $($item.DeltaRecordCount) | $($item.TombstoneCount) | $($item.SegmentCount) | $($item.DeltaReadyMs) |")
+        }
+    }
+
     $lines.Add("")
     $lines.Add("## 索引加载与后台阶段")
     $lines.Add("")
@@ -673,6 +787,47 @@ if ($ForceRebuildIndex) {
     $env:PM_MFT_INDEX_SNAPSHOT_DIR = $resolvedSnapshotDirectory
 }
 
+if ($SimulateUsnBacklog) {
+    $resolvedSnapshotDirectory = Assert-IsolatedSnapshotDirectory -SnapshotRoot $resolvedSnapshotDirectory -OutputRoot $outputRoot
+    $env:PM_MFT_INDEX_SNAPSHOT_DIR = $resolvedSnapshotDirectory
+    $env:PM_MFT_INDEX_TEST_HOOKS = "1"
+    Write-Host "Synthetic USN backlog test hooks enabled for isolated snapshot directory."
+}
+
+$env:PM_MFT_INDEX_HOST_STARTUP_WAIT_MS = ([Math]::Max($ReadyTimeoutSeconds * 1000, 15000)).ToString()
+
+$userEnvironmentBackup = @{}
+function Set-BenchmarkUserEnvironment {
+    param(
+        [string]$Name,
+        [string]$Value
+    )
+
+    if (!$script:userEnvironmentBackup.ContainsKey($Name)) {
+        $script:userEnvironmentBackup[$Name] = [Environment]::GetEnvironmentVariable($Name, "User")
+    }
+
+    [Environment]::SetEnvironmentVariable($Name, $Value, "User")
+}
+
+function Restore-BenchmarkUserEnvironment {
+    foreach ($entry in $script:userEnvironmentBackup.GetEnumerator()) {
+        [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, "User")
+    }
+}
+
+if ($Backend -eq "SharedHost") {
+    Set-BenchmarkUserEnvironment -Name "PM_ENABLE_NATIVE_INDEX" -Value "1"
+    Set-BenchmarkUserEnvironment -Name "PM_DISABLE_NATIVE_INDEX" -Value "0"
+    Set-BenchmarkUserEnvironment -Name "PM_MFT_INDEX_HOST_STARTUP_WAIT_MS" -Value $env:PM_MFT_INDEX_HOST_STARTUP_WAIT_MS
+    if (![string]::IsNullOrWhiteSpace($resolvedSnapshotDirectory)) {
+        Set-BenchmarkUserEnvironment -Name "PM_MFT_INDEX_SNAPSHOT_DIR" -Value $resolvedSnapshotDirectory
+    }
+    if ($SimulateUsnBacklog) {
+        Set-BenchmarkUserEnvironment -Name "PM_MFT_INDEX_TEST_HOOKS" -Value "1"
+    }
+}
+
 $msbuild = Resolve-MSBuild
 $project = Join-Path $repoRoot "PackageManager.csproj"
 $hostExe = Join-Path $repoRoot "Assets\Tools\MftScanner.exe"
@@ -726,6 +881,8 @@ $hostProcess = $null
 if ($Backend -eq "SharedHost") {
     Write-Host "Starting index host..."
     $hostProcess = Start-Process -FilePath $hostExe -ArgumentList "--index-agent" -WindowStyle Hidden -PassThru
+    Start-Sleep -Milliseconds 500
+    Assert-SingleIndexAgentHost -ExpectedExe $hostExe -ExpectedProcessId $hostProcess.Id
 }
 
 if (Test-Path $newtonsoftDll) {
@@ -738,10 +895,16 @@ $client = if ($Backend -eq "SharedHost") {
     New-Object MftScanner.SharedIndexServiceClient $SharedHostConsumer
 }
 else {
+    Write-Host "Creating in-process index service..."
     New-Object MftScanner.IndexService
 }
+Write-Host "Index service created."
 $startedAt = Get-Date
 $rows = New-Object System.Collections.Generic.List[object]
+$backlogRows = New-Object System.Collections.Generic.List[object]
+$failures = New-Object System.Collections.Generic.List[object]
+$shouldCheckServiceStatus = $SimulateServiceStoppedBacklog -or $PSBoundParameters.ContainsKey("RequireServiceReadyMs") -or $PSBoundParameters.ContainsKey("RequireServiceCatchupPublishMs")
+$serviceStatusBefore = if ($shouldCheckServiceStatus) { Get-MftIndexServiceStatus -RepoRoot $repoRoot } else { $null }
 $dynamicChineseTerms = New-Object System.Collections.Generic.List[string]
 
 function Add-DynamicChineseTerm {
@@ -841,6 +1004,100 @@ function Invoke-BenchmarkCase {
     }
 }
 
+function Invoke-NativeTestControl {
+    param(
+        [object]$Client,
+        [hashtable]$Payload,
+        [int]$TimeoutSeconds = 30
+    )
+
+    $json = ($Payload | ConvertTo-Json -Compress -Depth 8)
+    if ($Client -is [MftScanner.IndexService]) {
+        $raw = $Client.InvokeNativeTestControl($json)
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            throw "Native test control returned an empty response."
+        }
+
+        return $raw | ConvertFrom-Json
+    }
+
+    if ($Client -isnot [MftScanner.SharedIndexServiceClient]) {
+        throw "Native test control requires SharedIndexServiceClient or native IndexService."
+    }
+
+    $cts = New-Object System.Threading.CancellationTokenSource ([TimeSpan]::FromSeconds($TimeoutSeconds))
+    try {
+        $raw = $Client.SendTestControlAsync($json, $cts.Token).GetAwaiter().GetResult()
+        if ([string]::IsNullOrWhiteSpace($raw)) {
+            throw "Native test control returned an empty response."
+        }
+
+        return $raw | ConvertFrom-Json
+    }
+    finally {
+        $cts.Dispose()
+    }
+}
+
+function Invoke-SyntheticBacklogCorrectness {
+    param(
+        [object]$Client,
+        [int]$Seed,
+        [int]$Count,
+        [string]$Phase
+    )
+
+    $createCount = [int][math]::Floor($Count * 0.60)
+    $renameCount = [int][math]::Floor($Count * 0.20)
+    $deleteCount = $Count - $createCount - $renameCount
+    $checks = @(
+        [pscustomobject]@{ Name = "SyntheticCreated"; Keyword = "__pm_delta_create_${Seed}_"; ExpectedMin = [math]::Min($createCount, 500); ExpectedExact = $null },
+        [pscustomobject]@{ Name = "SyntheticRenameNew"; Keyword = "__pm_delta_rename_new_${Seed}_"; ExpectedMin = [math]::Min($renameCount, 500); ExpectedExact = $null },
+        [pscustomobject]@{ Name = "SyntheticRenameOld"; Keyword = "__pm_delta_rename_old_${Seed}_"; ExpectedMin = 0; ExpectedExact = 0 },
+        [pscustomobject]@{ Name = "SyntheticDeleted"; Keyword = "__pm_delta_delete_${Seed}_"; ExpectedMin = 0; ExpectedExact = 0 }
+    )
+
+    foreach ($check in $checks) {
+        $case = [pscustomobject]@{
+            Name = $check.Name
+            Keyword = $check.Keyword
+            Filter = [MftScanner.SearchTypeFilter]::All
+            Scenario = "SyntheticBacklog"
+            Language = "Synthetic"
+        }
+        Invoke-BenchmarkCase -Client $Client -Case $case -Phase $Phase -Iteration 1
+        $row = @($rows.ToArray())[-1]
+        if ($null -ne $check.ExpectedExact -and $row.TotalMatchedCount -ne $check.ExpectedExact) {
+            $failures.Add([pscustomobject]@{
+                Phase = $Phase
+                Name = $check.Name
+                Keyword = $check.Keyword
+                Filter = "All"
+                ClientMs = $row.ClientMs
+                HostSearchMs = $row.HostSearchMs
+                ContainsMode = $row.NativeAccelerator
+                TotalMatchedCount = $row.TotalMatchedCount
+                ThresholdMs = $check.ExpectedExact
+                Reason = "synthetic-total-exact"
+            })
+        }
+        elseif ($row.TotalMatchedCount -lt $check.ExpectedMin) {
+            $failures.Add([pscustomobject]@{
+                Phase = $Phase
+                Name = $check.Name
+                Keyword = $check.Keyword
+                Filter = "All"
+                ClientMs = $row.ClientMs
+                HostSearchMs = $row.HostSearchMs
+                ContainsMode = $row.NativeAccelerator
+                TotalMatchedCount = $row.TotalMatchedCount
+                ThresholdMs = $check.ExpectedMin
+                Reason = "synthetic-total-min"
+            })
+        }
+    }
+}
+
 try {
     Write-Host "Waiting for shared index readiness..."
     $readyCts = New-Object System.Threading.CancellationTokenSource ([TimeSpan]::FromSeconds($ReadyTimeoutSeconds))
@@ -924,6 +1181,137 @@ try {
             Invoke-BenchmarkCase -Client $client -Case $case -Phase "postings-ready" -Iteration $i
         }
     }
+
+    if ($SimulateUsnBacklog) {
+        if ($Backend -eq "SharedHost") {
+            Write-Host "Restarting shared host for backlog restore gate..."
+            $client.Dispose()
+            Stop-MftScannerHost
+            Start-Sleep -Milliseconds 500
+            $hostProcess = Start-Process -FilePath $hostExe -ArgumentList "--index-agent" -WindowStyle Hidden -PassThru
+            Start-Sleep -Milliseconds 500
+            Assert-SingleIndexAgentHost -ExpectedExe $hostExe -ExpectedProcessId $hostProcess.Id
+            $client = New-Object MftScanner.SharedIndexServiceClient $SharedHostConsumer
+        }
+        else {
+            Write-Host "Restarting in-process native backend for backlog restore gate..."
+            $client.Shutdown()
+            $client = New-Object MftScanner.IndexService
+        }
+        $restoreGateCts = New-Object System.Threading.CancellationTokenSource ([TimeSpan]::FromSeconds($ReadyTimeoutSeconds))
+        $restoreGateSw = [System.Diagnostics.Stopwatch]::StartNew()
+        try {
+            [void]$client.BuildIndexAsync($null, $restoreGateCts.Token).GetAwaiter().GetResult()
+        }
+        finally {
+            $restoreGateSw.Stop()
+            $restoreGateCts.Dispose()
+        }
+
+        if ($restoreGateSw.ElapsedMilliseconds -gt $RequireBacklogRestoreReadyMs) {
+            $failures.Add([pscustomobject]@{
+                Phase = "backlog-restore"
+                Name = "SnapshotRestoreBeforeBacklog"
+                Keyword = ""
+                Filter = ""
+                ClientMs = 0
+                HostSearchMs = $restoreGateSw.ElapsedMilliseconds
+                ContainsMode = "native-v2-restore"
+                TotalMatchedCount = $client.IndexedCount
+                ThresholdMs = $RequireBacklogRestoreReadyMs
+                Reason = "backlog-restore-ready-threshold"
+            })
+        }
+
+        foreach ($changeCount in $BacklogChangeCounts) {
+            $seed = ([int](Get-Date -Format "HHmmss") + $changeCount) % 1000000
+            $phase = "backlog-$changeCount"
+            Write-Host "Injecting synthetic USN backlog: count=$changeCount seed=$seed"
+            $injectStarted = Get-Date
+            $inject = Invoke-NativeTestControl -Client $client -Payload @{
+                action = "injectSyntheticUsnBacklog"
+                count = $changeCount
+                mode = $BacklogMode
+                seed = $seed
+            } -TimeoutSeconds ([Math]::Max(30, [int]($changeCount / 2000)))
+            if ($inject.success -ne $true) {
+                throw "Synthetic backlog injection failed: $($inject | ConvertTo-Json -Compress -Depth 8)"
+            }
+            $ready = Invoke-NativeTestControl -Client $client -Payload @{
+                action = "waitForDeltaIndexed"
+            } -TimeoutSeconds 10
+            if ($ready.success -ne $true -or $ready.ready -ne $true) {
+                throw "Delta did not report ready: $($ready | ConvertTo-Json -Compress -Depth 8)"
+            }
+            $deltaReadyMs = [int]([DateTime]::UtcNow - $injectStarted.ToUniversalTime()).TotalMilliseconds
+            $backlogRows.Add([pscustomobject]@{
+                Phase = $phase
+                ChangeCount = $changeCount
+                Seed = $seed
+                TotalMs = [int]$inject.totalMs
+                DeltaBuildMs = [int]$inject.deltaBuildMs
+                ReadUsnMs = [int]$inject.readUsnMs
+                CoalesceMs = [int]$inject.coalesceMs
+                ApplyMs = [int]$inject.applyMs
+                TokenEmitMs = [int]$inject.tokenEmitMs
+                SortMs = [int]$inject.sortMs
+                PublishLockMs = [int]$inject.publishLockMs
+                DeltaRecordCount = [int]$ready.deltaRecordCount
+                TombstoneCount = [int]$ready.tombstoneCount
+                SegmentCount = [int]$ready.segmentCount
+                DeltaReadyMs = $deltaReadyMs
+            })
+
+            $deltaThresholdMs = if ($changeCount -le 10000) {
+                [Math]::Min($RequireBacklogRestoreReadyMs, 100)
+            }
+            elseif ($changeCount -le 60000) {
+                [Math]::Min($RequireBacklogRestoreReadyMs, 300)
+            }
+            else {
+                $RequireBacklogRestoreReadyMs
+            }
+
+            if ($deltaReadyMs -gt $deltaThresholdMs) {
+                $failures.Add([pscustomobject]@{
+                    Phase = $phase
+                    Name = "SyntheticBacklogDeltaReady"
+                    Keyword = ""
+                    Filter = ""
+                    ClientMs = 0
+                    HostSearchMs = $deltaReadyMs
+                    ContainsMode = "native-delta"
+                    TotalMatchedCount = [int]$ready.deltaRecordCount
+                    ThresholdMs = $deltaThresholdMs
+                    Reason = "backlog-delta-ready-threshold"
+                })
+            }
+
+            foreach ($case in $cases) {
+                if ($case.Scenario -eq "Regex") {
+                    continue
+                }
+                Invoke-BenchmarkCase -Client $client -Case $case -Phase $phase -Iteration 1
+                $row = @($rows.ToArray())[-1]
+                if ($row.ClientMs -gt $RequireBacklogClientMs) {
+                    $failures.Add([pscustomobject]@{
+                        Phase = $phase
+                        Name = $row.Name
+                        Keyword = $row.Keyword
+                        Filter = $row.Filter
+                        ClientMs = $row.ClientMs
+                        HostSearchMs = $row.HostSearchMs
+                        ContainsMode = $row.NativeAccelerator
+                        TotalMatchedCount = $row.TotalMatchedCount
+                        ThresholdMs = $RequireBacklogClientMs
+                        Reason = "backlog-client-threshold"
+                    })
+                }
+            }
+
+            Invoke-SyntheticBacklogCorrectness -Client $client -Seed $seed -Count $changeCount -Phase $phase
+        }
+    }
 }
 finally {
     if ($Backend -eq "SharedHost") {
@@ -932,6 +1320,8 @@ finally {
     else {
         $client.Shutdown()
     }
+
+    Restore-BenchmarkUserEnvironment
 }
 
 Start-Sleep -Milliseconds 300
@@ -946,7 +1336,6 @@ if ($restoreTotal.Count -gt 0) {
     $restoreReadyMs = [int64]$restoreTotal[0].ElapsedMs
 }
 
-$failures = New-Object System.Collections.Generic.List[object]
 if ($restoreReadyMs -gt $MaxRestoreReadyMsThreshold -or $restoreReadyMs -le 0) {
     $failures.Add([pscustomobject]@{
         Phase = "restore"
@@ -961,9 +1350,41 @@ if ($restoreReadyMs -gt $MaxRestoreReadyMsThreshold -or $restoreReadyMs -le 0) {
         Reason = "restore-ready-timeout"
     })
 }
+
+$serviceStatusAfter = if ($shouldCheckServiceStatus) { Get-MftIndexServiceStatus -RepoRoot $repoRoot } else { $null }
+if ($null -ne $serviceStatusAfter -and $serviceStatusAfter.ready -eq $true -and $serviceStatusAfter.lastPublishMs -gt $RequireServiceCatchupPublishMs) {
+    $failures.Add([pscustomobject]@{
+        Phase = "service"
+        Name = "ServiceCatchupPublish"
+        Keyword = ""
+        Filter = ""
+        ClientMs = 0
+        HostSearchMs = [int]$serviceStatusAfter.lastPublishMs
+        ContainsMode = "service"
+        TotalMatchedCount = [int]$serviceStatusAfter.indexedCount
+        ThresholdMs = $RequireServiceCatchupPublishMs
+        Reason = "service-catchup-publish-threshold"
+    })
+}
+
+if ($SimulateServiceStoppedBacklog) {
+    $failures.Add([pscustomobject]@{
+        Phase = "service-stopped-backlog"
+        Name = "ServiceStoppedBacklogGate"
+        Keyword = ""
+        Filter = ""
+        ClientMs = 0
+        HostSearchMs = 0
+        ContainsMode = "service"
+        TotalMatchedCount = 0
+        ThresholdMs = $RequireServiceCatchupPublishMs
+        Reason = "service-stopped-backlog-not-implemented"
+    })
+}
 foreach ($row in @($rows.ToArray())) {
     $isObservedOnly = $row.Scenario -eq "Regex"
-    if ($row.ClientMs -gt $MaxClientMsThreshold -or $row.ClientMs -lt 0) {
+    $effectiveClientThreshold = [Math]::Min($MaxClientMsThreshold, $RequireClientMs)
+    if ($row.ClientMs -gt $effectiveClientThreshold -or $row.ClientMs -lt 0) {
         if ($isObservedOnly) {
             continue
         }
@@ -976,7 +1397,7 @@ foreach ($row in @($rows.ToArray())) {
             HostSearchMs = $row.HostSearchMs
             ContainsMode = $row.ContainsMode
             TotalMatchedCount = $row.TotalMatchedCount
-            ThresholdMs = $MaxClientMsThreshold
+            ThresholdMs = $effectiveClientThreshold
             Reason = "client-total-threshold"
         })
     }
@@ -1081,11 +1502,16 @@ $report = [ordered]@{
     Repeat = $Repeat
     Backend = $Backend
     ForceRebuildIndex = [bool]$ForceRebuildIndex
+    SimulateUsnBacklog = [bool]$SimulateUsnBacklog
+    SimulateServiceStoppedBacklog = [bool]$SimulateServiceStoppedBacklog
     SnapshotDirectory = $resolvedSnapshotDirectory
+    ServiceStatusBefore = $serviceStatusBefore
+    ServiceStatusAfter = $serviceStatusAfter
     SnapshotBackup = $snapshotBackup
     HostProcessId = if ($hostProcess) { $hostProcess.Id } else { $null }
     LogPath = $logPath
     Rows = @($rows.ToArray())
+    BacklogRows = @($backlogRows.ToArray())
     PathPrefilterEvents = @($prefilterEvents)
     ContainsCacheEvents = @($containsCacheEvents)
     ContainsQueryEvents = @($containsQueryEvents)
@@ -1097,6 +1523,11 @@ $report = [ordered]@{
     MaxClientMsThreshold = $MaxClientMsThreshold
     MaxLockWaitMsThreshold = $MaxLockWaitMsThreshold
     MaxRestoreReadyMsThreshold = $MaxRestoreReadyMsThreshold
+    RequireBacklogRestoreReadyMs = $RequireBacklogRestoreReadyMs
+    RequireBacklogClientMs = $RequireBacklogClientMs
+    RequireServiceReadyMs = $RequireServiceReadyMs
+    RequireServiceCatchupPublishMs = $RequireServiceCatchupPublishMs
+    RequireClientMs = $RequireClientMs
     MaxWorkingSetMBThreshold = $MaxWorkingSetMBThreshold
     MaxPrivateMBThreshold = $MaxPrivateMBThreshold
     Failures = @($failures.ToArray())
@@ -1108,6 +1539,7 @@ New-MarkdownReport `
     -PrefilterEvents @($prefilterEvents) `
     -ContainsCacheEvents @($containsCacheEvents) `
     -ContainsQueryEvents @($containsQueryEvents) `
+    -BacklogRows @($backlogRows.ToArray()) `
     -IndexStageEvents @($indexStageEvents) `
     -MemoryBefore @($memoryBefore) `
     -MemoryAfter @($memoryAfter) `
@@ -1131,4 +1563,5 @@ Write-Host "Markdown: $mdPath"
 @($prefilterEvents) | Format-Table Outcome, ElapsedMs, CandidateCount, DirectoryCount, PathPrefix -AutoSize
 @($containsCacheEvents) | Format-Table Outcome, ElapsedMs, SourceCount, Matched, Query -AutoSize
 @($containsQueryEvents) | Format-Table Mode, CandidateCount, IntersectMs, VerifyMs, Matched, Normalized -AutoSize
+@($backlogRows.ToArray()) | Format-Table Phase, ChangeCount, TotalMs, DeltaBuildMs, DeltaRecordCount, TombstoneCount, DeltaReadyMs -AutoSize
 @($indexStageEvents) | Format-Table Stage, Outcome, ElapsedMs, LoadMs, RestoreMs, V2Ms, RecordsMs, DirsMs, ApplyMs, TotalChanges, Stale -AutoSize

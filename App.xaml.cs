@@ -164,6 +164,27 @@ namespace PackageManager
                     Environment.Exit(exitCode);
                     return true;
                 }
+
+                if (args != null && args.Length >= 1 && string.Equals(args[0], "--install-index-service", StringComparison.OrdinalIgnoreCase))
+                {
+                    var exitCode = MftIndexServiceManager.RunAdminInstallOrUpdate();
+                    Environment.Exit(exitCode);
+                    return true;
+                }
+
+                if (args != null && args.Length >= 1 && string.Equals(args[0], "--uninstall-index-service", StringComparison.OrdinalIgnoreCase))
+                {
+                    var exitCode = MftIndexServiceManager.RunAdminUninstall();
+                    Environment.Exit(exitCode);
+                    return true;
+                }
+
+                if (args != null && args.Length >= 1 && string.Equals(args[0], "--service-status", StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.WriteLine(MftIndexServiceManager.GetStatusJson());
+                    Environment.Exit(0);
+                    return true;
+                }
             }
             catch (Exception ex)
             {

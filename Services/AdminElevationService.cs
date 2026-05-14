@@ -292,9 +292,16 @@ namespace PackageManager.Services
         private static IEnumerable<string> GetEmbeddedToolSidecars(string outputFileName)
         {
             if (string.Equals(outputFileName, "MftScanner.exe", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(outputFileName, "MftScanner.Service.exe", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(outputFileName, "CommonStartupTool.exe", StringComparison.OrdinalIgnoreCase))
             {
                 yield return "MftScanner.Core.dll";
+            }
+
+            if (string.Equals(outputFileName, "MftScanner.exe", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(outputFileName, "MftScanner.Service.exe", StringComparison.OrdinalIgnoreCase))
+            {
+                yield return "MftScanner.Native.dll";
             }
         }
 

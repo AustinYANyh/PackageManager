@@ -94,6 +94,7 @@ namespace MftScanner
             var indexAgentIndex = Array.IndexOf(args, "--index-agent");
             if (indexAgentIndex >= 0)
             {
+                ConfigureNativeIndexAgentDefaults();
                 if (!TryAcquireIndexHostMutex())
                 {
                     Shutdown(0);
@@ -203,6 +204,27 @@ namespace MftScanner
             }
 
             base.OnExit(e);
+        }
+
+        private static void ConfigureNativeIndexAgentDefaults()
+        {
+            if (string.Equals(
+                Environment.GetEnvironmentVariable("PM_DISABLE_NATIVE_INDEX"),
+                "1",
+                StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("PM_ENABLE_NATIVE_INDEX")))
+            {
+                Environment.SetEnvironmentVariable("PM_ENABLE_NATIVE_INDEX", "1");
+            }
+
+            if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("PM_MFT_INDEX_ROLE")))
+            {
+                Environment.SetEnvironmentVariable("PM_MFT_INDEX_ROLE", "client");
+            }
         }
 
         private static string GetInteractiveWindowMode(string[] args)
