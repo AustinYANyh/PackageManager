@@ -100,6 +100,9 @@ namespace PackageManager.Services
         private static string EnsureHostToolCurrentCore()
         {
             var toolPath = AdminElevationService.GetExtractedToolPath("MftScanner.exe");
+            StopExtractedSharedToolProcesses();
+            Thread.Sleep(300);
+
             if (TrySyncHostToolOnce(toolPath))
             {
                 return toolPath;
@@ -125,6 +128,7 @@ namespace PackageManager.Services
 
             LoggingService.LogInfo("后台索引宿主仍被占用，准备结束旧版 MftScanner 进程后重试同步。");
             TryStopProcessesUsingImagePath(toolPath);
+            StopExtractedSharedToolProcesses();
             Thread.Sleep(500);
 
             if (TrySyncHostToolOnce(toolPath))
@@ -433,6 +437,64 @@ namespace PackageManager.Services
             }
         }
 
+        private static void StopExtractedSharedToolProcesses()
+        {
+            TryStopExtractedToolProcess("MftScanner.exe");
+            TryStopExtractedToolProcess("MftScanner.Service.exe");
+            TryStopExtractedToolProcess("CommonStartupTool.exe");
+        }
+
+        private static void TryStopExtractedToolProcess(string toolName)
+        {
+            if (string.IsNullOrWhiteSpace(toolName))
+            {
+                return;
+            }
+
+            var expectedPath = AdminElevationService.GetExtractedToolPath(toolName);
+            if (string.IsNullOrWhiteSpace(expectedPath))
+            {
+                return;
+            }
+
+            try
+            {
+                foreach (var process in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(toolName)))
+                {
+                    try
+                    {
+                        var processPath = TryGetProcessImagePath(process);
+                        if (!string.Equals(processPath, expectedPath, StringComparison.OrdinalIgnoreCase))
+                        {
+                            continue;
+                        }
+
+                        LoggingService.LogInfo($"结束占用索引宿主共享组件的工具进程：Name={toolName} PID={process.Id}");
+                        process.Kill();
+                        process.WaitForExit(5000);
+                    }
+                    catch (Exception ex)
+                    {
+                        LoggingService.LogWarning($"结束占用索引宿主共享组件的工具进程失败：Name={toolName} PID={process.Id}，{ex.Message}");
+                    }
+                    finally
+                    {
+                        try
+                        {
+                            process.Dispose();
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogWarning($"扫描占用索引宿主共享组件的工具进程失败：Name={toolName}，{ex.Message}");
+            }
+        }
+
         private static string TryGetProcessImagePath(Process process)
         {
             if (process == null)
@@ -553,6 +615,7 @@ namespace PackageManager.Services
                 StopNativeIndexAgentHosts();
                 Thread.Sleep(300);
                 TryStopProcessesUsingImagePath(toolPath);
+                StopExtractedSharedToolProcesses();
                 Thread.Sleep(500);
 
                 toolPath = AdminElevationService.ExtractEmbeddedTool("MftScanner.exe", "MftScanner.exe");

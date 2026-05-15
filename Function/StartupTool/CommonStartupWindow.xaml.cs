@@ -39,6 +39,7 @@ public partial class CommonStartupWindow : Window
     private readonly DataPersistenceService _persistence;
     private readonly DispatcherTimer _debounceTimer;
     private readonly DispatcherTimer _liveRefreshTimer;
+    private readonly DispatcherTimer _indexChangeFlushTimer;
     private readonly object _indexGate = new();
     private readonly ObservableCollection<StartupNavigationItemVm> _viewItems = new();
     private readonly ObservableCollection<StartupNavigationItemVm> _groupItems = new();
@@ -47,6 +48,7 @@ public partial class CommonStartupWindow : Window
     private readonly ObservableCollection<StartupItemVm> _workspaceItems = new();
     private readonly ObservableCollection<StartupActivityVm> _recentActivities = new();
     private readonly ObservableCollection<ScanResultItem> _scanResults = new();
+    private readonly Queue<IndexChangedEventArgs> _pendingIndexChanges = new();
     private readonly List<CommonStartupGroup> _groupDefinitions = new();
     private readonly string _commonStartupSettingsFilePath;
     private readonly ISharedIndexService _indexService = SharedIndexServiceFactory.Create("CtrlQ.CommonStartup");
@@ -68,6 +70,10 @@ public partial class CommonStartupWindow : Window
     private int _searchVersion;
     private string _currentGroupName = string.Empty;
     private bool _wasSearchKeywordActive;
+    private bool _isSearchInProgress;
+    private bool _pendingRefresh;
+    private bool _forcePendingRefresh;
+    private bool _isApplyingPendingIndexChanges;
     private int _searchContextTrackingSuppressionCount;
     private int _ignoredWorkbenchScrollChangeCount;
     private int _workbenchRefreshVersion;
@@ -136,8 +142,10 @@ public partial class CommonStartupWindow : Window
 
         _debounceTimer = new DispatcherTimer { Interval = FileSearchDebounceInterval };
         _debounceTimer.Tick += DebounceTimer_Tick;
-        _liveRefreshTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
+        _liveRefreshTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
         _liveRefreshTimer.Tick += LiveRefreshTimer_Tick;
+        _indexChangeFlushTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(120) };
+        _indexChangeFlushTimer.Tick += IndexChangeFlushTimer_Tick;
         _settingsReloadTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(450) };
         _settingsReloadTimer.Tick += SettingsReloadTimer_Tick;
         _indexService.IndexChanged += IndexService_IndexChanged;
@@ -3316,6 +3324,7 @@ public partial class CommonStartupWindow : Window
     {
         _debounceTimer.Stop();
         _liveRefreshTimer.Stop();
+        _indexChangeFlushTimer.Stop();
         _settingsReloadTimer?.Stop();
         if (_commonStartupSettingsWatcher != null)
         {
@@ -3527,6 +3536,9 @@ public partial class CommonStartupWindow : Window
     private void SearchBox_TextChanged(object sender, TextChangedEventArgs e)
     {
         _debounceTimer.Stop();
+        _liveRefreshTimer.Stop();
+        _pendingRefresh = false;
+        _forcePendingRefresh = false;
         CancelActiveSearch();
         SetScanningState(false);
 
@@ -3554,10 +3566,33 @@ public partial class CommonStartupWindow : Window
         _liveRefreshTimer.Stop();
         if (!IsLoaded || string.IsNullOrWhiteSpace(GetSearchKeyword()) || !_canUseIntegratedFileSearch)
         {
+            _pendingRefresh = false;
+            _forcePendingRefresh = false;
             return;
         }
 
-        _ = StartScanAsync(forceRescan: false, preserveExistingResults: true, silentRefresh: true);
+        if (!_pendingRefresh && !_forcePendingRefresh)
+        {
+            return;
+        }
+
+        if (_isSearchInProgress)
+        {
+            _liveRefreshTimer.Start();
+            return;
+        }
+
+        var forceRefresh = _forcePendingRefresh;
+        if (!ShouldAutoRefreshCurrentQuery(forceRefresh))
+        {
+            _pendingRefresh = false;
+            _forcePendingRefresh = false;
+            return;
+        }
+
+        _pendingRefresh = false;
+        _forcePendingRefresh = false;
+        _ = StartScanAsync(forceRescan: false, preserveExistingResults: true, silentRefresh: true, allowCancelActiveSearch: false);
     }
 
     private void ScanButton_Click(object sender, RoutedEventArgs e)
@@ -3574,6 +3609,9 @@ public partial class CommonStartupWindow : Window
     private void StopButton_Click(object sender, RoutedEventArgs e)
     {
         _debounceTimer.Stop();
+        _liveRefreshTimer.Stop();
+        _pendingRefresh = false;
+        _forcePendingRefresh = false;
         Interlocked.Increment(ref _workbenchRefreshVersion);
         CancelActiveSearch();
         StatusText.Text = "检索已停止。";
@@ -3660,10 +3698,20 @@ public partial class CommonStartupWindow : Window
         }
     }
 
-    private async Task StartScanAsync(bool forceRescan, bool preserveExistingResults = false, bool silentRefresh = false)
+    private async Task StartScanAsync(
+        bool forceRescan,
+        bool preserveExistingResults = false,
+        bool silentRefresh = false,
+        bool allowCancelActiveSearch = true)
     {
         if (!_canUseIntegratedFileSearch)
         {
+            return;
+        }
+
+        if (_isSearchInProgress && !forceRescan && !allowCancelActiveSearch)
+        {
+            RequestRefreshCurrentQuery(force: false);
             return;
         }
 
@@ -3673,10 +3721,15 @@ public partial class CommonStartupWindow : Window
         long searchMs = 0;
         long applyMs = 0;
         var keyword = GetSearchKeyword();
-        CancelActiveSearch();
+        if (allowCancelActiveSearch || forceRescan || !_isSearchInProgress)
+        {
+            CancelActiveSearch();
+        }
+
         _scanCts = new CancellationTokenSource();
         var ct = _scanCts.Token;
         var currentVersion = Interlocked.Increment(ref _searchVersion);
+        _isSearchInProgress = true;
 
         if (!preserveExistingResults && (!string.IsNullOrWhiteSpace(keyword) || forceRescan))
         {
@@ -3728,7 +3781,7 @@ public partial class CommonStartupWindow : Window
             }
 
             stageStopwatch.Restart();
-            ApplySearchResult(searchResult.Response, searchResult.Results);
+            ApplySearchResult(searchResult.Response, searchResult.Results, silentRefresh);
             applyMs = stageStopwatch.ElapsedMilliseconds;
         }
         catch (OperationCanceledException)
@@ -3761,16 +3814,33 @@ public partial class CommonStartupWindow : Window
             {
                 SetScanningState(false);
             }
+
+            if (currentVersion == _searchVersion)
+            {
+                _isSearchInProgress = false;
+            }
+
+            if (_pendingRefresh && currentVersion == _searchVersion && !string.IsNullOrWhiteSpace(GetSearchKeyword()))
+            {
+                _liveRefreshTimer.Stop();
+                _liveRefreshTimer.Start();
+            }
         }
     }
 
-    private void ApplySearchResult(SearchQueryResult response, IReadOnlyList<ScanResultItem> results)
+    private void ApplySearchResult(SearchQueryResult response, IReadOnlyList<ScanResultItem> results, bool silentRefresh = false)
     {
-        ReconcileSearchResults(results);
-        RefreshCandidateSuggestions();
-        RefreshCandidatePane();
-        RefreshQueue();
-        ScrollRightSidebarToTop();
+        var changed = ReconcileSearchResults(results);
+        if (changed || !silentRefresh)
+        {
+            RefreshCandidateSuggestions();
+            RefreshCandidatePane();
+            RefreshQueue();
+            if (!silentRefresh)
+            {
+                ScrollRightSidebarToTop();
+            }
+        }
 
         if (results.Count == 0)
         {
@@ -3839,8 +3909,9 @@ public partial class CommonStartupWindow : Window
         };
     }
 
-    private void ReconcileSearchResults(IReadOnlyList<ScanResultItem> results)
+    private bool ReconcileSearchResults(IReadOnlyList<ScanResultItem> results)
     {
+        var changed = false;
         var incoming = results ?? Array.Empty<ScanResultItem>();
         var incomingMap = incoming
             .Where(item => item != null && !string.IsNullOrWhiteSpace(item.FullPath))
@@ -3852,17 +3923,28 @@ public partial class CommonStartupWindow : Window
             if (existing == null || string.IsNullOrWhiteSpace(existing.FullPath))
             {
                 _scanResults.RemoveAt(i);
+                changed = true;
                 continue;
             }
 
             if (!incomingMap.TryGetValue(existing.FullPath, out var incomingItem))
             {
                 _scanResults.RemoveAt(i);
+                changed = true;
                 continue;
             }
 
-            existing.FileName = incomingItem.FileName;
-            existing.SuggestedGroupName = incomingItem.SuggestedGroupName;
+            if (!string.Equals(existing.FileName, incomingItem.FileName, StringComparison.Ordinal))
+            {
+                existing.FileName = incomingItem.FileName;
+                changed = true;
+            }
+
+            if (!string.Equals(existing.SuggestedGroupName, incomingItem.SuggestedGroupName, StringComparison.Ordinal))
+            {
+                existing.SuggestedGroupName = incomingItem.SuggestedGroupName;
+                changed = true;
+            }
         }
 
         var existingPaths = new HashSet<string>(_scanResults.Select(item => item.FullPath), StringComparer.OrdinalIgnoreCase);
@@ -3874,7 +3956,10 @@ public partial class CommonStartupWindow : Window
             }
 
             _scanResults.Add(item);
+            changed = true;
         }
+
+        return changed;
     }
 
     private void IndexService_IndexStatusChanged(object sender, IndexStatusChangedEventArgs e)
@@ -3888,13 +3973,13 @@ public partial class CommonStartupWindow : Window
 
             if (e.RequireSearchRefresh && _indexReady && !string.IsNullOrWhiteSpace(GetSearchKeyword()))
             {
-                _ = StartScanAsync(forceRescan: false);
+                RequestRefreshCurrentQuery(force: true);
                 return;
             }
 
             if (_indexReady && !string.IsNullOrWhiteSpace(GetSearchKeyword()) && e.IsBackgroundCatchUpInProgress)
             {
-                ScheduleLiveRefresh();
+                RequestRefreshCurrentQuery(force: false);
             }
 
             if (string.IsNullOrWhiteSpace(GetSearchKeyword()) && !string.IsNullOrWhiteSpace(e.Message))
@@ -3906,15 +3991,301 @@ public partial class CommonStartupWindow : Window
 
     private void IndexService_IndexChanged(object sender, IndexChangedEventArgs e)
     {
-        Dispatcher.BeginInvoke(new Action(() =>
+        Dispatcher.BeginInvoke(new Action(() => EnqueueIndexChange(e)), DispatcherPriority.Background);
+    }
+
+    private void EnqueueIndexChange(IndexChangedEventArgs e)
+    {
+        if (e == null)
         {
-            if (!_indexReady || string.IsNullOrWhiteSpace(GetSearchKeyword()))
+            return;
+        }
+
+        _pendingIndexChanges.Enqueue(e);
+        if (!_indexChangeFlushTimer.IsEnabled)
+        {
+            _indexChangeFlushTimer.Start();
+        }
+    }
+
+    private void IndexChangeFlushTimer_Tick(object sender, EventArgs e)
+    {
+        _indexChangeFlushTimer.Stop();
+        if (_isApplyingPendingIndexChanges || _pendingIndexChanges.Count == 0)
+        {
+            return;
+        }
+
+        _isApplyingPendingIndexChanges = true;
+        try
+        {
+            var pendingChanges = new List<IndexChangedEventArgs>();
+            while (_pendingIndexChanges.Count > 0)
             {
-                return;
+                var change = _pendingIndexChanges.Dequeue();
+                if (change != null)
+                {
+                    pendingChanges.Add(change);
+                }
             }
 
-            ScheduleLiveRefresh();
-        }));
+            if (pendingChanges.Count > 0)
+            {
+                ApplyIndexChangesBatch(pendingChanges);
+            }
+        }
+        finally
+        {
+            _isApplyingPendingIndexChanges = false;
+            if (_pendingIndexChanges.Count > 0)
+            {
+                _indexChangeFlushTimer.Start();
+            }
+        }
+    }
+
+    private void ApplyIndexChangesBatch(IReadOnlyList<IndexChangedEventArgs> changes)
+    {
+        if (!_indexReady || string.IsNullOrWhiteSpace(GetSearchKeyword()) || changes == null || changes.Count == 0)
+        {
+            return;
+        }
+
+        var changed = false;
+        foreach (var change in changes)
+        {
+            changed = ApplyIndexChangeCore(change) || changed;
+        }
+
+        if (changed)
+        {
+            RefreshCandidateSuggestions();
+            RefreshCandidatePane();
+            RefreshQueue();
+            return;
+        }
+
+        RequestRefreshCurrentQuery(force: false);
+    }
+
+    private bool ApplyIndexChangeCore(IndexChangedEventArgs e)
+    {
+        if (e == null)
+        {
+            return false;
+        }
+
+        var changed = false;
+        switch (e.Type)
+        {
+            case IndexChangeType.Deleted:
+                changed = RemoveScanResult(e.FullPath, e.LowerName);
+                break;
+
+            case IndexChangeType.Created:
+                if (MatchesCurrentStartupQuery(e.LowerName, e.FullPath, e.IsDirectory))
+                {
+                    changed = AddOrUpdateScanResult(e.FullPath);
+                }
+                break;
+
+            case IndexChangeType.Renamed:
+                if (!string.IsNullOrWhiteSpace(e.OldFullPath) || !string.IsNullOrWhiteSpace(e.LowerName))
+                {
+                    changed = RemoveScanResult(e.OldFullPath, e.LowerName);
+                }
+
+                if (MatchesCurrentStartupQuery(e.NewLowerName, e.FullPath, e.IsDirectory))
+                {
+                    changed = AddOrUpdateScanResult(e.FullPath) || changed;
+                }
+                break;
+        }
+
+        return changed;
+    }
+
+    private bool AddOrUpdateScanResult(string fullPath)
+    {
+        if (string.IsNullOrWhiteSpace(fullPath))
+        {
+            return false;
+        }
+
+        var fileName = System.IO.Path.GetFileName(fullPath);
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            fileName = fullPath;
+        }
+
+        var existing = _scanResults.FirstOrDefault(item => string.Equals(item.FullPath, fullPath, StringComparison.OrdinalIgnoreCase));
+        if (existing != null)
+        {
+            var changed = false;
+            if (!string.Equals(existing.FileName, fileName, StringComparison.Ordinal))
+            {
+                existing.FileName = fileName;
+                changed = true;
+            }
+
+            var suggestedGroupName = ResolveSuggestedGroup(fullPath);
+            if (!string.Equals(existing.SuggestedGroupName, suggestedGroupName, StringComparison.Ordinal))
+            {
+                existing.SuggestedGroupName = suggestedGroupName;
+                changed = true;
+            }
+
+            return changed;
+        }
+
+        if (_scanResults.Count >= MaxDisplayedResults)
+        {
+            RequestRefreshCurrentQuery(force: false);
+            return false;
+        }
+
+        _scanResults.Add(new ScanResultItem
+        {
+            FileName = fileName,
+            FullPath = fullPath,
+            SuggestedGroupName = ResolveSuggestedGroup(fullPath)
+        });
+        return true;
+    }
+
+    private bool RemoveScanResult(string fullPath, string lowerName)
+    {
+        for (var i = _scanResults.Count - 1; i >= 0; i--)
+        {
+            var item = _scanResults[i];
+            if (item == null)
+            {
+                _scanResults.RemoveAt(i);
+                return true;
+            }
+
+            if ((!string.IsNullOrWhiteSpace(fullPath) && string.Equals(item.FullPath, fullPath, StringComparison.OrdinalIgnoreCase))
+                || (!string.IsNullOrWhiteSpace(lowerName) && string.Equals((item.FileName ?? string.Empty).ToLowerInvariant(), lowerName, StringComparison.OrdinalIgnoreCase)))
+            {
+                _scanResults.RemoveAt(i);
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private bool MatchesCurrentStartupQuery(string lowerName, string fullPath, bool isDirectory)
+    {
+        if (isDirectory || string.IsNullOrWhiteSpace(fullPath))
+        {
+            return false;
+        }
+
+        var extension = (System.IO.Path.GetExtension(fullPath) ?? string.Empty).ToLowerInvariant();
+        if (!IsLaunchableExtension(extension))
+        {
+            return false;
+        }
+
+        var parsed = ParsePathScope(GetSearchKeyword());
+        if (string.IsNullOrWhiteSpace(parsed.SearchTerm))
+        {
+            return false;
+        }
+
+        if (!MatchesPathScope(fullPath, parsed.PathPrefix))
+        {
+            return false;
+        }
+
+        var normalizedName = string.IsNullOrWhiteSpace(lowerName)
+            ? (System.IO.Path.GetFileName(fullPath) ?? string.Empty).ToLowerInvariant()
+            : lowerName.ToLowerInvariant();
+        var searchTerm = parsed.SearchTerm.ToLowerInvariant();
+        return normalizedName.Contains(searchTerm)
+               || (fullPath ?? string.Empty).IndexOf(parsed.SearchTerm, StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private static bool IsLaunchableExtension(string extension)
+    {
+        return extension.Equals(".exe", StringComparison.OrdinalIgnoreCase)
+               || extension.Equals(".bat", StringComparison.OrdinalIgnoreCase)
+               || extension.Equals(".cmd", StringComparison.OrdinalIgnoreCase)
+               || extension.Equals(".ps1", StringComparison.OrdinalIgnoreCase)
+               || extension.Equals(".lnk", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool MatchesPathScope(string fullPath, string pathPrefix)
+    {
+        if (string.IsNullOrWhiteSpace(pathPrefix))
+        {
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(fullPath))
+        {
+            return false;
+        }
+
+        var normalizedPrefix = pathPrefix.EndsWith("\\", StringComparison.Ordinal)
+            ? pathPrefix
+            : pathPrefix + "\\";
+        return fullPath.StartsWith(normalizedPrefix, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(fullPath, pathPrefix.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static (string PathPrefix, string SearchTerm) ParsePathScope(string keyword)
+    {
+        var kw = (keyword ?? string.Empty).Trim();
+        var spaceIndex = kw.IndexOf(' ');
+        if (spaceIndex <= 0)
+        {
+            return (null, kw);
+        }
+
+        var candidate = kw.Substring(0, spaceIndex);
+        var isValidPath = (candidate.Length >= 3
+                           && char.IsLetter(candidate[0])
+                           && candidate[1] == ':'
+                           && candidate[2] == '\\')
+                          || candidate.StartsWith("\\", StringComparison.Ordinal);
+        if (!isValidPath)
+        {
+            return (null, kw);
+        }
+
+        return (candidate, kw.Substring(spaceIndex).TrimStart());
+    }
+
+    private void RequestRefreshCurrentQuery(bool force = false)
+    {
+        if (string.IsNullOrWhiteSpace(GetSearchKeyword()) || !_canUseIntegratedFileSearch)
+        {
+            _pendingRefresh = false;
+            _forcePendingRefresh = false;
+            return;
+        }
+
+        if (!ShouldAutoRefreshCurrentQuery(force))
+        {
+            if (force)
+            {
+                _pendingRefresh = false;
+                _forcePendingRefresh = false;
+            }
+
+            return;
+        }
+
+        _pendingRefresh = true;
+        _forcePendingRefresh = _forcePendingRefresh || force;
+        ScheduleLiveRefresh();
+    }
+
+    private bool ShouldAutoRefreshCurrentQuery(bool force = false)
+    {
+        return force || _scanResults.Count == 0;
     }
 
     private void ScheduleLiveRefresh()
