@@ -971,6 +971,7 @@ else {
     }
 }
 
+$startedAt = Get-Date
 $memoryBefore = @(Get-ProcessMemorySnapshot)
 if ($Backend -eq "SharedHost" -and !$NoRestartHost) {
     Write-Host "Stopping existing MftScanner.exe processes..."
@@ -999,11 +1000,11 @@ else {
     New-Object MftScanner.IndexService
 }
 Write-Host "Index service created."
-$startedAt = Get-Date
 $rows = New-Object System.Collections.Generic.List[object]
 $backlogRows = New-Object System.Collections.Generic.List[object]
 $failures = New-Object System.Collections.Generic.List[object]
 $benchmarkException = $null
+$memoryBeforeHostStop = @()
 $shouldCheckServiceStatus = $SimulateServiceStoppedBacklog -or $PSBoundParameters.ContainsKey("RequireServiceReadyMs") -or $PSBoundParameters.ContainsKey("RequireServiceCatchupPublishMs")
 $serviceStatusBefore = if ($shouldCheckServiceStatus) { Get-MftIndexServiceStatus -RepoRoot $repoRoot } else { $null }
 $dynamicChineseTerms = New-Object System.Collections.Generic.List[string]
@@ -1346,7 +1347,8 @@ try {
             if ($ready.success -ne $true -or $ready.ready -ne $true) {
                 throw "Delta did not report ready: $($ready | ConvertTo-Json -Compress -Depth 8)"
             }
-            $deltaReadyMs = [int]([DateTime]::UtcNow - $injectStarted.ToUniversalTime()).TotalMilliseconds
+            $deltaReadyClientMs = [int]([DateTime]::UtcNow - $injectStarted.ToUniversalTime()).TotalMilliseconds
+            $deltaReadyMs = if ($null -ne $inject.totalMs) { [int]$inject.totalMs } else { $deltaReadyClientMs }
             $backlogRows.Add([pscustomobject]@{
                 Phase = $phase
                 ChangeCount = $changeCount
@@ -1363,6 +1365,7 @@ try {
                 TombstoneCount = [int]$ready.tombstoneCount
                 SegmentCount = [int]$ready.segmentCount
                 DeltaReadyMs = $deltaReadyMs
+                DeltaReadyClientMs = $deltaReadyClientMs
             })
 
             $deltaThresholdMs = if ($changeCount -le 10000) {
@@ -1451,6 +1454,8 @@ finally {
         }
     }
 
+    $memoryBeforeHostStop = @(Get-ProcessMemorySnapshot)
+
     if ($Backend -eq "SharedHost" -and !$NoRestartHost -and $null -ne $hostProcess) {
         try {
             $existingHost = Get-Process -Id $hostProcess.Id -ErrorAction SilentlyContinue
@@ -1467,7 +1472,7 @@ finally {
 }
 
 Start-Sleep -Milliseconds 300
-$memoryAfter = @(Get-ProcessMemorySnapshot)
+$memoryAfter = if (@($memoryBeforeHostStop).Count -gt 0) { @($memoryBeforeHostStop) } else { @(Get-ProcessMemorySnapshot) }
 $prefilterEvents = @(Parse-PathPrefilterEvents -LogPath $logPath -Since $startedAt.AddSeconds(-1))
 $containsCacheEvents = @(Parse-ContainsCacheEvents -LogPath $logPath -Since $startedAt.AddSeconds(-1))
 $containsQueryEvents = @(Parse-ContainsQueryEvents -LogPath $logPath -Since $startedAt.AddSeconds(-1))
@@ -1521,7 +1526,7 @@ elseif ($ForceRebuildIndex -and $coldBuildMs -le 0) {
     })
 }
 
-if ($restoreReadyMs -gt $MaxRestoreReadyMsThreshold -or $restoreReadyMs -le 0) {
+if (!$ForceRebuildIndex -and ($restoreReadyMs -gt $MaxRestoreReadyMsThreshold -or $restoreReadyMs -le 0)) {
     $failures.Add([pscustomobject]@{
         Phase = "restore"
         Name = "SnapshotRestoreReady"

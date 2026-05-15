@@ -415,6 +415,17 @@ namespace
         }
     };
 
+    struct OverlaySegmentSnapshotData
+    {
+        std::uint64_t stableRecordCount = 0;
+        std::unordered_map<wchar_t, VolumeState> volumes;
+        std::vector<Record> overlayRecords;
+        std::unordered_map<std::uint64_t, std::uint32_t> overlayIndexByKey;
+        std::unordered_set<std::uint64_t> overlayDeletedKeys;
+        std::unordered_set<std::uint64_t> compactedKeys;
+        std::unordered_set<std::uint64_t> compactedDeletedKeys;
+    };
+
     struct NativeV2Accelerator
     {
         std::vector<NativeV2BucketEntry> trigramEntries;
@@ -1085,12 +1096,23 @@ namespace
                     IsDirectoryRecord_NoLock(recordId)
                 });
             }
+            const auto duplicatePathCount = DeduplicateSearchRowsByPath(rows);
+            const auto physicalMatched = totalMatched;
+            const auto uniqueMatched = std::max(0, totalMatched - duplicatePathCount);
             const auto resolveMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - resolveStart).count();
 
-            const bool isTruncated = totalMatched > safeOffset + static_cast<int>(rows.size());
+            const bool isTruncated = uniqueMatched > safeOffset + static_cast<int>(rows.size());
             const auto jsonStart = std::chrono::steady_clock::now();
-            auto json = BuildSearchResponse(totalMatched, isTruncated, rows, binaryPayload, buildJson);
+            auto json = BuildSearchResponse(
+                uniqueMatched,
+                isTruncated,
+                rows,
+                binaryPayload,
+                buildJson,
+                physicalMatched,
+                uniqueMatched,
+                0);
             const auto jsonMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - jsonStart).count();
             const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1453,6 +1475,10 @@ namespace
                     std::vector<VolumeCatchUpResult> catchUpResults;
                     catchUpResults.reserve(catchUpStates.size());
                     bool journalReset = false;
+                    bool needsDeferredOverlayRebuild = false;
+                    bool needsForcedOverlaySegmentSave = false;
+                    bool needsSnapshotSave = false;
+                    std::uint64_t catchUpGeneration = 0;
                     for (auto& state : catchUpStates)
                     {
                         if (token->load())
@@ -1546,7 +1572,7 @@ namespace
                                         continue;
                                     }
 
-                                    ApplyCollectedChanges_NoLock(result.changes, &appliedPayloads, true);
+                                    ApplyCollectedChanges_NoLock(result.changes, &appliedPayloads, true, true);
                                 }
 
                                 payloadsToPublish.insert(
@@ -1554,6 +1580,8 @@ namespace
                                     std::make_move_iterator(appliedPayloads.begin()),
                                     std::make_move_iterator(appliedPayloads.end()));
                                 appliedChanges = true;
+                                needsDeferredOverlayRebuild = true;
+                                catchUpGeneration = generationId_.fetch_add(1, std::memory_order_acq_rel) + 1;
                                 publishRefresh = true;
                                 NativeLogWrite(
                                     "[NATIVE SNAPSHOT CATCHUP OVERLAY] changes="
@@ -1575,8 +1603,8 @@ namespace
                             std::chrono::steady_clock::now() - watcherStart).count();
                         if (!journalReset && appliedChanges)
                         {
-                            WriteOverlaySegmentSnapshotCore_NoLock(true);
-                            QueueSnapshotSave_NoLock();
+                            needsForcedOverlaySegmentSave = true;
+                            needsSnapshotSave = true;
                         }
                         publishRefresh = true;
                         NativeLogWrite(
@@ -1585,6 +1613,24 @@ namespace
                                 std::chrono::steady_clock::now() - catchUpStart).count())
                             + " watcherStartMs=" + std::to_string(watcherStartMs)
                             + " indexedCount=" + std::to_string(GetRecordCount_NoLock()));
+                    }
+
+                    if (needsDeferredOverlayRebuild && catchUpGeneration != 0)
+                    {
+                        RebuildOverlaySearchIndexOutsideExclusiveLock(catchUpGeneration);
+                    }
+
+                    if (needsForcedOverlaySegmentSave)
+                    {
+                        if (!SaveOverlaySegmentSnapshotOutsideExclusiveLock(true))
+                        {
+                            NativeLogWrite("[NATIVE SNAPSHOT CATCHUP OVERLAY] overlay-segment-save-failed");
+                        }
+                    }
+
+                    if (needsSnapshotSave)
+                    {
+                        QueueSnapshotSave();
                     }
 
                     if (publishRefresh)
@@ -2612,18 +2658,17 @@ namespace
             }
         }
 
-        void RebuildOverlaySearchIndex_NoLock()
+        void BuildOverlaySearchIndexInto_NoLock(OverlaySearchIndex& target) const
         {
-            overlaySearch_.ResetKeepCapacity();
+            target.ResetKeepCapacity();
             if (overlayRecords_.empty())
             {
-                overlayStalePostingEstimate_ = 0;
                 return;
             }
 
-            overlaySearch_.trigramPostings.reserve(overlayRecords_.size() * 4);
-            overlaySearch_.extensionPostings.reserve(std::max<std::size_t>(16, overlayRecords_.size() / 8));
-            overlaySearch_.parentFrnPostings.reserve(std::max<std::size_t>(16, overlayRecords_.size() / 4));
+            target.trigramPostings.reserve(overlayRecords_.size() * 4);
+            target.extensionPostings.reserve(std::max<std::size_t>(16, overlayRecords_.size() / 8));
+            target.parentFrnPostings.reserve(std::max<std::size_t>(16, overlayRecords_.size() / 4));
             for (std::uint32_t i = 0; i < overlayRecords_.size(); ++i)
             {
                 const auto& record = overlayRecords_[i];
@@ -2636,13 +2681,52 @@ namespace
                     continue;
                 }
 
-                AddOverlaySearchTokens_NoLock(record.lowerName, i, overlaySearch_);
-                AddOverlayPathScopePostings_NoLock(record, i, overlaySearch_);
+                AddOverlaySearchTokens_NoLock(record.lowerName, i, target);
+                AddOverlayPathScopePostings_NoLock(record, i, target);
             }
 
+            target.ready = true;
+        }
+
+        void RebuildOverlaySearchIndex_NoLock()
+        {
+            BuildOverlaySearchIndexInto_NoLock(overlaySearch_);
             overlaySearch_.ready = true;
             overlayStalePostingEstimate_ = 0;
             lastOverlayRebuildAttempt_ = std::chrono::steady_clock::now();
+        }
+
+        void MarkOverlaySearchNeedsRebuild_NoLock()
+        {
+            overlaySearch_.ready = false;
+            overlayStalePostingEstimate_ = overlayRecords_.size();
+            lastOverlayRebuildAttempt_ = std::chrono::steady_clock::now();
+        }
+
+        bool RebuildOverlaySearchIndexOutsideExclusiveLock(std::uint64_t expectedGeneration)
+        {
+            OverlaySearchIndex rebuilt;
+            {
+                std::shared_lock<std::shared_mutex> guard(mutex_);
+                if (hasShutdown_ || generationId_.load(std::memory_order_acquire) != expectedGeneration)
+                {
+                    return false;
+                }
+
+                BuildOverlaySearchIndexInto_NoLock(rebuilt);
+            }
+
+            std::unique_lock<std::shared_mutex> guard(mutex_);
+            if (hasShutdown_ || generationId_.load(std::memory_order_acquire) != expectedGeneration)
+            {
+                return false;
+            }
+
+            overlaySearch_ = std::move(rebuilt);
+            overlaySearch_.ready = true;
+            overlayStalePostingEstimate_ = 0;
+            lastOverlayRebuildAttempt_ = std::chrono::steady_clock::now();
+            return true;
         }
 
         void AddOverlaySearchEntry_NoLock(std::uint32_t overlayIndex)
@@ -3025,7 +3109,7 @@ namespace
             output.reserve(baseCount + overlayIndexByKey_.size());
             for (std::uint32_t i = 0; i < baseCount; ++i)
             {
-                if (IsRecordDeletedByOverlay_NoLock(i))
+                if (IsRecordSuppressedByOverlay_NoLock(i))
                 {
                     continue;
                 }
@@ -3297,14 +3381,16 @@ namespace
             return true;
         }
 
-        bool IsRecordDeletedByOverlay_NoLock(std::uint32_t recordId) const
+        bool IsRecordSuppressedByOverlay_NoLock(std::uint32_t recordId) const
         {
-            if (IsOverlayRecordId(recordId) || overlayDeletedKeys_.empty())
+            if (IsOverlayRecordId(recordId))
             {
                 return false;
             }
 
-            return overlayDeletedKeys_.find(MakeRecordKey(GetRecordDrive_NoLock(recordId), GetRecordFrn_NoLock(recordId))) != overlayDeletedKeys_.end();
+            const auto key = MakeRecordKey(GetRecordDrive_NoLock(recordId), GetRecordFrn_NoLock(recordId));
+            return overlayDeletedKeys_.find(key) != overlayDeletedKeys_.end()
+                || overlayIndexByKey_.find(key) != overlayIndexByKey_.end();
         }
 
         bool TryGetCompactRecord_NoLock(std::uint32_t recordId, const NativeV2CompactRecord*& record) const
@@ -3683,6 +3769,7 @@ namespace
                     {
                         if (ApplyCollectedChanges_NoLock(changes, &payloads))
                         {
+                            generationId_.fetch_add(1, std::memory_order_acq_rel);
                             shouldSave = true;
                             publishRefresh = true;
                             NativeLogWrite(
@@ -3931,7 +4018,8 @@ namespace
         bool ApplyCollectedChanges_NoLock(
             const std::vector<NativeChange>& changes,
             std::vector<std::string>* payloads,
-            bool forceRebuildOverlaySearch = false)
+            bool forceRebuildOverlaySearch = false,
+            bool deferOverlayRebuild = false)
         {
             bool changed = false;
             std::vector<std::uint32_t> changedOverlayIndexes;
@@ -3983,7 +4071,14 @@ namespace
                 lastOverlayMutationTickMs_.store(SteadyClockMilliseconds(), std::memory_order_release);
                 if (forceRebuildOverlaySearch || changes.size() > OverlayImmediateRebuildThreshold || ShouldRebuildOverlaySearch_NoLock())
                 {
-                    RebuildOverlaySearchIndex_NoLock();
+                    if (deferOverlayRebuild)
+                    {
+                        MarkOverlaySearchNeedsRebuild_NoLock();
+                    }
+                    else
+                    {
+                        RebuildOverlaySearchIndex_NoLock();
+                    }
                 }
                 else
                 {
@@ -4057,16 +4152,25 @@ namespace
                 std::chrono::steady_clock::now() - totalStart).count();
             const auto applyStart = std::chrono::steady_clock::now();
             bool changed = false;
+            std::uint64_t mutationGeneration = 0;
             {
                 std::unique_lock<std::shared_mutex> guard(mutex_);
-                changed = ApplyCollectedChanges_NoLock(changes, nullptr);
+                changed = ApplyCollectedChanges_NoLock(changes, nullptr, false, true);
                 if (changed)
                 {
                     currentStatusMessage_ = L"已应用 synthetic USN delta";
-                    WriteOverlaySegmentSnapshotCore_NoLock(true);
-                    QueueSnapshotSave_NoLock();
-                    generationId_.fetch_add(1, std::memory_order_relaxed);
+                    mutationGeneration = generationId_.fetch_add(1, std::memory_order_acq_rel) + 1;
                 }
+            }
+
+            if (changed)
+            {
+                RebuildOverlaySearchIndexOutsideExclusiveLock(mutationGeneration);
+                if (!SaveOverlaySegmentSnapshotOutsideExclusiveLock(true))
+                {
+                    NativeLogWrite("[NATIVE TEST DELTA] overlay-segment-save-failed");
+                }
+                QueueSnapshotSave();
             }
 
             const auto applyMs = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -4716,7 +4820,7 @@ namespace
                 {
                     continue;
                 }
-                if (IsRecordDeletedByOverlay_NoLock(recordId))
+                if (IsRecordSuppressedByOverlay_NoLock(recordId))
                 {
                     continue;
                 }
@@ -4770,7 +4874,7 @@ namespace
                 {
                     continue;
                 }
-                if (IsRecordDeletedByOverlay_NoLock(recordId))
+                if (IsRecordSuppressedByOverlay_NoLock(recordId))
                 {
                     continue;
                 }
@@ -6950,6 +7054,9 @@ namespace
             std::vector<std::uint32_t> logIdsCopy;
             std::vector<std::uint32_t> configIdsCopy;
             std::unordered_map<std::wstring, std::vector<std::uint32_t>> extensionIdsCopy;
+            OverlaySegmentSnapshotData overlaySegmentData;
+            bool writeOverlaySegment = false;
+            bool skipAfterOverlaySegment = false;
             bool compactedOverlay = false;
             std::uint64_t compactionGeneration = 0;
 
@@ -6964,37 +7071,40 @@ namespace
                 const auto hasOverlay = !overlayRecords_.empty() || !overlayDeletedKeys_.empty();
                 if (hasOverlay)
                 {
-                    WriteOverlaySegmentSnapshot_NoLock();
+                    BuildOverlaySegmentSnapshotData_NoLock(overlaySegmentData);
+                    writeOverlaySegment = true;
                     if (!CanCompactOverlayNow())
                     {
                         NativeLogWrite(
                             "[NATIVE SNAPSHOT SAVE] skipped reason=overlay-compaction-not-idle"
                             " overlayRecords=" + std::to_string(overlayRecords_.size())
                             + " overlayDeletes=" + std::to_string(overlayDeletedKeys_.size()));
-                        return true;
+                        skipAfterOverlaySegment = true;
                     }
-
-                    ExportStableRecords_NoLock(recordsCopy);
-                    compactedOverlay = true;
-                    compactionGeneration = generationId_.load(std::memory_order_acquire);
-                    volumesCopy.reserve(volumes_.size());
-                    for (const auto& pair : volumes_)
+                    else
                     {
-                        VolumeState volume;
-                        volume.driveLetter = pair.second.driveLetter;
-                        volume.nextUsn = pair.second.nextUsn;
-                        volume.journalId = pair.second.journalId;
-                        volume.recordCount = pair.second.recordCount;
-                        volume.maxFrn = pair.second.maxFrn;
-                        volume.enumerationComplete = pair.second.enumerationComplete;
-                        volumesCopy.emplace(pair.first, std::move(volume));
+                        ExportStableRecords_NoLock(recordsCopy);
+                        compactedOverlay = true;
+                        compactionGeneration = generationId_.load(std::memory_order_acquire);
+                        volumesCopy.reserve(volumes_.size());
+                        for (const auto& pair : volumes_)
+                        {
+                            VolumeState volume;
+                            volume.driveLetter = pair.second.driveLetter;
+                            volume.nextUsn = pair.second.nextUsn;
+                            volume.journalId = pair.second.journalId;
+                            volume.recordCount = pair.second.recordCount;
+                            volume.maxFrn = pair.second.maxFrn;
+                            volume.enumerationComplete = pair.second.enumerationComplete;
+                            volumesCopy.emplace(pair.first, std::move(volume));
+                        }
+                        NativeLogWrite(
+                            "[NATIVE SNAPSHOT SAVE] compacting-overlay"
+                            " baseRecords=" + std::to_string(GetRecordCount_NoLock())
+                            + " overlayRecords=" + std::to_string(overlayRecords_.size())
+                            + " overlayDeletes=" + std::to_string(overlayDeletedKeys_.size())
+                            + " compactedRecords=" + std::to_string(recordsCopy.size()));
                     }
-                    NativeLogWrite(
-                        "[NATIVE SNAPSHOT SAVE] compacting-overlay"
-                        " baseRecords=" + std::to_string(GetRecordCount_NoLock())
-                        + " overlayRecords=" + std::to_string(overlayRecords_.size())
-                        + " overlayDeletes=" + std::to_string(overlayDeletedKeys_.size())
-                        + " compactedRecords=" + std::to_string(recordsCopy.size()));
                 }
                 else if (records_.empty() && mappedRecords_.Ready())
                 {
@@ -7041,6 +7151,15 @@ namespace
                     logIdsCopy = logIds_;
                     configIdsCopy = configIds_;
                     extensionIdsCopy = extensionIds_;
+                }
+            }
+
+            if (writeOverlaySegment)
+            {
+                WriteOverlaySegmentSnapshotData(overlaySegmentData);
+                if (skipAfterOverlaySegment)
+                {
+                    return true;
                 }
             }
 
@@ -7106,11 +7225,12 @@ namespace
                 overlayCompactedKeys_.insert(pair.first);
             }
             overlayCompactedDeletedKeys_ = overlayDeletedKeys_;
-            WriteOverlaySegmentSnapshotCore_NoLock(true);
             NativeLogWrite(
                 "[NATIVE SNAPSHOT SAVE] compacted-overlay-stable-written records="
                 + std::to_string(compactedRecordCount)
                 + " liveBaseRecords=" + std::to_string(GetRecordCount_NoLock()));
+            guard.unlock();
+            SaveOverlaySegmentSnapshotOutsideExclusiveLock(true);
         }
 
         static void BuildTypeBucketsForRecords(
@@ -7200,6 +7320,65 @@ namespace
             return WriteOverlaySegmentSnapshotCore_NoLock(false);
         }
 
+        void BuildOverlaySegmentSnapshotData_NoLock(OverlaySegmentSnapshotData& data) const
+        {
+            data.stableRecordCount = overlaySegmentBaseRecordCountOverride_ == 0
+                ? static_cast<std::uint64_t>(GetRecordCount_NoLock())
+                : overlaySegmentBaseRecordCountOverride_;
+
+            data.volumes.clear();
+            data.volumes.reserve(volumes_.size());
+            for (const auto& pair : volumes_)
+            {
+                VolumeState volume;
+                volume.driveLetter = pair.second.driveLetter;
+                volume.nextUsn = pair.second.nextUsn;
+                volume.journalId = pair.second.journalId;
+                data.volumes.emplace(pair.first, std::move(volume));
+            }
+
+            data.overlayRecords = overlayRecords_;
+            data.overlayIndexByKey = overlayIndexByKey_;
+            data.overlayDeletedKeys = overlayDeletedKeys_;
+            data.compactedKeys = overlayCompactedKeys_;
+            data.compactedDeletedKeys = overlayCompactedDeletedKeys_;
+        }
+
+        bool WriteOverlaySegmentSnapshotData(const OverlaySegmentSnapshotData& data) const
+        {
+            return WriteV2OverlaySnapshotFile(
+                data.stableRecordCount,
+                data.volumes,
+                data.overlayRecords,
+                data.overlayIndexByKey,
+                data.overlayDeletedKeys,
+                data.compactedKeys,
+                data.compactedDeletedKeys,
+                lastOverlaySegmentSaveTickMs_);
+        }
+
+        bool SaveOverlaySegmentSnapshotOutsideExclusiveLock(bool force) const
+        {
+            if (!force)
+            {
+                const auto nowMs = SteadyClockMilliseconds();
+                const auto lastSaveMs = lastOverlaySegmentSaveTickMs_.load(std::memory_order_acquire);
+                if (lastSaveMs > 0
+                    && nowMs - lastSaveMs < OverlaySegmentSaveDebounceMilliseconds.count())
+                {
+                    return true;
+                }
+            }
+
+            OverlaySegmentSnapshotData data;
+            {
+                std::shared_lock<std::shared_mutex> guard(mutex_);
+                BuildOverlaySegmentSnapshotData_NoLock(data);
+            }
+
+            return WriteOverlaySegmentSnapshotData(data);
+        }
+
         bool WriteOverlaySegmentSnapshotCore_NoLock(bool force) const
         {
             if (!force)
@@ -7213,18 +7392,9 @@ namespace
                 }
             }
 
-            const auto stableRecordCount = overlaySegmentBaseRecordCountOverride_ == 0
-                ? static_cast<std::uint64_t>(GetRecordCount_NoLock())
-                : overlaySegmentBaseRecordCountOverride_;
-            return WriteV2OverlaySnapshotFile(
-                stableRecordCount,
-                volumes_,
-                overlayRecords_,
-                overlayIndexByKey_,
-                overlayDeletedKeys_,
-                overlayCompactedKeys_,
-                overlayCompactedDeletedKeys_,
-                lastOverlaySegmentSaveTickMs_);
+            OverlaySegmentSnapshotData data;
+            BuildOverlaySegmentSnapshotData_NoLock(data);
+            return WriteOverlaySegmentSnapshotData(data);
         }
 
         bool WriteCurrentGenerationSidecars_NoLock() const
@@ -8304,20 +8474,55 @@ namespace
             return ss.str();
         }
 
+        static int DeduplicateSearchRowsByPath(std::vector<SearchResultRow>& rows)
+        {
+            if (rows.size() < 2)
+            {
+                return 0;
+            }
+
+            std::unordered_set<std::wstring> seen;
+            seen.reserve(rows.size() * 2);
+            std::size_t writeIndex = 0;
+            int duplicateCount = 0;
+            for (std::size_t i = 0; i < rows.size(); ++i)
+            {
+                const auto inserted = seen.insert(rows[i].fullPath).second;
+                if (!inserted)
+                {
+                    ++duplicateCount;
+                    continue;
+                }
+
+                if (writeIndex != i)
+                {
+                    rows[writeIndex] = std::move(rows[i]);
+                }
+
+                ++writeIndex;
+            }
+
+            rows.resize(writeIndex);
+            return duplicateCount;
+        }
+
         std::string BuildSearchResponse(
             int totalMatchedCount,
             bool isTruncated,
             const std::vector<SearchResultRow>& rows,
             SearchBinaryPayload* binaryPayload,
-            bool buildJson) const
+            bool buildJson,
+            int physicalMatchedCount = -1,
+            int uniqueMatchedCount = -1,
+            int duplicatePathCount = 0) const
         {
             if (binaryPayload != nullptr)
             {
                 binaryPayload->totalIndexedCount = static_cast<int>(GetRecordCount_NoLock());
                 binaryPayload->totalMatchedCount = totalMatchedCount;
-                binaryPayload->physicalMatchedCount = totalMatchedCount;
-                binaryPayload->uniqueMatchedCount = totalMatchedCount;
-                binaryPayload->duplicatePathCount = 0;
+                binaryPayload->physicalMatchedCount = physicalMatchedCount >= 0 ? physicalMatchedCount : totalMatchedCount;
+                binaryPayload->uniqueMatchedCount = uniqueMatchedCount >= 0 ? uniqueMatchedCount : totalMatchedCount;
+                binaryPayload->duplicatePathCount = duplicatePathCount;
                 binaryPayload->isTruncated = isTruncated;
                 binaryPayload->rows = rows;
             }

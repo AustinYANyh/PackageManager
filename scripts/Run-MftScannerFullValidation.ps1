@@ -10,6 +10,7 @@ param(
     [int]$MaxHostMsThreshold = 100,
     [int]$MaxRestoreReadyMsThreshold = 3000,
     [switch]$NoBuild,
+    [switch]$SkipCorrectnessPrecheck,
     [switch]$NoOpenReport
 )
 
@@ -501,9 +502,12 @@ try {
     }
 
     $correctnessScript = Join-Path $repoRoot "scripts\Test-MftScannerSearchCorrectness.ps1"
-    if (Test-Path $correctnessScript) {
+    if (!$SkipCorrectnessPrecheck -and (Test-Path $correctnessScript)) {
         & powershell -NoProfile -ExecutionPolicy Bypass -File $correctnessScript -Configuration $Configuration -Queries "codex,code,c,vs,calsupport,workbench" -MaxResults 100 -SkipBuild
         if ($LASTEXITCODE -ne 0) { throw "Correctness precheck failed with exit code $LASTEXITCODE." }
+    }
+    elseif ($SkipCorrectnessPrecheck) {
+        Write-Host "Skipping correctness precheck."
     }
 
     if (Test-Path $newtonsoftDll) { [void][System.Reflection.Assembly]::LoadFrom($newtonsoftDll) }
