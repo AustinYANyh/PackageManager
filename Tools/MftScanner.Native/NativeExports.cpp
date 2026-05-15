@@ -369,6 +369,7 @@ namespace
         std::unordered_map<std::uint64_t, std::vector<std::uint32_t>> nonAsciiShortPostings;
         std::unordered_map<std::uint64_t, std::vector<std::uint32_t>> trigramPostings;
         std::unordered_map<std::wstring, std::vector<std::uint32_t>> extensionPostings;
+        std::unordered_map<std::uint64_t, std::vector<std::uint32_t>> parentFrnPostings;
         bool ready = false;
 
         void Clear()
@@ -388,6 +389,7 @@ namespace
             nonAsciiShortPostings.clear();
             trigramPostings.clear();
             extensionPostings.clear();
+            parentFrnPostings.clear();
             ready = false;
         }
 
@@ -408,6 +410,7 @@ namespace
             nonAsciiShortPostings.clear();
             trigramPostings.clear();
             extensionPostings.clear();
+            parentFrnPostings.clear();
             ready = false;
         }
     };
@@ -2568,6 +2571,47 @@ namespace
             }
         }
 
+        void AddOverlayPathScopePostings_NoLock(
+            const Record& record,
+            std::uint32_t overlayIndex,
+            OverlaySearchIndex& index) const
+        {
+            auto parentFrn = record.parentFrn;
+            std::array<std::uint64_t, 256> visited{};
+            std::size_t visitedCount = 0;
+
+            for (int depth = 0; depth < 256; ++depth)
+            {
+                const auto key = MakeRecordKey(record.driveLetter, parentFrn);
+                if (std::find(visited.begin(), visited.begin() + visitedCount, key) != visited.begin() + visitedCount)
+                {
+                    break;
+                }
+
+                visited[visitedCount++] = key;
+                index.parentFrnPostings[key].push_back(overlayIndex);
+
+                if (parentFrn == 0)
+                {
+                    break;
+                }
+
+                std::uint32_t parentId = 0;
+                if (!TryGetRecordIdByKey_NoLock(key, parentId))
+                {
+                    break;
+                }
+
+                const auto nextParentFrn = GetRecordParentFrn_NoLock(parentId);
+                if (nextParentFrn == parentFrn)
+                {
+                    break;
+                }
+
+                parentFrn = nextParentFrn;
+            }
+        }
+
         void RebuildOverlaySearchIndex_NoLock()
         {
             overlaySearch_.ResetKeepCapacity();
@@ -2579,6 +2623,7 @@ namespace
 
             overlaySearch_.trigramPostings.reserve(overlayRecords_.size() * 4);
             overlaySearch_.extensionPostings.reserve(std::max<std::size_t>(16, overlayRecords_.size() / 8));
+            overlaySearch_.parentFrnPostings.reserve(std::max<std::size_t>(16, overlayRecords_.size() / 4));
             for (std::uint32_t i = 0; i < overlayRecords_.size(); ++i)
             {
                 const auto& record = overlayRecords_[i];
@@ -2592,6 +2637,7 @@ namespace
                 }
 
                 AddOverlaySearchTokens_NoLock(record.lowerName, i, overlaySearch_);
+                AddOverlayPathScopePostings_NoLock(record, i, overlaySearch_);
             }
 
             overlaySearch_.ready = true;
@@ -2613,6 +2659,7 @@ namespace
             }
 
             AddOverlaySearchTokens_NoLock(overlayRecords_[overlayIndex].lowerName, overlayIndex, overlaySearch_);
+            AddOverlayPathScopePostings_NoLock(overlayRecords_[overlayIndex], overlayIndex, overlaySearch_);
         }
 
         void MarkOverlaySearchStale_NoLock(std::size_t staleCount = 1)
@@ -4783,12 +4830,34 @@ namespace
             }
 
             std::vector<std::uint32_t> candidates;
+            bool candidatesPathScoped = false;
+            std::uint64_t pathScopeKey = 0;
+            if (!pathPrefix.empty()
+                && TryBuildOverlayPathScopedCandidates_NoLock(plan, pathPrefix, candidates, pathScopeKey))
+            {
+                candidatesPathScoped = true;
+                AppendOverlayCandidateMatches_NoLock(
+                    plan,
+                    filter,
+                    pathPrefix,
+                    candidatesPathScoped,
+                    pathScopeKey,
+                    offset,
+                    maxResults,
+                    candidates,
+                    page,
+                    totalMatched);
+                return;
+            }
+
             if (TryBuildOverlayCandidates_NoLock(plan, candidates))
             {
                 AppendOverlayCandidateMatches_NoLock(
                     plan,
                     filter,
                     pathPrefix,
+                    candidatesPathScoped,
+                    pathScopeKey,
                     offset,
                     maxResults,
                     candidates,
@@ -4933,6 +5002,59 @@ namespace
             }
         }
 
+        bool TryBuildOverlayPathScopedCandidates_NoLock(
+            const QueryPlan& plan,
+            const std::wstring& pathPrefix,
+            std::vector<std::uint32_t>& candidates,
+            std::uint64_t& pathScopeKey) const
+        {
+            candidates.clear();
+            pathScopeKey = 0;
+            if (!overlaySearch_.ready || pathPrefix.empty())
+            {
+                return false;
+            }
+
+            if (!TryResolvePathScopeKey_NoLock(pathPrefix, pathScopeKey))
+            {
+                return false;
+            }
+
+            const auto scopeIt = overlaySearch_.parentFrnPostings.find(pathScopeKey);
+            if (scopeIt == overlaySearch_.parentFrnPostings.end() || scopeIt->second.empty())
+            {
+                return true;
+            }
+
+            std::vector<std::uint32_t> literalCandidates;
+            if (!TryBuildOverlayCandidates_NoLock(plan, literalCandidates))
+            {
+                return false;
+            }
+
+            const auto* scopeCandidates = &scopeIt->second;
+            std::vector<std::uint32_t> sortedScopeCandidates;
+            if (overlayStalePostingEstimate_ != 0)
+            {
+                std::sort(literalCandidates.begin(), literalCandidates.end());
+                literalCandidates.erase(std::unique(literalCandidates.begin(), literalCandidates.end()), literalCandidates.end());
+                sortedScopeCandidates = scopeIt->second;
+                std::sort(sortedScopeCandidates.begin(), sortedScopeCandidates.end());
+                sortedScopeCandidates.erase(std::unique(sortedScopeCandidates.begin(), sortedScopeCandidates.end()), sortedScopeCandidates.end());
+                scopeCandidates = &sortedScopeCandidates;
+            }
+
+            candidates.reserve(std::min(literalCandidates.size(), scopeCandidates->size()));
+            std::set_intersection(
+                literalCandidates.begin(),
+                literalCandidates.end(),
+                scopeCandidates->begin(),
+                scopeCandidates->end(),
+                std::back_inserter(candidates));
+            candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
+            return true;
+        }
+
         bool TryBuildOverlayLiteralCandidates_NoLock(const std::wstring& literal, std::vector<std::uint32_t>& candidates) const
         {
             candidates.clear();
@@ -5031,6 +5153,8 @@ namespace
             const QueryPlan& plan,
             SearchFilter filter,
             const std::wstring& pathPrefix,
+            bool candidatesPathScoped,
+            std::uint64_t pathScopeKey,
             int offset,
             int maxResults,
             const std::vector<std::uint32_t>& candidates,
@@ -5068,9 +5192,16 @@ namespace
                 }
 
                 const auto recordId = MakeOverlayRecordId(overlayIndex);
-                if (!pathPrefix.empty() && !RecordPassesPathScope_NoLock(recordId, pathPrefix))
+                if (!pathPrefix.empty())
                 {
-                    continue;
+                    const bool pathMatched = candidatesPathScoped
+                        ? (overlayStalePostingEstimate_ == 0
+                            || OverlayRecordPassesPathScopeKey_NoLock(record, pathScopeKey))
+                        : RecordPassesPathScope_NoLock(recordId, pathPrefix);
+                    if (!pathMatched)
+                    {
+                        continue;
+                    }
                 }
 
                 bool matched = false;
@@ -5635,6 +5766,49 @@ namespace
             return StartsWithI(ResolveFullPathById_NoLock(recordId), normalizedPrefix);
         }
 
+        bool OverlayRecordPassesPathScopeKey_NoLock(const Record& record, std::uint64_t pathScopeKey) const
+        {
+            auto parentFrn = record.parentFrn;
+            std::array<std::uint64_t, 256> visited{};
+            std::size_t visitedCount = 0;
+
+            for (int depth = 0; depth < 256; ++depth)
+            {
+                const auto key = MakeRecordKey(record.driveLetter, parentFrn);
+                if (key == pathScopeKey)
+                {
+                    return true;
+                }
+
+                if (std::find(visited.begin(), visited.begin() + visitedCount, key) != visited.begin() + visitedCount)
+                {
+                    break;
+                }
+
+                visited[visitedCount++] = key;
+                if (parentFrn == 0)
+                {
+                    break;
+                }
+
+                std::uint32_t parentId = 0;
+                if (!TryGetRecordIdByKey_NoLock(key, parentId))
+                {
+                    break;
+                }
+
+                const auto nextParentFrn = GetRecordParentFrn_NoLock(parentId);
+                if (nextParentFrn == parentFrn)
+                {
+                    break;
+                }
+
+                parentFrn = nextParentFrn;
+            }
+
+            return false;
+        }
+
         bool OverlayRecordIsLive_NoLock(std::uint32_t overlayIndex) const
         {
             if (overlayIndex >= overlayRecords_.size())
@@ -5648,6 +5822,32 @@ namespace
             return liveOverlay != overlayIndexByKey_.end()
                 && liveOverlay->second == overlayIndex
                 && overlayDeletedKeys_.find(key) == overlayDeletedKeys_.end();
+        }
+
+        bool TryResolvePathScopeKey_NoLock(const std::wstring& pathPrefix, std::uint64_t& key) const
+        {
+            key = 0;
+            auto normalized = EnsureTrailingSlash(pathPrefix);
+            if (normalized.length() < 3 || normalized[1] != L':' || normalized[2] != L'\\')
+            {
+                return false;
+            }
+
+            const wchar_t drive = static_cast<wchar_t>(towupper(normalized[0]));
+            if (normalized.length() == 3)
+            {
+                key = MakeRecordKey(drive, NtfsRootFileReferenceNumber);
+                return true;
+            }
+
+            const auto directoryId = TryResolveDirectoryRecordId_NoLock(normalized);
+            if (directoryId == std::numeric_limits<std::uint32_t>::max())
+            {
+                return false;
+            }
+
+            key = MakeRecordKey(GetRecordDrive_NoLock(directoryId), GetRecordFrn_NoLock(directoryId));
+            return true;
         }
 
         std::uint32_t TryResolveDirectoryRecordId_NoLock(const std::wstring& pathPrefix) const

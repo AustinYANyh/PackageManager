@@ -8,6 +8,7 @@ param(
     [int]$MaxHostMsThreshold = 50,
     [int]$MaxClientMsThreshold = 50,
     [int]$MaxLockWaitMsThreshold = 2,
+    [int]$MaxColdBuildMsThreshold = 15000,
     [int]$MaxRestoreReadyMsThreshold = 3000,
     [int]$MaxWorkingSetMBThreshold = 1024,
     [int]$MaxPrivateMBThreshold = 1024,
@@ -33,7 +34,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$BacklogChangeCounts = @(
+[int[]]$ParsedBacklogChangeCounts = @(
     $BacklogChangeCounts |
         ForEach-Object { ([string]$_) -split "," } |
         ForEach-Object { $_.Trim() } |
@@ -608,9 +609,11 @@ function New-MarkdownReport {
         [int]$MaxHostMsThreshold,
         [int]$MaxClientMsThreshold,
         [int]$MaxLockWaitMsThreshold,
+        [int]$MaxColdBuildMsThreshold,
         [int]$MaxRestoreReadyMsThreshold,
         [int]$MaxWorkingSetMBThreshold,
         [int]$MaxPrivateMBThreshold,
+        [long]$ColdBuildMs,
         [long]$RestoreReadyMs,
         [object[]]$Failures
     )
@@ -689,9 +692,11 @@ function New-MarkdownReport {
     $lines.Add("- 搜索宿主耗时阈值：$MaxHostMsThreshold ms")
     $lines.Add("- 搜索客户端端到端阈值：$MaxClientMsThreshold ms")
     $lines.Add("- Native 锁等待阈值：$MaxLockWaitMsThreshold ms")
+    $lines.Add("- 冷构建耗时阈值：$MaxColdBuildMsThreshold ms")
     $lines.Add("- 启动恢复 ready 阈值：$MaxRestoreReadyMsThreshold ms")
     $lines.Add("- WorkingSet 阈值：$MaxWorkingSetMBThreshold MB")
     $lines.Add("- Private Memory 阈值：$MaxPrivateMBThreshold MB")
+    $lines.Add("- 当前冷构建耗时：$ColdBuildMs ms")
     $lines.Add("- 当前恢复 ready 耗时：$RestoreReadyMs ms")
     if (-not $passed) {
         $lines.Add("")
@@ -1257,7 +1262,8 @@ try {
         }
     }
 
-    $deadline = (Get-Date).AddSeconds($ReadyTimeoutSeconds)
+    $bucketStatusWaitSeconds = [Math]::Min($ReadyTimeoutSeconds, 5)
+    $deadline = (Get-Date).AddSeconds($bucketStatusWaitSeconds)
     do {
         $state = if ($client.ContainsBucketStatus) { $client.ContainsBucketStatus } else { $null }
         if ($state -and $state.CharReady -and $state.BigramReady -and $state.TrigramReady) {
@@ -1320,7 +1326,7 @@ try {
             })
         }
 
-        foreach ($changeCount in $BacklogChangeCounts) {
+        foreach ($changeCount in $ParsedBacklogChangeCounts) {
             $seed = ([int](Get-Date -Format "HHmmss") + $changeCount) % 1000000
             $phase = "backlog-$changeCount"
             Write-Host "Injecting synthetic USN backlog: count=$changeCount seed=$seed"
@@ -1466,10 +1472,53 @@ $prefilterEvents = @(Parse-PathPrefilterEvents -LogPath $logPath -Since $started
 $containsCacheEvents = @(Parse-ContainsCacheEvents -LogPath $logPath -Since $startedAt.AddSeconds(-1))
 $containsQueryEvents = @(Parse-ContainsQueryEvents -LogPath $logPath -Since $startedAt.AddSeconds(-1))
 $indexStageEvents = @(Parse-IndexStageEvents -LogPath $logPath -Since $startedAt.AddSeconds(-1))
+$coldBuildMs = 0
+$coldBuildEvent = @(
+    $indexStageEvents |
+        Where-Object {
+            ($_.Stage -eq "NATIVE MFT BUILD" -or $_.Stage -eq "MFT BUILD") -and
+            ($_.Outcome -eq "success" -or $_.Raw -match "\bsuccess\b")
+        } |
+        Sort-Object Time |
+        Select-Object -Last 1
+)
+if ($coldBuildEvent.Count -gt 0) {
+    $coldBuildMs = [int64]$coldBuildEvent[0].ElapsedMs
+}
+
 $restoreReadyMs = 0
 $restoreTotal = @($indexStageEvents | Where-Object { $_.Stage -eq "NATIVE SNAPSHOT RESTORE TOTAL" -or $_.Stage -eq "SNAPSHOT RESTORE TOTAL" } | Sort-Object Time | Select-Object -Last 1)
 if ($restoreTotal.Count -gt 0) {
     $restoreReadyMs = [int64]$restoreTotal[0].ElapsedMs
+}
+
+if ($coldBuildMs -gt $MaxColdBuildMsThreshold) {
+    $failures.Add([pscustomobject]@{
+        Phase = "cold-build"
+        Name = "ColdBuild"
+        Keyword = ""
+        Filter = ""
+        ClientMs = 0
+        HostSearchMs = $coldBuildMs
+        ContainsMode = "mft-build"
+        TotalMatchedCount = 0
+        ThresholdMs = $MaxColdBuildMsThreshold
+        Reason = "cold-build-threshold"
+    })
+}
+elseif ($ForceRebuildIndex -and $coldBuildMs -le 0) {
+    $failures.Add([pscustomobject]@{
+        Phase = "cold-build"
+        Name = "ColdBuild"
+        Keyword = ""
+        Filter = ""
+        ClientMs = 0
+        HostSearchMs = $coldBuildMs
+        ContainsMode = "mft-build"
+        TotalMatchedCount = 0
+        ThresholdMs = $MaxColdBuildMsThreshold
+        Reason = "cold-build-missing"
+    })
 }
 
 if ($restoreReadyMs -gt $MaxRestoreReadyMsThreshold -or $restoreReadyMs -le 0) {
@@ -1639,6 +1688,7 @@ $report = [ordered]@{
     Backend = $Backend
     ForceRebuildIndex = [bool]$ForceRebuildIndex
     SimulateUsnBacklog = [bool]$SimulateUsnBacklog
+    BacklogChangeCounts = @($ParsedBacklogChangeCounts)
     SimulateServiceStoppedBacklog = [bool]$SimulateServiceStoppedBacklog
     SnapshotDirectory = $resolvedSnapshotDirectory
     ServiceStatusBefore = $serviceStatusBefore
@@ -1655,10 +1705,12 @@ $report = [ordered]@{
     IndexStageEvents = @($indexStageEvents)
     MemoryBefore = @($memoryBefore)
     MemoryAfter = @($memoryAfter)
+    ColdBuildMs = $coldBuildMs
     RestoreReadyMs = $restoreReadyMs
     MaxHostMsThreshold = $MaxHostMsThreshold
     MaxClientMsThreshold = $MaxClientMsThreshold
     MaxLockWaitMsThreshold = $MaxLockWaitMsThreshold
+    MaxColdBuildMsThreshold = $MaxColdBuildMsThreshold
     MaxRestoreReadyMsThreshold = $MaxRestoreReadyMsThreshold
     RequireBacklogRestoreReadyMs = $RequireBacklogRestoreReadyMs
     RequireBacklogClientMs = $RequireBacklogClientMs
@@ -1687,9 +1739,11 @@ New-MarkdownReport `
     -MaxHostMsThreshold $MaxHostMsThreshold `
     -MaxClientMsThreshold $MaxClientMsThreshold `
     -MaxLockWaitMsThreshold $MaxLockWaitMsThreshold `
+    -MaxColdBuildMsThreshold $MaxColdBuildMsThreshold `
     -MaxRestoreReadyMsThreshold $MaxRestoreReadyMsThreshold `
     -MaxWorkingSetMBThreshold $MaxWorkingSetMBThreshold `
     -MaxPrivateMBThreshold $MaxPrivateMBThreshold `
+    -ColdBuildMs $coldBuildMs `
     -RestoreReadyMs $restoreReadyMs `
     -Failures @($failures.ToArray()) |
     Set-Content -Path $mdPath -Encoding UTF8
