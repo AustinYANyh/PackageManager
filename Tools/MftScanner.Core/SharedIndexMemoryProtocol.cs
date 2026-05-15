@@ -162,6 +162,7 @@ namespace MftScanner
     public static class SharedIndexMemoryProtocol
     {
         public const int ProtocolVersion = 6;
+        private const string ProtocolNameSuffix = ".V6";
         public const int RequestCapacityBytes = 64 * 1024;
         public const int ResponseCapacityBytes = 32 * 1024 * 1024;
         public const int StateCapacityBytes = 64 * 1024;
@@ -221,47 +222,47 @@ namespace MftScanner
 
         public static string BuildStateMapName()
         {
-            return "PackageManager.MftScanner.IndexHost.State";
+            return "PackageManager.MftScanner.IndexHost.State" + ProtocolNameSuffix;
         }
 
         public static string BuildRequestMapName(SharedIndexClientSlotId slotId)
         {
-            return "PackageManager.MftScanner.IndexHost.Request." + slotId;
+            return "PackageManager.MftScanner.IndexHost.Request" + ProtocolNameSuffix + "." + slotId;
         }
 
         public static string BuildResponseMapName(SharedIndexClientSlotId slotId)
         {
-            return "PackageManager.MftScanner.IndexHost.Response." + slotId;
+            return "PackageManager.MftScanner.IndexHost.Response" + ProtocolNameSuffix + "." + slotId;
         }
 
         public static string BuildChangeMapName(SharedIndexClientSlotId slotId)
         {
-            return "PackageManager.MftScanner.IndexHost.Changes." + slotId;
+            return "PackageManager.MftScanner.IndexHost.Changes" + ProtocolNameSuffix + "." + slotId;
         }
 
         public static string BuildRequestReadyEventName(SharedIndexClientSlotId slotId)
         {
-            return "PackageManager.MftScanner.IndexHost.RequestReady." + slotId;
+            return "PackageManager.MftScanner.IndexHost.RequestReady" + ProtocolNameSuffix + "." + slotId;
         }
 
         public static string BuildResponseReadyEventName(SharedIndexClientSlotId slotId)
         {
-            return "PackageManager.MftScanner.IndexHost.ResponseReady." + slotId;
+            return "PackageManager.MftScanner.IndexHost.ResponseReady" + ProtocolNameSuffix + "." + slotId;
         }
 
         public static string BuildCancelEventName(SharedIndexClientSlotId slotId)
         {
-            return "PackageManager.MftScanner.IndexHost.Cancel." + slotId;
+            return "PackageManager.MftScanner.IndexHost.Cancel" + ProtocolNameSuffix + "." + slotId;
         }
 
         public static string BuildStatusChangedEventName(SharedIndexClientSlotId slotId)
         {
-            return "PackageManager.MftScanner.IndexHost.StatusChanged." + slotId;
+            return "PackageManager.MftScanner.IndexHost.StatusChanged" + ProtocolNameSuffix + "." + slotId;
         }
 
         public static string BuildChangeAvailableEventName(SharedIndexClientSlotId slotId)
         {
-            return "PackageManager.MftScanner.IndexHost.ChangeAvailable." + slotId;
+            return "PackageManager.MftScanner.IndexHost.ChangeAvailable" + ProtocolNameSuffix + "." + slotId;
         }
 
         public static SharedIndexClientSlotResources CreateHostSlotResources(SharedIndexClientSlotId slotId)

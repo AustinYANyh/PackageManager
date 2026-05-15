@@ -1007,8 +1007,27 @@ namespace MftScanner
             {
                 using (var process = Process.GetProcessById(processId))
                 {
-                    return !process.HasExited;
+                    try
+                    {
+                        return !process.HasExited;
+                    }
+                    catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 5)
+                    {
+                        return true;
+                    }
                 }
+            }
+            catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 5)
+            {
+                return true;
+            }
+            catch (InvalidOperationException)
+            {
+                return false;
+            }
+            catch (ArgumentException)
+            {
+                return false;
             }
             catch
             {

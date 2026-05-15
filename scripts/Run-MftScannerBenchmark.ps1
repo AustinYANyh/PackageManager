@@ -202,6 +202,73 @@ function Assert-SingleIndexAgentHost {
     }
 }
 
+function Get-ExpectedHostFingerprint {
+    param([string]$HostExe)
+
+    try {
+        if ([string]::IsNullOrWhiteSpace($HostExe) -or !(Test-Path $HostExe)) {
+            return ""
+        }
+
+        $toolDir = Split-Path -Parent $HostExe
+        return [MftScanner.ToolBundleFingerprint]::ComputeFromFiles(@(
+            $HostExe,
+            (Join-Path $toolDir "MftScanner.Core.dll"),
+            (Join-Path $toolDir "MftScanner.Native.dll")
+        ))
+    }
+    catch {
+        return ""
+    }
+}
+
+function Wait-SharedIndexHostReady {
+    param(
+        [int]$ExpectedProcessId = 0,
+        [string]$ExpectedFingerprint = "",
+        [int]$TimeoutSeconds = 15,
+        [switch]$RequireReadyState
+    )
+
+    $deadline = (Get-Date).AddSeconds([Math]::Max($TimeoutSeconds, 1))
+    $lastState = "no-state"
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $stateMap = [MftScanner.SharedIndexMemoryProtocol]::OpenStateMapForRead()
+            try {
+                $snapshot = [MftScanner.SharedIndexMemoryProtocol]::ReadState($stateMap)
+                $lastState = "pid=$($snapshot.HostProcessId) fingerprint=$($snapshot.HostFingerprint) buildState=$($snapshot.BuildState)"
+                $pidMatches = $snapshot.HostProcessId -gt 0 -and ($ExpectedProcessId -le 0 -or $snapshot.HostProcessId -eq $ExpectedProcessId)
+                $fingerprintMatches = [string]::IsNullOrWhiteSpace($ExpectedFingerprint) -or (
+                    ![string]::IsNullOrWhiteSpace($snapshot.HostFingerprint) -and
+                    [string]::Equals($snapshot.HostFingerprint, $ExpectedFingerprint, [System.StringComparison]::OrdinalIgnoreCase))
+                $readyMatches = !$RequireReadyState -or $snapshot.BuildState -eq [MftScanner.SharedIndexBuildState]::Ready
+                if ($pidMatches -and $fingerprintMatches -and $readyMatches) {
+                    return $snapshot
+                }
+            }
+            finally {
+                $stateMap.Dispose()
+            }
+        }
+        catch {
+            $lastState = $_.Exception.Message
+        }
+
+        Start-Sleep -Milliseconds 100
+    }
+
+    $expected = "pid=$ExpectedProcessId"
+    if (![string]::IsNullOrWhiteSpace($ExpectedFingerprint)) {
+        $expected = "$expected fingerprint=$ExpectedFingerprint"
+    }
+    if ($RequireReadyState) {
+        $expected = "$expected buildState=Ready"
+    }
+
+    throw "Shared index host did not publish matching ready state before timeout. Expected $expected; last=$lastState"
+}
+
 function Parse-PathPrefilterEvents {
     param(
         [string]$LogPath,
@@ -841,14 +908,35 @@ if ($Backend -eq "SharedHost" -and !$NoRestartHost) {
     Start-Sleep -Milliseconds 500
 }
 
-Write-Host "Building MftScanner artifacts..."
-& $msbuild $project /t:EnsureEmbeddedToolArtifacts "/p:Configuration=$Configuration" /v:minimal
-if ($LASTEXITCODE -ne 0) {
-    throw "Build failed with exit code $LASTEXITCODE."
+if ($Backend -eq "SharedHost" -and $NoRestartHost) {
+    Write-Host "Skipping MftScanner artifact build because -NoRestartHost is set."
+}
+else {
+    Write-Host "Building MftScanner artifacts..."
+    & $msbuild $project /t:EnsureEmbeddedToolArtifacts "/p:Configuration=$Configuration" /v:minimal
+    if ($LASTEXITCODE -ne 0) {
+        throw "Build failed with exit code $LASTEXITCODE."
+    }
 }
 
 if (!(Test-Path $hostExe)) {
     throw "Host executable not found: $hostExe"
+}
+
+if (Test-Path $newtonsoftDll) {
+    [void][System.Reflection.Assembly]::LoadFrom($newtonsoftDll)
+}
+
+if (!(Test-Path $coreDll)) {
+    throw "Core assembly not found: $coreDll"
+}
+
+[void][System.Reflection.Assembly]::LoadFrom($coreDll)
+$expectedHostFingerprint = if ($Backend -eq "SharedHost") {
+    Get-ExpectedHostFingerprint -HostExe $hostExe
+}
+else {
+    ""
 }
 
 $snapshotBackup = $null
@@ -878,18 +966,17 @@ if ($Backend -eq "SharedHost" -and !$NoRestartHost) {
 }
 
 $hostProcess = $null
-if ($Backend -eq "SharedHost") {
+if ($Backend -eq "SharedHost" -and !$NoRestartHost) {
     Write-Host "Starting index host..."
     $hostProcess = Start-Process -FilePath $hostExe -ArgumentList "--index-agent" -WindowStyle Hidden -PassThru
     Start-Sleep -Milliseconds 500
     Assert-SingleIndexAgentHost -ExpectedExe $hostExe -ExpectedProcessId $hostProcess.Id
+    [void](Wait-SharedIndexHostReady -ExpectedProcessId $hostProcess.Id -ExpectedFingerprint $expectedHostFingerprint -TimeoutSeconds $ReadyTimeoutSeconds -RequireReadyState)
 }
-
-if (Test-Path $newtonsoftDll) {
-    [void][System.Reflection.Assembly]::LoadFrom($newtonsoftDll)
+elseif ($Backend -eq "SharedHost") {
+    Write-Host "Using existing index host..."
+    [void](Wait-SharedIndexHostReady -ExpectedProcessId 0 -ExpectedFingerprint $expectedHostFingerprint -TimeoutSeconds $ReadyTimeoutSeconds -RequireReadyState)
 }
-
-[void][System.Reflection.Assembly]::LoadFrom($coreDll)
 
 $client = if ($Backend -eq "SharedHost") {
     New-Object MftScanner.SharedIndexServiceClient $SharedHostConsumer
@@ -903,6 +990,7 @@ $startedAt = Get-Date
 $rows = New-Object System.Collections.Generic.List[object]
 $backlogRows = New-Object System.Collections.Generic.List[object]
 $failures = New-Object System.Collections.Generic.List[object]
+$benchmarkException = $null
 $shouldCheckServiceStatus = $SimulateServiceStoppedBacklog -or $PSBoundParameters.ContainsKey("RequireServiceReadyMs") -or $PSBoundParameters.ContainsKey("RequireServiceCatchupPublishMs")
 $serviceStatusBefore = if ($shouldCheckServiceStatus) { Get-MftIndexServiceStatus -RepoRoot $repoRoot } else { $null }
 $dynamicChineseTerms = New-Object System.Collections.Generic.List[string]
@@ -1191,6 +1279,7 @@ try {
             $hostProcess = Start-Process -FilePath $hostExe -ArgumentList "--index-agent" -WindowStyle Hidden -PassThru
             Start-Sleep -Milliseconds 500
             Assert-SingleIndexAgentHost -ExpectedExe $hostExe -ExpectedProcessId $hostProcess.Id
+            [void](Wait-SharedIndexHostReady -ExpectedProcessId $hostProcess.Id -ExpectedFingerprint $expectedHostFingerprint -TimeoutSeconds $ReadyTimeoutSeconds -RequireReadyState)
             $client = New-Object MftScanner.SharedIndexServiceClient $SharedHostConsumer
         }
         else {
@@ -1313,12 +1402,51 @@ try {
         }
     }
 }
-finally {
-    if ($Backend -eq "SharedHost") {
-        $client.Dispose()
+catch {
+    $benchmarkException = $_
+    $exception = $_.Exception
+    $reason = if ($exception -is [System.Threading.Tasks.TaskCanceledException] -or $exception -is [System.OperationCanceledException]) {
+        "benchmark-timeout"
     }
     else {
-        $client.Shutdown()
+        "benchmark-exception"
+    }
+
+    $failures.Add([pscustomobject]@{
+        Phase = "benchmark"
+        Name = $exception.GetType().Name
+        Keyword = ""
+        Filter = ""
+        ClientMs = 0
+        HostSearchMs = 0
+        ContainsMode = ""
+        TotalMatchedCount = 0
+        ThresholdMs = $ReadyTimeoutSeconds
+        Reason = "$reason`: $($exception.Message)"
+    })
+
+    Write-Warning "Benchmark execution stopped before all phases completed: $($exception.GetType().Name): $($exception.Message)"
+}
+finally {
+    if ($null -ne $client) {
+        if ($Backend -eq "SharedHost") {
+            $client.Dispose()
+        }
+        else {
+            $client.Shutdown()
+        }
+    }
+
+    if ($Backend -eq "SharedHost" -and !$NoRestartHost -and $null -ne $hostProcess) {
+        try {
+            $existingHost = Get-Process -Id $hostProcess.Id -ErrorAction SilentlyContinue
+            if ($existingHost) {
+                Stop-Process -Id $hostProcess.Id -Force -ErrorAction Stop
+            }
+        }
+        catch {
+            Write-Warning "Failed to stop benchmark-owned MftScanner.exe pid=$($hostProcess.Id): $($_.Exception.Message)"
+        }
     }
 
     Restore-BenchmarkUserEnvironment
@@ -1507,6 +1635,7 @@ $report = [ordered]@{
     SnapshotDirectory = $resolvedSnapshotDirectory
     ServiceStatusBefore = $serviceStatusBefore
     ServiceStatusAfter = $serviceStatusAfter
+    BenchmarkException = if ($benchmarkException) { "$($benchmarkException.Exception.GetType().FullName): $($benchmarkException.Exception.Message)" } else { $null }
     SnapshotBackup = $snapshotBackup
     HostProcessId = if ($hostProcess) { $hostProcess.Id } else { $null }
     LogPath = $logPath
@@ -1549,6 +1678,7 @@ New-MarkdownReport `
     -ReportJsonPath $jsonPath `
     -MaxHostMsThreshold $MaxHostMsThreshold `
     -MaxClientMsThreshold $MaxClientMsThreshold `
+    -MaxLockWaitMsThreshold $MaxLockWaitMsThreshold `
     -MaxRestoreReadyMsThreshold $MaxRestoreReadyMsThreshold `
     -MaxWorkingSetMBThreshold $MaxWorkingSetMBThreshold `
     -MaxPrivateMBThreshold $MaxPrivateMBThreshold `
