@@ -19,7 +19,7 @@ param(
     [string]$SnapshotDirectory,
     [string]$SharedHostConsumer = "Benchmark",
     [switch]$SimulateUsnBacklog,
-    [int[]]$BacklogChangeCounts = @(10000, 60000, 200000),
+    [string[]]$BacklogChangeCounts = @("10000", "60000", "200000"),
     [ValidateSet("CreateRenameDeleteMixed")]
     [string]$BacklogMode = "CreateRenameDeleteMixed",
     [int]$RequireBacklogRestoreReadyMs = 1000,
@@ -32,6 +32,14 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+$BacklogChangeCounts = @(
+    $BacklogChangeCounts |
+        ForEach-Object { ([string]$_) -split "," } |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { $_.Length -gt 0 } |
+        ForEach-Object { [int]$_ }
+)
 
 function Resolve-RepoRoot {
     $scriptPath = $PSCommandPath
