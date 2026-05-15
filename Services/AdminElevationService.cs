@@ -8,6 +8,7 @@ using System.Security.Cryptography;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 using PackageManager.Models;
+using MftScanner;
 
 namespace PackageManager.Services
 {
@@ -273,6 +274,60 @@ namespace PackageManager.Services
             }
         }
 
+        public static string ComputeEmbeddedToolBundleFingerprint(string resourceSuffix, string outputFileName)
+        {
+            try
+            {
+                var asm = typeof(AdminElevationService).Assembly;
+                var components = new List<ToolBundleFingerprint.Component>();
+                try
+                {
+                    AddEmbeddedToolComponent(asm, components, resourceSuffix, outputFileName);
+                    foreach (var sidecarSuffix in GetEmbeddedToolSidecars(outputFileName))
+                    {
+                        AddEmbeddedToolComponent(asm, components, sidecarSuffix, Path.GetFileName(sidecarSuffix));
+                    }
+
+                    return ToolBundleFingerprint.ComputeFromStreams(components);
+                }
+                finally
+                {
+                    foreach (var component in components)
+                    {
+                        try
+                        {
+                            component.Stream?.Dispose();
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        public static string ComputeExtractedToolBundleFingerprint(string outputFileName)
+        {
+            try
+            {
+                var paths = new List<string> { GetExtractedToolPath(outputFileName) };
+                foreach (var sidecarSuffix in GetEmbeddedToolSidecars(outputFileName))
+                {
+                    paths.Add(GetExtractedToolPath(Path.GetFileName(sidecarSuffix)));
+                }
+
+                return ToolBundleFingerprint.ComputeFromFiles(paths);
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
         /// <summary>
         /// 获取嵌入工具提取后的目标文件路径（不执行提取）。
         /// </summary>
@@ -303,6 +358,28 @@ namespace PackageManager.Services
             {
                 yield return "MftScanner.Native.dll";
             }
+        }
+
+        private static void AddEmbeddedToolComponent(
+            System.Reflection.Assembly asm,
+            ICollection<ToolBundleFingerprint.Component> components,
+            string resourceSuffix,
+            string componentName)
+        {
+            var resourceName = asm.GetManifestResourceNames()
+                .FirstOrDefault(n => n.EndsWith(resourceSuffix, StringComparison.OrdinalIgnoreCase));
+            if (string.IsNullOrEmpty(resourceName))
+            {
+                throw new FileNotFoundException("嵌入工具资源未找到：" + resourceSuffix);
+            }
+
+            var stream = asm.GetManifestResourceStream(resourceName);
+            if (stream == null)
+            {
+                throw new FileNotFoundException("嵌入工具资源流为空：" + resourceName);
+            }
+
+            components.Add(new ToolBundleFingerprint.Component(componentName, stream));
         }
 
         private static void ExtractEmbeddedSidecar(System.Reflection.Assembly asm, string targetDir, string resourceSuffix)

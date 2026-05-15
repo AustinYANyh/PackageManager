@@ -12,7 +12,8 @@ namespace MftScanner
 {
     public sealed class SharedIndexServiceClient : ISharedIndexService, IDisposable
     {
-        private const int HostStartupWaitMilliseconds = 15000;
+        private const int DefaultHostStartupWaitMilliseconds = 15000;
+        private const int MaxHostStartupWaitMilliseconds = 300000;
         private const int HostStartupProbeIntervalMilliseconds = 500;
         private const int HostReadyPollIntervalMilliseconds = 200;
         private const int ShowSearchUiRequestTimeoutMilliseconds = 5000;
@@ -193,11 +194,16 @@ namespace MftScanner
 
         public static bool TryWaitForHostAvailability(int timeoutMilliseconds)
         {
+            return TryWaitForHostAvailability(timeoutMilliseconds, null);
+        }
+
+        public static bool TryWaitForHostAvailability(int timeoutMilliseconds, string expectedHostFingerprint)
+        {
             try
             {
                 using (var cts = new CancellationTokenSource(Math.Max(timeoutMilliseconds, 0)))
                 {
-                    return WaitForHostAvailabilityAsync(timeoutMilliseconds, cts.Token).GetAwaiter().GetResult();
+                    return WaitForHostAvailabilityAsync(timeoutMilliseconds, cts.Token, expectedHostFingerprint).GetAwaiter().GetResult();
                 }
             }
             catch
@@ -829,7 +835,7 @@ namespace MftScanner
         private async Task<int> WaitForSharedIndexReadyAsync(IProgress<string> progress, CancellationToken ct)
         {
             progress?.Report("正在连接共享索引宿主...");
-            if (!await WaitForHostAvailabilityAsync(HostStartupWaitMilliseconds, ct).ConfigureAwait(false))
+            if (!await WaitForHostAvailabilityAsync(GetHostStartupWaitMilliseconds(), ct).ConfigureAwait(false))
             {
                 throw BuildHostUnavailableException("build", null);
             }
@@ -929,10 +935,29 @@ namespace MftScanner
         private async Task<bool> RetryAgainstHostIfStartingAsync(IProgress<string> progress, CancellationToken ct)
         {
             progress?.Report("后台索引宿主连接中，正在等待其完成启动...");
-            return await WaitForHostAvailabilityAsync(HostStartupWaitMilliseconds, ct).ConfigureAwait(false);
+            return await WaitForHostAvailabilityAsync(GetHostStartupWaitMilliseconds(), ct).ConfigureAwait(false);
+        }
+
+        private static int GetHostStartupWaitMilliseconds()
+        {
+            var raw = Environment.GetEnvironmentVariable("PM_MFT_INDEX_HOST_STARTUP_WAIT_MS");
+            int value;
+            if (!string.IsNullOrWhiteSpace(raw)
+                && int.TryParse(raw, out value)
+                && value > 0)
+            {
+                return Math.Min(value, MaxHostStartupWaitMilliseconds);
+            }
+
+            return DefaultHostStartupWaitMilliseconds;
         }
 
         private static async Task<bool> WaitForHostAvailabilityAsync(int timeoutMilliseconds, CancellationToken ct)
+        {
+            return await WaitForHostAvailabilityAsync(timeoutMilliseconds, ct, null).ConfigureAwait(false);
+        }
+
+        private static async Task<bool> WaitForHostAvailabilityAsync(int timeoutMilliseconds, CancellationToken ct, string expectedHostFingerprint)
         {
             var deadline = DateTime.UtcNow.AddMilliseconds(Math.Max(timeoutMilliseconds, 0));
             while (!ct.IsCancellationRequested && DateTime.UtcNow < deadline)
@@ -942,7 +967,9 @@ namespace MftScanner
                     using (var stateMap = SharedIndexMemoryProtocol.OpenStateMapForRead())
                     {
                         var snapshot = SharedIndexMemoryProtocol.ReadState(stateMap);
-                        if (snapshot.HostProcessId > 0 && IsProcessAlive(snapshot.HostProcessId))
+                        if (snapshot.HostProcessId > 0
+                            && IsProcessAlive(snapshot.HostProcessId)
+                            && HostFingerprintMatches(snapshot, expectedHostFingerprint))
                         {
                             return true;
                         }
@@ -960,6 +987,18 @@ namespace MftScanner
             }
 
             return false;
+        }
+
+        private static bool HostFingerprintMatches(SharedIndexStateSnapshot snapshot, string expectedHostFingerprint)
+        {
+            if (string.IsNullOrWhiteSpace(expectedHostFingerprint))
+            {
+                return true;
+            }
+
+            return snapshot != null
+                && !string.IsNullOrWhiteSpace(snapshot.HostFingerprint)
+                && string.Equals(snapshot.HostFingerprint, expectedHostFingerprint, StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsProcessAlive(int processId)

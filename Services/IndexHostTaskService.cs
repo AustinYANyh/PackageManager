@@ -23,6 +23,36 @@ namespace PackageManager.Services
         {
             try
             {
+                var expectedFingerprint = AdminElevationService.ComputeEmbeddedToolBundleFingerprint("MftScanner.exe", "MftScanner.exe");
+                if (string.IsNullOrWhiteSpace(expectedFingerprint))
+                {
+                    LoggingService.LogWarning("计算内置 MftScanner.exe 指纹失败，无法启动后台索引宿主。");
+                    return false;
+                }
+
+                var existingHost = TryReadRunningHostState();
+                if (existingHost != null && IsHostFingerprintCurrent(existingHost, expectedFingerprint))
+                {
+                    LoggingService.LogDebug(
+                        $"[索引宿主启动] 已存在最新 Native 宿主，PID={existingHost.HostProcessId} fingerprint={existingHost.HostFingerprint}");
+                    return true;
+                }
+
+                if (existingHost != null && existingHost.HostProcessId > 0)
+                {
+                    LoggingService.LogInfo(
+                        $"[索引宿主启动] 检测到旧版 Native 宿主，准备先停止。PID={existingHost.HostProcessId} " +
+                        $"actualFingerprint={existingHost.HostFingerprint} expectedFingerprint={expectedFingerprint}");
+                    StopExistingHost(existingHost.HostProcessId);
+                }
+                else if (SharedIndexServiceClient.TryWaitForHostAvailability(1500, expectedFingerprint))
+                {
+                    LoggingService.LogDebug("[索引宿主启动] Native 宿主状态延迟发布，等待后确认已是最新指纹。");
+                    return true;
+                }
+
+                StopNativeIndexAgentHosts();
+
                 var toolPath = EnsureHostToolCurrent();
                 if (string.IsNullOrWhiteSpace(toolPath))
                 {
@@ -33,20 +63,18 @@ namespace PackageManager.Services
                 var taskExists = TaskExists();
                 var taskMatches = taskExists && TaskDefinitionMatches(toolPath);
                 LoggingService.LogDebug($"[索引宿主启动] taskExists={taskExists} taskMatches={taskMatches} toolPath={toolPath}");
-                if (!taskExists)
+                if (!taskExists || !taskMatches)
                 {
-                    LoggingService.LogInfo("后台索引宿主计划任务不存在，准备以管理员权限注册。");
+                    LoggingService.LogInfo(taskExists
+                        ? "后台索引宿主计划任务定义不是最新，准备以管理员权限重建。"
+                        : "后台索引宿主计划任务不存在，准备以管理员权限注册。");
                     if (!RunElevatedRegister(toolPath))
                     {
                         return false;
                     }
                 }
-                else if (!taskMatches)
-                {
-                    LoggingService.LogDebug("[索引宿主启动] 计划任务已存在，但定义校验未通过；当前版本跳过重建，继续复用既有任务。");
-                }
 
-                return EnsureTaskRunning(toolPath);
+                return EnsureTaskRunning(toolPath, expectedFingerprint);
             }
             catch (Exception ex)
             {
@@ -116,15 +144,15 @@ namespace PackageManager.Services
                 && AdminElevationService.IsEmbeddedToolUpToDate("MftScanner.exe", "MftScanner.exe");
         }
 
-        private static bool EnsureTaskRunning(string toolPath)
+        private static bool EnsureTaskRunning(string toolPath, string expectedFingerprint)
         {
-            if (SharedIndexServiceClient.TryWaitForHostAvailability(1500))
+            if (SharedIndexServiceClient.TryWaitForHostAvailability(1500, expectedFingerprint))
             {
                 return true;
             }
 
             if (TryRunRegisteredTaskSilently()
-                && SharedIndexServiceClient.TryWaitForHostAvailability(HostAvailabilityWaitMilliseconds))
+                && SharedIndexServiceClient.TryWaitForHostAvailability(HostAvailabilityWaitMilliseconds, expectedFingerprint))
             {
                 return true;
             }
@@ -244,6 +272,119 @@ namespace PackageManager.Services
                 }
 
                 return RunElevatedEnsureHost();
+            }
+        }
+
+        private static SharedIndexStateSnapshot TryReadRunningHostState()
+        {
+            try
+            {
+                using (var stateMap = SharedIndexMemoryProtocol.OpenStateMapForRead())
+                {
+                    var snapshot = SharedIndexMemoryProtocol.ReadState(stateMap);
+                    if (snapshot != null && snapshot.HostProcessId > 0 && IsProcessAlive(snapshot.HostProcessId))
+                    {
+                        return snapshot;
+                    }
+                }
+            }
+            catch
+            {
+            }
+
+            return null;
+        }
+
+        private static bool IsHostFingerprintCurrent(SharedIndexStateSnapshot snapshot, string expectedFingerprint)
+        {
+            return snapshot != null
+                && snapshot.HostProcessId > 0
+                && !string.IsNullOrWhiteSpace(snapshot.HostFingerprint)
+                && string.Equals(snapshot.HostFingerprint, expectedFingerprint, StringComparison.OrdinalIgnoreCase)
+                && IsProcessAlive(snapshot.HostProcessId);
+        }
+
+        private static void StopExistingHost(int processId)
+        {
+            TryStopRegisteredTaskInstance();
+            try
+            {
+                using (var process = Process.GetProcessById(processId))
+                {
+                    process.Kill();
+                    process.WaitForExit(5000);
+                }
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogWarning($"结束旧版 Native 索引宿主失败：PID={processId}，{ex.Message}");
+            }
+        }
+
+        private static void StopNativeIndexAgentHosts()
+        {
+            TryStopRegisteredTaskInstance();
+
+            try
+            {
+                using (var searcher = new ManagementObjectSearcher(
+                    "SELECT ProcessId, Name, CommandLine FROM Win32_Process WHERE Name = 'MftScanner.exe'"))
+                {
+                    foreach (var item in searcher.Get().OfType<ManagementObject>())
+                    {
+                        var commandLine = item["CommandLine"] as string;
+                        if (string.IsNullOrWhiteSpace(commandLine)
+                            || commandLine.IndexOf("--index-agent", StringComparison.OrdinalIgnoreCase) < 0)
+                        {
+                            continue;
+                        }
+
+                        var rawProcessId = item["ProcessId"];
+                        if (rawProcessId == null)
+                        {
+                            continue;
+                        }
+
+                        var processId = Convert.ToInt32(rawProcessId);
+                        TryKillNativeIndexAgentProcess(processId, "指纹不匹配或旧协议不可读");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogWarning($"扫描 Native 索引宿主进程失败：{ex.Message}");
+            }
+        }
+
+        private static void TryKillNativeIndexAgentProcess(int processId, string reason)
+        {
+            try
+            {
+                using (var process = Process.GetProcessById(processId))
+                {
+                    LoggingService.LogInfo($"结束 Native 索引宿主：PID={processId} reason={reason}");
+                    process.Kill();
+                    process.WaitForExit(5000);
+                }
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogWarning($"结束 Native 索引宿主失败：PID={processId}，{ex.Message}");
+            }
+        }
+
+        private static bool IsProcessAlive(int processId)
+        {
+            try
+            {
+                using (var process = Process.GetProcessById(processId))
+                {
+                    return !process.HasExited;
+                }
+            }
+            catch
+            {
+                return false;
             }
         }
 
@@ -409,6 +550,8 @@ namespace PackageManager.Services
                 var toolPath = AdminElevationService.GetExtractedToolPath("MftScanner.exe");
                 TryStopRegisteredTaskInstance();
                 Thread.Sleep(300);
+                StopNativeIndexAgentHosts();
+                Thread.Sleep(300);
                 TryStopProcessesUsingImagePath(toolPath);
                 Thread.Sleep(500);
 
@@ -429,13 +572,19 @@ namespace PackageManager.Services
                     }
                 }
 
+                var expectedFingerprint = AdminElevationService.ComputeEmbeddedToolBundleFingerprint("MftScanner.exe", "MftScanner.exe");
+                if (string.IsNullOrWhiteSpace(expectedFingerprint))
+                {
+                    return 6;
+                }
+
                 if (!TryRunRegisteredTaskSilently()
-                    && !SharedIndexServiceClient.TryWaitForHostAvailability(HostAvailabilityWaitMilliseconds))
+                    && !SharedIndexServiceClient.TryWaitForHostAvailability(HostAvailabilityWaitMilliseconds, expectedFingerprint))
                 {
                     return 3;
                 }
 
-                return SharedIndexServiceClient.TryWaitForHostAvailability(HostAvailabilityWaitMilliseconds) ? 0 : 4;
+                return SharedIndexServiceClient.TryWaitForHostAvailability(HostAvailabilityWaitMilliseconds, expectedFingerprint) ? 0 : 4;
             }
             catch (Exception ex)
             {

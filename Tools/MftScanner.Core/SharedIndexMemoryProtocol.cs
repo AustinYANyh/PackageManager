@@ -86,6 +86,7 @@ namespace MftScanner
         public SharedIndexBuildState BuildState { get; set; }
         public long LastCommittedChangeSequence { get; set; }
         public long RefreshSequence { get; set; }
+        public string HostFingerprint { get; set; }
         public ContainsBucketStatus ContainsBucketStatus { get; set; } = ContainsBucketStatus.Empty;
     }
 
@@ -160,7 +161,7 @@ namespace MftScanner
 
     public static class SharedIndexMemoryProtocol
     {
-        public const int ProtocolVersion = 5;
+        public const int ProtocolVersion = 6;
         public const int RequestCapacityBytes = 64 * 1024;
         public const int ResponseCapacityBytes = 32 * 1024 * 1024;
         public const int StateCapacityBytes = 64 * 1024;
@@ -507,6 +508,7 @@ namespace MftScanner
                 writer.Write((int)snapshot.BuildState);
                 writer.Write(snapshot.LastCommittedChangeSequence);
                 writer.Write(snapshot.RefreshSequence);
+                WriteSizedString(writer, snapshot.HostFingerprint);
                 WriteContainsBucketStatus(writer, snapshot.ContainsBucketStatus);
                 WriteSizedString(writer, snapshot.StatusMessage);
 
@@ -537,6 +539,7 @@ namespace MftScanner
                     BuildState = (SharedIndexBuildState)reader.ReadInt32(),
                     LastCommittedChangeSequence = reader.ReadInt64(),
                     RefreshSequence = reader.ReadInt64(),
+                    HostFingerprint = ReadSizedString(reader),
                     ContainsBucketStatus = ReadContainsBucketStatus(reader),
                     StatusMessage = ReadSizedString(reader)
                 };

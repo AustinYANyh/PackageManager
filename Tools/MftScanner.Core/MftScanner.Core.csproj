@@ -54,6 +54,7 @@
     <Compile Include="UsnWatcher.cs" />
     <Compile Include="MftScanService.cs" />
     <Compile Include="SharedIndexConstants.cs" />
+    <Compile Include="ToolBundleFingerprint.cs" />
     <Compile Include="SharedIndexMemoryProtocol.cs" />
     <Compile Include="SharedIndexMessages.cs" />
     <Compile Include="SharedIndexServiceClient.cs" />

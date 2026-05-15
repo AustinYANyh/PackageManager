@@ -22,6 +22,7 @@ namespace MftScanner
         private const int SearchUiReadyPollMilliseconds = 50;
         private readonly IndexService _indexService = new IndexService();
         private readonly Action _showSearchUi;
+        private readonly string _hostFingerprint;
         private readonly object _buildLock = new object();
         private readonly object _showSearchUiLock = new object();
         private readonly object _stateLock = new object();
@@ -50,6 +51,7 @@ namespace MftScanner
         public IndexHostAgent(Action showSearchUi)
         {
             _showSearchUi = showSearchUi ?? throw new ArgumentNullException(nameof(showSearchUi));
+            _hostFingerprint = ComputeHostFingerprint();
             _indexService.IndexStatusChanged += IndexService_IndexStatusChanged;
             _indexService.IndexChanged += IndexService_IndexChanged;
         }
@@ -58,7 +60,8 @@ namespace MftScanner
         {
             LoggingService.LogIndexPerf("INDEX",
                 $"[INDEX HOST START] processId={Process.GetCurrentProcess().Id} isElevated={IsProcessElevated()} " +
-                $"identity={LoggingService.FormatPerfValue(TryGetIdentityName())} process={LoggingService.FormatPerfValue(TryGetProcessPath())}");
+                $"identity={LoggingService.FormatPerfValue(TryGetIdentityName())} process={LoggingService.FormatPerfValue(TryGetProcessPath())} " +
+                $"fingerprint={LoggingService.FormatPerfValue(_hostFingerprint)}");
             InitializeSharedMemory();
             Task.Run(() => RunControlCommandServerLoop(_cts.Token));
             Task.Run(() => RunHeartbeatLoop(_cts.Token));
@@ -601,6 +604,7 @@ namespace MftScanner
                     BuildState = _buildState,
                     LastCommittedChangeSequence = Interlocked.Read(ref _lastCommittedChangeSequence),
                     RefreshSequence = Interlocked.Read(ref _refreshSequence),
+                    HostFingerprint = _hostFingerprint,
                     ContainsBucketStatus = _indexService.ContainsBucketStatus
                 };
 
@@ -621,6 +625,30 @@ namespace MftScanner
                 catch
                 {
                 }
+            }
+        }
+
+        private static string ComputeHostFingerprint()
+        {
+            try
+            {
+                var exePath = Process.GetCurrentProcess().MainModule?.FileName;
+                if (string.IsNullOrWhiteSpace(exePath))
+                {
+                    return string.Empty;
+                }
+
+                var dir = Path.GetDirectoryName(exePath) ?? string.Empty;
+                return ToolBundleFingerprint.ComputeFromFiles(new[]
+                {
+                    exePath,
+                    Path.Combine(dir, "MftScanner.Core.dll"),
+                    Path.Combine(dir, "MftScanner.Native.dll")
+                });
+            }
+            catch
+            {
+                return string.Empty;
             }
         }
 

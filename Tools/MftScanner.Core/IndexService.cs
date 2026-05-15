@@ -3468,6 +3468,11 @@ namespace MftScanner
                         $"changes={totalChangeCount} inserted={liveDeltaInserted} deleted={liveDeltaDeleted} " +
                         $"restored={liveDeltaRestored} alreadyVisible={liveDeltaAlreadyVisible} " +
                         $"compactRequired={liveDeltaCompactRequired} liveDeltaCount={index.LiveDeltaCount}");
+
+                    if (index.LiveDeltaCount > 0)
+                    {
+                        QueueLiveDeltaCompact("snapshot-catchup-force-merge", generation, force: true);
+                    }
                 }
 
                 applyStopwatch.Stop();
@@ -4079,10 +4084,15 @@ namespace MftScanner
 
         private void QueueLiveDeltaCompact(string reason)
         {
-            QueueLiveDeltaCompact(reason, CurrentIndexGeneration);
+            QueueLiveDeltaCompact(reason, CurrentIndexGeneration, force: false);
         }
 
         private void QueueLiveDeltaCompact(string reason, long generation)
+        {
+            QueueLiveDeltaCompact(reason, generation, force: false);
+        }
+
+        private void QueueLiveDeltaCompact(string reason, long generation, bool force)
         {
             var index = _index;
             if (index == null || generation != CurrentIndexGeneration || index.LiveDeltaCount == 0)
@@ -4099,7 +4109,8 @@ namespace MftScanner
 
                 var nowTicks = DateTime.UtcNow.Ticks;
                 var lastTicks = Interlocked.Read(ref _lastLiveDeltaCompactAttemptUtcTicks);
-                if (lastTicks > 0
+                if (!force
+                    && lastTicks > 0
                     && (new TimeSpan(nowTicks - lastTicks)).TotalMilliseconds < LiveDeltaCompactMinIntervalMilliseconds)
                 {
                     UsnDiagLog.Write(
@@ -4536,10 +4547,34 @@ namespace MftScanner
                 var liveDeltaCount = index?.LiveDeltaCount ?? 0;
                 if (liveDeltaCount > 0)
                 {
-                    UsnDiagLog.Write(
-                        $"[SNAPSHOT SAVE DEFER] reason={reason} liveDeltaCount={liveDeltaCount} " +
-                        "message=base-snapshot-not-compacted");
-                    return;
+                    long compactMs;
+                    if (index != null && index.TryCompactLiveDeltaOverlay(out compactMs))
+                    {
+                        UsnDiagLog.Write(
+                            $"[SNAPSHOT SAVE COMPACT] outcome=success reason={reason} compactMs={compactMs} records={index.TotalCount}");
+                        if (!IsCurrentIndex(index, generation))
+                        {
+                            UsnDiagLog.Write(
+                                $"[SNAPSHOT SAVE COMPACT] outcome=skip-stale-generation reason={reason} " +
+                                $"generation={generation} currentGeneration={CurrentIndexGeneration}");
+                            return;
+                        }
+
+                        _currentIndexContentFingerprint = IndexSnapshotFingerprint.Compute(index.SortedArray);
+                        liveDeltaCount = index.LiveDeltaCount;
+                    }
+
+                    if (liveDeltaCount == 0)
+                    {
+                        CancelPendingSnapshotSave();
+                    }
+                    else
+                    {
+                        UsnDiagLog.Write(
+                            $"[SNAPSHOT SAVE DEFER] reason={reason} liveDeltaCount={liveDeltaCount} " +
+                            "message=base-snapshot-not-compacted");
+                        return;
+                    }
                 }
 
                 if (!string.Equals(reason, "shutdown", StringComparison.OrdinalIgnoreCase)

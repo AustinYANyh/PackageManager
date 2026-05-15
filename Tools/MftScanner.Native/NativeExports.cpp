@@ -362,6 +362,56 @@ namespace
         const char* name = "contains";
     };
 
+    struct OverlaySearchIndex
+    {
+        std::array<std::vector<std::uint32_t>, 128> asciiCharPostings;
+        std::array<std::vector<std::uint32_t>, 128 * 128> asciiBigramPostings;
+        std::unordered_map<std::uint64_t, std::vector<std::uint32_t>> nonAsciiShortPostings;
+        std::unordered_map<std::uint64_t, std::vector<std::uint32_t>> trigramPostings;
+        std::unordered_map<std::wstring, std::vector<std::uint32_t>> extensionPostings;
+        bool ready = false;
+
+        void Clear()
+        {
+            for (auto& posting : asciiCharPostings)
+            {
+                posting.clear();
+                posting.shrink_to_fit();
+            }
+
+            for (auto& posting : asciiBigramPostings)
+            {
+                posting.clear();
+                posting.shrink_to_fit();
+            }
+
+            nonAsciiShortPostings.clear();
+            trigramPostings.clear();
+            extensionPostings.clear();
+            ready = false;
+        }
+
+        void ResetKeepCapacity()
+        {
+            for (auto& posting : asciiCharPostings)
+            {
+                posting.clear();
+                posting.shrink_to_fit();
+            }
+
+            for (auto& posting : asciiBigramPostings)
+            {
+                posting.clear();
+                posting.shrink_to_fit();
+            }
+
+            nonAsciiShortPostings.clear();
+            trigramPostings.clear();
+            extensionPostings.clear();
+            ready = false;
+        }
+    };
+
     struct NativeV2Accelerator
     {
         std::vector<NativeV2BucketEntry> trigramEntries;
@@ -897,6 +947,17 @@ namespace
             bool buildJson)
         {
             const auto totalStart = std::chrono::steady_clock::now();
+            activeSearchCount_.fetch_add(1, std::memory_order_acq_rel);
+            struct SearchActivityScope
+            {
+                const NativeIndex* owner;
+                ~SearchActivityScope()
+                {
+                    owner->lastSearchCompletedTickMs_.store(SteadyClockMilliseconds(), std::memory_order_release);
+                    owner->activeSearchCount_.fetch_sub(1, std::memory_order_acq_rel);
+                }
+            } activity{ this };
+
             const auto lockWaitStart = std::chrono::steady_clock::now();
             std::shared_lock<std::shared_mutex> guard(mutex_);
             const auto lockWaitMs = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1119,6 +1180,7 @@ namespace
         static constexpr std::int32_t V2PostingsSnapshotVersion1 = 1;
         static constexpr std::int32_t V2RuntimeSnapshotVersion2 = 2;
         static constexpr std::int32_t V2TypeBucketsSnapshotVersion1 = 1;
+        static constexpr std::int32_t V2OverlaySnapshotVersion1 = 1;
         static constexpr DWORD LiveWatcherBufferSize = 256 * 1024;
         static constexpr DWORD CatchUpBufferSize = 1024 * 1024;
         static constexpr DWORD MftEnumBufferSize = 8 * 1024 * 1024;
@@ -1132,8 +1194,13 @@ namespace
         static constexpr DWORD SnapshotWriteLockTimeoutMilliseconds = 200;
         static constexpr auto SnapshotSaveDebounceMilliseconds = std::chrono::milliseconds(1000);
         static constexpr auto SnapshotSaveStartupDelayMilliseconds = std::chrono::milliseconds(8000);
+        static constexpr auto SnapshotCompactionIdleMilliseconds = std::chrono::milliseconds(5000);
+        static constexpr auto OverlaySegmentSaveDebounceMilliseconds = std::chrono::milliseconds(1000);
         static constexpr std::uint32_t OverlayRecordIdMask = 0x80000000u;
         static constexpr std::size_t OverlayCompactionThreshold = 65536;
+        static constexpr std::size_t OverlayImmediateRebuildThreshold = 4096;
+        static constexpr std::size_t OverlayStaleRebuildThreshold = 32768;
+        static constexpr std::size_t OverlayStaleRebuildRatioDivisor = 4;
         static constexpr std::size_t MaxPathCacheEntriesPerVolume = 32768;
 
         mutable std::shared_mutex mutex_;
@@ -1141,6 +1208,12 @@ namespace
         std::vector<Record> overlayRecords_;
         std::unordered_map<std::uint64_t, std::uint32_t> overlayIndexByKey_;
         std::unordered_set<std::uint64_t> overlayDeletedKeys_;
+        OverlaySearchIndex overlaySearch_;
+        std::size_t overlayStalePostingEstimate_ = 0;
+        std::chrono::steady_clock::time_point lastOverlayRebuildAttempt_{};
+        std::uint64_t overlaySegmentBaseRecordCountOverride_ = 0;
+        std::unordered_set<std::uint64_t> overlayCompactedKeys_;
+        std::unordered_set<std::uint64_t> overlayCompactedDeletedKeys_;
         std::unordered_map<std::uint64_t, std::size_t> recordIndexByKey_;
         std::vector<FrnRecordIndexEntry> frnRecordIndex_;
         std::vector<std::uint32_t> allIds_;
@@ -1172,6 +1245,10 @@ namespace
         mutable bool snapshotSavePending_ = false;
         mutable bool snapshotWorkerStop_ = false;
         mutable std::atomic<std::uint64_t> generationId_{ 0 };
+        mutable std::atomic<int> activeSearchCount_{ 0 };
+        mutable std::atomic<long long> lastSearchCompletedTickMs_{ 0 };
+        mutable std::atomic<long long> lastOverlayMutationTickMs_{ 0 };
+        mutable std::atomic<long long> lastOverlaySegmentSaveTickMs_{ 0 };
 
         void StartSnapshotWorker()
         {
@@ -1222,7 +1299,7 @@ namespace
             snapshotWorkerStop_ = false;
         }
 
-        void SnapshotWorkerLoop() const
+        void SnapshotWorkerLoop()
         {
             for (;;)
             {
@@ -1466,7 +1543,7 @@ namespace
                                         continue;
                                     }
 
-                                    ApplyCollectedChanges_NoLock(result.changes, &appliedPayloads);
+                                    ApplyCollectedChanges_NoLock(result.changes, &appliedPayloads, true);
                                 }
 
                                 payloadsToPublish.insert(
@@ -1495,6 +1572,7 @@ namespace
                             std::chrono::steady_clock::now() - watcherStart).count();
                         if (!journalReset && appliedChanges)
                         {
+                            WriteOverlaySegmentSnapshotCore_NoLock(true);
                             QueueSnapshotSave_NoLock();
                         }
                         publishRefresh = true;
@@ -1569,6 +1647,10 @@ namespace
             overlayRecords_.clear();
             overlayIndexByKey_.clear();
             overlayDeletedKeys_.clear();
+            overlaySearch_.Clear();
+            overlaySegmentBaseRecordCountOverride_ = 0;
+            overlayCompactedKeys_.clear();
+            overlayCompactedDeletedKeys_.clear();
             recordIndexByKey_.clear();
             frnRecordIndex_.clear();
             volumes_.clear();
@@ -2440,6 +2522,120 @@ namespace
             }
         }
 
+        static void AddOverlaySearchTokens_NoLock(
+            const std::wstring& name,
+            std::uint32_t overlayIndex,
+            OverlaySearchIndex& index)
+        {
+            for (std::size_t i = 0; i < name.length(); ++i)
+            {
+                const auto ch = name[i];
+                if (ch >= 0 && ch < 128)
+                {
+                    index.asciiCharPostings[static_cast<std::size_t>(ch)].push_back(overlayIndex);
+                }
+                else
+                {
+                    index.nonAsciiShortPostings[PackShortToken(ch, 0, 1)].push_back(overlayIndex);
+                }
+
+                if (i + 1 < name.length())
+                {
+                    const auto next = name[i + 1];
+                    if (ch >= 0 && ch < 128 && next >= 0 && next < 128)
+                    {
+                        const auto bigramIndex = (static_cast<std::size_t>(ch) << 7) | static_cast<std::size_t>(next);
+                        index.asciiBigramPostings[bigramIndex].push_back(overlayIndex);
+                    }
+                    else
+                    {
+                        index.nonAsciiShortPostings[PackShortToken(ch, next, 2)].push_back(overlayIndex);
+                    }
+                }
+            }
+
+            std::vector<std::uint64_t> uniqueKeys;
+            BuildUniqueTrigramKeys_NoLock(name, uniqueKeys);
+            for (const auto key : uniqueKeys)
+            {
+                index.trigramPostings[key].push_back(overlayIndex);
+            }
+
+            const auto extension = GetExtension(name);
+            if (!extension.empty())
+            {
+                index.extensionPostings[extension].push_back(overlayIndex);
+            }
+        }
+
+        void RebuildOverlaySearchIndex_NoLock()
+        {
+            overlaySearch_.ResetKeepCapacity();
+            if (overlayRecords_.empty())
+            {
+                overlayStalePostingEstimate_ = 0;
+                return;
+            }
+
+            overlaySearch_.trigramPostings.reserve(overlayRecords_.size() * 4);
+            overlaySearch_.extensionPostings.reserve(std::max<std::size_t>(16, overlayRecords_.size() / 8));
+            for (std::uint32_t i = 0; i < overlayRecords_.size(); ++i)
+            {
+                const auto& record = overlayRecords_[i];
+                const auto key = MakeRecordKey(record.driveLetter, record.frn);
+                const auto liveOverlay = overlayIndexByKey_.find(key);
+                if (liveOverlay == overlayIndexByKey_.end()
+                    || liveOverlay->second != i
+                    || overlayDeletedKeys_.find(key) != overlayDeletedKeys_.end())
+                {
+                    continue;
+                }
+
+                AddOverlaySearchTokens_NoLock(record.lowerName, i, overlaySearch_);
+            }
+
+            overlaySearch_.ready = true;
+            overlayStalePostingEstimate_ = 0;
+            lastOverlayRebuildAttempt_ = std::chrono::steady_clock::now();
+        }
+
+        void AddOverlaySearchEntry_NoLock(std::uint32_t overlayIndex)
+        {
+            if (overlayIndex >= overlayRecords_.size())
+            {
+                return;
+            }
+
+            if (!overlaySearch_.ready)
+            {
+                RebuildOverlaySearchIndex_NoLock();
+                return;
+            }
+
+            AddOverlaySearchTokens_NoLock(overlayRecords_[overlayIndex].lowerName, overlayIndex, overlaySearch_);
+        }
+
+        void MarkOverlaySearchStale_NoLock(std::size_t staleCount = 1)
+        {
+            overlayStalePostingEstimate_ += staleCount;
+        }
+
+        bool ShouldRebuildOverlaySearch_NoLock() const
+        {
+            if (!overlaySearch_.ready)
+            {
+                return true;
+            }
+
+            if (overlayStalePostingEstimate_ >= OverlayStaleRebuildThreshold)
+            {
+                return true;
+            }
+
+            return overlayRecords_.size() > 0
+                && overlayStalePostingEstimate_ > overlayRecords_.size() / OverlayStaleRebuildRatioDivisor;
+        }
+
         static void EncodeDeltaPosting_NoLock(
             const std::vector<std::uint32_t>& rawPostings,
             std::uint32_t offset,
@@ -2775,6 +2971,52 @@ namespace
             return bytes;
         }
 
+        void ExportStableRecords_NoLock(std::vector<Record>& output) const
+        {
+            output.clear();
+            const auto baseCount = GetRecordCount_NoLock();
+            output.reserve(baseCount + overlayIndexByKey_.size());
+            for (std::uint32_t i = 0; i < baseCount; ++i)
+            {
+                if (IsRecordDeletedByOverlay_NoLock(i))
+                {
+                    continue;
+                }
+
+                Record record;
+                record.frn = GetRecordFrn_NoLock(i);
+                record.parentFrn = GetRecordParentFrn_NoLock(i);
+                record.driveLetter = GetRecordDrive_NoLock(i);
+                record.isDirectory = IsDirectoryRecord_NoLock(i);
+                record.originalName = std::wstring(GetOriginalNameView_NoLock(i));
+                record.lowerName = std::wstring(GetLowerNameView_NoLock(i));
+                output.push_back(std::move(record));
+            }
+
+            for (std::uint32_t i = 0; i < overlayRecords_.size(); ++i)
+            {
+                if (OverlayRecordIsLive_NoLock(i))
+                {
+                    output.push_back(overlayRecords_[i]);
+                }
+            }
+
+            std::sort(output.begin(), output.end(), [](const Record& left, const Record& right)
+            {
+                if (left.lowerName != right.lowerName)
+                {
+                    return left.lowerName < right.lowerName;
+                }
+
+                if (left.driveLetter != right.driveLetter)
+                {
+                    return left.driveLetter < right.driveLetter;
+                }
+
+                return left.frn < right.frn;
+            });
+        }
+
         void SortFrnRecordIndex_NoLock()
         {
             std::sort(frnRecordIndex_.begin(), frnRecordIndex_.end(), [](const auto& left, const auto& right)
@@ -2811,6 +3053,10 @@ namespace
             overlayRecords_.clear();
             overlayIndexByKey_.clear();
             overlayDeletedKeys_.clear();
+            overlaySearch_.Clear();
+            overlaySegmentBaseRecordCountOverride_ = 0;
+            overlayCompactedKeys_.clear();
+            overlayCompactedDeletedKeys_.clear();
             if (!mappedRecords_.Ready())
             {
                 return;
@@ -3609,8 +3855,13 @@ namespace
             return true;
         }
 
-        bool ApplyChange_NoLock(const NativeChange& change, std::string* payload)
+        bool ApplyChange_NoLock(const NativeChange& change, std::string* payload, std::uint32_t* changedOverlayIndex)
         {
+            if (changedOverlayIndex != nullptr)
+            {
+                *changedOverlayIndex = std::numeric_limits<std::uint32_t>::max();
+            }
+
             auto volumeIt = volumes_.find(change.driveLetter);
             if (volumeIt == volumes_.end())
             {
@@ -3620,19 +3871,30 @@ namespace
             switch (change.kind)
             {
             case ChangeKind::Create:
-                return ApplyCreate_NoLock(volumeIt->second, change, payload);
+                return ApplyCreate_NoLock(volumeIt->second, change, payload, changedOverlayIndex);
             case ChangeKind::Delete:
                 return ApplyDelete_NoLock(volumeIt->second, change, payload);
             case ChangeKind::Rename:
-                return ApplyRename_NoLock(volumeIt->second, change, payload);
+                return ApplyRename_NoLock(volumeIt->second, change, payload, changedOverlayIndex);
             default:
                 return false;
             }
         }
 
-        bool ApplyCollectedChanges_NoLock(const std::vector<NativeChange>& changes, std::vector<std::string>* payloads)
+        bool ApplyCollectedChanges_NoLock(
+            const std::vector<NativeChange>& changes,
+            std::vector<std::string>* payloads,
+            bool forceRebuildOverlaySearch = false)
         {
             bool changed = false;
+            std::vector<std::uint32_t> changedOverlayIndexes;
+            const bool incrementalOverlay = !forceRebuildOverlaySearch
+                && changes.size() <= OverlayImmediateRebuildThreshold;
+            if (incrementalOverlay)
+            {
+                changedOverlayIndexes.reserve(changes.size());
+            }
+
             if (payloads != nullptr)
             {
                 payloads->clear();
@@ -3642,12 +3904,45 @@ namespace
             for (const auto& change : changes)
             {
                 std::string payload;
-                if (ApplyChange_NoLock(change, payloads == nullptr ? nullptr : &payload))
+                std::uint32_t changedOverlayIndex = std::numeric_limits<std::uint32_t>::max();
+                if (ApplyChange_NoLock(change, payloads == nullptr ? nullptr : &payload, &changedOverlayIndex))
                 {
                     changed = true;
+                    if (change.kind == ChangeKind::Delete)
+                    {
+                        MarkOverlaySearchStale_NoLock();
+                    }
+                    else if (changedOverlayIndex != std::numeric_limits<std::uint32_t>::max())
+                    {
+                        if (incrementalOverlay)
+                        {
+                            changedOverlayIndexes.push_back(changedOverlayIndex);
+                        }
+                        else
+                        {
+                            MarkOverlaySearchStale_NoLock();
+                        }
+                    }
+
                     if (payloads != nullptr && !payload.empty())
                     {
                         payloads->push_back(std::move(payload));
+                    }
+                }
+            }
+
+            if (changed)
+            {
+                lastOverlayMutationTickMs_.store(SteadyClockMilliseconds(), std::memory_order_release);
+                if (forceRebuildOverlaySearch || changes.size() > OverlayImmediateRebuildThreshold || ShouldRebuildOverlaySearch_NoLock())
+                {
+                    RebuildOverlaySearchIndex_NoLock();
+                }
+                else
+                {
+                    for (const auto overlayIndex : changedOverlayIndexes)
+                    {
+                        AddOverlaySearchEntry_NoLock(overlayIndex);
                     }
                 }
             }
@@ -3721,6 +4016,8 @@ namespace
                 if (changed)
                 {
                     currentStatusMessage_ = L"已应用 synthetic USN delta";
+                    WriteOverlaySegmentSnapshotCore_NoLock(true);
+                    QueueSnapshotSave_NoLock();
                     generationId_.fetch_add(1, std::memory_order_relaxed);
                 }
             }
@@ -3820,7 +4117,7 @@ namespace
             return maxFrn + 1000000ull + (seed * 1000000ull);
         }
 
-        bool ApplyCreate_NoLock(VolumeState& volume, const NativeChange& change, std::string* payload)
+        bool ApplyCreate_NoLock(VolumeState& volume, const NativeChange& change, std::string* payload, std::uint32_t* changedOverlayIndex)
         {
             Record record;
             record.frn = change.frn;
@@ -3831,15 +4128,27 @@ namespace
             record.lowerName = change.lowerName;
 
             const auto key = MakeRecordKey(record.driveLetter, record.frn);
+            overlayCompactedKeys_.erase(key);
+            overlayCompactedDeletedKeys_.erase(key);
             const auto existingOverlay = overlayIndexByKey_.find(key);
             if (existingOverlay != overlayIndexByKey_.end())
             {
                 overlayRecords_[existingOverlay->second] = record;
+                if (changedOverlayIndex != nullptr)
+                {
+                    *changedOverlayIndex = existingOverlay->second;
+                }
+                MarkOverlaySearchStale_NoLock();
             }
             else
             {
-                overlayIndexByKey_[key] = static_cast<std::uint32_t>(overlayRecords_.size());
+                const auto overlayIndex = static_cast<std::uint32_t>(overlayRecords_.size());
+                overlayIndexByKey_[key] = overlayIndex;
                 overlayRecords_.push_back(record);
+                if (changedOverlayIndex != nullptr)
+                {
+                    *changedOverlayIndex = overlayIndex;
+                }
             }
 
             overlayDeletedKeys_.erase(key);
@@ -3863,6 +4172,8 @@ namespace
         bool ApplyDelete_NoLock(VolumeState& volume, const NativeChange& change, std::string* payload)
         {
             const auto key = MakeRecordKey(change.driveLetter, change.frn);
+            overlayCompactedKeys_.erase(key);
+            overlayCompactedDeletedKeys_.erase(key);
             std::uint32_t recordId = 0;
             if (!TryGetRecordIdByKey_NoLock(key, recordId))
             {
@@ -3897,9 +4208,11 @@ namespace
             return true;
         }
 
-        bool ApplyRename_NoLock(VolumeState& volume, const NativeChange& change, std::string* payload)
+        bool ApplyRename_NoLock(VolumeState& volume, const NativeChange& change, std::string* payload, std::uint32_t* changedOverlayIndex)
         {
             const auto key = MakeRecordKey(change.driveLetter, change.frn);
+            overlayCompactedKeys_.erase(key);
+            overlayCompactedDeletedKeys_.erase(key);
 
             Record record;
             record.frn = change.frn;
@@ -3920,11 +4233,21 @@ namespace
             if (existingOverlay != overlayIndexByKey_.end())
             {
                 overlayRecords_[existingOverlay->second] = record;
+                if (changedOverlayIndex != nullptr)
+                {
+                    *changedOverlayIndex = existingOverlay->second;
+                }
+                MarkOverlaySearchStale_NoLock();
             }
             else
             {
-                overlayIndexByKey_[key] = static_cast<std::uint32_t>(overlayRecords_.size());
+                const auto overlayIndex = static_cast<std::uint32_t>(overlayRecords_.size());
+                overlayIndexByKey_[key] = overlayIndex;
                 overlayRecords_.push_back(record);
+                if (changedOverlayIndex != nullptr)
+                {
+                    *changedOverlayIndex = overlayIndex;
+                }
             }
 
             overlayDeletedKeys_.erase(key);
@@ -4459,6 +4782,21 @@ namespace
                 return;
             }
 
+            std::vector<std::uint32_t> candidates;
+            if (TryBuildOverlayCandidates_NoLock(plan, candidates))
+            {
+                AppendOverlayCandidateMatches_NoLock(
+                    plan,
+                    filter,
+                    pathPrefix,
+                    offset,
+                    maxResults,
+                    candidates,
+                    page,
+                    totalMatched);
+                return;
+            }
+
             std::wregex regex;
             const bool needsRegex = plan.kind == QueryPlanKind::WildcardLiteral
                 || plan.kind == QueryPlanKind::RegexLiteral
@@ -4559,6 +4897,224 @@ namespace
                 }
             }
 
+        }
+
+        bool TryBuildOverlayCandidates_NoLock(const QueryPlan& plan, std::vector<std::uint32_t>& candidates) const
+        {
+            candidates.clear();
+            if (!overlaySearch_.ready)
+            {
+                return false;
+            }
+
+            switch (plan.kind)
+            {
+            case QueryPlanKind::Contains:
+            case QueryPlanKind::Prefix:
+            case QueryPlanKind::Suffix:
+                return TryBuildOverlayLiteralCandidates_NoLock(plan.query, candidates);
+
+            case QueryPlanKind::ExtensionWildcard:
+            {
+                const auto it = overlaySearch_.extensionPostings.find(plan.extension);
+                if (it != overlaySearch_.extensionPostings.end())
+                {
+                    candidates = it->second;
+                }
+                return true;
+            }
+
+            case QueryPlanKind::WildcardLiteral:
+            case QueryPlanKind::RegexLiteral:
+                return TryBuildOverlayLiteralCandidates_NoLock(plan.requiredLiteral, candidates);
+
+            default:
+                return false;
+            }
+        }
+
+        bool TryBuildOverlayLiteralCandidates_NoLock(const std::wstring& literal, std::vector<std::uint32_t>& candidates) const
+        {
+            candidates.clear();
+            if (literal.empty())
+            {
+                return false;
+            }
+
+            if (literal.length() == 1)
+            {
+                const auto ch = literal[0];
+                if (ch >= 0 && ch < 128)
+                {
+                    candidates = overlaySearch_.asciiCharPostings[static_cast<std::size_t>(ch)];
+                }
+                else
+                {
+                    const auto it = overlaySearch_.nonAsciiShortPostings.find(PackShortToken(ch, 0, 1));
+                    if (it != overlaySearch_.nonAsciiShortPostings.end())
+                    {
+                        candidates = it->second;
+                    }
+                }
+
+                return true;
+            }
+
+            if (literal.length() == 2)
+            {
+                const auto first = literal[0];
+                const auto second = literal[1];
+                if (first >= 0 && first < 128 && second >= 0 && second < 128)
+                {
+                    const auto index = (static_cast<std::size_t>(first) << 7) | static_cast<std::size_t>(second);
+                    candidates = overlaySearch_.asciiBigramPostings[index];
+                }
+                else
+                {
+                    const auto it = overlaySearch_.nonAsciiShortPostings.find(PackShortToken(first, second, 2));
+                    if (it != overlaySearch_.nonAsciiShortPostings.end())
+                    {
+                        candidates = it->second;
+                    }
+                }
+
+                return true;
+            }
+
+            std::vector<std::uint64_t> keys;
+            keys.reserve(literal.length() - 2);
+            for (std::size_t i = 0; i + 2 < literal.length(); ++i)
+            {
+                keys.push_back(PackTrigram(literal[i], literal[i + 1], literal[i + 2]));
+            }
+
+            std::sort(keys.begin(), keys.end());
+            keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+
+            const std::vector<std::uint32_t>* best = nullptr;
+            for (const auto key : keys)
+            {
+                const auto it = overlaySearch_.trigramPostings.find(key);
+                if (it == overlaySearch_.trigramPostings.end() || it->second.empty())
+                {
+                    return true;
+                }
+
+                if (best == nullptr || it->second.size() < best->size())
+                {
+                    best = &it->second;
+                }
+            }
+
+            if (best == nullptr)
+            {
+                return false;
+            }
+
+            candidates = *best;
+            if (keys.size() <= 1)
+            {
+                return true;
+            }
+
+            candidates.erase(
+                std::remove_if(candidates.begin(), candidates.end(), [this, &literal](std::uint32_t overlayIndex)
+                {
+                    return overlayIndex >= overlayRecords_.size()
+                        || !ContainsText(overlayRecords_[overlayIndex].lowerName, literal);
+                }),
+                candidates.end());
+            return true;
+        }
+
+        void AppendOverlayCandidateMatches_NoLock(
+            const QueryPlan& plan,
+            SearchFilter filter,
+            const std::wstring& pathPrefix,
+            int offset,
+            int maxResults,
+            const std::vector<std::uint32_t>& candidates,
+            std::vector<std::uint32_t>& page,
+            int& totalMatched) const
+        {
+            std::wregex regex;
+            const bool needsRegex = plan.kind == QueryPlanKind::WildcardLiteral
+                || plan.kind == QueryPlanKind::RegexLiteral;
+            if (needsRegex)
+            {
+                try
+                {
+                    regex = plan.kind == QueryPlanKind::WildcardLiteral
+                        ? std::wregex(WildcardToRegex(plan.pattern), std::regex_constants::icase)
+                        : std::wregex(plan.pattern, std::regex_constants::icase);
+                }
+                catch (const std::regex_error&)
+                {
+                    return;
+                }
+            }
+
+            for (const auto overlayIndex : candidates)
+            {
+                if (!OverlayRecordIsLive_NoLock(overlayIndex))
+                {
+                    continue;
+                }
+
+                const auto& record = overlayRecords_[overlayIndex];
+                if (!RecordPassesFilter(record, filter))
+                {
+                    continue;
+                }
+
+                const auto recordId = MakeOverlayRecordId(overlayIndex);
+                if (!pathPrefix.empty() && !RecordPassesPathScope_NoLock(recordId, pathPrefix))
+                {
+                    continue;
+                }
+
+                bool matched = false;
+                switch (plan.kind)
+                {
+                case QueryPlanKind::Contains:
+                    matched = ContainsText(record.lowerName, plan.query);
+                    break;
+                case QueryPlanKind::Prefix:
+                    matched = StartsWith(record.lowerName, plan.query);
+                    break;
+                case QueryPlanKind::Suffix:
+                    matched = EndsWith(record.lowerName, plan.query);
+                    break;
+                case QueryPlanKind::ExtensionWildcard:
+                    matched = GetExtension(record.lowerName) == plan.extension;
+                    break;
+                case QueryPlanKind::WildcardLiteral:
+                case QueryPlanKind::RegexLiteral:
+                    try
+                    {
+                        matched = std::regex_search(record.lowerName, regex);
+                    }
+                    catch (const std::regex_error&)
+                    {
+                        matched = false;
+                    }
+                    break;
+                default:
+                    matched = false;
+                    break;
+                }
+
+                if (!matched)
+                {
+                    continue;
+                }
+
+                ++totalMatched;
+                if (totalMatched > offset && static_cast<int>(page.size()) < maxResults)
+                {
+                    page.push_back(recordId);
+                }
+            }
         }
 
         bool TryMatchRecordsV2_NoLock(
@@ -5077,6 +5633,21 @@ namespace
 
             const auto normalizedPrefix = EnsureTrailingSlash(pathPrefix);
             return StartsWithI(ResolveFullPathById_NoLock(recordId), normalizedPrefix);
+        }
+
+        bool OverlayRecordIsLive_NoLock(std::uint32_t overlayIndex) const
+        {
+            if (overlayIndex >= overlayRecords_.size())
+            {
+                return false;
+            }
+
+            const auto& record = overlayRecords_[overlayIndex];
+            const auto key = MakeRecordKey(record.driveLetter, record.frn);
+            const auto liveOverlay = overlayIndexByKey_.find(key);
+            return liveOverlay != overlayIndexByKey_.end()
+                && liveOverlay->second == overlayIndex
+                && overlayDeletedKeys_.find(key) == overlayDeletedKeys_.end();
         }
 
         std::uint32_t TryResolveDirectoryRecordId_NoLock(const std::wstring& pathPrefix) const
@@ -5649,6 +6220,7 @@ namespace
                 v2_.ready = true;
                 derivedDirty_ = false;
                 generationId_.fetch_add(1, std::memory_order_relaxed);
+                TryLoadV2OverlaySnapshot_NoLock(mappedRecordCount);
 
                 const auto restoreMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - restoreStart).count();
@@ -5810,6 +6382,7 @@ namespace
             {
                 BuildV2Accelerator_NoLock();
             }
+            TryLoadV2OverlaySnapshot_NoLock(records_.size());
 
             const auto restoreMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - restoreStart).count();
@@ -5835,6 +6408,155 @@ namespace
                 + " restoreMs=" + std::to_string(restoreMs)
                 + " restoredCount=" + std::to_string(records_.size())
                 + " source=v2-records");
+            return true;
+        }
+
+        bool TryLoadV2OverlaySnapshot_NoLock(std::size_t stableRecordCount)
+        {
+            const auto path = GetV2OverlaySnapshotPath();
+            if (!std::filesystem::exists(path))
+            {
+                return false;
+            }
+
+            const auto start = std::chrono::steady_clock::now();
+            std::ifstream input(path, std::ios::binary);
+            if (!input)
+            {
+                NativeLogWrite("[NATIVE V2 OVERLAY LOAD] miss reason=open-failed");
+                return false;
+            }
+
+            std::int32_t version = 0;
+            std::uint64_t baseRecordCount = 0;
+            std::uint32_t volumeCount = 0;
+            std::uint32_t recordCount = 0;
+            std::uint32_t tombstoneCount = 0;
+            input.read(reinterpret_cast<char*>(&version), sizeof(version));
+            input.read(reinterpret_cast<char*>(&baseRecordCount), sizeof(baseRecordCount));
+            input.read(reinterpret_cast<char*>(&volumeCount), sizeof(volumeCount));
+            input.read(reinterpret_cast<char*>(&recordCount), sizeof(recordCount));
+            input.read(reinterpret_cast<char*>(&tombstoneCount), sizeof(tombstoneCount));
+            if (!input.good()
+                || version != V2OverlaySnapshotVersion1
+                || baseRecordCount != stableRecordCount
+                || recordCount > 10000000u
+                || tombstoneCount > 10000000u)
+            {
+                NativeLogWrite(
+                    "[NATIVE V2 OVERLAY LOAD] miss reason=header"
+                    " stableRecords=" + std::to_string(stableRecordCount)
+                    + " baseRecordCount=" + std::to_string(baseRecordCount));
+                return false;
+            }
+
+            std::unordered_map<wchar_t, std::pair<std::int64_t, std::uint64_t>> volumeCheckpoints;
+            volumeCheckpoints.reserve(volumeCount);
+            for (std::uint32_t i = 0; i < volumeCount; ++i)
+            {
+                wchar_t drive = L'\0';
+                std::int64_t nextUsn = 0;
+                std::uint64_t journalId = 0;
+                if (!ReadSnapshotChar(input, drive))
+                {
+                    return false;
+                }
+
+                input.read(reinterpret_cast<char*>(&nextUsn), sizeof(nextUsn));
+                input.read(reinterpret_cast<char*>(&journalId), sizeof(journalId));
+                if (!input.good())
+                {
+                    return false;
+                }
+
+                volumeCheckpoints[drive] = { nextUsn, journalId };
+            }
+
+            std::vector<Record> loadedOverlayRecords;
+            loadedOverlayRecords.reserve(recordCount);
+            for (std::uint32_t i = 0; i < recordCount; ++i)
+            {
+                Record record;
+                if (!ReadSnapshotChar(input, record.driveLetter))
+                {
+                    return false;
+                }
+
+                input.read(reinterpret_cast<char*>(&record.frn), sizeof(record.frn));
+                input.read(reinterpret_cast<char*>(&record.parentFrn), sizeof(record.parentFrn));
+                if (!ReadSnapshotBool(input, record.isDirectory)
+                    || !ReadSnapshotString(input, record.originalName)
+                    || !ReadSnapshotString(input, record.lowerName)
+                    || !input.good())
+                {
+                    return false;
+                }
+
+                loadedOverlayRecords.push_back(std::move(record));
+            }
+
+            std::unordered_set<std::uint64_t> loadedDeletes;
+            loadedDeletes.reserve(tombstoneCount);
+            for (std::uint32_t i = 0; i < tombstoneCount; ++i)
+            {
+                wchar_t drive = L'\0';
+                std::uint64_t frn = 0;
+                if (!ReadSnapshotChar(input, drive))
+                {
+                    return false;
+                }
+
+                input.read(reinterpret_cast<char*>(&frn), sizeof(frn));
+                if (!input.good())
+                {
+                    return false;
+                }
+
+                loadedDeletes.insert(MakeRecordKey(drive, frn));
+            }
+
+            overlayRecords_.clear();
+            overlayIndexByKey_.clear();
+            overlayDeletedKeys_ = std::move(loadedDeletes);
+            overlaySegmentBaseRecordCountOverride_ = 0;
+            overlayCompactedKeys_.clear();
+            overlayCompactedDeletedKeys_.clear();
+            overlayRecords_.reserve(loadedOverlayRecords.size());
+            overlayIndexByKey_.reserve(loadedOverlayRecords.size());
+            for (auto& record : loadedOverlayRecords)
+            {
+                const auto key = MakeRecordKey(record.driveLetter, record.frn);
+                if (overlayDeletedKeys_.find(key) != overlayDeletedKeys_.end())
+                {
+                    continue;
+                }
+
+                overlayIndexByKey_[key] = static_cast<std::uint32_t>(overlayRecords_.size());
+                overlayRecords_.push_back(std::move(record));
+            }
+
+            for (const auto& pair : volumeCheckpoints)
+            {
+                auto volumeIt = volumes_.find(pair.first);
+                if (volumeIt == volumes_.end())
+                {
+                    continue;
+                }
+
+                volumeIt->second.nextUsn = std::max(volumeIt->second.nextUsn, pair.second.first);
+                volumeIt->second.journalId = pair.second.second;
+            }
+
+            RebuildOverlaySearchIndex_NoLock();
+            generationId_.fetch_add(1, std::memory_order_relaxed);
+            NativeLogWrite(
+                "[NATIVE V2 OVERLAY LOAD] success elapsedMs="
+                + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - start).count())
+                + " stableRecords=" + std::to_string(stableRecordCount)
+                + " overlayRecords=" + std::to_string(overlayRecords_.size())
+                + " overlayDeletes=" + std::to_string(overlayDeletedKeys_.size())
+                + " volumes=" + std::to_string(volumeCheckpoints.size()));
             return true;
         }
 
@@ -6016,7 +6738,7 @@ namespace
             return true;
         }
 
-        bool SaveSnapshot() const
+        bool SaveSnapshot()
         {
             std::vector<Record> recordsCopy;
             std::unordered_map<wchar_t, VolumeState> volumesCopy;
@@ -6028,6 +6750,8 @@ namespace
             std::vector<std::uint32_t> logIdsCopy;
             std::vector<std::uint32_t> configIdsCopy;
             std::unordered_map<std::wstring, std::vector<std::uint32_t>> extensionIdsCopy;
+            bool compactedOverlay = false;
+            std::uint64_t compactionGeneration = 0;
 
             {
                 std::shared_lock<std::shared_mutex> guard(mutex_, std::try_to_lock);
@@ -6037,61 +6761,270 @@ namespace
                     return false;
                 }
 
-                if (records_.empty() && mappedRecords_.Ready())
+                const auto hasOverlay = !overlayRecords_.empty() || !overlayDeletedKeys_.empty();
+                if (hasOverlay)
                 {
+                    WriteOverlaySegmentSnapshot_NoLock();
+                    if (!CanCompactOverlayNow())
+                    {
+                        NativeLogWrite(
+                            "[NATIVE SNAPSHOT SAVE] skipped reason=overlay-compaction-not-idle"
+                            " overlayRecords=" + std::to_string(overlayRecords_.size())
+                            + " overlayDeletes=" + std::to_string(overlayDeletedKeys_.size()));
+                        return true;
+                    }
+
+                    ExportStableRecords_NoLock(recordsCopy);
+                    compactedOverlay = true;
+                    compactionGeneration = generationId_.load(std::memory_order_acquire);
+                    volumesCopy.reserve(volumes_.size());
+                    for (const auto& pair : volumes_)
+                    {
+                        VolumeState volume;
+                        volume.driveLetter = pair.second.driveLetter;
+                        volume.nextUsn = pair.second.nextUsn;
+                        volume.journalId = pair.second.journalId;
+                        volume.recordCount = pair.second.recordCount;
+                        volume.maxFrn = pair.second.maxFrn;
+                        volume.enumerationComplete = pair.second.enumerationComplete;
+                        volumesCopy.emplace(pair.first, std::move(volume));
+                    }
                     NativeLogWrite(
-                        "[NATIVE SNAPSHOT SAVE] skipped reason=mmap-generation-immutable"
-                        " overlayRecords=" + std::to_string(overlayRecords_.size())
-                        + " overlayDeletes=" + std::to_string(overlayDeletedKeys_.size()));
+                        "[NATIVE SNAPSHOT SAVE] compacting-overlay"
+                        " baseRecords=" + std::to_string(GetRecordCount_NoLock())
+                        + " overlayRecords=" + std::to_string(overlayRecords_.size())
+                        + " overlayDeletes=" + std::to_string(overlayDeletedKeys_.size())
+                        + " compactedRecords=" + std::to_string(recordsCopy.size()));
+                }
+                else if (records_.empty() && mappedRecords_.Ready())
+                {
+                    NativeLogWrite("[NATIVE SNAPSHOT SAVE] skipped reason=mmap-generation-immutable");
                     return true;
                 }
-
-                if (records_.empty() || volumes_.empty())
+                else if (records_.empty() || volumes_.empty())
                 {
                     return true;
                 }
-
-                recordsCopy.assign(records_.begin(), records_.end());
-                volumesCopy.reserve(volumes_.size());
-                for (const auto& pair : volumes_)
-            {
-                VolumeState volume;
-                volume.driveLetter = pair.second.driveLetter;
-                volume.nextUsn = pair.second.nextUsn;
-                volume.journalId = pair.second.journalId;
-                volume.recordCount = pair.second.recordCount;
-                volume.maxFrn = pair.second.maxFrn;
-                volume.enumerationComplete = pair.second.enumerationComplete;
-                volumesCopy.emplace(pair.first, std::move(volume));
+                else
+                {
+                    recordsCopy.assign(records_.begin(), records_.end());
+                    volumesCopy.reserve(volumes_.size());
+                    for (const auto& pair : volumes_)
+                    {
+                        VolumeState volume;
+                        volume.driveLetter = pair.second.driveLetter;
+                        volume.nextUsn = pair.second.nextUsn;
+                        volume.journalId = pair.second.journalId;
+                        volume.recordCount = pair.second.recordCount;
+                        volume.maxFrn = pair.second.maxFrn;
+                        volume.enumerationComplete = pair.second.enumerationComplete;
+                        volumesCopy.emplace(pair.first, std::move(volume));
+                    }
+                    v2Copy.trigramEntries = v2_.trigramEntries;
+                    v2Copy.trigramPostings = v2_.trigramPostings;
+                    v2Copy.asciiCharEntries = v2_.asciiCharEntries;
+                    v2Copy.asciiBigramEntries = v2_.asciiBigramEntries;
+                    v2Copy.nonAsciiShortEntries = v2_.nonAsciiShortEntries;
+                    v2Copy.asciiCharCompressedPostings = v2_.asciiCharCompressedPostings;
+                    v2Copy.asciiBigramCompressedPostings = v2_.asciiBigramCompressedPostings;
+                    v2Copy.nonAsciiShortCompressedPostings = v2_.nonAsciiShortCompressedPostings;
+                    v2Copy.parentOrder = v2_.parentOrder;
+                    v2Copy.childEntries = v2_.childEntries;
+                    v2Copy.childRecordIds = v2_.childRecordIds;
+                    v2Copy.ready = v2_.ready;
+                    v2Copy.buildMs = v2_.buildMs;
+                    v2Copy.postingsBytes = v2_.postingsBytes;
+                    allIdsCopy = allIds_;
+                    directoryIdsCopy = directoryIds_;
+                    launchableIdsCopy = launchableIds_;
+                    scriptIdsCopy = scriptIds_;
+                    logIdsCopy = logIds_;
+                    configIdsCopy = configIds_;
+                    extensionIdsCopy = extensionIds_;
+                }
             }
-                v2Copy.trigramEntries = v2_.trigramEntries;
-                v2Copy.trigramPostings = v2_.trigramPostings;
-                v2Copy.asciiCharEntries = v2_.asciiCharEntries;
-                v2Copy.asciiBigramEntries = v2_.asciiBigramEntries;
-                v2Copy.nonAsciiShortEntries = v2_.nonAsciiShortEntries;
-                v2Copy.asciiCharCompressedPostings = v2_.asciiCharCompressedPostings;
-                v2Copy.asciiBigramCompressedPostings = v2_.asciiBigramCompressedPostings;
-                v2Copy.nonAsciiShortCompressedPostings = v2_.nonAsciiShortCompressedPostings;
-                v2Copy.parentOrder = v2_.parentOrder;
-                v2Copy.childEntries = v2_.childEntries;
-                v2Copy.childRecordIds = v2_.childRecordIds;
-            v2Copy.ready = v2_.ready;
-            v2Copy.buildMs = v2_.buildMs;
-            v2Copy.postingsBytes = v2_.postingsBytes;
-            allIdsCopy = allIds_;
-                directoryIdsCopy = directoryIds_;
-                launchableIdsCopy = launchableIds_;
-                scriptIdsCopy = scriptIds_;
-                logIdsCopy = logIds_;
-                configIdsCopy = configIds_;
-                extensionIdsCopy = extensionIds_;
+
+            bool rebuiltTypeBucketsOnly = false;
+            if (!recordsCopy.empty() && (v2Copy.ready == false || v2Copy.parentOrder.empty() || v2Copy.parentOrder.size() != recordsCopy.size()))
+            {
+                BuildTypeBucketsForRecords(
+                    recordsCopy,
+                    allIdsCopy,
+                    directoryIdsCopy,
+                    launchableIdsCopy,
+                    scriptIdsCopy,
+                    logIdsCopy,
+                    configIdsCopy,
+                    extensionIdsCopy);
+                rebuiltTypeBucketsOnly = true;
             }
 
             WriteV2RecordsSnapshotFile(recordsCopy, volumesCopy);
-            WriteV2PostingsSnapshotFile(recordsCopy.size(), v2Copy);
-            WriteV2RuntimeSnapshotFile(recordsCopy.size(), v2Copy);
-            WriteV2TypeBucketsSnapshotFile(recordsCopy.size(), allIdsCopy, directoryIdsCopy, launchableIdsCopy, scriptIdsCopy, logIdsCopy, configIdsCopy, extensionIdsCopy);
+            if (rebuiltTypeBucketsOnly)
+            {
+                DeleteFileW(GetV2PostingsSnapshotPath().c_str());
+                DeleteFileW(GetV2RuntimeSnapshotPath().c_str());
+                WriteV2TypeBucketsSnapshotFile(recordsCopy.size(), allIdsCopy, directoryIdsCopy, launchableIdsCopy, scriptIdsCopy, logIdsCopy, configIdsCopy, extensionIdsCopy);
+            }
+            else
+            {
+                WriteV2PostingsSnapshotFile(recordsCopy.size(), v2Copy);
+                WriteV2RuntimeSnapshotFile(recordsCopy.size(), v2Copy);
+                WriteV2TypeBucketsSnapshotFile(recordsCopy.size(), allIdsCopy, directoryIdsCopy, launchableIdsCopy, scriptIdsCopy, logIdsCopy, configIdsCopy, extensionIdsCopy);
+            }
+            if (compactedOverlay)
+            {
+                CompleteOverlayCompaction(compactionGeneration, recordsCopy.size());
+            }
             return true;
+        }
+
+        void CompleteOverlayCompaction(
+            std::uint64_t compactionGeneration,
+            std::size_t compactedRecordCount)
+        {
+            std::unique_lock<std::shared_mutex> guard(mutex_, std::try_to_lock);
+            if (!guard.owns_lock())
+            {
+                NativeLogWrite("[NATIVE SNAPSHOT SAVE] compacted but memory-swap skipped reason=index-lock-busy");
+                return;
+            }
+
+            if (generationId_.load(std::memory_order_acquire) != compactionGeneration)
+            {
+                NativeLogWrite("[NATIVE SNAPSHOT SAVE] compacted but memory-swap skipped reason=generation-changed");
+                return;
+            }
+
+            overlaySegmentBaseRecordCountOverride_ = static_cast<std::uint64_t>(compactedRecordCount);
+            overlayCompactedKeys_.clear();
+            overlayCompactedDeletedKeys_.clear();
+            overlayCompactedKeys_.reserve(overlayIndexByKey_.size());
+            overlayCompactedDeletedKeys_.reserve(overlayDeletedKeys_.size());
+            for (const auto& pair : overlayIndexByKey_)
+            {
+                overlayCompactedKeys_.insert(pair.first);
+            }
+            overlayCompactedDeletedKeys_ = overlayDeletedKeys_;
+            WriteOverlaySegmentSnapshotCore_NoLock(true);
+            NativeLogWrite(
+                "[NATIVE SNAPSHOT SAVE] compacted-overlay-stable-written records="
+                + std::to_string(compactedRecordCount)
+                + " liveBaseRecords=" + std::to_string(GetRecordCount_NoLock()));
+        }
+
+        static void BuildTypeBucketsForRecords(
+            const std::vector<Record>& records,
+            std::vector<std::uint32_t>& allIds,
+            std::vector<std::uint32_t>& directoryIds,
+            std::vector<std::uint32_t>& launchableIds,
+            std::vector<std::uint32_t>& scriptIds,
+            std::vector<std::uint32_t>& logIds,
+            std::vector<std::uint32_t>& configIds,
+            std::unordered_map<std::wstring, std::vector<std::uint32_t>>& extensionIds)
+        {
+            allIds.clear();
+            directoryIds.clear();
+            launchableIds.clear();
+            scriptIds.clear();
+            logIds.clear();
+            configIds.clear();
+            extensionIds.clear();
+
+            allIds.reserve(records.size());
+            directoryIds.reserve(records.size() / 8);
+            launchableIds.reserve(records.size() / 8);
+            extensionIds.reserve(records.size() / 8);
+
+            for (std::uint32_t i = 0; i < records.size(); ++i)
+            {
+                const auto& record = records[i];
+                allIds.push_back(i);
+                if (record.isDirectory)
+                {
+                    directoryIds.push_back(i);
+                    continue;
+                }
+
+                const auto extension = GetExtension(record.lowerName);
+                if (!extension.empty())
+                {
+                    extensionIds[extension].push_back(i);
+                }
+                if (IsLaunchableExtension(extension))
+                {
+                    launchableIds.push_back(i);
+                }
+                if (IsScriptExtension(extension))
+                {
+                    scriptIds.push_back(i);
+                }
+                if (IsLogExtension(extension))
+                {
+                    logIds.push_back(i);
+                }
+                if (IsConfigExtension(extension))
+                {
+                    configIds.push_back(i);
+                }
+            }
+        }
+
+        bool CanCompactOverlayNow() const
+        {
+            if (activeSearchCount_.load(std::memory_order_acquire) > 0)
+            {
+                return false;
+            }
+
+            const auto lastSearchCompleted = lastSearchCompletedTickMs_.load(std::memory_order_acquire);
+            const auto lastOverlayMutation = lastOverlayMutationTickMs_.load(std::memory_order_acquire);
+            const auto nowMs = SteadyClockMilliseconds();
+            if (lastOverlayMutation > 0
+                && nowMs - lastOverlayMutation < SnapshotCompactionIdleMilliseconds.count())
+            {
+                return false;
+            }
+
+            if (lastSearchCompleted == 0)
+            {
+                return true;
+            }
+
+            const auto idleMs = nowMs - lastSearchCompleted;
+            return idleMs >= SnapshotCompactionIdleMilliseconds.count();
+        }
+
+        bool WriteOverlaySegmentSnapshot_NoLock() const
+        {
+            return WriteOverlaySegmentSnapshotCore_NoLock(false);
+        }
+
+        bool WriteOverlaySegmentSnapshotCore_NoLock(bool force) const
+        {
+            if (!force)
+            {
+                const auto nowMs = SteadyClockMilliseconds();
+                const auto lastSaveMs = lastOverlaySegmentSaveTickMs_.load(std::memory_order_acquire);
+                if (lastSaveMs > 0
+                    && nowMs - lastSaveMs < OverlaySegmentSaveDebounceMilliseconds.count())
+                {
+                    return true;
+                }
+            }
+
+            const auto stableRecordCount = overlaySegmentBaseRecordCountOverride_ == 0
+                ? static_cast<std::uint64_t>(GetRecordCount_NoLock())
+                : overlaySegmentBaseRecordCountOverride_;
+            return WriteV2OverlaySnapshotFile(
+                stableRecordCount,
+                volumes_,
+                overlayRecords_,
+                overlayIndexByKey_,
+                overlayDeletedKeys_,
+                overlayCompactedKeys_,
+                overlayCompactedDeletedKeys_,
+                lastOverlaySegmentSaveTickMs_);
         }
 
         bool WriteCurrentGenerationSidecars_NoLock() const
@@ -6448,6 +7381,171 @@ namespace
                 + " records=" + std::to_string(records.size())
                 + " volumes=" + std::to_string(volumes.size())
                 + " stringPoolChars=" + std::to_string(stringPool.size()));
+        }
+
+        static bool WriteV2OverlaySnapshotFile(
+            std::uint64_t stableRecordCount,
+            const std::unordered_map<wchar_t, VolumeState>& volumes,
+            const std::vector<Record>& overlayRecords,
+            const std::unordered_map<std::uint64_t, std::uint32_t>& overlayIndexByKey,
+            const std::unordered_set<std::uint64_t>& overlayDeletedKeys,
+            const std::unordered_set<std::uint64_t>& compactedKeys,
+            const std::unordered_set<std::uint64_t>& compactedDeletedKeys,
+            std::atomic<long long>& lastSaveTickMs)
+        {
+            const auto start = std::chrono::steady_clock::now();
+            const auto path = GetV2OverlaySnapshotPath();
+            const auto liveOverlayCount = overlayIndexByKey.size() > compactedKeys.size()
+                ? overlayIndexByKey.size() - compactedKeys.size()
+                : 0;
+            const auto liveDeleteCount = overlayDeletedKeys.size() > compactedDeletedKeys.size()
+                ? overlayDeletedKeys.size() - compactedDeletedKeys.size()
+                : 0;
+            if (liveOverlayCount == 0 && liveDeleteCount == 0)
+            {
+                DeleteFileW(path.c_str());
+                lastSaveTickMs.store(SteadyClockMilliseconds(), std::memory_order_release);
+                NativeLogWrite(
+                    "[NATIVE V2 OVERLAY SAVE] deleted-empty stableRecords="
+                    + std::to_string(stableRecordCount));
+                return true;
+            }
+
+            std::filesystem::create_directories(path.parent_path());
+            const auto tempPath = path.wstring()
+                + L"."
+                + std::to_wstring(GetCurrentProcessId())
+                + L"."
+                + std::to_wstring(GetTickCount64())
+                + L".tmp";
+
+            std::ofstream output(tempPath, std::ios::binary | std::ios::trunc);
+            if (!output)
+            {
+                return false;
+            }
+
+            std::vector<const Record*> liveOverlayRecords;
+            liveOverlayRecords.reserve(overlayIndexByKey.size());
+            for (std::uint32_t i = 0; i < overlayRecords.size(); ++i)
+            {
+                const auto& record = overlayRecords[i];
+                const auto key = MakeRecordKey(record.driveLetter, record.frn);
+                const auto liveIt = overlayIndexByKey.find(key);
+                if (liveIt == overlayIndexByKey.end()
+                    || liveIt->second != i
+                    || overlayDeletedKeys.find(key) != overlayDeletedKeys.end()
+                    || compactedKeys.find(key) != compactedKeys.end())
+                {
+                    continue;
+                }
+
+                liveOverlayRecords.push_back(&record);
+            }
+
+            const auto version = V2OverlaySnapshotVersion1;
+            const auto baseRecordCount = stableRecordCount;
+            const auto orderedVolumes = GetOrderedVolumes(volumes);
+            const auto volumeCount = static_cast<std::uint32_t>(orderedVolumes.size());
+            const auto recordCount = static_cast<std::uint32_t>(liveOverlayRecords.size());
+            const auto tombstoneCount = static_cast<std::uint32_t>(liveDeleteCount);
+            output.write(reinterpret_cast<const char*>(&version), sizeof(version));
+            output.write(reinterpret_cast<const char*>(&baseRecordCount), sizeof(baseRecordCount));
+            output.write(reinterpret_cast<const char*>(&volumeCount), sizeof(volumeCount));
+            output.write(reinterpret_cast<const char*>(&recordCount), sizeof(recordCount));
+            output.write(reinterpret_cast<const char*>(&tombstoneCount), sizeof(tombstoneCount));
+
+            for (const auto* volume : orderedVolumes)
+            {
+                if (!WriteSnapshotChar(output, volume->driveLetter))
+                {
+                    output.close();
+                    DeleteFileW(tempPath.c_str());
+                    return false;
+                }
+
+                output.write(reinterpret_cast<const char*>(&volume->nextUsn), sizeof(volume->nextUsn));
+                output.write(reinterpret_cast<const char*>(&volume->journalId), sizeof(volume->journalId));
+            }
+
+            for (const auto* record : liveOverlayRecords)
+            {
+                if (!WriteSnapshotChar(output, record->driveLetter))
+                {
+                    output.close();
+                    DeleteFileW(tempPath.c_str());
+                    return false;
+                }
+
+                output.write(reinterpret_cast<const char*>(&record->frn), sizeof(record->frn));
+                output.write(reinterpret_cast<const char*>(&record->parentFrn), sizeof(record->parentFrn));
+                if (!WriteSnapshotBool(output, record->isDirectory)
+                    || !WriteSnapshotString(output, record->originalName)
+                    || !WriteSnapshotString(output, record->lowerName))
+                {
+                    output.close();
+                    DeleteFileW(tempPath.c_str());
+                    return false;
+                }
+            }
+
+            for (const auto key : overlayDeletedKeys)
+            {
+                if (compactedDeletedKeys.find(key) != compactedDeletedKeys.end())
+                {
+                    continue;
+                }
+
+                const auto drive = static_cast<wchar_t>((key >> 56) & 0xFF);
+                const auto frn = key & 0x00FFFFFFFFFFFFFFull;
+                if (!WriteSnapshotChar(output, drive))
+                {
+                    output.close();
+                    DeleteFileW(tempPath.c_str());
+                    return false;
+                }
+
+                output.write(reinterpret_cast<const char*>(&frn), sizeof(frn));
+            }
+
+            output.flush();
+            const auto ok = output.good();
+            output.close();
+            if (!ok)
+            {
+                DeleteFileW(tempPath.c_str());
+                return false;
+            }
+
+            if (std::filesystem::exists(path))
+            {
+                if (!ReplaceFileW(path.c_str(), tempPath.c_str(), nullptr, REPLACEFILE_IGNORE_MERGE_ERRORS, nullptr, nullptr))
+                {
+                    DeleteFileW(tempPath.c_str());
+                    return false;
+                }
+            }
+            else if (!MoveFileExW(tempPath.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING))
+            {
+                DeleteFileW(tempPath.c_str());
+                return false;
+            }
+
+            lastSaveTickMs.store(SteadyClockMilliseconds(), std::memory_order_release);
+            NativeLogWrite(
+                "[NATIVE V2 OVERLAY SAVE] success elapsedMs="
+                + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - start).count())
+                + " stableRecords=" + std::to_string(stableRecordCount)
+                + " overlayRecords=" + std::to_string(liveOverlayRecords.size())
+                + " overlayDeletes=" + std::to_string(liveDeleteCount)
+                + " volumes=" + std::to_string(volumes.size()));
+            return true;
+        }
+
+        static void DeleteV2OverlaySnapshotFile()
+        {
+            DeleteFileW(GetV2OverlaySnapshotPath().c_str());
         }
 
         bool TryLoadV2PostingsSnapshot_NoLock()
@@ -7726,6 +8824,12 @@ namespace
             return (static_cast<std::uint64_t>(driveLetter & 0xFF) << 56) | (frn & 0x00FFFFFFFFFFFFFFull);
         }
 
+        static long long SteadyClockMilliseconds()
+        {
+            return std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+        }
+
         static std::wstring ToLower(const std::wstring& value)
         {
             std::wstring result = value;
@@ -7776,6 +8880,11 @@ namespace
         static std::filesystem::path GetV2TypeBucketsSnapshotPath()
         {
             return GetSnapshotDirectoryPath() / L"index-native-v2.type-buckets.bin";
+        }
+
+        static std::filesystem::path GetV2OverlaySnapshotPath()
+        {
+            return GetSnapshotDirectoryPath() / L"index-native-v2.overlay.bin";
         }
 
         static std::filesystem::path GetSnapshotDirectoryPath()
