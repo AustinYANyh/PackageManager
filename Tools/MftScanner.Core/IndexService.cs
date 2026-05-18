@@ -42,6 +42,7 @@ namespace MftScanner
         private volatile bool _isBackgroundCatchUpInProgress;
         private volatile bool _isSnapshotStale;
         private volatile string _currentStatusMessage = string.Empty;
+        private IndexBuildProgress _currentBuildProgress = IndexBuildProgress.Empty;
         private readonly object _periodicSnapshotSaveLock = new object();
         private CancellationTokenSource _periodicSnapshotSaveCts;
         private Task _periodicSnapshotSaveTask;
@@ -86,6 +87,7 @@ namespace MftScanner
         public bool IsSnapshotStale => _isSnapshotStale;
         public string CurrentStatusMessage => _currentStatusMessage;
         public ContainsBucketStatus ContainsBucketStatus => _index?.GetContainsBucketStatus() ?? ContainsBucketStatus.Empty;
+        public IndexBuildProgress CurrentBuildProgress => _currentBuildProgress?.Clone() ?? IndexBuildProgress.Empty;
 
         public void EnsureSearchHotStructuresReady(CancellationToken ct, string reason)
         {
@@ -4237,16 +4239,18 @@ namespace MftScanner
             }
         }
 
-        private void PublishIndexStatus(string message, bool isBackgroundCatchUpInProgress, bool requireSearchRefresh = false)
+        private void PublishIndexStatus(string message, bool isBackgroundCatchUpInProgress, bool requireSearchRefresh = false, IndexBuildProgress buildProgress = null)
         {
             _currentStatusMessage = message ?? string.Empty;
             _isBackgroundCatchUpInProgress = isBackgroundCatchUpInProgress;
+            _currentBuildProgress = buildProgress?.Clone() ?? IndexBuildProgress.Empty;
             IndexStatusChanged?.Invoke(this, new IndexStatusChangedEventArgs(
                 _currentStatusMessage,
                 _index.TotalCount,
                 isBackgroundCatchUpInProgress,
                 requireSearchRefresh,
-                ContainsBucketStatus));
+                ContainsBucketStatus,
+                _currentBuildProgress));
         }
 
         private List<IndexChangedEventArgs> BuildBatchIndexChangedArgs(IReadOnlyList<UsnChangeEntry> changes)
@@ -4734,13 +4738,14 @@ namespace MftScanner
 
     public sealed class IndexStatusChangedEventArgs : EventArgs
     {
-        public IndexStatusChangedEventArgs(string message, int indexedCount, bool isBackgroundCatchUpInProgress, bool requireSearchRefresh, ContainsBucketStatus containsBucketStatus = null)
+        public IndexStatusChangedEventArgs(string message, int indexedCount, bool isBackgroundCatchUpInProgress, bool requireSearchRefresh, ContainsBucketStatus containsBucketStatus = null, IndexBuildProgress buildProgress = null)
         {
             Message = message;
             IndexedCount = indexedCount;
             IsBackgroundCatchUpInProgress = isBackgroundCatchUpInProgress;
             RequireSearchRefresh = requireSearchRefresh;
             ContainsBucketStatus = containsBucketStatus ?? ContainsBucketStatus.Empty;
+            BuildProgress = buildProgress?.Clone() ?? IndexBuildProgress.Empty;
         }
 
         public string Message { get; }
@@ -4748,6 +4753,7 @@ namespace MftScanner
         public bool IsBackgroundCatchUpInProgress { get; }
         public bool RequireSearchRefresh { get; }
         public ContainsBucketStatus ContainsBucketStatus { get; }
+        public IndexBuildProgress BuildProgress { get; }
     }
 
     public sealed class IndexChangedEventArgs : EventArgs

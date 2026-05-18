@@ -29,6 +29,7 @@ namespace MftScanner
         public bool IsBackgroundCatchUpInProgress => _backend.IsBackgroundCatchUpInProgress;
         public string CurrentStatusMessage => _backend.CurrentStatusMessage;
         public ContainsBucketStatus ContainsBucketStatus => _backend.ContainsBucketStatus;
+        public IndexBuildProgress CurrentBuildProgress => _backend.CurrentBuildProgress;
         public bool PreferSynchronousHostSearch => _backend.PreferSynchronousHostSearch;
 
         public event EventHandler<IndexChangedEventArgs> IndexChanged
@@ -126,6 +127,7 @@ namespace MftScanner
         private int _indexedCount;
         private string _currentStatusMessage = string.Empty;
         private bool _isBackgroundCatchUpInProgress;
+        private IndexBuildProgress _currentBuildProgress = IndexBuildProgress.Empty;
         private int _searchWarmupDone;
 
         public event EventHandler<IndexChangedEventArgs> IndexChanged;
@@ -203,6 +205,7 @@ namespace MftScanner
         public MemoryIndex Index => _index;
         public int IndexedCount => _indexedCount;
         public ContainsBucketStatus ContainsBucketStatus => ContainsBucketStatus.Empty;
+        public IndexBuildProgress CurrentBuildProgress => _currentBuildProgress?.Clone() ?? IndexBuildProgress.Empty;
         public bool PreferSynchronousHostSearch => true;
 
         public bool IsBackgroundCatchUpInProgress
@@ -357,7 +360,7 @@ namespace MftScanner
                 throw new InvalidOperationException(response.error);
             }
 
-            ApplyState(response.indexedCount, response.currentStatusMessage, response.isBackgroundCatchUpInProgress, response.requireSearchRefresh);
+            ApplyState(response.indexedCount, response.currentStatusMessage, response.isBackgroundCatchUpInProgress, response.requireSearchRefresh, response.buildProgress);
             WarmupSearchPath(ct);
             return response.indexedCount;
         }
@@ -411,23 +414,27 @@ namespace MftScanner
             if (response == null)
                 return;
 
-            ApplyState(response.indexedCount, response.currentStatusMessage, response.isBackgroundCatchUpInProgress, response.requireSearchRefresh);
+            ApplyState(response.indexedCount, response.currentStatusMessage, response.isBackgroundCatchUpInProgress, response.requireSearchRefresh, response.buildProgress);
         }
 
-        private void ApplyState(int indexedCount, string message, bool isCatchUp, bool requireSearchRefresh)
+        private void ApplyState(int indexedCount, string message, bool isCatchUp, bool requireSearchRefresh, IndexBuildProgress buildProgress = null)
         {
+            var progress = buildProgress?.Clone() ?? IndexBuildProgress.Empty;
             lock (_stateLock)
             {
                 _currentStatusMessage = message ?? string.Empty;
                 _isBackgroundCatchUpInProgress = isCatchUp;
                 _indexedCount = indexedCount;
+                _currentBuildProgress = progress;
             }
 
             IndexStatusChanged?.Invoke(this, new IndexStatusChangedEventArgs(
                 message ?? string.Empty,
                 indexedCount,
                 isCatchUp,
-                requireSearchRefresh));
+                requireSearchRefresh,
+                ContainsBucketStatus,
+                progress));
         }
 
         private string InvokeJsonCall(NativeMethods.NativeJsonOperation operation, string requestJson)
@@ -468,7 +475,7 @@ namespace MftScanner
                 var status = JsonConvert.DeserializeObject<NativeStateResponse>(json);
                 if (status != null)
                 {
-                    ApplyState(status.indexedCount, status.currentStatusMessage, status.isBackgroundCatchUpInProgress, status.requireSearchRefresh);
+                    ApplyState(status.indexedCount, status.currentStatusMessage, status.isBackgroundCatchUpInProgress, status.requireSearchRefresh, status.buildProgress);
                 }
             }
             catch (Exception ex)
@@ -531,6 +538,7 @@ namespace MftScanner
             public string currentStatusMessage { get; set; }
             public bool isBackgroundCatchUpInProgress { get; set; }
             public bool requireSearchRefresh { get; set; }
+            public IndexBuildProgress buildProgress { get; set; }
             public string error { get; set; }
         }
 
@@ -540,6 +548,7 @@ namespace MftScanner
             public string currentStatusMessage { get; set; }
             public bool isBackgroundCatchUpInProgress { get; set; }
             public bool requireSearchRefresh { get; set; }
+            public IndexBuildProgress buildProgress { get; set; }
         }
 
         private sealed class NativeSearchRequest

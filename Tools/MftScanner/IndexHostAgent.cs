@@ -39,6 +39,8 @@ namespace MftScanner
         private long _lastCommittedChangeSequence;
         private long _refreshSequence;
         private SharedIndexBuildState _buildState = SharedIndexBuildState.Unknown;
+        private bool _forceRebuildPending;
+        private IndexBuildProgress _hostBuildProgressOverride;
 
         private sealed class SlotSearchState
         {
@@ -136,6 +138,17 @@ namespace MftScanner
             if (e.RequireSearchRefresh)
             {
                 Interlocked.Increment(ref _refreshSequence);
+            }
+
+            if (_forceRebuildPending && e.BuildProgress != null && e.BuildProgress.HasPercent)
+            {
+                var stage = e.BuildProgress.Stage ?? string.Empty;
+                if (!string.Equals(stage, "restore", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(stage, "queued-rebuild", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(stage, "rebuild-start", StringComparison.OrdinalIgnoreCase))
+                {
+                    _hostBuildProgressOverride = null;
+                }
             }
 
             PublishState(signalClients: true);
@@ -495,20 +508,89 @@ namespace MftScanner
         {
             lock (_buildLock)
             {
-                if (rebuild || _buildTask == null)
+                if (rebuild && _buildTask != null && !_buildTask.IsCompleted)
                 {
                     Interlocked.Increment(ref _indexEpoch);
                     _buildState = SharedIndexBuildState.Building;
+                    _forceRebuildPending = true;
+                    _hostBuildProgressOverride = new IndexBuildProgress
+                    {
+                        Stage = "queued-rebuild",
+                        Percent = 0d,
+                        Message = "强制重建已请求，正在等待当前索引初始化完成",
+                        IndexedCount = _indexService.IndexedCount,
+                        CurrentDrive = string.Empty,
+                        ElapsedMs = 0
+                    };
                     PublishState(signalClients: true);
 
+                    var queuedTask = TrackBuildAsync(RunRebuildAfterCurrentBuildAsync(_buildTask, ct));
+                    _buildTask = queuedTask;
+                }
+                else if (rebuild || _buildTask == null)
+                {
+                    Interlocked.Increment(ref _indexEpoch);
+                    _buildState = SharedIndexBuildState.Building;
+                    _forceRebuildPending = rebuild;
+                    _hostBuildProgressOverride = rebuild
+                        ? new IndexBuildProgress
+                        {
+                            Stage = "rebuild-start",
+                            Percent = 0d,
+                            Message = "正在启动强制重建索引",
+                            IndexedCount = _indexService.IndexedCount,
+                            CurrentDrive = string.Empty,
+                            ElapsedMs = 0
+                        }
+                        : null;
+                    PublishState(signalClients: true);
+
+                    var progress = new Progress<string>(delegate
+                    {
+                        PublishState(signalClients: true);
+                    });
+
                     var buildTask = rebuild
-                        ? _indexService.RebuildIndexAsync(null, _cts.Token)
-                        : _indexService.BuildIndexAsync(null, _cts.Token);
+                        ? _indexService.RebuildIndexAsync(progress, _cts.Token)
+                        : _indexService.BuildIndexAsync(progress, _cts.Token);
                     _buildTask = TrackBuildAsync(buildTask);
                 }
 
                 return _buildTask;
             }
+        }
+
+        private async Task<int> RunRebuildAfterCurrentBuildAsync(Task<int> currentBuildTask, CancellationToken ct)
+        {
+            try
+            {
+                await currentBuildTask.ConfigureAwait(false);
+            }
+            catch
+            {
+                // 强制重建请求应覆盖前一个普通初始化失败。
+            }
+
+            ct.ThrowIfCancellationRequested();
+            _buildState = SharedIndexBuildState.Building;
+            _forceRebuildPending = true;
+            _hostBuildProgressOverride = new IndexBuildProgress
+            {
+                Stage = "rebuild-start",
+                Percent = 0d,
+                Message = "当前索引初始化已结束，正在启动强制重建",
+                IndexedCount = _indexService.IndexedCount,
+                CurrentDrive = string.Empty,
+                ElapsedMs = 0
+            };
+            PublishState(signalClients: true);
+
+            var progress = new Progress<string>(delegate
+            {
+                PublishState(signalClients: true);
+            });
+
+            return await _indexService.RebuildIndexAsync(progress, _cts.Token).ConfigureAwait(false);
         }
 
         private async Task<int> TrackBuildAsync(Task<int> buildTask)
@@ -517,16 +599,44 @@ namespace MftScanner
             {
                 var indexedCount = await buildTask.ConfigureAwait(false);
                 _indexService.EnsureSearchHotStructuresReady(_cts.Token, "index-host-ready");
+                _forceRebuildPending = false;
+                _hostBuildProgressOverride = null;
                 _buildState = SharedIndexBuildState.Ready;
                 PublishState(signalClients: true);
                 return indexedCount;
             }
             catch
             {
+                _forceRebuildPending = false;
+                _hostBuildProgressOverride = null;
                 _buildState = SharedIndexBuildState.Failed;
                 PublishState(signalClients: true);
                 throw;
             }
+        }
+
+        private IndexBuildProgress GetBuildProgressForState()
+        {
+            if (_hostBuildProgressOverride != null)
+            {
+                return _hostBuildProgressOverride.Clone();
+            }
+
+            var progress = _indexService.CurrentBuildProgress;
+            if (_forceRebuildPending && string.Equals(progress?.Stage, "restore", StringComparison.OrdinalIgnoreCase))
+            {
+                return new IndexBuildProgress
+                {
+                    Stage = "queued-rebuild",
+                    Percent = 0d,
+                    Message = "强制重建已请求，正在等待当前索引初始化完成",
+                    IndexedCount = _indexService.IndexedCount,
+                    CurrentDrive = string.Empty,
+                    ElapsedMs = 0
+                };
+            }
+
+            return progress;
         }
 
         private SharedIndexIpcResponse BuildStateResponse(long requestId)
@@ -541,6 +651,7 @@ namespace MftScanner
                 RefreshSequence = Interlocked.Read(ref _refreshSequence),
                 TotalIndexedCount = _indexService.IndexedCount,
                 ContainsBucketStatus = _indexService.ContainsBucketStatus,
+                BuildProgress = GetBuildProgressForState(),
                 TotalMatchedCount = 0,
                 PhysicalMatchedCount = 0,
                 UniqueMatchedCount = 0,
@@ -605,7 +716,8 @@ namespace MftScanner
                     LastCommittedChangeSequence = Interlocked.Read(ref _lastCommittedChangeSequence),
                     RefreshSequence = Interlocked.Read(ref _refreshSequence),
                     HostFingerprint = _hostFingerprint,
-                    ContainsBucketStatus = _indexService.ContainsBucketStatus
+                    ContainsBucketStatus = _indexService.ContainsBucketStatus,
+                    BuildProgress = GetBuildProgressForState()
                 };
 
                 SharedIndexMemoryProtocol.WriteState(_stateMap, snapshot);
@@ -769,6 +881,7 @@ namespace MftScanner
                         currentStatusMessage = _indexService.CurrentStatusMessage,
                         isBackgroundCatchUpInProgress = _indexService.IsBackgroundCatchUpInProgress,
                         containsBucketStatus = _indexService.ContainsBucketStatus,
+                        buildProgress = GetBuildProgressForState(),
                         totalIndexedCount = _indexService.IndexedCount,
                         physicalMatchedCount = 0,
                         uniqueMatchedCount = 0,
@@ -812,6 +925,7 @@ namespace MftScanner
                         currentStatusMessage = _indexService.CurrentStatusMessage,
                         isBackgroundCatchUpInProgress = _indexService.IsBackgroundCatchUpInProgress,
                         containsBucketStatus = _indexService.ContainsBucketStatus,
+                        buildProgress = GetBuildProgressForState(),
                         totalIndexedCount = _indexService.IndexedCount,
                         results = new List<ScannedFileInfo>()
                     });
@@ -833,6 +947,7 @@ namespace MftScanner
                 currentStatusMessage = _indexService.CurrentStatusMessage,
                 isBackgroundCatchUpInProgress = _indexService.IsBackgroundCatchUpInProgress,
                 containsBucketStatus = _indexService.ContainsBucketStatus,
+                buildProgress = GetBuildProgressForState(),
                 totalIndexedCount = _indexService.IndexedCount,
                 totalMatchedCount = 0,
                 physicalMatchedCount = 0,

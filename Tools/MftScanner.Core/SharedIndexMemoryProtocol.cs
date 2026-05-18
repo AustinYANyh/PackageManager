@@ -41,6 +41,41 @@ namespace MftScanner
         Failed = 3
     }
 
+    public sealed class IndexBuildProgress
+    {
+        public static readonly IndexBuildProgress Empty = new IndexBuildProgress
+        {
+            Stage = string.Empty,
+            Percent = -1d,
+            Message = string.Empty,
+            IndexedCount = 0,
+            CurrentDrive = string.Empty,
+            ElapsedMs = 0
+        };
+
+        public string Stage { get; set; }
+        public double Percent { get; set; } = -1d;
+        public string Message { get; set; }
+        public int IndexedCount { get; set; }
+        public string CurrentDrive { get; set; }
+        public long ElapsedMs { get; set; }
+
+        public bool HasPercent => Percent >= 0d && Percent <= 100d;
+
+        public IndexBuildProgress Clone()
+        {
+            return new IndexBuildProgress
+            {
+                Stage = Stage ?? string.Empty,
+                Percent = Percent,
+                Message = Message ?? string.Empty,
+                IndexedCount = IndexedCount,
+                CurrentDrive = CurrentDrive ?? string.Empty,
+                ElapsedMs = ElapsedMs
+            };
+        }
+    }
+
     public sealed class SharedIndexIpcRequest
     {
         public long RequestId { get; set; }
@@ -71,6 +106,7 @@ namespace MftScanner
         public long HostSearchMs { get; set; }
         public bool IsSnapshotStale { get; set; }
         public ContainsBucketStatus ContainsBucketStatus { get; set; } = ContainsBucketStatus.Empty;
+        public IndexBuildProgress BuildProgress { get; set; } = IndexBuildProgress.Empty;
         public List<ScannedFileInfo> Results { get; set; }
     }
 
@@ -88,6 +124,7 @@ namespace MftScanner
         public long RefreshSequence { get; set; }
         public string HostFingerprint { get; set; }
         public ContainsBucketStatus ContainsBucketStatus { get; set; } = ContainsBucketStatus.Empty;
+        public IndexBuildProgress BuildProgress { get; set; } = IndexBuildProgress.Empty;
     }
 
     public sealed class SharedIndexChangeRecord
@@ -161,8 +198,8 @@ namespace MftScanner
 
     public static class SharedIndexMemoryProtocol
     {
-        public const int ProtocolVersion = 6;
-        private const string ProtocolNameSuffix = ".V6";
+        public const int ProtocolVersion = 7;
+        private const string ProtocolNameSuffix = ".V7";
         public const int RequestCapacityBytes = 64 * 1024;
         public const int ResponseCapacityBytes = 32 * 1024 * 1024;
         public const int StateCapacityBytes = 64 * 1024;
@@ -511,6 +548,7 @@ namespace MftScanner
                 writer.Write(snapshot.RefreshSequence);
                 WriteSizedString(writer, snapshot.HostFingerprint);
                 WriteContainsBucketStatus(writer, snapshot.ContainsBucketStatus);
+                WriteIndexBuildProgress(writer, snapshot.BuildProgress);
                 WriteSizedString(writer, snapshot.StatusMessage);
 
                 EnsureWithinCapacity(stream.Position, StateCapacityBytes, "共享索引状态块超过容量。");
@@ -542,6 +580,7 @@ namespace MftScanner
                     RefreshSequence = reader.ReadInt64(),
                     HostFingerprint = ReadSizedString(reader),
                     ContainsBucketStatus = ReadContainsBucketStatus(reader),
+                    BuildProgress = ReadIndexBuildProgress(reader),
                     StatusMessage = ReadSizedString(reader)
                 };
             }
@@ -671,6 +710,7 @@ namespace MftScanner
                 writer.Write(response.HostSearchMs);
                 writer.Write(response.IsSnapshotStale ? 1 : 0);
                 WriteContainsBucketStatus(writer, response.ContainsBucketStatus);
+                WriteIndexBuildProgress(writer, response.BuildProgress);
                 WriteSizedString(writer, response.CurrentStatusMessage);
                 WriteSizedString(writer, response.ErrorMessage);
 
@@ -722,6 +762,7 @@ namespace MftScanner
                     HostSearchMs = reader.ReadInt64(),
                     IsSnapshotStale = reader.ReadInt32() != 0,
                     ContainsBucketStatus = ReadContainsBucketStatus(reader),
+                    BuildProgress = ReadIndexBuildProgress(reader),
                     CurrentStatusMessage = ReadSizedString(reader),
                     ErrorMessage = ReadSizedString(reader),
                     Results = new List<ScannedFileInfo>()
@@ -839,6 +880,17 @@ namespace MftScanner
             writer.Write(value.Epoch);
         }
 
+        private static void WriteIndexBuildProgress(BinaryWriter writer, IndexBuildProgress progress)
+        {
+            var value = progress ?? IndexBuildProgress.Empty;
+            WriteSizedString(writer, value.Stage);
+            writer.Write(value.Percent);
+            WriteSizedString(writer, value.Message);
+            writer.Write(value.IndexedCount);
+            WriteSizedString(writer, value.CurrentDrive);
+            writer.Write(value.ElapsedMs);
+        }
+
         private static string ReadSizedString(BinaryReader reader)
         {
             var byteLength = reader.ReadInt32();
@@ -904,6 +956,19 @@ namespace MftScanner
                 TrigramReady = reader.ReadInt32() != 0,
                 IsOverlayOverflowed = reader.ReadInt32() != 0,
                 Epoch = reader.ReadInt64()
+            };
+        }
+
+        private static IndexBuildProgress ReadIndexBuildProgress(BinaryReader reader)
+        {
+            return new IndexBuildProgress
+            {
+                Stage = ReadSizedString(reader),
+                Percent = reader.ReadDouble(),
+                Message = ReadSizedString(reader),
+                IndexedCount = reader.ReadInt32(),
+                CurrentDrive = ReadSizedString(reader),
+                ElapsedMs = reader.ReadInt64()
             };
         }
     }

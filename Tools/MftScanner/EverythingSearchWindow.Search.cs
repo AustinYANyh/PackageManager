@@ -33,7 +33,23 @@ namespace MftScanner
             var ct = _indexCts.Token;
             _indexReady = false;
             _latestContainsBucketStatus = ContainsBucketStatus.Empty;
-            IndexingProgress.Visibility = Visibility.Visible;
+            _indexBuildOperationActive = true;
+            _latestBuildProgress = forceRescan
+                ? new IndexBuildProgress
+                {
+                    Stage = "request",
+                    Percent = 0d,
+                    Message = "正在请求共享索引重建",
+                    IndexedCount = 0,
+                    CurrentDrive = string.Empty,
+                    ElapsedMs = 0
+                }
+                : IndexBuildProgress.Empty;
+            SetIndexBuildOverlay(true, forceRescan ? "正在请求共享索引重建..." : "正在连接共享索引宿主...");
+            UpdateIndexBuildOverlay(_latestBuildProgress, forceRescan ? "正在请求共享索引重建..." : "正在连接共享索引宿主...");
+
+            UpdateIndexingProgress(_latestBuildProgress, show: true);
+            await Dispatcher.InvokeAsync(delegate { }, DispatcherPriority.Render);
             IndexStateBadgeText.Text = forceRescan ? "正在重建共享索引" : "正在连接共享索引";
             UpdateBucketBadgeTexts();
             StatusText.Text = forceRescan ? "正在请求共享索引重建..." : "正在连接共享索引宿主...";
@@ -49,6 +65,10 @@ namespace MftScanner
                     {
                         _latestIndexStatusMessage = message;
                         StatusText.Text = message;
+                        if (_showIndexBuildOverlay)
+                        {
+                            IndexBuildOverlay.Message = message;
+                        }
                     }
                 });
 
@@ -58,7 +78,10 @@ namespace MftScanner
 
                 _indexReady = true;
                 _latestContainsBucketStatus = _indexService.ContainsBucketStatus;
-                IndexingProgress.Visibility = Visibility.Collapsed;
+                _indexBuildOperationActive = false;
+                _latestBuildProgress = IndexBuildProgress.Empty;
+                SetIndexBuildOverlay(false);
+                UpdateIndexingProgress(_latestBuildProgress, show: false);
                 UpdateIndexStateBadge(false);
                 UpdateSummaryStatus();
                 if (!string.IsNullOrWhiteSpace(SearchBox.Text))
@@ -68,14 +91,18 @@ namespace MftScanner
             }
             catch (OperationCanceledException)
             {
-                IndexingProgress.Visibility = Visibility.Collapsed;
+                _indexBuildOperationActive = false;
+                SetIndexBuildOverlay(false);
+                UpdateIndexingProgress(IndexBuildProgress.Empty, show: false);
                 IndexStateBadgeText.Text = "索引已取消";
                 UpdateBucketBadgeTexts();
                 StatusText.Text = "索引已取消";
             }
             catch (Exception ex)
             {
-                IndexingProgress.Visibility = Visibility.Collapsed;
+                _indexBuildOperationActive = false;
+                SetIndexBuildOverlay(false);
+                UpdateIndexingProgress(IndexBuildProgress.Empty, show: false);
                 IndexStateBadgeText.Text = "索引失败";
                 UpdateBucketBadgeTexts();
                 StatusText.Text = "索引失败：" + ex.Message;
@@ -142,7 +169,7 @@ namespace MftScanner
             }
 
             _isSearchInProgress = true;
-            IndexingProgress.Visibility = Visibility.Visible;
+            UpdateIndexingProgress(IndexBuildProgress.Empty, show: true);
             StatusText.Text = "正在搜索 \"" + GetVisibleQueryText() + "\"...";
             CurrentLoadSummaryText.Text = "正在搜索";
             ClearDisplayedResults();
@@ -182,7 +209,7 @@ namespace MftScanner
                 {
                     _searchCts = null;
                     _isSearchInProgress = false;
-                    IndexingProgress.Visibility = Visibility.Collapsed;
+                    UpdateIndexingProgress(_latestBuildProgress, show: IsBuildProgressActive(_latestBuildProgress));
                     UpdateSummaryStatus();
                     UpdateEmptyState();
                 }
@@ -238,7 +265,7 @@ namespace MftScanner
             var hostTypeFilter = MapTypeFilter(typeFilter);
 
             _isLoadingMore = true;
-            IndexingProgress.Visibility = Visibility.Visible;
+            UpdateIndexingProgress(IndexBuildProgress.Empty, show: true);
             StatusText.Text = "正在继续加载 \"" + GetVisibleQueryText() + "\"...";
             try
             {
@@ -250,7 +277,7 @@ namespace MftScanner
             finally
             {
                 _isLoadingMore = false;
-                IndexingProgress.Visibility = _isSearchInProgress ? Visibility.Visible : Visibility.Collapsed;
+                UpdateIndexingProgress(_latestBuildProgress, show: _isSearchInProgress || IsBuildProgressActive(_latestBuildProgress));
                 UpdateSummaryStatus();
             }
         }
@@ -259,12 +286,34 @@ namespace MftScanner
         {
             _indexedCount = e.IndexedCount;
             _latestIndexStatusMessage = e.Message;
+            var incomingProgress = e.BuildProgress ?? IndexBuildProgress.Empty;
+            if (HasMeaningfulBuildProgress(incomingProgress))
+            {
+                _latestBuildProgress = incomingProgress;
+                _indexBuildOperationActive = IsBuildProgressActive(_latestBuildProgress);
+            }
+            else if (!_indexBuildOperationActive)
+            {
+                _latestBuildProgress = IndexBuildProgress.Empty;
+            }
+
             _latestContainsBucketStatus = e.ContainsBucketStatus ?? ContainsBucketStatus.Empty;
             UpdateIndexStateBadge(e.IsBackgroundCatchUpInProgress);
-            if (e.IsBackgroundCatchUpInProgress)
-                IndexingProgress.Visibility = Visibility.Visible;
+            var shouldShowBuildUi = _indexBuildOperationActive || IsBuildProgressActive(_latestBuildProgress);
+            if (shouldShowBuildUi && !_showIndexBuildOverlay)
+            {
+                SetIndexBuildOverlay(true, e.Message);
+            }
+
+            if (_showIndexBuildOverlay)
+            {
+                UpdateIndexBuildOverlay(_latestBuildProgress, e.Message);
+            }
+
+            if (e.IsBackgroundCatchUpInProgress || shouldShowBuildUi)
+                UpdateIndexingProgress(_latestBuildProgress, show: true);
             else if (!_isSearchInProgress)
-                IndexingProgress.Visibility = Visibility.Collapsed;
+                UpdateIndexingProgress(_latestBuildProgress, show: false);
 
             if (e.RequireSearchRefresh)
                 RequestRefreshCurrentQuery(force: true);

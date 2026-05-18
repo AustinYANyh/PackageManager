@@ -63,6 +63,9 @@ namespace MftScanner
         private bool _pendingRefresh;
         private bool _forcePendingRefresh;
         private string _latestIndexStatusMessage = string.Empty;
+        private IndexBuildProgress _latestBuildProgress = IndexBuildProgress.Empty;
+        private bool _indexBuildOperationActive;
+        private bool _showIndexBuildOverlay;
         private ContainsBucketStatus _latestContainsBucketStatus = ContainsBucketStatus.Empty;
         private string _cachedKeyword;
         private Regex _cachedRegex;
@@ -566,6 +569,151 @@ namespace MftScanner
             DeleteButton.IsEnabled = hasSelection;
         }
 
+        private void SetIndexBuildOverlay(bool show, string message = null)
+        {
+            _showIndexBuildOverlay = show;
+            IndexBuildOverlay.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+            IndexBuildOverlay.IsBusy = show;
+            if (show)
+            {
+                IndexBuildOverlay.Message = string.IsNullOrWhiteSpace(message)
+                    ? "正在重建共享索引..."
+                    : message;
+            }
+        }
+
+        private void UpdateIndexBuildOverlay(IndexBuildProgress progress, string fallbackMessage)
+        {
+            if (!_showIndexBuildOverlay)
+            {
+                return;
+            }
+
+            IndexBuildOverlay.Message = FormatBuildProgressMessage(progress, fallbackMessage);
+        }
+
+        private void UpdateIndexingProgress(IndexBuildProgress progress, bool show)
+        {
+            if (!show)
+            {
+                IndexingProgress.Visibility = Visibility.Collapsed;
+                IndexingProgress.IsIndeterminate = true;
+                IndexingProgress.Value = 0;
+                StatusBuildProgressText.Visibility = Visibility.Collapsed;
+                StatusBuildProgressText.Text = string.Empty;
+                return;
+            }
+
+            IndexingProgress.Visibility = Visibility.Visible;
+            if (progress != null && progress.HasPercent)
+            {
+                IndexingProgress.IsIndeterminate = false;
+                IndexingProgress.Value = Math.Max(0d, Math.Min(100d, progress.Percent));
+                StatusBuildProgressText.Visibility = Visibility.Visible;
+                StatusBuildProgressText.Text = FormatBuildProgressStatusText(progress);
+            }
+            else
+            {
+                IndexingProgress.IsIndeterminate = true;
+                StatusBuildProgressText.Visibility = Visibility.Visible;
+                StatusBuildProgressText.Text = "索引中";
+            }
+        }
+
+        private static bool IsBuildProgressActive(IndexBuildProgress progress)
+        {
+            if (progress == null || !progress.HasPercent)
+            {
+                return false;
+            }
+
+            if (progress.Percent >= 100d)
+            {
+                return false;
+            }
+
+            return !string.Equals(progress.Stage, "ready", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool HasMeaningfulBuildProgress(IndexBuildProgress progress)
+        {
+            return progress != null && (progress.HasPercent || !string.IsNullOrWhiteSpace(progress.Stage) || !string.IsNullOrWhiteSpace(progress.Message));
+        }
+
+        private static string FormatBuildProgressStatusText(IndexBuildProgress progress)
+        {
+            if (progress == null || !progress.HasPercent)
+            {
+                return "索引中";
+            }
+
+            var parts = new List<string>
+            {
+                Math.Round(progress.Percent).ToString("0") + "%"
+            };
+
+            if (progress.IndexedCount > 0)
+            {
+                parts.Add(progress.IndexedCount.ToString("N0") + " 个对象");
+            }
+
+            if (!string.IsNullOrWhiteSpace(progress.CurrentDrive))
+            {
+                parts.Add(progress.CurrentDrive);
+            }
+
+            if (progress.ElapsedMs > 0)
+            {
+                parts.Add(FormatElapsed(progress.ElapsedMs));
+            }
+
+            return string.Join(" · ", parts);
+        }
+
+        private static string FormatBuildProgressMessage(IndexBuildProgress progress, string fallbackMessage)
+        {
+            if (progress == null || !progress.HasPercent)
+            {
+                return string.IsNullOrWhiteSpace(fallbackMessage)
+                    ? "正在重建共享索引..."
+                    : fallbackMessage;
+            }
+
+            var message = string.IsNullOrWhiteSpace(progress.Message)
+                ? (string.IsNullOrWhiteSpace(fallbackMessage) ? "正在重建共享索引" : fallbackMessage)
+                : progress.Message;
+            var parts = new List<string>
+            {
+                "重建索引 " + Math.Round(progress.Percent).ToString("0") + "%",
+                message
+            };
+
+            if (progress.IndexedCount > 0)
+            {
+                parts.Add("已发现 " + progress.IndexedCount.ToString("N0") + " 个对象");
+            }
+
+            if (!string.IsNullOrWhiteSpace(progress.CurrentDrive))
+            {
+                parts.Add("当前 " + progress.CurrentDrive);
+            }
+
+            if (progress.ElapsedMs > 0)
+            {
+                parts.Add(FormatElapsed(progress.ElapsedMs));
+            }
+
+            return string.Join(" · ", parts);
+        }
+
+        private static string FormatElapsed(long elapsedMs)
+        {
+            var value = TimeSpan.FromMilliseconds(Math.Max(0, elapsedMs));
+            return value.TotalHours >= 1d
+                ? value.ToString(@"hh\:mm\:ss")
+                : value.ToString(@"mm\:ss");
+        }
+
         private void UpdateSummaryStatus()
         {
             var typeFilterText = GetTypeFilterText(_currentTypeFilter);
@@ -588,7 +736,11 @@ namespace MftScanner
 
             if (!_indexReady)
             {
-                StatusText.Text = "正在建立索引，请稍候...";
+                StatusText.Text = _latestBuildProgress != null && _latestBuildProgress.HasPercent
+                    ? FormatBuildProgressMessage(_latestBuildProgress, _latestIndexStatusMessage)
+                    : (string.IsNullOrWhiteSpace(_latestIndexStatusMessage)
+                        ? "正在建立索引，请稍候..."
+                        : _latestIndexStatusMessage);
             }
             else if (_isSearchInProgress && _displayedResults.Count == 0)
             {

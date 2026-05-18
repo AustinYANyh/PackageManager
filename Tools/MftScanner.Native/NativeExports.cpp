@@ -756,6 +756,24 @@ namespace
         return result;
     }
 
+    std::wstring JoinDriveLettersWide(const std::vector<wchar_t>& drives)
+    {
+        std::wstring result;
+        result.reserve(drives.size() * 3);
+        for (std::size_t i = 0; i < drives.size(); ++i)
+        {
+            if (i > 0)
+            {
+                result.append(L",");
+            }
+
+            result.push_back(static_cast<wchar_t>(towupper(drives[i])));
+            result.push_back(L':');
+        }
+
+        return result;
+    }
+
     std::size_t CountFrnEntries(const std::unordered_map<wchar_t, VolumeState>& volumes)
     {
         std::size_t total = 0;
@@ -841,6 +859,25 @@ namespace
 
     class NativeIndex
     {
+        struct BuildProgressState
+        {
+            std::wstring stage;
+            double percent = -1.0;
+            std::wstring message;
+            std::size_t indexedCount = 0;
+            wchar_t currentDrive = L'\0';
+            long long elapsedMs = 0;
+        };
+
+        struct EnumeratedVolume
+        {
+            wchar_t driveLetter = L'\0';
+            bool success = false;
+            std::vector<Record> records;
+            VolumeState volume;
+            std::string error;
+        };
+
     public:
         NativeIndex(NativeJsonCallback statusCallback, NativeJsonCallback changeCallback, void* userData)
             : statusCallback_(statusCallback),
@@ -860,14 +897,27 @@ namespace
         std::string Build(bool forceRebuild)
         {
             const auto totalStart = std::chrono::steady_clock::now();
+            const auto stopCatchUpStart = std::chrono::steady_clock::now();
             StopBackgroundCatchUp();
+            const auto stopBackgroundCatchUpMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - stopCatchUpStart).count();
+            const auto stopWatchersStart = std::chrono::steady_clock::now();
             StopWatchers();
+            const auto stopWatchersMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - stopWatchersStart).count();
 
             std::unique_lock<std::shared_mutex> guard(mutex_);
             hasShutdown_ = false;
+            ClearBuildProgress_NoLock();
+
+            if (!forceRebuild)
+            {
+                SetBuildProgress_NoLock(L"restore", 5.0, L"正在恢复索引快照", GetRecordCount_NoLock(), L'\0', totalStart);
+            }
 
             if (!forceRebuild && TryLoadSnapshot())
             {
+                SetBuildProgress_NoLock(L"restore", 100.0, L"索引快照已恢复", GetRecordCount_NoLock(), L'\0', totalStart);
                 currentStatusMessage_ = L"已从 native 快照恢复索引，可立即搜索；后台正在追平 USN...";
                 isBackgroundCatchUpInProgress_ = true;
                 PublishStatus(false);
@@ -876,32 +926,37 @@ namespace
                     "[NATIVE BUILD] mode=snapshot-restore totalMs="
                     + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
                         std::chrono::steady_clock::now() - totalStart).count())
+                    + " stopBackgroundCatchUpMs=" + std::to_string(stopBackgroundCatchUpMs)
+                    + " stopWatchersMs=" + std::to_string(stopWatchersMs)
                     + " indexedCount=" + std::to_string(GetRecordCount_NoLock())
                     + " isBackgroundCatchUpInProgress=true");
                 return BuildStateJson(false);
             }
 
+            const auto mftBuildStart = std::chrono::steady_clock::now();
             BuildFromMft();
-            bool generationSidecarsWritten = false;
-            if (WriteCurrentGenerationSidecars_NoLock())
-            {
-                generationSidecarsWritten = RemapCurrentSidecars_NoLock();
-            }
+            const auto mftBuildMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - mftBuildStart).count();
             const auto watcherStart = std::chrono::steady_clock::now();
-            currentStatusMessage_ = L"已通过 native 内核构建索引";
+            currentStatusMessage_ = L"索引可搜索，正在后台保存快照";
             isBackgroundCatchUpInProgress_ = false;
             StartWatchers_NoLock();
             const auto watcherStartMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - watcherStart).count();
-            if (!generationSidecarsWritten)
-            {
-                QueueSnapshotSave_NoLock();
-            }
+            lastSearchCompletedTickMs_.store(SteadyClockMilliseconds(), std::memory_order_release);
+            forceFullSnapshotSavePending_.store(true, std::memory_order_release);
+            QueueSnapshotSave_NoLock();
+            SetBuildProgress_NoLock(L"ready", 100.0, L"索引可搜索，正在后台保存快照", GetRecordCount_NoLock(), L'\0', totalStart, true);
             PublishStatus(true);
             NativeLogWrite(
                 "[NATIVE BUILD] mode=full totalMs="
                 + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - totalStart).count())
+                + " stopBackgroundCatchUpMs=" + std::to_string(stopBackgroundCatchUpMs)
+                + " stopWatchersMs=" + std::to_string(stopWatchersMs)
+                + " mftBuildMs=" + std::to_string(mftBuildMs)
+                + " recordsRemapMs=0 recordsRemapped=false"
+                + " sidecarSaveMs=0 generationRemapMs=0"
                 + " watcherStartMs=" + std::to_string(watcherStartMs)
                 + " indexedCount=" + std::to_string(GetRecordCount_NoLock())
                 + " isBackgroundCatchUpInProgress=false");
@@ -1220,6 +1275,7 @@ namespace
         static constexpr auto SnapshotSaveDebounceMilliseconds = std::chrono::milliseconds(1000);
         static constexpr auto SnapshotSaveStartupDelayMilliseconds = std::chrono::milliseconds(8000);
         static constexpr auto SnapshotCompactionIdleMilliseconds = std::chrono::milliseconds(5000);
+        static constexpr auto ForceFullSnapshotIdleMilliseconds = std::chrono::milliseconds(5000);
         static constexpr auto OverlaySegmentSaveDebounceMilliseconds = std::chrono::milliseconds(1000);
         static constexpr std::uint32_t OverlayRecordIdMask = 0x80000000u;
         static constexpr std::size_t OverlayCompactionThreshold = 65536;
@@ -1253,6 +1309,7 @@ namespace
         NativeV2MappedRecords mappedRecords_;
         std::unordered_map<wchar_t, VolumeState> volumes_;
         std::wstring currentStatusMessage_;
+        BuildProgressState buildProgress_;
         bool isBackgroundCatchUpInProgress_ = false;
         bool derivedDirty_ = false;
         bool hasShutdown_ = false;
@@ -1274,6 +1331,8 @@ namespace
         mutable std::atomic<long long> lastSearchCompletedTickMs_{ 0 };
         mutable std::atomic<long long> lastOverlayMutationTickMs_{ 0 };
         mutable std::atomic<long long> lastOverlaySegmentSaveTickMs_{ 0 };
+        mutable std::atomic_bool forceFullSnapshotSavePending_{ false };
+        mutable std::mutex watcherLifecycleMutex_;
 
         void StartSnapshotWorker()
         {
@@ -1400,7 +1459,7 @@ namespace
             std::shared_ptr<std::atomic_bool> oldToken;
 
             {
-                std::unique_lock<std::shared_mutex> guard(mutex_);
+                std::lock_guard<std::mutex> guard(watcherLifecycleMutex_);
                 oldToken = watcherStopToken_;
                 if (oldToken != nullptr)
                 {
@@ -1411,12 +1470,38 @@ namespace
                 watcherStopToken_ = std::make_shared<std::atomic_bool>(false);
             }
 
+            const auto joinStart = std::chrono::steady_clock::now();
+            int joinedCount = 0;
+            int cancelRequestedCount = 0;
+            for (auto& thread : threadsToJoin)
+            {
+                if (thread.joinable())
+                {
+                    if (CancelSynchronousIo(static_cast<HANDLE>(thread.native_handle())) != FALSE)
+                    {
+                        ++cancelRequestedCount;
+                    }
+                }
+            }
+
             for (auto& thread : threadsToJoin)
             {
                 if (thread.joinable())
                 {
                     thread.join();
+                    ++joinedCount;
                 }
+            }
+
+            const auto joinMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - joinStart).count();
+            if (joinedCount > 0 || joinMs > 0)
+            {
+                NativeLogWrite(
+                    "[NATIVE WATCHERS STOP] joined=" + std::to_string(joinedCount)
+                    + " cancelRequested=" + std::to_string(cancelRequestedCount)
+                    + " elapsedMs=" + std::to_string(joinMs)
+                    + (joinMs > 2000 ? " slow=true" : " slow=false"));
             }
         }
 
@@ -1430,7 +1515,13 @@ namespace
 
             if (backgroundCatchUpThread_.joinable())
             {
+                const auto joinStart = std::chrono::steady_clock::now();
                 backgroundCatchUpThread_.join();
+                const auto joinMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - joinStart).count();
+                NativeLogWrite(
+                    "[NATIVE CATCHUP STOP] elapsedMs=" + std::to_string(joinMs)
+                    + (joinMs > 2000 ? " slow=true" : " slow=false"));
             }
 
             backgroundCatchUpStopToken_ = std::make_shared<std::atomic_bool>(false);
@@ -1439,6 +1530,7 @@ namespace
         void StartWatchers_NoLock()
         {
             const auto token = watcherStopToken_;
+            std::lock_guard<std::mutex> guard(watcherLifecycleMutex_);
             for (const auto& pair : volumes_)
             {
                 watcherThreads_.emplace_back([this, driveLetter = pair.first, token]()
@@ -1491,7 +1583,12 @@ namespace
                         const auto startJournalId = state.journalId;
                         VolumeCatchUpResult result;
                         result.driveLetter = state.driveLetter;
-                        result.journalReset = CatchUpVolume(state, result.changes);
+                        if (token->load())
+                        {
+                            break;
+                        }
+
+                        result.journalReset = CatchUpVolume(state, token.get(), result.changes);
                         result.state = std::move(state);
                         result.success = true;
                         catchUpResults.push_back(std::move(result));
@@ -1688,6 +1785,91 @@ namespace
             volume.pendingRenameOldByFrn = std::move(state.pendingRenameOldByFrn);
         }
 
+        void SetBuildProgress_NoLock(
+            const wchar_t* stage,
+            double percent,
+            const wchar_t* message,
+            std::size_t indexedCount,
+            wchar_t currentDrive,
+            const std::chrono::steady_clock::time_point& start,
+            bool requireSearchRefresh = false)
+        {
+            buildProgress_.stage = stage == nullptr ? L"" : stage;
+            buildProgress_.percent = percent;
+            buildProgress_.message = message == nullptr ? L"" : message;
+            buildProgress_.indexedCount = indexedCount;
+            buildProgress_.currentDrive = currentDrive;
+            buildProgress_.elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - start).count();
+            currentStatusMessage_ = buildProgress_.message;
+            PublishStatus(requireSearchRefresh);
+        }
+
+        void PublishEnumerationProgress_NoLock(
+            const std::vector<EnumeratedVolume>& results,
+            const std::vector<bool>& completed,
+            const std::vector<wchar_t>& fixedDrives,
+            std::size_t completedCount,
+            const std::chrono::steady_clock::time_point& start,
+            const wchar_t* detail)
+        {
+            std::size_t enumeratedRecords = 0;
+            wchar_t currentDrive = L'\0';
+            std::wstring pendingDrives;
+            for (std::size_t i = 0; i < results.size(); ++i)
+            {
+                if (completed[i] && results[i].success)
+                {
+                    enumeratedRecords += results[i].records.size();
+                }
+                else if (!completed[i])
+                {
+                    if (currentDrive == L'\0')
+                    {
+                        currentDrive = results[i].driveLetter;
+                    }
+
+                    if (!pendingDrives.empty())
+                    {
+                        pendingDrives.append(L",");
+                    }
+
+                    pendingDrives.push_back(static_cast<wchar_t>(towupper(results[i].driveLetter)));
+                    pendingDrives.push_back(L':');
+                }
+            }
+
+            const auto total = std::max<std::size_t>(fixedDrives.size(), 1);
+            const auto percent = 1.0 + (static_cast<double>(completedCount) / static_cast<double>(total)) * 54.0;
+            std::wstring message = detail == nullptr || detail[0] == L'\0'
+                ? L"正在枚举 MFT 记录"
+                : detail;
+            message.append(L"（");
+            message.append(std::to_wstring(completedCount));
+            message.push_back(L'/');
+            message.append(std::to_wstring(fixedDrives.size()));
+            message.append(L" 个固定盘");
+            if (!pendingDrives.empty())
+            {
+                message.append(L"，等待 ");
+                message.append(pendingDrives);
+            }
+            message.push_back(L'）');
+
+            SetBuildProgress_NoLock(
+                L"enumerate",
+                percent,
+                message.c_str(),
+                enumeratedRecords,
+                currentDrive,
+                start);
+        }
+
+        void ClearBuildProgress_NoLock()
+        {
+            buildProgress_ = BuildProgressState();
+        }
+
         void BuildFromMft()
         {
             const auto totalStart = std::chrono::steady_clock::now();
@@ -1704,6 +1886,8 @@ namespace
             frnRecordIndex_.clear();
             volumes_.clear();
             derivedDirty_ = false;
+            ClearBuildProgress_NoLock();
+            SetBuildProgress_NoLock(L"enumerate", 0.0, L"正在准备枚举固定磁盘", 0, L'\0', totalStart);
 
             const auto drivesMask = GetLogicalDrives();
             std::vector<wchar_t> fixedDrives;
@@ -1725,15 +1909,14 @@ namespace
             }
 
             NativeLogWrite("[NATIVE MFT BUILD] start drives=" + JoinDriveLetters(fixedDrives));
-
-            struct EnumeratedVolume
+            std::wstring enumerateStartMessage = L"正在枚举 MFT 记录";
+            if (!fixedDrives.empty())
             {
-                wchar_t driveLetter = L'\0';
-                bool success = false;
-                std::vector<Record> records;
-                VolumeState volume;
-                std::string error;
-            };
+                enumerateStartMessage.append(L"（固定盘 ");
+                enumerateStartMessage.append(JoinDriveLettersWide(fixedDrives));
+                enumerateStartMessage.append(L"）");
+            }
+            SetBuildProgress_NoLock(L"enumerate", 1.0, enumerateStartMessage.c_str(), 0, fixedDrives.empty() ? L'\0' : fixedDrives.front(), totalStart);
 
             const auto enumerateStart = std::chrono::steady_clock::now();
             std::vector<EnumeratedVolume> results(fixedDrives.size());
@@ -1797,9 +1980,59 @@ namespace
                 }));
             }
 
-            for (auto& task : tasks)
+            std::vector<bool> completed(tasks.size(), false);
+            std::size_t completedCount = 0;
+            auto lastPublish = std::chrono::steady_clock::now();
+            while (completedCount < tasks.size())
             {
-                task.get();
+                bool madeProgress = false;
+                for (std::size_t i = 0; i < tasks.size(); ++i)
+                {
+                    if (completed[i])
+                    {
+                        continue;
+                    }
+
+                    if (tasks[i].wait_for(std::chrono::milliseconds(0)) != std::future_status::ready)
+                    {
+                        continue;
+                    }
+
+                    tasks[i].get();
+                    completed[i] = true;
+                    ++completedCount;
+                    madeProgress = true;
+
+                    std::wstring message = L"已完成 ";
+                    message.push_back(static_cast<wchar_t>(towupper(results[i].driveLetter)));
+                    message.append(L": 盘枚举");
+                    PublishEnumerationProgress_NoLock(
+                        results,
+                        completed,
+                        fixedDrives,
+                        completedCount,
+                        totalStart,
+                        message.c_str());
+                    lastPublish = std::chrono::steady_clock::now();
+                }
+
+                if (!madeProgress)
+                {
+                    const auto now = std::chrono::steady_clock::now();
+                    if (now - lastPublish >= std::chrono::milliseconds(500))
+                    {
+                        PublishEnumerationProgress_NoLock(
+                            results,
+                            completed,
+                            fixedDrives,
+                            completedCount,
+                            totalStart,
+                            L"正在枚举 MFT 记录");
+                        lastPublish = now;
+                    }
+
+                    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+                }
             }
 
             std::size_t totalRecordCount = 0;
@@ -1835,6 +2068,7 @@ namespace
             const auto enumerateMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - enumerateStart).count();
             const auto mergeStart = std::chrono::steady_clock::now();
+            SetBuildProgress_NoLock(L"merge", 55.0, L"正在合并各卷索引记录", totalRecordCount, L'\0', totalStart);
             records_.reserve(totalRecordCount);
             for (auto& result : results)
             {
@@ -1858,9 +2092,11 @@ namespace
             const auto mergeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - mergeStart).count();
             const auto buildStart = std::chrono::steady_clock::now();
+            SetBuildProgress_NoLock(L"derived", 60.0, L"正在构建搜索加速结构", records_.size(), L'\0', totalStart);
             RebuildDerivedData_NoLock("mft-build", false);
             const auto buildMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - buildStart).count();
+            SetBuildProgress_NoLock(L"derived", 92.0, L"搜索加速结构已构建，正在收尾", records_.size(), L'\0', totalStart);
             NativeLogWrite(
                 "[NATIVE MFT BUILD] success totalMs="
                 + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -2377,21 +2613,6 @@ namespace
                 + EstimateShortPostingBytes_NoLock()
                 + (static_cast<std::uint64_t>(v2_.parentOrder.size()) * sizeof(std::uint32_t));
             v2_.ready = true;
-            NativeLogWrite(
-                "[NATIVE V2 BUILD] totalMs=" + std::to_string(v2_.buildMs)
-                + " workerCount=" + std::to_string(workerCount)
-                + " trigramCountMs=" + std::to_string(emitMs)
-                + " shortBuildMs=" + std::to_string(emitMs)
-                + " entryBuildMs=" + std::to_string(entryBuildMs)
-                + " fillMs=0"
-                + " sortBucketsMs=0"
-                + " encodeMs=" + std::to_string(encodeMs)
-                + " shortCompressMs=" + std::to_string(shortCompressMs)
-                + " parentMs=" + std::to_string(parentMs)
-                + " trigramBuckets=" + std::to_string(v2_.trigramEntries.size())
-                + " trigramBytes=" + std::to_string(v2_.trigramPostings.size())
-                + " totalPostings=" + std::to_string(totalPostings)
-                + " shortBytes=" + std::to_string(EstimateShortPostingBytes_NoLock()));
         }
 
         void BuildV2RuntimeStructures_NoLock()
@@ -2837,7 +3058,8 @@ namespace
             NativeV2ShortBucketEntry& entry,
             std::vector<std::uint8_t>& output)
         {
-            std::sort(posting.begin(), posting.end());
+            // Full-build postings are appended in ascending recordId order; merging worker
+            // ranges preserves that order, so only duplicate ids from repeated tokens need removal.
             posting.erase(std::unique(posting.begin(), posting.end()), posting.end());
             entry.offset = static_cast<std::uint32_t>(output.size());
             entry.count = static_cast<std::uint32_t>(posting.size());
@@ -3582,7 +3804,10 @@ namespace
             return bytes;
         }
 
-        bool CatchUpVolume(UsnReadState& volumeState, std::vector<NativeChange>& allChanges)
+        bool CatchUpVolume(
+            UsnReadState& volumeState,
+            const std::atomic_bool* stopToken,
+            std::vector<NativeChange>& allChanges)
         {
             allChanges.clear();
 
@@ -3604,8 +3829,13 @@ namespace
 
             while (true)
             {
+                if (stopToken != nullptr && stopToken->load())
+                {
+                    break;
+                }
+
                 changes.clear();
-                if (!ReadUsnChanges_NoLock(handle, volumeState, buffer, CatchUpBufferSize, 0, nullptr, changes, journalReset))
+                if (!ReadUsnChanges_NoLock(handle, volumeState, buffer, CatchUpBufferSize, 0, stopToken, changes, journalReset))
                 {
                     break;
                 }
@@ -3744,8 +3974,18 @@ namespace
                     changes,
                     journalReset);
 
+                if (stopToken->load())
+                {
+                    break;
+                }
+
                 {
                     std::unique_lock<std::shared_mutex> guard(mutex_);
+                    if (stopToken->load())
+                    {
+                        break;
+                    }
+
                     auto volumeIt = volumes_.find(driveLetter);
                     if (volumeIt == volumes_.end())
                     {
@@ -3789,7 +4029,7 @@ namespace
 
                 if (publishRefresh)
                 {
-                    PublishStatus(true);
+                    PublishStatus(shouldRebuild);
                 }
 
                 if (shouldRebuild)
@@ -3852,6 +4092,11 @@ namespace
             changes.clear();
             journalReset = false;
 
+            if (stopToken != nullptr && stopToken->load())
+            {
+                return true;
+            }
+
             USN_JOURNAL_DATA_V0 journalData{};
             if (!QueryJournal_NoLock(handle, journalData))
             {
@@ -3879,6 +4124,11 @@ namespace
 
             while (stopToken == nullptr || !stopToken->load())
             {
+                if (stopToken != nullptr && stopToken->load())
+                {
+                    return true;
+                }
+
                 DWORD bytesReturned = 0;
                 if (!DeviceIoControl(
                     handle,
@@ -3916,6 +4166,11 @@ namespace
                 DWORD offset = sizeof(USN);
                 while (offset + 60 < bytesReturned)
                 {
+                    if (stopToken != nullptr && stopToken->load())
+                    {
+                        return true;
+                    }
+
                     const auto* recordHeader = reinterpret_cast<const USN_RECORD_V2*>(buffer + offset);
                     if (recordHeader->RecordLength == 0)
                     {
@@ -6909,6 +7164,119 @@ namespace
             return true;
         }
 
+        bool WriteAndMapCurrentRecords_NoLock()
+        {
+            if (records_.empty() || volumes_.empty())
+            {
+                return mappedRecords_.Ready();
+            }
+
+            const auto start = std::chrono::steady_clock::now();
+            WriteV2RecordsSnapshotFile(records_, volumes_);
+
+            std::unordered_map<wchar_t, VolumeState> mappedVolumes;
+            std::uint32_t mappedRecordCount = 0;
+            std::uint32_t mappedStringPoolChars = 0;
+            std::uint64_t mappedFileBytes = 0;
+            if (!TryMapV2RecordsSnapshot_NoLock(start, mappedVolumes, mappedRecordCount, mappedStringPoolChars, mappedFileBytes))
+            {
+                return false;
+            }
+
+            records_.clear();
+            records_.shrink_to_fit();
+            volumes_ = std::move(mappedVolumes);
+            RebuildFrnRecordIndexFromMapped_NoLock();
+            NativeLogWrite(
+                "[NATIVE RECORDS REMAP] success elapsedMs="
+                + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - start).count())
+                + " records=" + std::to_string(mappedRecordCount)
+                + " fileBytes=" + std::to_string(mappedFileBytes)
+                + " stringPoolChars=" + std::to_string(mappedStringPoolChars));
+            return true;
+        }
+
+        bool CanForceFullSnapshotNow() const
+        {
+            if (activeSearchCount_.load(std::memory_order_acquire) > 0)
+            {
+                return false;
+            }
+
+            const auto lastSearchCompleted = lastSearchCompletedTickMs_.load(std::memory_order_acquire);
+            const auto nowMs = SteadyClockMilliseconds();
+            if (lastSearchCompleted == 0)
+            {
+                return true;
+            }
+
+            const auto idleMs = nowMs - lastSearchCompleted;
+            return idleMs >= ForceFullSnapshotIdleMilliseconds.count();
+        }
+
+        bool SaveForceFullSnapshot()
+        {
+            std::unique_lock<std::shared_mutex> guard(mutex_, std::try_to_lock);
+            if (!guard.owns_lock())
+            {
+                NativeLogWrite("[NATIVE SNAPSHOT SAVE] skipped reason=force-full-index-lock-busy");
+                return false;
+            }
+
+            const auto hasRecords = !records_.empty() && !volumes_.empty();
+            if ((!hasRecords && !mappedRecords_.Ready()) || !v2_.ready)
+            {
+                return false;
+            }
+
+            if (!CanForceFullSnapshotNow())
+            {
+                NativeLogWrite(
+                    "[NATIVE SNAPSHOT SAVE] skipped reason=force-full-not-idle"
+                    " overlayRecords=" + std::to_string(overlayRecords_.size())
+                    + " overlayDeletes=" + std::to_string(overlayDeletedKeys_.size()));
+                return false;
+            }
+
+            OverlaySegmentSnapshotData overlaySegmentData;
+            const auto hasOverlay = !overlayRecords_.empty() || !overlayDeletedKeys_.empty();
+            const auto directSaveStart = std::chrono::steady_clock::now();
+            if (hasOverlay)
+            {
+                BuildOverlaySegmentSnapshotData_NoLock(overlaySegmentData);
+                WriteOverlaySegmentSnapshotData(overlaySegmentData);
+            }
+
+            const auto recordsRemapStart = std::chrono::steady_clock::now();
+            const bool recordsRemapped = hasRecords ? WriteAndMapCurrentRecords_NoLock() : mappedRecords_.Ready();
+            const auto recordsRemapMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - recordsRemapStart).count();
+            if (!recordsRemapped)
+            {
+                NativeLogWrite(
+                    "[NATIVE SNAPSHOT SAVE] skipped reason=force-full-records-remap-failed"
+                    " recordsRemapMs=" + std::to_string(recordsRemapMs));
+                return false;
+            }
+
+            const auto recordCount = GetRecordCount_NoLock();
+            WriteV2PostingsSnapshotFile(recordCount, v2_);
+            WriteV2RuntimeSnapshotFile(recordCount, v2_);
+            WriteV2TypeBucketsSnapshotFile(recordCount, allIds_, directoryIds_, launchableIds_, scriptIds_, logIds_, configIds_, extensionIds_);
+            forceFullSnapshotSavePending_.store(false, std::memory_order_release);
+            NativeLogWrite(
+                "[NATIVE SNAPSHOT SAVE] force-full-generation success elapsedMs="
+                + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - directSaveStart).count())
+                + " recordsRemapMs=" + std::to_string(recordsRemapMs)
+                + " recordsRemapped=" + std::string(recordsRemapped ? "true" : "false")
+                + " records=" + std::to_string(recordCount)
+                + " overlayRecords=" + std::to_string(overlayRecords_.size())
+                + " overlayDeletes=" + std::to_string(overlayDeletedKeys_.size()));
+            return true;
+        }
+
         bool TryMapV2RecordsSnapshot_NoLock(
             const std::chrono::steady_clock::time_point& totalStart,
             std::unordered_map<wchar_t, VolumeState>& loadedVolumes,
@@ -7044,6 +7412,11 @@ namespace
 
         bool SaveSnapshot()
         {
+            if (forceFullSnapshotSavePending_.load(std::memory_order_acquire))
+            {
+                return SaveForceFullSnapshot();
+            }
+
             std::vector<Record> recordsCopy;
             std::unordered_map<wchar_t, VolumeState> volumesCopy;
             NativeV2Accelerator v2Copy;
@@ -7195,6 +7568,7 @@ namespace
             {
                 CompleteOverlayCompaction(compactionGeneration, recordsCopy.size());
             }
+            forceFullSnapshotSavePending_.store(false, std::memory_order_release);
             return true;
         }
 
@@ -8407,6 +8781,14 @@ namespace
             ss << "\"currentStatusMessage\":\"" << EscapeJson(WideToUtf8(currentStatusMessage_)) << "\",";
             ss << "\"isBackgroundCatchUpInProgress\":" << (isBackgroundCatchUpInProgress_ ? "true" : "false") << ",";
             ss << "\"requireSearchRefresh\":" << (requireSearchRefresh ? "true" : "false") << ",";
+            ss << "\"buildProgress\":{";
+            ss << "\"stage\":\"" << EscapeJson(WideToUtf8(buildProgress_.stage)) << "\",";
+            ss << "\"percent\":" << FormatBuildProgressPercent(buildProgress_.percent) << ",";
+            ss << "\"message\":\"" << EscapeJson(WideToUtf8(buildProgress_.message)) << "\",";
+            ss << "\"indexedCount\":" << buildProgress_.indexedCount << ",";
+            ss << "\"currentDrive\":\"" << EscapeJson(WideToUtf8(BuildProgressDriveText(buildProgress_.currentDrive))) << "\",";
+            ss << "\"elapsedMs\":" << buildProgress_.elapsedMs;
+            ss << "},";
             ss << "\"engineVersion\":\"native-v2\",";
             ss << "\"readyStage\":\"" << (v2_.ready ? "records+trigram+shortQuery+pathOrder+typeBuckets" : "not-ready") << "\",";
             ss << "\"capabilities\":{";
@@ -8472,6 +8854,38 @@ namespace
             ss << "]";
             ss << "}";
             return ss.str();
+        }
+
+        static std::string FormatBuildProgressPercent(double value)
+        {
+            if (value < 0.0)
+            {
+                return "-1";
+            }
+
+            if (value > 100.0)
+            {
+                value = 100.0;
+            }
+
+            std::ostringstream ss;
+            ss.setf(std::ios::fixed);
+            ss.precision(1);
+            ss << value;
+            return ss.str();
+        }
+
+        static std::wstring BuildProgressDriveText(wchar_t drive)
+        {
+            if (drive == L'\0')
+            {
+                return L"";
+            }
+
+            std::wstring text;
+            text.push_back(static_cast<wchar_t>(towupper(drive)));
+            text.append(L":");
+            return text;
         }
 
         static int DeduplicateSearchRowsByPath(std::vector<SearchResultRow>& rows)

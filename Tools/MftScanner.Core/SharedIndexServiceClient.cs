@@ -40,6 +40,7 @@ namespace MftScanner
         private bool _isBackgroundCatchUpInProgress;
         private SharedIndexBuildState _buildState = SharedIndexBuildState.Unknown;
         private ContainsBucketStatus _containsBucketStatus = ContainsBucketStatus.Empty;
+        private IndexBuildProgress _buildProgress = IndexBuildProgress.Empty;
 
         public SharedIndexServiceClient(string consumerName)
         {
@@ -103,6 +104,17 @@ namespace MftScanner
         public Task<int> BuildIndexAsync(IProgress<string> progress, CancellationToken ct)
         {
             return WaitForSharedIndexReadyAsync(progress, ct);
+        }
+
+        public IndexBuildProgress CurrentBuildProgress
+        {
+            get
+            {
+                lock (_stateLock)
+                {
+                    return _buildProgress?.Clone() ?? IndexBuildProgress.Empty;
+                }
+            }
         }
 
         public Task<int> RebuildIndexAsync(IProgress<string> progress, CancellationToken ct)
@@ -432,7 +444,8 @@ namespace MftScanner
                 snapshot.IndexedCount,
                 snapshot.IsBackgroundCatchUpInProgress,
                 requireRefresh,
-                snapshot.ContainsBucketStatus));
+                snapshot.ContainsBucketStatus,
+                snapshot.BuildProgress));
         }
 
         private void DrainPendingChanges()
@@ -489,12 +502,14 @@ namespace MftScanner
             int indexedCount;
             bool isBackgroundCatchUpInProgress;
             ContainsBucketStatus containsBucketStatus;
+            IndexBuildProgress buildProgress;
             lock (_stateLock)
             {
                 message = _currentStatusMessage;
                 indexedCount = _indexedCount;
                 isBackgroundCatchUpInProgress = _isBackgroundCatchUpInProgress;
                 containsBucketStatus = _containsBucketStatus;
+                buildProgress = _buildProgress?.Clone() ?? IndexBuildProgress.Empty;
             }
 
             IndexStatusChanged?.Invoke(this, new IndexStatusChangedEventArgs(
@@ -502,7 +517,8 @@ namespace MftScanner
                 indexedCount,
                 isBackgroundCatchUpInProgress,
                 requireSearchRefresh: true,
-                containsBucketStatus));
+                containsBucketStatus,
+                buildProgress));
         }
 
         private async Task<SharedIndexIpcResponse> SendRequestAsync(SharedIndexIpcRequest request, CancellationToken ct)
@@ -555,7 +571,7 @@ namespace MftScanner
                 writeMs = stageStopwatch.ElapsedMilliseconds;
 
                 stageStopwatch.Restart();
-                WaitForResponse(slotResources, ct);
+                await Task.Run(() => WaitForResponse(slotResources, ct, request.CommandType), ct).ConfigureAwait(false);
                 waitMs = stageStopwatch.ElapsedMilliseconds;
 
                 SharedIndexIpcResponse response;
@@ -584,7 +600,7 @@ namespace MftScanner
                         $"expectedRequestId={request.RequestId} actualRequestId={response.RequestId}");
 
                     stageStopwatch.Restart();
-                    WaitForResponse(slotResources, ct);
+                    await Task.Run(() => WaitForResponse(slotResources, ct, request.CommandType), ct).ConfigureAwait(false);
                     waitMs += stageStopwatch.ElapsedMilliseconds;
                 }
 
@@ -630,7 +646,7 @@ namespace MftScanner
             }
         }
 
-        private static void WaitForResponse(SharedIndexClientSlotResources slotResources, CancellationToken ct)
+        private void WaitForResponse(SharedIndexClientSlotResources slotResources, CancellationToken ct, SharedIndexCommandType commandType)
         {
             if (slotResources.ResponseReadyEvent.WaitOne(0))
             {
@@ -639,14 +655,44 @@ namespace MftScanner
 
             try
             {
-                var waitHandles = new WaitHandle[] { slotResources.ResponseReadyEvent, ct.WaitHandle };
-                var waitIndex = WaitHandle.WaitAny(waitHandles);
-                if (waitIndex == 0)
+                var waitHandles = new WaitHandle[]
                 {
-                    return;
-                }
+                    slotResources.ResponseReadyEvent,
+                    slotResources.StatusChangedEvent,
+                    slotResources.ChangeAvailableEvent,
+                    ct.WaitHandle
+                };
 
-                throw new OperationCanceledException(ct);
+                while (true)
+                {
+                    var waitIndex = WaitHandle.WaitAny(waitHandles, 250);
+                    if (waitIndex == 0)
+                    {
+                        return;
+                    }
+
+                    if (waitIndex == 1)
+                    {
+                        ApplyLatestState(raiseEvent: true);
+                        continue;
+                    }
+
+                    if (waitIndex == 2)
+                    {
+                        DrainPendingChanges();
+                        continue;
+                    }
+
+                    if (waitIndex == 3)
+                    {
+                        throw new OperationCanceledException(ct);
+                    }
+
+                    if (commandType == SharedIndexCommandType.Build || commandType == SharedIndexCommandType.Rebuild)
+                    {
+                        ApplyLatestState(raiseEvent: true);
+                    }
+                }
             }
             catch (OperationCanceledException)
             {
@@ -825,6 +871,7 @@ namespace MftScanner
                 _currentStatusMessage = response.CurrentStatusMessage ?? string.Empty;
                 _isBackgroundCatchUpInProgress = response.IsBackgroundCatchUpInProgress;
                 _containsBucketStatus = response.ContainsBucketStatus ?? ContainsBucketStatus.Empty;
+                _buildProgress = response.BuildProgress?.Clone() ?? IndexBuildProgress.Empty;
                 if (_indexedCount > 0)
                 {
                     _buildState = SharedIndexBuildState.Ready;
@@ -922,6 +969,7 @@ namespace MftScanner
             _isBackgroundCatchUpInProgress = snapshot.IsBackgroundCatchUpInProgress;
             _buildState = snapshot.BuildState;
             _containsBucketStatus = snapshot.ContainsBucketStatus ?? ContainsBucketStatus.Empty;
+            _buildProgress = snapshot.BuildProgress?.Clone() ?? IndexBuildProgress.Empty;
         }
 
         private IOException BuildHostUnavailableException(string operation, Exception ex)

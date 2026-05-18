@@ -125,6 +125,46 @@ function Get-ProcessMemorySnapshot {
             @{ Name = "PrivateMB"; Expression = { [math]::Round($_.PrivateMemorySize64 / 1MB, 1) } }
 }
 
+function Wait-MftPostRebuildMaintenance {
+    param(
+        [string]$LogPath,
+        [datetime]$Since,
+        [int]$TimeoutSeconds = 12
+    )
+
+    if ([string]::IsNullOrWhiteSpace($LogPath) -or !(Test-Path $LogPath)) {
+        return $false
+    }
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $matched = Select-String -Path $LogPath -Pattern "\[NATIVE SNAPSHOT SAVE\] force-full-generation success|\[NATIVE RECORDS REMAP\] success" -ErrorAction SilentlyContinue |
+            Where-Object {
+                $line = $_.Line
+                $include = $true
+                if ($line -match "^(?<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})") {
+                    try {
+                        $include = [datetime]::ParseExact($Matches.ts, "yyyy-MM-dd HH:mm:ss.fff", [System.Globalization.CultureInfo]::InvariantCulture) -ge $Since
+                    }
+                    catch {
+                        $include = $true
+                    }
+                }
+
+                $include
+            } |
+            Select-Object -Last 1
+
+        if ($matched) {
+            return $true
+        }
+
+        Start-Sleep -Milliseconds 300
+    }
+
+    return $false
+}
+
 function Get-MftIndexServiceStatus {
     param([string]$RepoRoot)
 
@@ -524,7 +564,7 @@ function Parse-IndexStageEvents {
         return @()
     }
 
-    $patterns = "\[V7 SNAPSHOT LOAD\]|\[V7 SNAPSHOT SAVE\]|\[SNAPSHOT LOAD\]|\[SNAPSHOT RESTORE\]|\[SNAPSHOT RESTORE TOTAL\]|\[SNAPSHOT CATCHUP TOTAL\]|\[SNAPSHOT CATCHUP APPLY WAIT\]|\[MFT BUILD\]|\[CONTAINS WARMUP\]|\[CONTAINS SHORT HOT WARMUP\]|\[CONTAINS SHORT HOT BUILD\]|\[DERIVED STRUCTURES\]|\[POSTINGS SNAPSHOT LOAD\]|\[POSTINGS SNAPSHOT RESTORE\]|\[POSTINGS SNAPSHOT SAVE\]|\[CONTAINS SNAPSHOT LOAD\]|\[NATIVE DERIVED BUILD\]|\[NATIVE BASE BUCKET BUILD\]|\[NATIVE MFT BUILD\]|\[NATIVE SNAPSHOT LOAD\]|\[NATIVE SNAPSHOT RESTORE\]|\[NATIVE SNAPSHOT RESTORE TOTAL\]|\[NATIVE V2 POSTINGS LOAD\]|\[NATIVE V2 POSTINGS SAVE\]|\[NATIVE V2 RUNTIME LOAD\]|\[NATIVE V2 RUNTIME SAVE\]|\[NATIVE V2 TYPE BUCKETS LOAD\]|\[NATIVE V2 TYPE BUCKETS SAVE\]"
+    $patterns = "\[V7 SNAPSHOT LOAD\]|\[V7 SNAPSHOT SAVE\]|\[SNAPSHOT LOAD\]|\[SNAPSHOT RESTORE\]|\[SNAPSHOT RESTORE TOTAL\]|\[SNAPSHOT CATCHUP TOTAL\]|\[SNAPSHOT CATCHUP APPLY WAIT\]|\[MFT BUILD\]|\[CONTAINS WARMUP\]|\[CONTAINS SHORT HOT WARMUP\]|\[CONTAINS SHORT HOT BUILD\]|\[DERIVED STRUCTURES\]|\[POSTINGS SNAPSHOT LOAD\]|\[POSTINGS SNAPSHOT RESTORE\]|\[POSTINGS SNAPSHOT SAVE\]|\[CONTAINS SNAPSHOT LOAD\]|\[NATIVE BUILD\]|\[NATIVE DERIVED BUILD\]|\[NATIVE BASE BUCKET BUILD\]|\[NATIVE MFT BUILD\]|\[NATIVE RECORDS REMAP\]|\[NATIVE SNAPSHOT SAVE\]|\[NATIVE SNAPSHOT LOAD\]|\[NATIVE SNAPSHOT RESTORE\]|\[NATIVE SNAPSHOT RESTORE TOTAL\]|\[NATIVE V2 POSTINGS LOAD\]|\[NATIVE V2 POSTINGS SAVE\]|\[NATIVE V2 RUNTIME LOAD\]|\[NATIVE V2 RUNTIME SAVE\]|\[NATIVE V2 TYPE BUCKETS LOAD\]|\[NATIVE V2 TYPE BUCKETS SAVE\]|\[MMF HOST\]|\[MMF\]"
     $events = New-Object System.Collections.Generic.List[object]
     foreach ($match in Select-String -Path $LogPath -Pattern $patterns -ErrorAction SilentlyContinue) {
         $line = $match.Line
@@ -543,7 +583,17 @@ function Parse-IndexStageEvents {
             Time = $time
             Stage = $stage
             Outcome = if ($line -match "outcome=(?<v>\S+)") { $Matches.v } else { "" }
-            ElapsedMs = if ($line -match "elapsedMs=(?<v>\d+)") { [int]$Matches.v } elseif ($line -match "totalMs=(?<v>\d+)") { [int]$Matches.v } elseif ($line -match "catchUpMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+            Command = if ($line -match "command=(?<v>\S+)") { $Matches.v } else { "" }
+            ElapsedMs = if ($line -match "elapsedMs=(?<v>\d+)") { [int]$Matches.v } elseif ($line -match "totalMs=(?<v>\d+)") { [int]$Matches.v } elseif ($line -match "executeMs=(?<v>\d+)") { [int]$Matches.v } elseif ($line -match "catchUpMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+            ExecuteMs = if ($line -match "executeMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+            WaitMs = if ($line -match "waitMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+            StopBackgroundCatchUpMs = if ($line -match "stopBackgroundCatchUpMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+            StopWatchersMs = if ($line -match "stopWatchersMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+            MftBuildMs = if ($line -match "mftBuildMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+            RecordsRemapMs = if ($line -match "recordsRemapMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+            SidecarSaveMs = if ($line -match "sidecarSaveMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+            GenerationRemapMs = if ($line -match "generationRemapMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
+            WatcherStartMs = if ($line -match "watcherStartMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
             LoadMs = if ($line -match "loadMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
             RestoreMs = if ($line -match "restoreMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
             ApplyMs = if ($line -match "applyMs=(?<v>\d+)") { [int]$Matches.v } else { 0 }
@@ -614,6 +664,9 @@ function New-MarkdownReport {
         [int]$MaxWorkingSetMBThreshold,
         [int]$MaxPrivateMBThreshold,
         [long]$ColdBuildMs,
+        [long]$MftBuildMs,
+        [long]$FullBuildMs,
+        [long]$RebuildIpcMs,
         [long]$RestoreReadyMs,
         [object[]]$Failures
     )
@@ -696,7 +749,10 @@ function New-MarkdownReport {
     $lines.Add("- 启动恢复 ready 阈值：$MaxRestoreReadyMsThreshold ms")
     $lines.Add("- WorkingSet 阈值：$MaxWorkingSetMBThreshold MB")
     $lines.Add("- Private Memory 阈值：$MaxPrivateMBThreshold MB")
-    $lines.Add("- 当前冷构建耗时：$ColdBuildMs ms")
+    $lines.Add("- 当前冷构建耗时（完整路径）：$ColdBuildMs ms")
+    $lines.Add("- MFT 构建耗时：$MftBuildMs ms")
+    $lines.Add("- native full build 耗时：$FullBuildMs ms")
+    $lines.Add("- Rebuild IPC 端到端耗时：$RebuildIpcMs ms")
     $lines.Add("- 当前恢复 ready 耗时：$RestoreReadyMs ms")
     if (-not $passed) {
         $lines.Add("")
@@ -774,14 +830,14 @@ function New-MarkdownReport {
     $lines.Add("")
     $lines.Add("## 索引加载与后台阶段")
     $lines.Add("")
-    $lines.Add("| 时间 | 阶段 | 结果 | 耗时(ms) | load(ms) | restore(ms) | v2(ms) | records(ms) | dirs(ms) | apply(ms) | 记录数 | 文件(MB) | buckets | bytes(MB) | v2(MB) | short(MB) | parentOrder | childBuckets | 变更数 | stale |")
-    $lines.Add("| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
+    $lines.Add("| 时间 | 阶段 | 命令 | 结果 | 耗时(ms) | execute(ms) | wait(ms) | stopCatchUp(ms) | stopWatchers(ms) | mft(ms) | recordsRemap(ms) | save(ms) | remap(ms) | watcherStart(ms) | load(ms) | restore(ms) | v2(ms) | records(ms) | dirs(ms) | apply(ms) | 记录数 | 文件(MB) | buckets | bytes(MB) | v2(MB) | short(MB) | parentOrder | childBuckets | 变更数 | stale |")
+    $lines.Add("| --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
     foreach ($item in $IndexStageEvents) {
         $fileMb = if ($item.FileBytes -gt 0) { [math]::Round($item.FileBytes / 1MB, 1) } else { 0 }
         $bytesMb = if ($item.Bytes -gt 0) { [math]::Round($item.Bytes / 1MB, 1) } else { 0 }
         $v2Mb = if ($item.V2Bytes -gt 0) { [math]::Round($item.V2Bytes / 1MB, 1) } else { 0 }
         $shortMb = if ($item.ShortBytes -gt 0) { [math]::Round($item.ShortBytes / 1MB, 1) } else { 0 }
-        $lines.Add("| $($item.Time.ToString('HH:mm:ss.fff')) | $($item.Stage) | $($item.Outcome) | $($item.ElapsedMs) | $($item.LoadMs) | $($item.RestoreMs) | $($item.V2Ms) | $($item.RecordsMs) | $($item.DirsMs) | $($item.ApplyMs) | $($item.Records) | $fileMb | $($item.Buckets) | $bytesMb | $v2Mb | $shortMb | $($item.ParentOrder) | $($item.ChildBuckets) | $($item.TotalChanges) | $(Convert-BoolToChinese $item.Stale) |")
+        $lines.Add("| $($item.Time.ToString('HH:mm:ss.fff')) | $($item.Stage) | $($item.Command) | $($item.Outcome) | $($item.ElapsedMs) | $($item.ExecuteMs) | $($item.WaitMs) | $($item.StopBackgroundCatchUpMs) | $($item.StopWatchersMs) | $($item.MftBuildMs) | $($item.RecordsRemapMs) | $($item.SidecarSaveMs) | $($item.GenerationRemapMs) | $($item.WatcherStartMs) | $($item.LoadMs) | $($item.RestoreMs) | $($item.V2Ms) | $($item.RecordsMs) | $($item.DirsMs) | $($item.ApplyMs) | $($item.Records) | $fileMb | $($item.Buckets) | $bytesMb | $v2Mb | $shortMb | $($item.ParentOrder) | $($item.ChildBuckets) | $($item.TotalChanges) | $(Convert-BoolToChinese $item.Stale) |")
     }
 
     $lines.Add("")
@@ -1203,7 +1259,12 @@ function Invoke-SyntheticBacklogCorrectness {
 try {
     Write-Host "Waiting for shared index readiness..."
     $readyCts = New-Object System.Threading.CancellationTokenSource ([TimeSpan]::FromSeconds($ReadyTimeoutSeconds))
-    $indexedCount = $client.BuildIndexAsync($null, $readyCts.Token).GetAwaiter().GetResult()
+    $indexedCount = if ($ForceRebuildIndex) {
+        $client.RebuildIndexAsync($null, $readyCts.Token).GetAwaiter().GetResult()
+    }
+    else {
+        $client.BuildIndexAsync($null, $readyCts.Token).GetAwaiter().GetResult()
+    }
     $readyCts.Dispose()
 
     $cases = @(
@@ -1454,6 +1515,10 @@ finally {
         }
     }
 
+    if ($ForceRebuildIndex) {
+        [void](Wait-MftPostRebuildMaintenance -LogPath $logPath -Since $startedAt.AddSeconds(-1) -TimeoutSeconds 12)
+    }
+
     $memoryBeforeHostStop = @(Get-ProcessMemorySnapshot)
 
     if ($Backend -eq "SharedHost" -and !$NoRestartHost -and $null -ne $hostProcess) {
@@ -1478,6 +1543,9 @@ $containsCacheEvents = @(Parse-ContainsCacheEvents -LogPath $logPath -Since $sta
 $containsQueryEvents = @(Parse-ContainsQueryEvents -LogPath $logPath -Since $startedAt.AddSeconds(-1))
 $indexStageEvents = @(Parse-IndexStageEvents -LogPath $logPath -Since $startedAt.AddSeconds(-1))
 $coldBuildMs = 0
+$mftBuildMs = 0
+$fullBuildMs = 0
+$rebuildIpcMs = 0
 $coldBuildEvent = @(
     $indexStageEvents |
         Where-Object {
@@ -1488,6 +1556,38 @@ $coldBuildEvent = @(
         Select-Object -Last 1
 )
 if ($coldBuildEvent.Count -gt 0) {
+    $mftBuildMs = [int64]$coldBuildEvent[0].ElapsedMs
+}
+
+$fullBuildEvent = @(
+    $indexStageEvents |
+        Where-Object {
+            $_.Stage -eq "NATIVE BUILD" -and
+            $_.Raw -match "mode=full"
+        } |
+        Sort-Object Time |
+        Select-Object -Last 1
+)
+if ($fullBuildEvent.Count -gt 0) {
+    $fullBuildMs = [int64]$fullBuildEvent[0].ElapsedMs
+}
+
+$rebuildIpcEvent = @(
+    $indexStageEvents |
+        Where-Object {
+            ($_.Stage -eq "MMF" -or $_.Stage -eq "MMF HOST") -and
+            $_.Command -eq "Rebuild" -and
+            ($_.Outcome -eq "success" -or $_.Raw -match "\boutcome=success\b")
+        } |
+        Sort-Object Time |
+        Select-Object -Last 1
+)
+if ($rebuildIpcEvent.Count -gt 0) {
+    $rebuildIpcMs = [int64]$rebuildIpcEvent[0].ElapsedMs
+}
+
+$coldBuildMs = [Math]::Max($mftBuildMs, [Math]::Max($fullBuildMs, $rebuildIpcMs))
+if ($coldBuildMs -le 0 -and $coldBuildEvent.Count -gt 0) {
     $coldBuildMs = [int64]$coldBuildEvent[0].ElapsedMs
 }
 
@@ -1505,10 +1605,10 @@ if ($coldBuildMs -gt $MaxColdBuildMsThreshold) {
         Filter = ""
         ClientMs = 0
         HostSearchMs = $coldBuildMs
-        ContainsMode = "mft-build"
+        ContainsMode = "full-rebuild"
         TotalMatchedCount = 0
         ThresholdMs = $MaxColdBuildMsThreshold
-        Reason = "cold-build-threshold"
+        Reason = "cold-build-threshold-full-path"
     })
 }
 elseif ($ForceRebuildIndex -and $coldBuildMs -le 0) {
@@ -1519,7 +1619,7 @@ elseif ($ForceRebuildIndex -and $coldBuildMs -le 0) {
         Filter = ""
         ClientMs = 0
         HostSearchMs = $coldBuildMs
-        ContainsMode = "mft-build"
+        ContainsMode = "full-rebuild"
         TotalMatchedCount = 0
         ThresholdMs = $MaxColdBuildMsThreshold
         Reason = "cold-build-missing"
@@ -1711,6 +1811,9 @@ $report = [ordered]@{
     MemoryBefore = @($memoryBefore)
     MemoryAfter = @($memoryAfter)
     ColdBuildMs = $coldBuildMs
+    MftBuildMs = $mftBuildMs
+    FullBuildMs = $fullBuildMs
+    RebuildIpcMs = $rebuildIpcMs
     RestoreReadyMs = $restoreReadyMs
     MaxHostMsThreshold = $MaxHostMsThreshold
     MaxClientMsThreshold = $MaxClientMsThreshold
@@ -1749,6 +1852,9 @@ New-MarkdownReport `
     -MaxWorkingSetMBThreshold $MaxWorkingSetMBThreshold `
     -MaxPrivateMBThreshold $MaxPrivateMBThreshold `
     -ColdBuildMs $coldBuildMs `
+    -MftBuildMs $mftBuildMs `
+    -FullBuildMs $fullBuildMs `
+    -RebuildIpcMs $rebuildIpcMs `
     -RestoreReadyMs $restoreReadyMs `
     -Failures @($failures.ToArray()) |
     Set-Content -Path $mdPath -Encoding UTF8
@@ -1761,4 +1867,4 @@ Write-Host "Markdown: $mdPath"
 @($containsCacheEvents) | Format-Table Outcome, ElapsedMs, SourceCount, Matched, Query -AutoSize
 @($containsQueryEvents) | Format-Table Mode, CandidateCount, IntersectMs, VerifyMs, Matched, Normalized -AutoSize
 @($backlogRows.ToArray()) | Format-Table Phase, ChangeCount, TotalMs, DeltaBuildMs, DeltaRecordCount, TombstoneCount, DeltaReadyMs -AutoSize
-@($indexStageEvents) | Format-Table Stage, Outcome, ElapsedMs, LoadMs, RestoreMs, V2Ms, RecordsMs, DirsMs, ApplyMs, TotalChanges, Stale -AutoSize
+@($indexStageEvents) | Format-Table Stage, Command, Outcome, ElapsedMs, ExecuteMs, WaitMs, StopBackgroundCatchUpMs, StopWatchersMs, MftBuildMs, RecordsRemapMs, SidecarSaveMs, GenerationRemapMs, WatcherStartMs, LoadMs, RestoreMs, V2Ms, RecordsMs, DirsMs, ApplyMs, TotalChanges, Stale -AutoSize
