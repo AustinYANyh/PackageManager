@@ -1059,6 +1059,11 @@ namespace PackageManager.Services
         /// 获取或设置文件传输收件箱目录。
         /// </summary>
         public string LanTransferInboxPath { get; set; } = null;
+
+        /// <summary>
+        /// 获取或设置文件传输接收时是否静默覆盖同名文件或目录。
+        /// </summary>
+        public bool LanTransferSilentOverwrite { get; set; } = false;
     }
 
     /// <summary>

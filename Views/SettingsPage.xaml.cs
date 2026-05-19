@@ -43,6 +43,7 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
     private bool enableLanTransfer;
     private string lanTransferDisplayName;
     private string lanTransferInboxPath;
+    private bool lanTransferSilentOverwrite;
 
     /// <summary>
     /// 初始化 <see cref="SettingsPage"/> 的新实例。
@@ -180,6 +181,16 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
     }
 
     /// <summary>
+    /// 获取或设置文件传输接收时是否静默覆盖同名文件或目录。
+    /// </summary>
+    public bool LanTransferSilentOverwrite
+    {
+        get => lanTransferSilentOverwrite;
+
+        set => SetProperty(ref lanTransferSilentOverwrite, value);
+    }
+
+    /// <summary>
     /// 获取或设置是否过滤日志目录的标志。
     /// </summary>
     public bool FilterLogDirectories
@@ -292,6 +303,7 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
             LanTransferInboxPath = string.IsNullOrWhiteSpace(settings?.LanTransferInboxPath)
                 ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "PackageManager 收件箱")
                 : settings.LanTransferInboxPath;
+            LanTransferSilentOverwrite = settings?.LanTransferSilentOverwrite ?? false;
             JenkinsPasswordBox.Password = CredentialProtectionService.Unprotect(settings?.JenkinsPasswordProtected);
 
             LogTxtReader = settings?.LogTxtReader ?? "LogViewPro";
@@ -430,6 +442,7 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
                 EnableLanTransfer = true;
                 LanTransferDisplayName = $"{Environment.UserName}@{Environment.MachineName}";
                 LanTransferInboxPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "PackageManager 收件箱");
+                LanTransferSilentOverwrite = false;
                 JenkinsPasswordBox.Password = string.Empty;
             }
         }
@@ -464,6 +477,7 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
             settings.EnableLanTransfer = EnableLanTransfer;
             settings.LanTransferDisplayName = string.IsNullOrWhiteSpace(LanTransferDisplayName) ? $"{Environment.UserName}@{Environment.MachineName}" : LanTransferDisplayName.Trim();
             settings.LanTransferInboxPath = string.IsNullOrWhiteSpace(LanTransferInboxPath) ? null : LanTransferInboxPath.Trim();
+            settings.LanTransferSilentOverwrite = LanTransferSilentOverwrite;
 
             dataPersistenceService.SaveSettings(settings);
             lanTransferService.ApplySettings(settings);

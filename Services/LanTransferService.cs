@@ -43,6 +43,7 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
     private string _inboxPath;
     private string _statusText;
     private string _appVersion;
+    private bool _silentOverwrite;
 
     /// <summary>
     /// 初始化 <see cref="LanTransferService"/> 的新实例，加载设置并启动服务。
@@ -98,6 +99,13 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         private set => SetProperty(ref _inboxPath, value);
     }
 
+    /// <summary>接收文件时是否静默覆盖同名文件或目录。</summary>
+    public bool SilentOverwrite
+    {
+        get => _silentOverwrite;
+        private set => SetProperty(ref _silentOverwrite, value);
+    }
+
     /// <summary>服务状态显示文本。</summary>
     public string StatusText
     {
@@ -151,6 +159,7 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         DisplayName = EnsureDisplayName(settings.LanTransferDisplayName);
         DeviceId = EnsureDeviceId(settings.LanTransferDeviceId);
         InboxPath = EnsureInboxPath(settings.LanTransferInboxPath);
+        SilentOverwrite = settings.LanTransferSilentOverwrite;
 
         EnsureRunningState();
         OnPropertyChanged(nameof(ListenPort));
@@ -699,6 +708,7 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         DisplayName = settings.LanTransferDisplayName;
         DeviceId = settings.LanTransferDeviceId;
         InboxPath = settings.LanTransferInboxPath;
+        SilentOverwrite = settings.LanTransferSilentOverwrite;
         AppVersion = GetCurrentVersionText();
         StatusText = "文件传输服务未启动";
 
@@ -777,6 +787,7 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
             MachineName = MachineName,
             AppVersion = AppVersion,
             InboxPath = InboxPath,
+            SilentOverwrite = SilentOverwrite,
             Capabilities = LanTransferProtocol.CurrentCapabilities,
             SecretChatPublicKey = _secretChatRsa.ToXmlString(false),
         };
@@ -842,7 +853,7 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
 
     private async Task<LanIncomingTransferDecision> ApproveIncomingRequestAsync(LanTransferRequest request)
     {
-        request.SaveDirectory = BuildReceivePreviewPath(request);
+        request.SaveDirectory = InboxPath;
         await InvokeOnUiAsync(() => _pendingRequests.Add(request));
         ToastService.ShowToast("收到文件传输", $"{request.SenderLabel} 请求发送 {request.ItemCount} 项，请确认是否接收。", "Info");
 
@@ -881,7 +892,7 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
             }
 
             request.StatusText = "已确认";
-            return LanIncomingTransferDecision.Accept(InboxPath);
+            return LanIncomingTransferDecision.Accept(InboxPath, SilentOverwrite);
         }
         finally
         {
@@ -1386,34 +1397,6 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
 
             OnPropertyChanged(nameof(OnlinePeerCount));
         }).GetAwaiter().GetResult();
-    }
-
-    private string BuildReceivePreviewPath(LanTransferRequest request)
-    {
-        var topLevel = (request.TopLevelNames != null) && (request.TopLevelNames.Count == 1)
-            ? request.TopLevelNames[0]
-            : $"{Math.Max(1, request.TopLevelNames?.Count ?? 0)}项";
-
-        var sender = SanitizePathPart(request.SenderDisplayName ?? "Unknown");
-        var summary = SanitizePathPart(topLevel);
-        return Path.Combine(InboxPath, $"{DateTime.Now:yyyyMMdd_HHmmss}_{sender}_{summary}");
-    }
-
-    private static string SanitizePathPart(string value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return "Transfer";
-        }
-
-        var invalidChars = Path.GetInvalidFileNameChars();
-        var sanitized = new string(value.Select(ch => invalidChars.Contains(ch) ? '_' : ch).ToArray()).Trim();
-        if (sanitized.Length > 32)
-        {
-            sanitized = sanitized.Substring(0, 32);
-        }
-
-        return string.IsNullOrWhiteSpace(sanitized) ? "Transfer" : sanitized;
     }
 
     private static string EnsureDisplayName(string value)

@@ -348,7 +348,8 @@ internal sealed class LanTransferHostService : IDisposable
 
         var config = _configurationProvider();
         var inboxPath = string.IsNullOrWhiteSpace(decision.InboxPath) ? config?.InboxPath : decision.InboxPath;
-        var preparedPath = PrepareReceiveDirectories(inboxPath, request);
+        var silentOverwrite = decision.SilentOverwrite || (config?.SilentOverwrite ?? false);
+        var preparedPath = PrepareReceiveDirectories(inboxPath);
 
         try
         {
@@ -395,13 +396,7 @@ internal sealed class LanTransferHostService : IDisposable
         try
         {
             await ReceiveFilesAsync(stream, preparedPath.TempDirectory, session, linkedCts.Token);
-
-            if (Directory.Exists(preparedPath.FinalDirectory))
-            {
-                throw new IOException("目标目录已存在，无法完成接收。");
-            }
-
-            Directory.Move(preparedPath.TempDirectory, preparedPath.FinalDirectory);
+            CommitReceivedItems(preparedPath.TempDirectory, preparedPath.FinalDirectory, request, silentOverwrite);
             session.StatusText = "接收完成";
             session.CanCancel = false;
 
@@ -577,39 +572,110 @@ internal sealed class LanTransferHostService : IDisposable
         return replaced.TrimStart(Path.DirectorySeparatorChar);
     }
 
-    private static LanPreparedReceivePath PrepareReceiveDirectories(string inboxPath, LanTransferRequest request)
+    private static LanPreparedReceivePath PrepareReceiveDirectories(string inboxPath)
     {
-        var summary = request.TopLevelNames != null && request.TopLevelNames.Count == 1
-            ? request.TopLevelNames[0]
-            : $"{Math.Max(1, request.TopLevelNames?.Count ?? 0)}项";
-
-        var sender = SanitizeFileName(request.SenderDisplayName ?? "Unknown");
-        var targetName = $"{DateTime.Now:yyyyMMdd_HHmmss}_{sender}_{SanitizeFileName(summary)}";
-        var finalDirectory = Path.Combine(inboxPath, targetName);
-        var tempDirectory = finalDirectory + ".tmp_" + Guid.NewGuid().ToString("N");
+        var tempDirectory = Path.Combine(inboxPath, ".pm_lan_receive_" + Guid.NewGuid().ToString("N"));
         return new LanPreparedReceivePath
         {
-            FinalDirectory = finalDirectory,
+            FinalDirectory = inboxPath,
             TempDirectory = tempDirectory,
         };
     }
 
-    private static string SanitizeFileName(string value)
+    private static void CommitReceivedItems(string tempDirectory, string inboxPath, LanTransferRequest request, bool silentOverwrite)
     {
-        if (string.IsNullOrWhiteSpace(value))
+        Directory.CreateDirectory(inboxPath);
+
+        var topLevelNames = GetReceiveTopLevelNames(request, tempDirectory);
+        foreach (var topLevelName in topLevelNames)
         {
-            return "Transfer";
+            var sourcePath = Path.Combine(tempDirectory, topLevelName);
+            if (!File.Exists(sourcePath) && !Directory.Exists(sourcePath))
+            {
+                continue;
+            }
+
+            var destinationPath = Path.Combine(inboxPath, topLevelName);
+            var isDirectory = Directory.Exists(sourcePath);
+            if (silentOverwrite)
+            {
+                DeleteExistingDestination(destinationPath);
+            }
+            else
+            {
+                destinationPath = GetNonConflictingPath(destinationPath, isDirectory);
+            }
+
+            if (isDirectory)
+            {
+                Directory.Move(sourcePath, destinationPath);
+            }
+            else
+            {
+                File.Move(sourcePath, destinationPath);
+            }
         }
 
-        var invalidChars = Path.GetInvalidFileNameChars();
-        var sanitized = new string(value.Select(ch => invalidChars.Contains(ch) ? '_' : ch).ToArray());
-        sanitized = sanitized.Trim();
-        if (sanitized.Length > 40)
+        TryDeleteDirectory(tempDirectory);
+    }
+
+    private static List<string> GetReceiveTopLevelNames(LanTransferRequest request, string tempDirectory)
+    {
+        var actualNames = Directory.EnumerateFileSystemEntries(tempDirectory)
+            .Select(Path.GetFileName)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .ToList();
+
+        var requestedNames = (request.TopLevelNames ?? new List<string>())
+            .Select(name => NormalizeRelativePath(name))
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Select(name => name.Split(Path.DirectorySeparatorChar)[0])
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return requestedNames
+            .Where(name => actualNames.Contains(name, StringComparer.OrdinalIgnoreCase))
+            .Concat(actualNames.Where(name => !requestedNames.Contains(name, StringComparer.OrdinalIgnoreCase)))
+            .ToList();
+    }
+
+    private static void DeleteExistingDestination(string destinationPath)
+    {
+        if (File.Exists(destinationPath))
         {
-            sanitized = sanitized.Substring(0, 40);
+            File.Delete(destinationPath);
         }
 
-        return string.IsNullOrWhiteSpace(sanitized) ? "Transfer" : sanitized;
+        if (Directory.Exists(destinationPath))
+        {
+            Directory.Delete(destinationPath, true);
+        }
+    }
+
+    private static string GetNonConflictingPath(string destinationPath, bool isDirectory)
+    {
+        if (!File.Exists(destinationPath) && !Directory.Exists(destinationPath))
+        {
+            return destinationPath;
+        }
+
+        var directory = Path.GetDirectoryName(destinationPath);
+        var fileName = isDirectory ? Path.GetFileName(destinationPath) : Path.GetFileNameWithoutExtension(destinationPath);
+        var extension = isDirectory ? string.Empty : Path.GetExtension(destinationPath);
+
+        for (var index = 1; index < 10000; index++)
+        {
+            var candidateName = string.IsNullOrEmpty(extension)
+                ? $"{fileName} ({index})"
+                : $"{fileName} ({index}){extension}";
+            var candidatePath = Path.Combine(directory ?? string.Empty, candidateName);
+            if (!File.Exists(candidatePath) && !Directory.Exists(candidatePath))
+            {
+                return candidatePath;
+            }
+        }
+
+        throw new IOException("无法生成不冲突的保存路径。");
     }
 
     private static void TryDeleteDirectory(string path)
@@ -677,6 +743,9 @@ internal sealed class LanHostConfiguration
     /// <summary>收件箱目录路径。</summary>
     public string InboxPath { get; set; }
 
+    /// <summary>接收文件时是否静默覆盖同名文件或目录。</summary>
+    public bool SilentOverwrite { get; set; }
+
     /// <summary>设备支持的能力列表。</summary>
     public List<string> Capabilities { get; set; } = new List<string>();
 
@@ -698,17 +767,21 @@ internal sealed class LanIncomingTransferDecision
     /// <summary>自定义收件箱路径，为 null 时使用默认路径。</summary>
     public string InboxPath { get; set; }
 
+    /// <summary>是否静默覆盖同名文件或目录。</summary>
+    public bool SilentOverwrite { get; set; }
+
     /// <summary>
     /// 创建一个接受传输的决定。
     /// </summary>
     /// <param name="inboxPath">收件箱路径。</param>
     /// <returns>接受决定。</returns>
-    public static LanIncomingTransferDecision Accept(string inboxPath)
+    public static LanIncomingTransferDecision Accept(string inboxPath, bool silentOverwrite = false)
     {
         return new LanIncomingTransferDecision
         {
             Accepted = true,
             InboxPath = inboxPath,
+            SilentOverwrite = silentOverwrite,
         };
     }
 
