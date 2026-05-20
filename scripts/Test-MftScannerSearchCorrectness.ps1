@@ -1,6 +1,7 @@
 param(
     [string]$Configuration = "Debug",
     [string[]]$Queries = @("codex", "code", "c", "vs"),
+    [string[]]$RootScopeQueries = @("C:\ d", "C:\ ve", "C:\ makenumberconfig"),
     [int]$MaxResults = 100,
     [int]$ReadyTimeoutSeconds = 180,
     [int]$SearchTimeoutSeconds = 60,
@@ -148,6 +149,57 @@ try {
 
         if ($badNames.Count -gt 0) {
             $failures.Add("Query '$query' returned non-matching file names: $($badNames -join ', ')")
+        }
+    }
+
+    foreach ($query in $RootScopeQueries) {
+        if ([string]::IsNullOrWhiteSpace($query)) {
+            continue
+        }
+
+        $spaceIndex = $query.IndexOf(' ')
+        if ($spaceIndex -le 0) {
+            continue
+        }
+
+        $pathPrefix = $query.Substring(0, $spaceIndex)
+        $term = $query.Substring($spaceIndex + 1).Trim()
+        if ([string]::IsNullOrWhiteSpace($pathPrefix) -or [string]::IsNullOrWhiteSpace($term)) {
+            continue
+        }
+
+        $searchCts = New-Object System.Threading.CancellationTokenSource ([TimeSpan]::FromSeconds($SearchTimeoutSeconds))
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $result = $service.SearchAsync(
+            $query,
+            $MaxResults,
+            0,
+            [MftScanner.SearchTypeFilter]::All,
+            $null,
+            $searchCts.Token).GetAwaiter().GetResult()
+        $sw.Stop()
+        $searchCts.Dispose()
+
+        $badPaths = @($result.Results | Where-Object {
+            $_.FullPath -notlike "$pathPrefix*"
+        } | Select-Object -First 10 -ExpandProperty FullPath)
+        $badNames = @($result.Results | Where-Object {
+            $_.FileName.IndexOf($term, [StringComparison]::OrdinalIgnoreCase) -lt 0
+        } | Select-Object -First 10 -ExpandProperty FileName)
+
+        Write-Host ("RootScopeQuery={0} UI={1} Physical={2} Unique={3} Returned={4} BadPaths={5} BadNames={6} ElapsedMs={7}" -f `
+            $query, $result.TotalMatchedCount, $result.PhysicalMatchedCount, $result.UniqueMatchedCount, @($result.Results).Count, $badPaths.Count, $badNames.Count, $sw.ElapsedMilliseconds)
+
+        if ($result.TotalMatchedCount -le 0 -and @($result.Results).Count -eq 0) {
+            $failures.Add("Root scope query '$query' returned no matches.")
+        }
+
+        if ($badPaths.Count -gt 0) {
+            $failures.Add("Root scope query '$query' returned paths outside '$pathPrefix': $($badPaths -join ', ')")
+        }
+
+        if ($badNames.Count -gt 0) {
+            $failures.Add("Root scope query '$query' returned non-matching file names: $($badNames -join ', ')")
         }
     }
 }

@@ -435,6 +435,10 @@ namespace
         std::unordered_map<std::uint64_t, std::vector<std::uint32_t>> nonAsciiShortPostings;
         std::array<NativeV2ShortBucketEntry, 128> asciiCharEntries{};
         std::array<NativeV2ShortBucketEntry, 128 * 128> asciiBigramEntries{};
+        std::vector<std::array<std::uint32_t, 26>> asciiCharDriveCounts;
+        std::vector<std::array<std::uint32_t, 26>> asciiBigramDriveCounts;
+        std::vector<std::array<std::vector<std::uint32_t>, 26>> asciiCharDrivePages;
+        std::vector<std::array<std::vector<std::uint32_t>, 26>> asciiBigramDrivePages;
         std::unordered_map<std::uint64_t, NativeV2ShortBucketEntry> nonAsciiShortEntries;
         std::vector<std::uint8_t> asciiCharCompressedPostings;
         std::vector<std::uint8_t> asciiBigramCompressedPostings;
@@ -466,6 +470,10 @@ namespace
             nonAsciiShortPostings.clear();
             asciiCharEntries = {};
             asciiBigramEntries = {};
+            asciiCharDriveCounts.clear();
+            asciiBigramDriveCounts.clear();
+            asciiCharDrivePages.clear();
+            asciiBigramDrivePages.clear();
             nonAsciiShortEntries.clear();
             asciiCharCompressedPostings.clear();
             asciiCharCompressedPostings.shrink_to_fit();
@@ -1258,9 +1266,10 @@ namespace
         static constexpr std::int32_t V2RecordsSnapshotVersion1 = 1;
         static constexpr std::int32_t V2RecordsSnapshotVersion2 = 2;
         static constexpr std::int32_t V2PostingsSnapshotVersion1 = 1;
-        static constexpr std::int32_t V2RuntimeSnapshotVersion2 = 2;
+        static constexpr std::int32_t V2RuntimeSnapshotVersion4 = 4;
         static constexpr std::int32_t V2TypeBucketsSnapshotVersion1 = 1;
         static constexpr std::int32_t V2OverlaySnapshotVersion1 = 1;
+        static constexpr std::size_t ShortDrivePageSize = 1024;
         static constexpr DWORD LiveWatcherBufferSize = 256 * 1024;
         static constexpr DWORD CatchUpBufferSize = 1024 * 1024;
         static constexpr DWORD MftEnumBufferSize = 8 * 1024 * 1024;
@@ -1283,12 +1292,14 @@ namespace
         static constexpr std::size_t OverlayStaleRebuildThreshold = 32768;
         static constexpr std::size_t OverlayStaleRebuildRatioDivisor = 4;
         static constexpr std::size_t MaxPathCacheEntriesPerVolume = 32768;
+        static constexpr std::size_t MaxPathScopeRecordIdsCacheEntries = 32;
 
         mutable std::shared_mutex mutex_;
         std::vector<Record> records_;
         std::vector<Record> overlayRecords_;
         std::unordered_map<std::uint64_t, std::uint32_t> overlayIndexByKey_;
         std::unordered_set<std::uint64_t> overlayDeletedKeys_;
+        std::vector<std::uint8_t> overlaySuppressedRecordIds_;
         OverlaySearchIndex overlaySearch_;
         std::size_t overlayStalePostingEstimate_ = 0;
         std::chrono::steady_clock::time_point lastOverlayRebuildAttempt_{};
@@ -1303,8 +1314,11 @@ namespace
         std::vector<std::uint32_t> scriptIds_;
         std::vector<std::uint32_t> logIds_;
         std::vector<std::uint32_t> configIds_;
+        std::array<std::vector<std::uint32_t>, 26> driveIds_;
         std::unordered_map<std::wstring, std::vector<std::uint32_t>> extensionIds_;
         std::unordered_map<std::wstring_view, std::vector<std::uint32_t>, WStringViewHash, WStringViewEqual> exactNameIds_;
+        mutable std::unordered_map<std::uint64_t, std::vector<std::uint32_t>> pathScopeRecordIdsCache_;
+        mutable std::uint64_t pathScopeRecordIdsCacheGeneration_ = 0;
         NativeV2Accelerator v2_;
         NativeV2MappedRecords mappedRecords_;
         std::unordered_map<wchar_t, VolumeState> volumes_;
@@ -1878,6 +1892,7 @@ namespace
             overlayRecords_.clear();
             overlayIndexByKey_.clear();
             overlayDeletedKeys_.clear();
+            overlaySuppressedRecordIds_.clear();
             overlaySearch_.Clear();
             overlaySegmentBaseRecordCountOverride_ = 0;
             overlayCompactedKeys_.clear();
@@ -2316,8 +2331,10 @@ namespace
             scriptIds_.clear();
             logIds_.clear();
             configIds_.clear();
+            ClearDriveIds_NoLock();
             extensionIds_.clear();
             v2_.Clear();
+            ClearPathScopeRecordIdsCache_NoLock();
 
             frnRecordIndex_.reserve(records_.size());
             allIds_.reserve(records_.size());
@@ -2333,6 +2350,7 @@ namespace
                 const auto key = MakeRecordKey(record.driveLetter, record.frn);
                 frnRecordIndex_.push_back(FrnRecordIndexEntry{ key, i });
                 allIds_.push_back(i);
+                AddDriveId_NoLock(record.driveLetter, i);
                 if (record.isDirectory)
                 {
                     directoryIds_.push_back(i);
@@ -2436,8 +2454,10 @@ namespace
             scriptIds_.clear();
             logIds_.clear();
             configIds_.clear();
+            ClearDriveIds_NoLock();
             exactNameIds_.clear();
             extensionIds_.clear();
+            ClearPathScopeRecordIdsCache_NoLock();
 
             frnRecordIndex_.reserve(records_.size());
             allIds_.reserve(records_.size());
@@ -2452,6 +2472,7 @@ namespace
                 const auto key = MakeRecordKey(record.driveLetter, record.frn);
                 frnRecordIndex_.push_back(FrnRecordIndexEntry{ key, i });
                 allIds_.push_back(i);
+                AddDriveId_NoLock(record.driveLetter, i);
                 if (record.isDirectory)
                 {
                     directoryIds_.push_back(i);
@@ -3205,9 +3226,184 @@ namespace
             }
 
             v2_.nonAsciiShortPostings.clear();
+            BuildShortDriveCounts_NoLock();
             v2_.asciiCharCompressedPostings.shrink_to_fit();
             v2_.asciiBigramCompressedPostings.shrink_to_fit();
             v2_.nonAsciiShortCompressedPostings.shrink_to_fit();
+        }
+
+        void BuildShortDriveCounts_NoLock()
+        {
+            v2_.asciiCharDriveCounts.assign(v2_.asciiCharPostings.size(), {});
+            v2_.asciiBigramDriveCounts.assign(v2_.asciiBigramPostings.size(), {});
+            v2_.asciiCharDrivePages.assign(v2_.asciiCharPostings.size(), {});
+            v2_.asciiBigramDrivePages.assign(v2_.asciiBigramPostings.size(), {});
+
+            for (std::size_t token = 0; token < v2_.asciiCharPostings.size(); ++token)
+            {
+                auto& counts = v2_.asciiCharDriveCounts[token];
+                auto& pages = v2_.asciiCharDrivePages[token];
+                for (const auto recordId : v2_.asciiCharPostings[token])
+                {
+                    const auto driveIndex = GetDriveIndex_NoLock(recordId);
+                    if (driveIndex >= 0)
+                    {
+                        const auto index = static_cast<std::size_t>(driveIndex);
+                        ++counts[index];
+                        if (pages[index].size() < ShortDrivePageSize)
+                        {
+                            pages[index].push_back(recordId);
+                        }
+                    }
+                }
+            }
+
+            for (std::size_t token = 0; token < v2_.asciiBigramPostings.size(); ++token)
+            {
+                auto& counts = v2_.asciiBigramDriveCounts[token];
+                auto& pages = v2_.asciiBigramDrivePages[token];
+                for (const auto recordId : v2_.asciiBigramPostings[token])
+                {
+                    const auto driveIndex = GetDriveIndex_NoLock(recordId);
+                    if (driveIndex >= 0)
+                    {
+                        const auto index = static_cast<std::size_t>(driveIndex);
+                        ++counts[index];
+                        if (pages[index].size() < ShortDrivePageSize)
+                        {
+                            pages[index].push_back(recordId);
+                        }
+                    }
+                }
+            }
+        }
+
+        void BuildShortDrivePagesFromRuntime_NoLock()
+        {
+            v2_.asciiCharDrivePages.assign(v2_.asciiCharEntries.size(), {});
+            v2_.asciiBigramDrivePages.assign(v2_.asciiBigramEntries.size(), {});
+            for (std::size_t token = 0; token < v2_.asciiCharEntries.size(); ++token)
+            {
+                BuildShortDrivePagesForEntry_NoLock(
+                    v2_.asciiCharCompressedPostings,
+                    v2_.asciiCharEntries[token],
+                    v2_.asciiCharDrivePages[token]);
+            }
+
+            for (std::size_t token = 0; token < v2_.asciiBigramEntries.size(); ++token)
+            {
+                BuildShortDrivePagesForEntry_NoLock(
+                    v2_.asciiBigramCompressedPostings,
+                    v2_.asciiBigramEntries[token],
+                    v2_.asciiBigramDrivePages[token]);
+            }
+        }
+
+        void BuildShortDriveCountsFromRuntime_NoLock()
+        {
+            v2_.asciiCharDriveCounts.assign(v2_.asciiCharEntries.size(), {});
+            v2_.asciiBigramDriveCounts.assign(v2_.asciiBigramEntries.size(), {});
+            for (std::size_t token = 0; token < v2_.asciiCharEntries.size(); ++token)
+            {
+                BuildShortDriveCountsForEntry_NoLock(
+                    v2_.asciiCharCompressedPostings,
+                    v2_.asciiCharEntries[token],
+                    v2_.asciiCharDriveCounts[token]);
+            }
+
+            for (std::size_t token = 0; token < v2_.asciiBigramEntries.size(); ++token)
+            {
+                BuildShortDriveCountsForEntry_NoLock(
+                    v2_.asciiBigramCompressedPostings,
+                    v2_.asciiBigramEntries[token],
+                    v2_.asciiBigramDriveCounts[token]);
+            }
+        }
+
+        void BuildShortDriveCountsForEntry_NoLock(
+            const std::vector<std::uint8_t>& bytes,
+            const NativeV2ShortBucketEntry& entry,
+            std::array<std::uint32_t, 26>& counts) const
+        {
+            counts = {};
+            if (entry.count == 0)
+            {
+                return;
+            }
+
+            std::size_t byteOffset = entry.offset;
+            const std::size_t end = static_cast<std::size_t>(entry.offset) + entry.byteCount;
+            std::uint32_t previous = 0;
+            for (std::uint32_t i = 0; i < entry.count && byteOffset < end; ++i)
+            {
+                std::uint32_t delta = 0;
+                if (!ReadVarUInt(bytes, byteOffset, end, delta))
+                {
+                    counts = {};
+                    return;
+                }
+
+                const auto recordId = i == 0 ? delta : previous + delta;
+                previous = recordId;
+                const auto driveIndex = GetDriveIndex_NoLock(recordId);
+                if (driveIndex >= 0 && !IsRecordSuppressedByOverlay_NoLock(recordId))
+                {
+                    ++counts[static_cast<std::size_t>(driveIndex)];
+                }
+            }
+        }
+
+        void BuildShortDrivePagesForEntry_NoLock(
+            const std::vector<std::uint8_t>& bytes,
+            const NativeV2ShortBucketEntry& entry,
+            std::array<std::vector<std::uint32_t>, 26>& pages) const
+        {
+            for (auto& page : pages)
+            {
+                page.clear();
+                page.reserve(std::min<std::size_t>(ShortDrivePageSize, 256));
+            }
+
+            if (entry.count == 0)
+            {
+                return;
+            }
+
+            std::size_t byteOffset = entry.offset;
+            const std::size_t end = static_cast<std::size_t>(entry.offset) + entry.byteCount;
+            std::uint32_t previous = 0;
+            std::size_t completedDrives = 0;
+            std::array<bool, 26> completed{};
+            for (std::uint32_t i = 0; i < entry.count && byteOffset < end && completedDrives < 26; ++i)
+            {
+                std::uint32_t delta = 0;
+                if (!ReadVarUInt(bytes, byteOffset, end, delta))
+                {
+                    return;
+                }
+
+                const auto recordId = i == 0 ? delta : previous + delta;
+                previous = recordId;
+                const auto driveIndex = GetDriveIndex_NoLock(recordId);
+                if (driveIndex < 0)
+                {
+                    continue;
+                }
+
+                const auto index = static_cast<std::size_t>(driveIndex);
+                if (completed[index] || IsRecordSuppressedByOverlay_NoLock(recordId))
+                {
+                    continue;
+                }
+
+                auto& page = pages[index];
+                page.push_back(recordId);
+                if (page.size() >= ShortDrivePageSize)
+                {
+                    completed[index] = true;
+                    ++completedDrives;
+                }
+            }
         }
 
         static void WriteVarUInt(std::uint32_t value, std::vector<std::uint8_t>& output)
@@ -3399,6 +3595,57 @@ namespace
             SortFrnRecordIndex_NoLock();
         }
 
+        void ClearDriveIds_NoLock()
+        {
+            for (auto& ids : driveIds_)
+            {
+                ids.clear();
+            }
+        }
+
+        void AddDriveId_NoLock(wchar_t driveLetter, std::uint32_t recordId)
+        {
+            const auto index = static_cast<int>(towupper(driveLetter) - L'A');
+            if (index >= 0 && index < static_cast<int>(driveIds_.size()))
+            {
+                driveIds_[static_cast<std::size_t>(index)].push_back(recordId);
+            }
+        }
+
+        int GetDriveIndex_NoLock(std::uint32_t recordId) const
+        {
+            if (recordId >= GetRecordCount_NoLock())
+            {
+                return -1;
+            }
+
+            const auto index = static_cast<int>(towupper(GetRecordDrive_NoLock(recordId)) - L'A');
+            return index >= 0 && index < 26 ? index : -1;
+        }
+
+        const std::vector<std::uint32_t>* GetDriveIds_NoLock(wchar_t driveLetter) const
+        {
+            const auto index = static_cast<int>(towupper(driveLetter) - L'A');
+            if (index < 0 || index >= static_cast<int>(driveIds_.size()))
+            {
+                return nullptr;
+            }
+
+            return &driveIds_[static_cast<std::size_t>(index)];
+        }
+
+        void RebuildDriveIdsFromAllIds_NoLock()
+        {
+            ClearDriveIds_NoLock();
+            for (const auto recordId : allIds_)
+            {
+                if (recordId < GetRecordCount_NoLock())
+                {
+                    AddDriveId_NoLock(GetRecordDrive_NoLock(recordId), recordId);
+                }
+            }
+        }
+
         void RebuildFrnRecordIndexFromMapped_NoLock()
         {
             recordIndexByKey_.clear();
@@ -3406,6 +3653,7 @@ namespace
             overlayRecords_.clear();
             overlayIndexByKey_.clear();
             overlayDeletedKeys_.clear();
+            overlaySuppressedRecordIds_.clear();
             overlaySearch_.Clear();
             overlaySegmentBaseRecordCountOverride_ = 0;
             overlayCompactedKeys_.clear();
@@ -3525,6 +3773,48 @@ namespace
             volume.pathCache.rehash(MaxPathCacheEntriesPerVolume / 2);
         }
 
+        void ClearPathScopeRecordIdsCache_NoLock() const
+        {
+            pathScopeRecordIdsCache_.clear();
+            pathScopeRecordIdsCacheGeneration_ = generationId_.load(std::memory_order_acquire);
+        }
+
+        void EnsurePathScopeRecordIdsCacheCurrent_NoLock() const
+        {
+            const auto generation = generationId_.load(std::memory_order_acquire);
+            if (pathScopeRecordIdsCacheGeneration_ == generation)
+            {
+                return;
+            }
+
+            pathScopeRecordIdsCache_.clear();
+            pathScopeRecordIdsCacheGeneration_ = generation;
+        }
+
+        bool TryGetCachedPathScopeRecordIds_NoLock(std::uint64_t key, std::vector<std::uint32_t>& ids) const
+        {
+            EnsurePathScopeRecordIdsCacheCurrent_NoLock();
+            const auto it = pathScopeRecordIdsCache_.find(key);
+            if (it == pathScopeRecordIdsCache_.end())
+            {
+                return false;
+            }
+
+            ids = it->second;
+            return true;
+        }
+
+        void StorePathScopeRecordIdsCache_NoLock(std::uint64_t key, const std::vector<std::uint32_t>& ids) const
+        {
+            EnsurePathScopeRecordIdsCacheCurrent_NoLock();
+            if (pathScopeRecordIdsCache_.size() >= MaxPathScopeRecordIdsCacheEntries)
+            {
+                pathScopeRecordIdsCache_.clear();
+            }
+
+            pathScopeRecordIdsCache_[key] = ids;
+        }
+
         bool TryGetRecordIdByKey_NoLock(std::uint64_t key, std::uint32_t& recordId) const
         {
             const auto overlayIt = overlayIndexByKey_.find(key);
@@ -3561,6 +3851,78 @@ namespace
 
             recordId = lo->recordId;
             return true;
+        }
+
+        bool TryGetStableRecordIdByKey_NoLock(std::uint64_t key, std::uint32_t& recordId) const
+        {
+            auto lo = frnRecordIndex_.begin();
+            auto hi = frnRecordIndex_.end();
+            while (lo < hi)
+            {
+                auto mid = lo + ((hi - lo) / 2);
+                if (mid->key < key)
+                {
+                    lo = mid + 1;
+                }
+                else
+                {
+                    hi = mid;
+                }
+            }
+
+            if (lo == frnRecordIndex_.end() || lo->key != key || lo->recordId >= GetRecordCount_NoLock())
+            {
+                return false;
+            }
+
+            recordId = lo->recordId;
+            return true;
+        }
+
+        void SetOverlaySuppressedRecordId_NoLock(std::uint64_t key, bool suppressed)
+        {
+            std::uint32_t recordId = 0;
+            if (!TryGetStableRecordIdByKey_NoLock(key, recordId))
+            {
+                return;
+            }
+
+            const auto recordCount = GetRecordCount_NoLock();
+            if (overlaySuppressedRecordIds_.size() != recordCount)
+            {
+                overlaySuppressedRecordIds_.assign(recordCount, 0);
+            }
+
+            overlaySuppressedRecordIds_[recordId] = suppressed ? 1 : 0;
+        }
+
+        void RebuildOverlaySuppressedRecordIds_NoLock()
+        {
+            const auto recordCount = GetRecordCount_NoLock();
+            overlaySuppressedRecordIds_.clear();
+            if (recordCount == 0 || (overlayDeletedKeys_.empty() && overlayIndexByKey_.empty()))
+            {
+                return;
+            }
+
+            overlaySuppressedRecordIds_.assign(recordCount, 0);
+            for (const auto key : overlayDeletedKeys_)
+            {
+                std::uint32_t recordId = 0;
+                if (TryGetStableRecordIdByKey_NoLock(key, recordId))
+                {
+                    overlaySuppressedRecordIds_[recordId] = 1;
+                }
+            }
+
+            for (const auto& pair : overlayIndexByKey_)
+            {
+                std::uint32_t recordId = 0;
+                if (TryGetStableRecordIdByKey_NoLock(pair.first, recordId))
+                {
+                    overlaySuppressedRecordIds_[recordId] = 1;
+                }
+            }
         }
 
         std::uint32_t GetRecordCount_NoLock() const
@@ -3606,6 +3968,16 @@ namespace
         bool IsRecordSuppressedByOverlay_NoLock(std::uint32_t recordId) const
         {
             if (IsOverlayRecordId(recordId))
+            {
+                return false;
+            }
+
+            if (recordId < overlaySuppressedRecordIds_.size())
+            {
+                return overlaySuppressedRecordIds_[recordId] != 0;
+            }
+
+            if (overlayDeletedKeys_.empty() && overlayIndexByKey_.empty())
             {
                 return false;
             }
@@ -3797,6 +4169,10 @@ namespace
                 + v2_.trigramPostings.capacity()
                 + v2_.parentOrder.capacity()
                 + v2_.childRecordIds.capacity()) * sizeof(std::uint32_t);
+            for (const auto& ids : driveIds_)
+            {
+                bytes += static_cast<std::uint64_t>(ids.capacity()) * sizeof(std::uint32_t);
+            }
             bytes += static_cast<std::uint64_t>(v2_.trigramEntries.capacity()) * sizeof(NativeV2BucketEntry);
             bytes += static_cast<std::uint64_t>(v2_.childEntries.capacity()) * sizeof(NativeV2ChildBucketEntry);
             bytes += static_cast<std::uint64_t>(frnRecordIndex_.capacity()) * sizeof(FrnRecordIndexEntry);
@@ -4558,6 +4934,7 @@ namespace
             }
 
             overlayDeletedKeys_.erase(key);
+            SetOverlaySuppressedRecordId_NoLock(key, true);
             volume.pathCache.erase(record.frn);
 
             if (payload != nullptr)
@@ -4597,6 +4974,7 @@ namespace
             const auto fullPath = ResolveFullPathById_NoLock(recordId);
             overlayIndexByKey_.erase(key);
             overlayDeletedKeys_.insert(key);
+            SetOverlaySuppressedRecordId_NoLock(key, true);
             volume.pathCache.erase(change.frn);
 
             if (payload != nullptr)
@@ -4657,6 +5035,7 @@ namespace
             }
 
             overlayDeletedKeys_.erase(key);
+            SetOverlaySuppressedRecordId_NoLock(key, true);
             volume.pathCache.erase(record.frn);
 
             if (payload != nullptr)
@@ -5791,43 +6170,626 @@ namespace
         {
             page.clear();
             totalMatched = 0;
-            const auto directoryId = TryResolveDirectoryRecordId_NoLock(pathPrefix);
-            if (directoryId == std::numeric_limits<std::uint32_t>::max())
+            const auto normalizedPath = EnsureTrailingSlash(pathPrefix);
+            if (query.empty() || query.length() > 2)
+            {
+                return false;
+            }
+
+            const NativeV2ShortBucketEntry* entry = nullptr;
+            const std::vector<std::uint8_t>* bytes = nullptr;
+            if (!TryGetShortPostingEntry_NoLock(query, entry, bytes))
             {
                 acceleratorMode = query.length() == 1 ? "path-subtree-short-char" : "path-subtree-short-bigram";
                 return true;
             }
 
+            if (IsDriveRootPath(normalizedPath))
+            {
+                if (!TryMatchShortQueryRootDrive_NoLock(
+                    query,
+                    filter,
+                    static_cast<wchar_t>(towupper(normalizedPath[0])),
+                    offset,
+                    maxResults,
+                    page,
+                    totalMatched))
+                {
+                    return false;
+                }
+
+                acceleratorMode = query.length() == 1 ? "v2-short-char+root-drive" : "v2-short-bigram+root-drive";
+                return true;
+            }
+
             std::vector<std::uint32_t> subtree;
-            BuildSubtreeRecordIds_NoLock(directoryId, subtree);
+            if (!TryBuildPathScopeRecordIds_NoLock(normalizedPath, subtree))
+            {
+                acceleratorMode = query.length() == 1 ? "path-subtree-short-char" : "path-subtree-short-bigram";
+                return true;
+            }
+
             if (subtree.empty())
             {
                 acceleratorMode = query.length() == 1 ? "path-subtree-short-char" : "path-subtree-short-bigram";
                 return true;
             }
 
-            ApplyFilterToCandidates_NoLock(subtree, filter);
-            page.reserve(static_cast<std::size_t>(std::min(maxResults, 64)));
-            for (const auto recordId : subtree)
+            if (entry == nullptr || bytes == nullptr || entry->count == 0)
             {
-                if (recordId >= GetRecordCount_NoLock())
+                acceleratorMode = query.length() == 1 ? "path-subtree-short-char" : "path-subtree-short-bigram";
+                return true;
+            }
+
+            ApplyFilterToCandidates_NoLock(subtree, filter);
+            CountAndBuildPathScopedShortQueryPageFromPosting_NoLock(
+                *bytes,
+                *entry,
+                subtree,
+                offset,
+                maxResults,
+                page,
+                totalMatched);
+            acceleratorMode = query.length() == 1 ? "path-subtree-short-char" : "path-subtree-short-bigram";
+            return true;
+        }
+
+        bool TryGetShortPostingEntry_NoLock(
+            const std::wstring& query,
+            const NativeV2ShortBucketEntry*& entry,
+            const std::vector<std::uint8_t>*& bytes) const
+        {
+            entry = nullptr;
+            bytes = nullptr;
+            if (query.length() == 1)
+            {
+                const auto ch = query[0];
+                if (ch >= 0 && ch < 128)
+                {
+                    entry = &v2_.asciiCharEntries[static_cast<std::size_t>(ch)];
+                    bytes = &v2_.asciiCharCompressedPostings;
+                    return true;
+                }
+
+                const auto it = v2_.nonAsciiShortEntries.find(PackShortToken(ch, 0, 1));
+                if (it != v2_.nonAsciiShortEntries.end())
+                {
+                    entry = &it->second;
+                    bytes = &v2_.nonAsciiShortCompressedPostings;
+                }
+
+                return true;
+            }
+
+            if (query.length() == 2)
+            {
+                const auto first = query[0];
+                const auto second = query[1];
+                if (first >= 0 && first < 128 && second >= 0 && second < 128)
+                {
+                    const auto index = (static_cast<std::size_t>(first) << 7) | static_cast<std::size_t>(second);
+                    entry = &v2_.asciiBigramEntries[index];
+                    bytes = &v2_.asciiBigramCompressedPostings;
+                    return true;
+                }
+
+                const auto it = v2_.nonAsciiShortEntries.find(PackShortToken(first, second, 2));
+                if (it != v2_.nonAsciiShortEntries.end())
+                {
+                    entry = &it->second;
+                    bytes = &v2_.nonAsciiShortCompressedPostings;
+                }
+
+                return true;
+            }
+
+            return false;
+        }
+
+        void ApplyDriveScopeToCandidates_NoLock(std::vector<std::uint32_t>& ids, wchar_t drive) const
+        {
+            ids.erase(
+                std::remove_if(ids.begin(), ids.end(), [this, drive](std::uint32_t recordId)
+                {
+                    return recordId >= GetRecordCount_NoLock()
+                        || static_cast<wchar_t>(towupper(GetRecordDrive_NoLock(recordId))) != drive;
+                }),
+                ids.end());
+        }
+
+        bool TryMatchShortQueryRootDrive_NoLock(
+            const std::wstring& query,
+            SearchFilter filter,
+            wchar_t drive,
+            int offset,
+            int maxResults,
+            std::vector<std::uint32_t>& page,
+            int& totalMatched) const
+        {
+            page.clear();
+            totalMatched = 0;
+            if (query.empty() || query.length() > 2)
+            {
+                return false;
+            }
+
+            const NativeV2ShortBucketEntry* entry = nullptr;
+            const std::vector<std::uint8_t>* bytes = nullptr;
+            if (query.length() == 1)
+            {
+                const auto ch = query[0];
+                if (ch >= 0 && ch < 128)
+                {
+                    entry = &v2_.asciiCharEntries[static_cast<std::size_t>(ch)];
+                    bytes = &v2_.asciiCharCompressedPostings;
+                }
+                else
+                {
+                    const auto it = v2_.nonAsciiShortEntries.find(PackShortToken(ch, 0, 1));
+                    if (it != v2_.nonAsciiShortEntries.end())
+                    {
+                        entry = &it->second;
+                        bytes = &v2_.nonAsciiShortCompressedPostings;
+                    }
+                }
+            }
+            else
+            {
+                const auto first = query[0];
+                const auto second = query[1];
+                if (first >= 0 && first < 128 && second >= 0 && second < 128)
+                {
+                    const auto index = (static_cast<std::size_t>(first) << 7) | static_cast<std::size_t>(second);
+                    entry = &v2_.asciiBigramEntries[index];
+                    bytes = &v2_.asciiBigramCompressedPostings;
+                }
+                else
+                {
+                    const auto it = v2_.nonAsciiShortEntries.find(PackShortToken(first, second, 2));
+                    if (it != v2_.nonAsciiShortEntries.end())
+                    {
+                        entry = &it->second;
+                        bytes = &v2_.nonAsciiShortCompressedPostings;
+                    }
+                }
+            }
+
+            if (entry == nullptr || bytes == nullptr || entry->count == 0 || maxResults <= 0)
+            {
+                return true;
+            }
+
+            page.reserve(static_cast<std::size_t>(std::min(maxResults, 64)));
+            const auto safeOffset = std::max(offset, 0);
+            const auto driveIndex = static_cast<int>(towupper(drive) - L'A');
+            const auto canUseDriveCount = driveIndex >= 0 && driveIndex < 26 && filter == SearchFilter::All
+                && !v2_.asciiCharDriveCounts.empty()
+                && !v2_.asciiBigramDriveCounts.empty()
+                && ((query.length() == 1 && query[0] >= 0 && query[0] < 128)
+                    || (query.length() == 2 && query[0] >= 0 && query[0] < 128 && query[1] >= 0 && query[1] < 128));
+            if (canUseDriveCount)
+            {
+                if (query.length() == 1)
+                {
+                    if (static_cast<std::size_t>(query[0]) >= v2_.asciiCharDriveCounts.size())
+                    {
+                        return true;
+                    }
+
+                    totalMatched = static_cast<int>(v2_.asciiCharDriveCounts[static_cast<std::size_t>(query[0])][static_cast<std::size_t>(driveIndex)]);
+                    if (TryCopyRootDriveShortQueryPage_NoLock(
+                        v2_.asciiCharDrivePages,
+                        static_cast<std::size_t>(query[0]),
+                        static_cast<std::size_t>(driveIndex),
+                        safeOffset,
+                        maxResults,
+                        page))
+                    {
+                        return true;
+                    }
+                }
+                else
+                {
+                    const auto token = (static_cast<std::size_t>(query[0]) << 7) | static_cast<std::size_t>(query[1]);
+                    if (token >= v2_.asciiBigramDriveCounts.size())
+                    {
+                        return true;
+                    }
+
+                    totalMatched = static_cast<int>(v2_.asciiBigramDriveCounts[token][static_cast<std::size_t>(driveIndex)]);
+                    if (TryCopyRootDriveShortQueryPage_NoLock(
+                        v2_.asciiBigramDrivePages,
+                        token,
+                        static_cast<std::size_t>(driveIndex),
+                        safeOffset,
+                        maxResults,
+                        page))
+                    {
+                        return true;
+                    }
+                }
+
+                const auto* driveIds = GetDriveIds_NoLock(drive);
+                if (driveIds == nullptr || driveIds->empty())
+                {
+                    return true;
+                }
+
+                BuildRootDriveShortQueryPageFromPosting_NoLock(
+                    *bytes,
+                    *entry,
+                    *driveIds,
+                    safeOffset,
+                    maxResults,
+                    page);
+                return true;
+            }
+
+            const auto* driveIds = GetDriveIds_NoLock(drive);
+            if (driveIds == nullptr || driveIds->empty())
+            {
+                return true;
+            }
+
+            if (filter == SearchFilter::All)
+            {
+                CountAndBuildRootDriveShortQueryPageFromPosting_NoLock(
+                    *bytes,
+                    *entry,
+                    *driveIds,
+                    safeOffset,
+                    maxResults,
+                    page,
+                    totalMatched);
+                return true;
+            }
+
+            return TryScanShortPostingForRootDrive_NoLock(
+                *bytes,
+                *entry,
+                *driveIds,
+                filter,
+                safeOffset,
+                maxResults,
+                page,
+                totalMatched);
+        }
+
+        void CountAndBuildRootDriveShortQueryPageFromPosting_NoLock(
+            const std::vector<std::uint8_t>& bytes,
+            const NativeV2ShortBucketEntry& entry,
+            const std::vector<std::uint32_t>& driveIds,
+            int offset,
+            int maxResults,
+            std::vector<std::uint32_t>& page,
+            int& totalMatched) const
+        {
+            page.clear();
+            totalMatched = 0;
+            if (entry.count == 0 || driveIds.empty())
+            {
+                return;
+            }
+
+            page.reserve(static_cast<std::size_t>(std::min(maxResults, 64)));
+            std::size_t byteOffset = entry.offset;
+            const std::size_t end = static_cast<std::size_t>(entry.offset) + entry.byteCount;
+            std::uint32_t previous = 0;
+            std::size_t driveIndex = 0;
+            std::uint64_t matchedCount = 0;
+            const auto safeOffset = std::max(offset, 0);
+            auto matchedBeforePage = 0;
+            for (std::uint32_t i = 0; i < entry.count && byteOffset < end; ++i)
+            {
+                std::uint32_t delta = 0;
+                if (!ReadVarUInt(bytes, byteOffset, end, delta))
+                {
+                    page.clear();
+                    totalMatched = 0;
+                    return;
+                }
+
+                const auto recordId = i == 0 ? delta : previous + delta;
+                previous = recordId;
+                while (driveIndex < driveIds.size() && driveIds[driveIndex] < recordId)
+                {
+                    ++driveIndex;
+                }
+
+                if (driveIndex >= driveIds.size())
+                {
+                    break;
+                }
+
+                if (driveIds[driveIndex] == recordId
+                    && recordId < GetRecordCount_NoLock()
+                    && !IsRecordSuppressedByOverlay_NoLock(recordId))
+                {
+                    ++matchedCount;
+                    if (matchedBeforePage++ >= safeOffset && static_cast<int>(page.size()) < maxResults)
+                    {
+                        page.push_back(recordId);
+                    }
+                }
+            }
+
+            totalMatched = static_cast<int>(std::min<std::uint64_t>(
+                matchedCount,
+                static_cast<std::uint64_t>(std::numeric_limits<int>::max())));
+        }
+
+        void CountAndBuildPathScopedShortQueryPageFromPosting_NoLock(
+            const std::vector<std::uint8_t>& bytes,
+            const NativeV2ShortBucketEntry& entry,
+            const std::vector<std::uint32_t>& scopedIds,
+            int offset,
+            int maxResults,
+            std::vector<std::uint32_t>& page,
+            int& totalMatched) const
+        {
+            page.clear();
+            totalMatched = 0;
+            if (entry.count == 0 || scopedIds.empty() || maxResults <= 0)
+            {
+                return;
+            }
+
+            page.reserve(static_cast<std::size_t>(std::min(maxResults, 64)));
+            std::size_t byteOffset = entry.offset;
+            const std::size_t end = static_cast<std::size_t>(entry.offset) + entry.byteCount;
+            std::uint32_t previous = 0;
+            std::size_t scopedIndex = 0;
+            std::uint64_t matchedCount = 0;
+            const auto safeOffset = std::max(offset, 0);
+            auto matchedBeforePage = 0;
+            for (std::uint32_t i = 0; i < entry.count && byteOffset < end; ++i)
+            {
+                std::uint32_t delta = 0;
+                if (!ReadVarUInt(bytes, byteOffset, end, delta))
+                {
+                    page.clear();
+                    totalMatched = 0;
+                    return;
+                }
+
+                const auto recordId = i == 0 ? delta : previous + delta;
+                previous = recordId;
+                while (scopedIndex < scopedIds.size() && scopedIds[scopedIndex] < recordId)
+                {
+                    ++scopedIndex;
+                }
+
+                if (scopedIndex >= scopedIds.size())
+                {
+                    break;
+                }
+
+                if (scopedIds[scopedIndex] == recordId
+                    && recordId < GetRecordCount_NoLock()
+                    && !IsRecordSuppressedByOverlay_NoLock(recordId))
+                {
+                    ++matchedCount;
+                    if (matchedBeforePage++ >= safeOffset && static_cast<int>(page.size()) < maxResults)
+                    {
+                        page.push_back(recordId);
+                    }
+                }
+            }
+
+            totalMatched = static_cast<int>(std::min<std::uint64_t>(
+                matchedCount,
+                static_cast<std::uint64_t>(std::numeric_limits<int>::max())));
+        }
+
+        void BuildRootDriveShortQueryPageFromPosting_NoLock(
+            const std::vector<std::uint8_t>& bytes,
+            const NativeV2ShortBucketEntry& entry,
+            const std::vector<std::uint32_t>& driveIds,
+            int offset,
+            int maxResults,
+            std::vector<std::uint32_t>& page) const
+        {
+            page.clear();
+            if (entry.count == 0 || driveIds.empty() || maxResults <= 0)
+            {
+                return;
+            }
+
+            page.reserve(static_cast<std::size_t>(std::min(maxResults, 64)));
+            std::size_t byteOffset = entry.offset;
+            const std::size_t end = static_cast<std::size_t>(entry.offset) + entry.byteCount;
+            std::uint32_t previous = 0;
+            const auto safeOffset = std::max(offset, 0);
+            auto matchedBeforePage = 0;
+            std::size_t driveIndex = 0;
+            for (std::uint32_t i = 0; i < entry.count && byteOffset < end; ++i)
+            {
+                std::uint32_t delta = 0;
+                if (!ReadVarUInt(bytes, byteOffset, end, delta))
+                {
+                    page.clear();
+                    return;
+                }
+
+                const auto recordId = i == 0 ? delta : previous + delta;
+                previous = recordId;
+                while (driveIndex < driveIds.size() && driveIds[driveIndex] < recordId)
+                {
+                    ++driveIndex;
+                }
+
+                if (driveIndex >= driveIds.size())
+                {
+                    return;
+                }
+
+                if (driveIds[driveIndex] != recordId
+                    || recordId >= GetRecordCount_NoLock()
+                    || IsRecordSuppressedByOverlay_NoLock(recordId))
                 {
                     continue;
                 }
 
-                if (!ContainsText(GetLowerNameView_NoLock(recordId), query))
+                if (matchedBeforePage++ < safeOffset)
                 {
                     continue;
                 }
 
-                ++totalMatched;
-                if (totalMatched > offset && static_cast<int>(page.size()) < maxResults)
+                page.push_back(recordId);
+                if (static_cast<int>(page.size()) >= maxResults)
+                {
+                    return;
+                }
+            }
+        }
+
+        bool TryCopyRootDriveShortQueryPage_NoLock(
+            const std::vector<std::array<std::vector<std::uint32_t>, 26>>& pages,
+            std::size_t token,
+            std::size_t driveIndex,
+            int offset,
+            int maxResults,
+            std::vector<std::uint32_t>& page) const
+        {
+            page.clear();
+            if (token >= pages.size()
+                || driveIndex >= 26
+                || offset < 0
+                || maxResults <= 0)
+            {
+                return false;
+            }
+
+            const auto& source = pages[token][driveIndex];
+            if (source.empty()
+                || static_cast<std::size_t>(offset) >= source.size()
+                || static_cast<std::size_t>(offset) + static_cast<std::size_t>(maxResults) > source.size())
+            {
+                return false;
+            }
+
+            const auto begin = source.begin() + offset;
+            const auto count = std::min<std::size_t>(static_cast<std::size_t>(maxResults), source.size() - static_cast<std::size_t>(offset));
+            page.assign(begin, begin + count);
+            return true;
+        }
+
+        void BuildRootDriveShortQueryPageFromDriveIds_NoLock(
+            const std::wstring& query,
+            const std::vector<std::uint32_t>& driveIds,
+            int offset,
+            int maxResults,
+            std::vector<std::uint32_t>& page) const
+        {
+            page.clear();
+            if (query.empty() || query.length() > 2 || maxResults <= 0)
+            {
+                return;
+            }
+
+            page.reserve(static_cast<std::size_t>(std::min(maxResults, 64)));
+            const auto safeOffset = std::max(offset, 0);
+            auto matchedBeforePage = 0;
+            const std::wstring_view queryView(query.data(), query.length());
+            for (const auto recordId : driveIds)
+            {
+                if (recordId >= GetRecordCount_NoLock() || IsRecordSuppressedByOverlay_NoLock(recordId))
+                {
+                    continue;
+                }
+
+                const auto name = GetLowerNameView_NoLock(recordId);
+                const bool matches = query.length() == 1
+                    ? name.find(query[0]) != std::wstring_view::npos
+                    : name.find(queryView) != std::wstring_view::npos;
+                if (!matches)
+                {
+                    continue;
+                }
+
+                if (matchedBeforePage++ < safeOffset)
+                {
+                    continue;
+                }
+
+                page.push_back(recordId);
+                if (static_cast<int>(page.size()) >= maxResults)
+                {
+                    return;
+                }
+            }
+        }
+
+        bool TryScanShortPostingForRootDrive_NoLock(
+            const std::vector<std::uint8_t>& bytes,
+            const NativeV2ShortBucketEntry& entry,
+            const std::vector<std::uint32_t>& driveIds,
+            SearchFilter filter,
+            int offset,
+            int maxResults,
+            std::vector<std::uint32_t>& page,
+            int& totalMatched) const
+        {
+            page.clear();
+            totalMatched = 0;
+            if (entry.count == 0 || maxResults <= 0)
+            {
+                return true;
+            }
+
+            page.reserve(static_cast<std::size_t>(std::min(maxResults, 64)));
+            std::size_t byteOffset = entry.offset;
+            const std::size_t end = static_cast<std::size_t>(entry.offset) + entry.byteCount;
+            std::uint32_t previous = 0;
+            const auto safeOffset = std::max(offset, 0);
+            auto matchedBeforePage = 0;
+            std::uint64_t matchedCount = 0;
+            std::size_t driveIndex = 0;
+            for (std::uint32_t i = 0; i < entry.count && byteOffset < end; ++i)
+            {
+                std::uint32_t delta = 0;
+                if (!ReadVarUInt(bytes, byteOffset, end, delta))
+                {
+                    page.clear();
+                    totalMatched = 0;
+                    return true;
+                }
+
+                const auto recordId = i == 0 ? delta : previous + delta;
+                previous = recordId;
+                while (driveIndex < driveIds.size() && driveIds[driveIndex] < recordId)
+                {
+                    ++driveIndex;
+                }
+
+                if (driveIndex >= driveIds.size())
+                {
+                    break;
+                }
+
+                if (driveIds[driveIndex] != recordId
+                    || recordId >= GetRecordCount_NoLock()
+                    || IsRecordSuppressedByOverlay_NoLock(recordId)
+                    || !RecordIdPassesFilter_NoLock(recordId, filter))
+                {
+                    continue;
+                }
+
+                ++matchedCount;
+                if (matchedBeforePage++ < safeOffset)
+                {
+                    continue;
+                }
+
+                if (static_cast<int>(page.size()) < maxResults)
                 {
                     page.push_back(recordId);
                 }
             }
 
-            acceleratorMode = query.length() == 1 ? "path-subtree-short-char" : "path-subtree-short-bigram";
+            totalMatched = static_cast<int>(std::min<std::uint64_t>(
+                matchedCount,
+                static_cast<std::uint64_t>(std::numeric_limits<int>::max())));
             return true;
         }
 
@@ -6100,17 +7062,56 @@ namespace
             }
         }
 
+        bool RecordIdPassesFilter_NoLock(std::uint32_t recordId, SearchFilter filter) const
+        {
+            if (filter == SearchFilter::All)
+            {
+                return true;
+            }
+
+            const auto isDirectory = IsDirectoryRecord_NoLock(recordId);
+            if (filter == SearchFilter::Folder)
+            {
+                return isDirectory;
+            }
+
+            if (isDirectory)
+            {
+                return false;
+            }
+
+            const auto extension = GetExtension(std::wstring(GetLowerNameView_NoLock(recordId)));
+            switch (filter)
+            {
+            case SearchFilter::Launchable:
+                return IsLaunchableExtension(extension);
+            case SearchFilter::Script:
+                return IsScriptExtension(extension);
+            case SearchFilter::Log:
+                return IsLogExtension(extension);
+            case SearchFilter::Config:
+                return IsConfigExtension(extension);
+            default:
+                return true;
+            }
+        }
+
         void ApplyPathScopeToCandidates_NoLock(std::vector<std::uint32_t>& ids, const std::wstring& pathPrefix) const
         {
-            const auto directoryId = TryResolveDirectoryRecordId_NoLock(pathPrefix);
-            if (directoryId == std::numeric_limits<std::uint32_t>::max())
+            const auto normalized = EnsureTrailingSlash(pathPrefix);
+            if (IsDriveRootPath(normalized))
+            {
+                ApplyDriveScopeToCandidates_NoLock(ids, static_cast<wchar_t>(towupper(normalized[0])));
+                return;
+            }
+
+            std::vector<std::uint32_t> subtree;
+            if (!TryBuildPathScopeRecordIds_NoLock(normalized, subtree))
             {
                 ids.clear();
                 return;
             }
 
-            std::vector<std::uint32_t> subtree;
-            BuildSubtreeRecordIds_NoLock(directoryId, subtree);
             IntersectSortedVectors(ids, subtree);
         }
 
@@ -6193,7 +7194,7 @@ namespace
             }
 
             const wchar_t drive = static_cast<wchar_t>(towupper(normalized[0]));
-            if (normalized.length() == 3)
+            if (IsDriveRootPath(normalized))
             {
                 key = MakeRecordKey(drive, NtfsRootFileReferenceNumber);
                 return true;
@@ -6218,6 +7219,14 @@ namespace
             }
 
             const wchar_t drive = static_cast<wchar_t>(towupper(normalized[0]));
+            if (IsDriveRootPath(normalized))
+            {
+                std::uint32_t rootRecordId = 0;
+                return TryGetRecordIdByKey_NoLock(MakeRecordKey(drive, NtfsRootFileReferenceNumber), rootRecordId)
+                    ? rootRecordId
+                    : std::numeric_limits<std::uint32_t>::max();
+            }
+
             std::uint64_t currentParent = NtfsRootFileReferenceNumber;
             std::uint32_t currentRecordId = std::numeric_limits<std::uint32_t>::max();
             std::size_t segmentStart = 3;
@@ -6279,6 +7288,59 @@ namespace
             return currentRecordId;
         }
 
+        bool TryBuildPathScopeRecordIds_NoLock(const std::wstring& pathPrefix, std::vector<std::uint32_t>& ids) const
+        {
+            ids.clear();
+            auto normalized = EnsureTrailingSlash(pathPrefix);
+            if (normalized.length() < 3 || normalized[1] != L':' || normalized[2] != L'\\')
+            {
+                return false;
+            }
+
+            const wchar_t drive = static_cast<wchar_t>(towupper(normalized[0]));
+            if (IsDriveRootPath(normalized))
+            {
+                const auto rootKey = MakeRecordKey(drive, NtfsRootFileReferenceNumber);
+                if (TryGetCachedPathScopeRecordIds_NoLock(rootKey, ids))
+                {
+                    return true;
+                }
+
+                std::uint32_t rootRecordId = 0;
+                if (TryGetRecordIdByKey_NoLock(rootKey, rootRecordId))
+                {
+                    BuildSubtreeRecordIds_NoLock(rootRecordId, ids);
+                    StorePathScopeRecordIdsCache_NoLock(rootKey, ids);
+                    return true;
+                }
+
+                BuildSubtreeRecordIdsFromParentKey_NoLock(drive, NtfsRootFileReferenceNumber, ids);
+                if (ids.empty())
+                {
+                    BuildSubtreeRecordIdsFromParentKey_NoLock(drive, 0, ids);
+                }
+
+                StorePathScopeRecordIdsCache_NoLock(rootKey, ids);
+                return true;
+            }
+
+            const auto directoryId = TryResolveDirectoryRecordId_NoLock(normalized);
+            if (directoryId == std::numeric_limits<std::uint32_t>::max())
+            {
+                return false;
+            }
+
+            const auto directoryKey = MakeRecordKey(GetRecordDrive_NoLock(directoryId), GetRecordFrn_NoLock(directoryId));
+            if (TryGetCachedPathScopeRecordIds_NoLock(directoryKey, ids))
+            {
+                return true;
+            }
+
+            BuildSubtreeRecordIds_NoLock(directoryId, ids);
+            StorePathScopeRecordIdsCache_NoLock(directoryKey, ids);
+            return true;
+        }
+
         void BuildSubtreeRecordIds_NoLock(std::uint32_t directoryId, std::vector<std::uint32_t>& ids) const
         {
             ids.clear();
@@ -6303,6 +7365,54 @@ namespace
 
                 const auto childEnd = static_cast<std::size_t>(childOffset) + childCount;
                 for (std::size_t i = childOffset; i < childEnd && i < v2_.childRecordIds.size(); ++i)
+                {
+                    const auto childId = v2_.childRecordIds[i];
+                    if (childId < GetRecordCount_NoLock())
+                    {
+                        stack.push_back(childId);
+                    }
+                }
+            }
+
+            std::sort(ids.begin(), ids.end());
+            ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+        }
+
+        void BuildSubtreeRecordIdsFromParentKey_NoLock(wchar_t drive, std::uint64_t parentFrn, std::vector<std::uint32_t>& ids) const
+        {
+            ids.clear();
+            std::uint32_t childOffset = 0;
+            std::uint32_t childCount = 0;
+            if (!TryGetChildRange_NoLock(MakeRecordKey(drive, parentFrn), childOffset, childCount))
+            {
+                return;
+            }
+
+            std::vector<std::uint32_t> stack;
+            const auto childEnd = static_cast<std::size_t>(childOffset) + childCount;
+            for (std::size_t i = childOffset; i < childEnd && i < v2_.childRecordIds.size(); ++i)
+            {
+                const auto childId = v2_.childRecordIds[i];
+                if (childId < GetRecordCount_NoLock())
+                {
+                    stack.push_back(childId);
+                }
+            }
+
+            while (!stack.empty())
+            {
+                const auto current = stack.back();
+                stack.pop_back();
+                ids.push_back(current);
+                std::uint32_t nestedOffset = 0;
+                std::uint32_t nestedCount = 0;
+                if (!TryGetChildRange_NoLock(MakeRecordKey(GetRecordDrive_NoLock(current), GetRecordFrn_NoLock(current)), nestedOffset, nestedCount))
+                {
+                    continue;
+                }
+
+                const auto nestedEnd = static_cast<std::size_t>(nestedOffset) + nestedCount;
+                for (std::size_t i = nestedOffset; i < nestedEnd && i < v2_.childRecordIds.size(); ++i)
                 {
                     const auto childId = v2_.childRecordIds[i];
                     if (childId < GetRecordCount_NoLock())
@@ -7093,6 +8203,7 @@ namespace
                 overlayIndexByKey_[key] = static_cast<std::uint32_t>(overlayRecords_.size());
                 overlayRecords_.push_back(std::move(record));
             }
+            RebuildOverlaySuppressedRecordIds_NoLock();
 
             for (const auto& pair : volumeCheckpoints)
             {
@@ -7129,8 +8240,10 @@ namespace
             scriptIds_.clear();
             logIds_.clear();
             configIds_.clear();
+            ClearDriveIds_NoLock();
             extensionIds_.clear();
             exactNameIds_.clear();
+            ClearPathScopeRecordIdsCache_NoLock();
 
             std::unordered_map<wchar_t, VolumeState> mappedVolumes;
             std::uint32_t mappedRecordCount = 0;
@@ -7507,6 +8620,10 @@ namespace
                     v2Copy.trigramPostings = v2_.trigramPostings;
                     v2Copy.asciiCharEntries = v2_.asciiCharEntries;
                     v2Copy.asciiBigramEntries = v2_.asciiBigramEntries;
+                    v2Copy.asciiCharDriveCounts = v2_.asciiCharDriveCounts;
+                    v2Copy.asciiBigramDriveCounts = v2_.asciiBigramDriveCounts;
+                    v2Copy.asciiCharDrivePages = v2_.asciiCharDrivePages;
+                    v2Copy.asciiBigramDrivePages = v2_.asciiBigramDrivePages;
                     v2Copy.nonAsciiShortEntries = v2_.nonAsciiShortEntries;
                     v2Copy.asciiCharCompressedPostings = v2_.asciiCharCompressedPostings;
                     v2Copy.asciiBigramCompressedPostings = v2_.asciiBigramCompressedPostings;
@@ -8468,7 +9585,7 @@ namespace
             input.read(reinterpret_cast<char*>(&version), sizeof(version));
             input.read(reinterpret_cast<char*>(&recordCount), sizeof(recordCount));
             if (!input.good()
-                || version != V2RuntimeSnapshotVersion2
+                || (version != V2RuntimeSnapshotVersion4 && version != 3 && version != 2)
                 || recordCount != static_cast<std::int32_t>(GetRecordCount_NoLock()))
             {
                 NativeLogWrite("[NATIVE V2 RUNTIME LOAD] miss reason=version-or-record-count");
@@ -8479,6 +9596,34 @@ namespace
                 static_cast<std::streamsize>(v2_.asciiCharEntries.size() * sizeof(NativeV2ShortBucketEntry)));
             input.read(reinterpret_cast<char*>(v2_.asciiBigramEntries.data()),
                 static_cast<std::streamsize>(v2_.asciiBigramEntries.size() * sizeof(NativeV2ShortBucketEntry)));
+            if (version >= 3)
+            {
+                if (!ReadDriveCountVector(input, v2_.asciiCharDriveCounts)
+                    || !ReadDriveCountVector(input, v2_.asciiBigramDriveCounts))
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                v2_.asciiCharDriveCounts.clear();
+                v2_.asciiBigramDriveCounts.clear();
+            }
+
+            if (version >= V2RuntimeSnapshotVersion4)
+            {
+                if (!ReadDrivePageVector(input, v2_.asciiCharDrivePages)
+                    || !ReadDrivePageVector(input, v2_.asciiBigramDrivePages))
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                v2_.asciiCharDrivePages.clear();
+                v2_.asciiBigramDrivePages.clear();
+            }
+
             if (!input.good()
                 || !ReadByteVector(input, v2_.asciiCharCompressedPostings)
                 || !ReadByteVector(input, v2_.asciiBigramCompressedPostings)
@@ -8515,6 +9660,16 @@ namespace
                 || !ReadUInt32Vector(input, v2_.childRecordIds))
             {
                 return false;
+            }
+
+            if (version >= 3 && version < V2RuntimeSnapshotVersion4)
+            {
+                BuildShortDrivePagesFromRuntime_NoLock();
+            }
+
+            if (version < 3)
+            {
+                NativeLogWrite("[NATIVE V2 RUNTIME LOAD] compatibility mode=v2-without-drive-counts");
             }
 
             NativeLogWrite(
@@ -8554,7 +9709,7 @@ namespace
                 return;
             }
 
-            const auto version = V2RuntimeSnapshotVersion2;
+            const auto version = V2RuntimeSnapshotVersion4;
             const auto count = static_cast<std::int32_t>(recordCount);
             output.write(reinterpret_cast<const char*>(&version), sizeof(version));
             output.write(reinterpret_cast<const char*>(&count), sizeof(count));
@@ -8562,6 +9717,10 @@ namespace
                 static_cast<std::streamsize>(v2.asciiCharEntries.size() * sizeof(NativeV2ShortBucketEntry)));
             output.write(reinterpret_cast<const char*>(v2.asciiBigramEntries.data()),
                 static_cast<std::streamsize>(v2.asciiBigramEntries.size() * sizeof(NativeV2ShortBucketEntry)));
+            WriteDriveCountVector(output, v2.asciiCharDriveCounts);
+            WriteDriveCountVector(output, v2.asciiBigramDriveCounts);
+            WriteDrivePageVector(output, v2.asciiCharDrivePages);
+            WriteDrivePageVector(output, v2.asciiBigramDrivePages);
             WriteByteVector(output, v2.asciiCharCompressedPostings);
             WriteByteVector(output, v2.asciiBigramCompressedPostings);
             WriteByteVector(output, v2.nonAsciiShortCompressedPostings);
@@ -8675,6 +9834,7 @@ namespace
                 extensionIds_[std::move(extension)] = std::move(ids);
             }
 
+            RebuildDriveIdsFromAllIds_NoLock();
             derivedDirty_ = false;
             generationId_.fetch_add(1, std::memory_order_relaxed);
             NativeLogWrite(
@@ -8817,7 +9977,7 @@ namespace
                 (static_cast<std::uint64_t>(v2_.childRecordIds.capacity()) * sizeof(std::uint32_t))
                 + (static_cast<std::uint64_t>(v2_.childEntries.capacity()) * sizeof(NativeV2ChildBucketEntry))) << ",";
             ss << "\"generationId\":" << generationId_.load(std::memory_order_relaxed) << ",";
-            ss << "\"snapshotFormatVersion\":" << V2RuntimeSnapshotVersion2 << ",";
+            ss << "\"snapshotFormatVersion\":" << V2RuntimeSnapshotVersion4 << ",";
             ss << "\"restoreMappedBytes\":0";
             ss << "},";
             ss << "\"memoryBytes\":" << EstimateNativeMemoryBytes_NoLock() << ",";
@@ -9588,6 +10748,14 @@ namespace
             return value + L'\\';
         }
 
+        static bool IsDriveRootPath(const std::wstring& value)
+        {
+            return value.length() == 3
+                && iswalpha(value[0])
+                && value[1] == L':'
+                && value[2] == L'\\';
+        }
+
         static std::wstring GetExtension(const std::wstring& lowerName)
         {
             const auto dotIndex = lowerName.find_last_of(L'.');
@@ -9992,6 +11160,80 @@ namespace
                 if (!input.good())
                 {
                     return false;
+                }
+            }
+
+            values.shrink_to_fit();
+            return true;
+        }
+
+        static void WriteDriveCountVector(std::ofstream& output, const std::vector<std::array<std::uint32_t, 26>>& values)
+        {
+            const auto count = static_cast<std::uint32_t>(values.size());
+            output.write(reinterpret_cast<const char*>(&count), sizeof(count));
+            if (count > 0)
+            {
+                output.write(reinterpret_cast<const char*>(values.data()),
+                    static_cast<std::streamsize>(count * sizeof(values[0])));
+            }
+        }
+
+        static bool ReadDriveCountVector(std::ifstream& input, std::vector<std::array<std::uint32_t, 26>>& values)
+        {
+            std::uint32_t count = 0;
+            input.read(reinterpret_cast<char*>(&count), sizeof(count));
+            if (!input.good())
+            {
+                return false;
+            }
+
+            values.resize(count);
+            if (count > 0)
+            {
+                input.read(reinterpret_cast<char*>(values.data()),
+                    static_cast<std::streamsize>(count * sizeof(values[0])));
+                if (!input.good())
+                {
+                    return false;
+                }
+            }
+
+            values.shrink_to_fit();
+            return true;
+        }
+
+        static void WriteDrivePageVector(std::ofstream& output, const std::vector<std::array<std::vector<std::uint32_t>, 26>>& values)
+        {
+            const auto tokenCount = static_cast<std::uint32_t>(values.size());
+            output.write(reinterpret_cast<const char*>(&tokenCount), sizeof(tokenCount));
+            for (const auto& tokenPages : values)
+            {
+                for (const auto& drivePage : tokenPages)
+                {
+                    WriteUInt32Vector(output, drivePage);
+                }
+            }
+        }
+
+        static bool ReadDrivePageVector(std::ifstream& input, std::vector<std::array<std::vector<std::uint32_t>, 26>>& values)
+        {
+            std::uint32_t tokenCount = 0;
+            input.read(reinterpret_cast<char*>(&tokenCount), sizeof(tokenCount));
+            if (!input.good())
+            {
+                return false;
+            }
+
+            values.clear();
+            values.resize(tokenCount);
+            for (auto& tokenPages : values)
+            {
+                for (auto& drivePage : tokenPages)
+                {
+                    if (!ReadUInt32Vector(input, drivePage))
+                    {
+                        return false;
+                    }
                 }
             }
 

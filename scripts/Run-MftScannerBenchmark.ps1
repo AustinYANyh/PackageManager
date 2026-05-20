@@ -619,8 +619,9 @@ function Parse-IndexStageEvents {
 
 function Get-BadReturnedCount {
     param(
+        [object]$Case,
         [string]$Keyword,
-        [string]$PathPrefix,
+        [string]$DefaultPathPrefix,
         [object]$Result
     )
 
@@ -629,8 +630,22 @@ function Get-BadReturnedCount {
     }
 
     $term = $Keyword
-    if (![string]::IsNullOrWhiteSpace($PathPrefix) -and $Keyword.StartsWith($PathPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-        $term = $Keyword.Substring($PathPrefix.Length).Trim()
+    $scopePath = $null
+    if ($null -ne $Case -and ($Case.PSObject.Properties.Name -contains "PathScope")) {
+        $scopePath = [string]$Case.PathScope
+    }
+
+    if ([string]::IsNullOrWhiteSpace($scopePath)) {
+        if (![string]::IsNullOrWhiteSpace($DefaultPathPrefix) -and $Case.Keyword.StartsWith($DefaultPathPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            $scopePath = $DefaultPathPrefix
+        }
+        else {
+            return 0
+        }
+    }
+
+    if (![string]::IsNullOrWhiteSpace($scopePath) -and $Keyword.StartsWith($scopePath, [StringComparison]::OrdinalIgnoreCase)) {
+        $term = $Keyword.Substring($scopePath.Length).Trim()
     }
 
     if ([string]::IsNullOrWhiteSpace($term) -or $term.Contains("*") -or $term.Contains("?") -or $term.StartsWith("^") -or $term.EndsWith("$") -or ($term.StartsWith("/") -and $term.EndsWith("/"))) {
@@ -639,6 +654,41 @@ function Get-BadReturnedCount {
 
     return @($Result.Results | Where-Object {
         $_.FileName.IndexOf($term, [StringComparison]::OrdinalIgnoreCase) -lt 0
+    }).Count
+}
+
+function Get-BadPathScopeCount {
+    param(
+        [object]$Case,
+        [string]$DefaultPathPrefix,
+        [object]$Result
+    )
+
+    if ($null -eq $Result -or $null -eq $Result.Results) {
+        return 0
+    }
+
+    $scopePath = $null
+    if ($null -ne $Case -and ($Case.PSObject.Properties.Name -contains "PathScope")) {
+        $scopePath = [string]$Case.PathScope
+    }
+
+    if ([string]::IsNullOrWhiteSpace($scopePath)) {
+        if (![string]::IsNullOrWhiteSpace($DefaultPathPrefix) -and $Case.Keyword.StartsWith($DefaultPathPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            $scopePath = $DefaultPathPrefix
+        }
+        else {
+            return 0
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($scopePath)) {
+        return 0
+    }
+
+    $normalized = if ($scopePath.EndsWith("\")) { $scopePath } else { "$scopePath\" }
+    return @($Result.Results | Where-Object {
+        $_.FullPath -notlike "$normalized*"
     }).Count
 }
 
@@ -843,14 +893,14 @@ function New-MarkdownReport {
     $lines.Add("")
     $lines.Add("## 查询明细")
     $lines.Add("")
-    $lines.Add("| 阶段 | 场景 | 用例 | 类型过滤 | 关键词 | 客户端耗时(ms) | 宿主耗时(ms) | Native总耗时(ms) | 锁等待(ms) | Plan | Accelerator | Contains模式 | UI命中数 | 物理命中数 | 唯一路径数 | 重复路径数 | 返回数 | 错配返回 | stale | 桶状态 | 是否截断 |")
-    $lines.Add("| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |")
+    $lines.Add("| 阶段 | 场景 | 用例 | 类型过滤 | 关键词 | 客户端耗时(ms) | 宿主耗时(ms) | Native总耗时(ms) | 锁等待(ms) | Plan | Accelerator | Contains模式 | UI命中数 | 物理命中数 | 唯一路径数 | 重复路径数 | 返回数 | 错配返回 | 路径越界 | stale | 桶状态 | 是否截断 |")
+    $lines.Add("| --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | --- |")
     foreach ($row in $Rows) {
         $keyword = ($row.Keyword -replace "\|", "\|")
         $truncated = Convert-BoolToChinese $row.IsTruncated
         $stale = Convert-BoolToChinese $row.IsSnapshotStale
         $bucket = "C=$($row.CharBucketReady),B=$($row.BigramBucketReady),T=$($row.TrigramBucketReady)"
-        $lines.Add("| $($row.Phase) | $($row.Scenario) | $($row.Name) | $($row.Filter) | ``$keyword`` | $($row.ClientMs) | $($row.HostSearchMs) | $($row.NativeTotalMs) | $($row.NativeLockWaitMs) | $($row.NativePlan) | $($row.NativeAccelerator) | $($row.ContainsMode) | $($row.TotalMatchedCount) | $($row.PhysicalMatchedCount) | $($row.UniqueMatchedCount) | $($row.DuplicatePathCount) | $($row.ReturnedCount) | $($row.BadReturnedCount) | $stale | $bucket | $truncated |")
+        $lines.Add("| $($row.Phase) | $($row.Scenario) | $($row.Name) | $($row.Filter) | ``$keyword`` | $($row.ClientMs) | $($row.HostSearchMs) | $($row.NativeTotalMs) | $($row.NativeLockWaitMs) | $($row.NativePlan) | $($row.NativeAccelerator) | $($row.ContainsMode) | $($row.TotalMatchedCount) | $($row.PhysicalMatchedCount) | $($row.UniqueMatchedCount) | $($row.DuplicatePathCount) | $($row.ReturnedCount) | $($row.BadReturnedCount) | $($row.BadPathScopeCount) | $stale | $bucket | $truncated |")
     }
 
     $lines.Add("")
@@ -1145,7 +1195,8 @@ function Invoke-BenchmarkCase {
             UniqueMatchedCount = $result.UniqueMatchedCount
             DuplicatePathCount = $result.DuplicatePathCount
             ReturnedCount = @($result.Results).Count
-            BadReturnedCount = Get-BadReturnedCount -Keyword $Case.Keyword -PathPrefix $PathPrefix -Result $result
+            BadReturnedCount = Get-BadReturnedCount -Case $Case -Keyword $Case.Keyword -DefaultPathPrefix $PathPrefix -Result $result
+            BadPathScopeCount = Get-BadPathScopeCount -Case $Case -DefaultPathPrefix $PathPrefix -Result $result
             IsTruncated = $result.IsTruncated
             IsSnapshotStale = $result.IsSnapshotStale
             CharBucketReady = $result.ContainsBucketStatus.CharReady
@@ -1282,6 +1333,10 @@ try {
         [pscustomobject]@{ Name = "PathWildcardLiteral"; Keyword = "$PathPrefix *ver*"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
         [pscustomobject]@{ Name = "PathLaunchableContains"; Keyword = "$PathPrefix ve"; Filter = [MftScanner.SearchTypeFilter]::Launchable; Scenario = "Direct"; Language = "Ascii" },
         [pscustomobject]@{ Name = "PathConfigCalsupport"; Keyword = "$PathPrefix calsupport"; Filter = [MftScanner.SearchTypeFilter]::Config; Scenario = "Direct"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "RootPathContainsSingleChar"; Keyword = "C:\ d"; PathScope = "C:\"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "RootPath"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "RootPathContainsTwoChars"; Keyword = "C:\ ve"; PathScope = "C:\"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "RootPath"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "RootPathWildcardExe"; Keyword = "C:\ *.exe"; PathScope = "C:\"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "RootPath"; Language = "Ascii" },
+        [pscustomobject]@{ Name = "RootPathConfigMakeNumber"; Keyword = "C:\ makenumberconfig"; PathScope = "C:\"; Filter = [MftScanner.SearchTypeFilter]::Config; Scenario = "RootPath"; Language = "Ascii" },
         [pscustomobject]@{ Name = "GlobalAllSingleChar"; Keyword = "d"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
         [pscustomobject]@{ Name = "GlobalAllTwoChars"; Keyword = "ve"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
         [pscustomobject]@{ Name = "GlobalSparseDx"; Keyword = "dx"; Filter = [MftScanner.SearchTypeFilter]::All; Scenario = "Direct"; Language = "Ascii" },
@@ -1743,6 +1798,36 @@ foreach ($row in @($rows.ToArray())) {
             TotalMatchedCount = $row.TotalMatchedCount
             ThresholdMs = 0
             Reason = "native-unindexed-success"
+        })
+    }
+
+    if ($row.BadPathScopeCount -gt 0) {
+        $failures.Add([pscustomobject]@{
+            Phase = $row.Phase
+            Name = $row.Name
+            Keyword = $row.Keyword
+            Filter = $row.Filter
+            ClientMs = $row.ClientMs
+            HostSearchMs = $row.HostSearchMs
+            ContainsMode = $row.NativeAccelerator
+            TotalMatchedCount = $row.TotalMatchedCount
+            ThresholdMs = 0
+            Reason = "path-scope-returned-outside-prefix"
+        })
+    }
+
+    if ($row.BadReturnedCount -gt 0) {
+        $failures.Add([pscustomobject]@{
+            Phase = $row.Phase
+            Name = $row.Name
+            Keyword = $row.Keyword
+            Filter = $row.Filter
+            ClientMs = $row.ClientMs
+            HostSearchMs = $row.HostSearchMs
+            ContainsMode = $row.NativeAccelerator
+            TotalMatchedCount = $row.TotalMatchedCount
+            ThresholdMs = 0
+            Reason = "returned-name-mismatch"
         })
     }
 }
