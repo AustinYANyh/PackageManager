@@ -13,7 +13,7 @@ description: Git+SVN 改动由脚本采集；模型默认打开本机可见 Powe
 
 其中：
 
-- `type`：优先使用 conventional 类型（图1那组），允许扩展但要克制
+- `type`：必须是英文小写 conventional 类型标识，例如 `docs`、`test`、`ci`、`build`、`fix`、`feat`、`refactor`、`perf`、`style`、`chore`。**禁止翻译成中文**，不得写成 `修复`、`功能`、`性能` 等中文词。
 - `scope`：一般是功能名称；若能定位到模块/项目，优先使用项目/模块名
 
 ## 触发词建议
@@ -32,6 +32,7 @@ description: Git+SVN 改动由脚本采集；模型默认打开本机可见 Powe
 5. **不要粘贴大段 diff**：提交日志只输出抽象后的变更点，不直接贴 patch 内容。
 6. **长日志必须主动硬换行**：标题与正文按后文「长文本换行规则」处理。
 7. **最终提交/推送也必须限时交互**：模型生成最终提交日志后，默认必须打开本机可见 PowerShell 询问是否提交并推送；`-PromptTimeoutSeconds` 默认 30 秒，超时自动选择 **第 1 个选项：提交并推送**。只有用户明确要求“只生成日志 / 不提交 / 不推送”时才跳过这一步。
+8. **提交日志 type 必须保持英文**：无论摘要和正文是否为中文，标题开头 `type(scope):` 中的 `type` 都必须是英文小写标识。Step 3 前必须自检标题；若 `(` 前不是英文类型，必须先改正，禁止提交。
 
 ## 执行流程
 
@@ -102,7 +103,7 @@ JSON 关键字段（与脚本一致）：
 
 ### 提交日志正文要点
 
-- 只输出一条 `type(scope): 中文摘要`；多项目 scope 用顿号 `、` 连接。
+- 只输出一条 `type(scope): 中文摘要`；`type` 必须为英文小写 conventional 类型，`scope` 可含项目/模块名，多项目 scope 用顿号 `、` 连接。
 - 正文 2–8 条 `- ` 条目；若 `ItemsExcluded` 非空，附 `本次排除清单`（`#Id Path`）。
 
 ### Step 3) 限时确认是否提交并推送
@@ -127,7 +128,7 @@ Step 1 wrapper 会自动把采集 JSON 保存到 `.claude/skills/git_svn_commitl
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/invoke-commit-push-interactive.ps1 -PromptTimeoutSeconds 30 -CommitMessageBase64Utf8 '<模型已在推理中算好的 ASCII Base64>'
 ```
 
-兼容入口：`-CommitMessageLines`、`-CommitMessageText` 仅供 Windows 原生命令行或自动化脚本使用，不再作为 Claude Code 默认路径。最终提交日志标题和正文都必须使用中文写法，不要照搬英文模板。
+兼容入口：`-CommitMessageLines`、`-CommitMessageText` 仅供 Windows 原生命令行或自动化脚本使用，不再作为 Claude Code 默认路径。最终提交日志的摘要和正文必须使用中文写法，不要照搬英文模板；但标题开头的 `type(scope):` 中 **`type` 必须保持英文小写**，不得翻译。
 
 Step 3 返回 JSON 中的 `CommitMessage` 与 `CommitMessageSha256` 是脚本实际用于 `git commit -F` / `svn commit -F` 的内容。模型最终回复里的“最终版提交日志（可直接复制）”必须逐字复制 `CommitMessage`，不得再根据记忆或上文重新生成一份；如果发现它和准备展示的日志不同，必须报告 `failed` 并停止。
 
@@ -147,6 +148,14 @@ Step 3 返回 JSON 中的 `CommitMessage` 与 `CommitMessageSha256` 是脚本实
 
 ### type 推断（优先级从高到低）
 
+**硬性格式规则**：
+
+- `type` 必须只使用英文小写字母（必要时可含短横线），放在标题最开头并紧跟 `(`，格式为 `type(scope): 中文摘要`。
+- 内置类型只能写：`docs`、`test`、`ci`、`build`、`fix`、`feat`、`refactor`、`perf`、`style`、`chore`。
+- 允许扩展类型时也必须是英文小写标识，且必须对团队有稳定含义；不得使用中文扩展类型。
+- **禁止示例**：`修复(PackageManager): ...`、`功能(MftScanner): ...`、`性能(PackageManager): ...`。
+- **正确示例**：`fix(PackageManager): ...`、`feat(MftScanner): ...`、`perf(PackageManager): ...`。
+
 - **docs**：只改 `*.md`/文档目录/注释类内容\n
 - **test**：只改测试项目/测试文件\n
 - **ci**：只改 CI 配置/流水线脚本\n
@@ -158,7 +167,7 @@ Step 3 返回 JSON 中的 `CommitMessage` 与 `CommitMessageSha256` 是脚本实
 - **style**：格式化/不影响语义的改动\n
 - **chore**：杂项维护（不属于以上）\n
 
-> 允许扩展类型，但务必保证：扩展类型对团队有稳定含义，并避免滥用。
+> 允许扩展类型，但务必保证：扩展类型是英文小写标识，对团队有稳定含义，并避免滥用。
 
 ### scope 选择
 
@@ -170,8 +179,8 @@ Step 3 返回 JSON 中的 `CommitMessage` 与 `CommitMessageSha256` 是脚本实
 
 一句话写清楚：**改了什么** + **解决什么问题/为什么要改**。\n
 例：\n
-- `修复(git_svn_commitlog_generator): 改用 Base64 UTF-8 传递提交日志，消除 Bash eval 中文问题`
-- `功能(MftScanner.Core、MftScanner): 路径前缀前置过滤替换后置过滤，优化 IPC 共享内存序列化`
+- `fix(git_svn_commitlog_generator): 改用 Base64 UTF-8 传递提交日志，消除 Bash eval 中文问题`
+- `feat(MftScanner.Core、MftScanner): 路径前缀前置过滤替换后置过滤，优化 IPC 共享内存序列化`
 
 ### 条目写法
 
@@ -211,7 +220,7 @@ feat(MftScanner.Core、MftScanner、PackageManager): 增加软删除覆盖层与
 示例格式：
 
 ```text
-功能(MftScanner.Core、MftScanner): 路径前缀前置过滤替换后置过滤，优化 IPC 共享内存序列化
+feat(MftScanner.Core、MftScanner): 路径前缀前置过滤替换后置过滤，优化 IPC 共享内存序列化
 
 - MftEnumerator 新增 _childDirectoryFrnsByParent 父子目录映射，
   TryGetDirectorySubtree 可将路径前缀定位到目录子树 FRN 集合

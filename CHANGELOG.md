@@ -2,6 +2,77 @@
 
 本文件基于仓库 `gitlog.md` 的提交历史按版本号归档,概述每个版本的主要改动与新增功能。
 
+## 3.3.0.0 — 2026-05-20
+
+- MFT Native v2 索引与查询性能：
+  - 新增 Native v2 MFT 加速索引，围绕短查询、路径范围查询和快照恢复重构核心搜索链路。
+  - 为单字符、双字符、短 contains 查询增加专用桶、位图、计数表和盘符统计，降低短词查询全量扫描成本。
+  - 路径范围查询改为目录 recordId 定位、盘符过滤、父目录 postings、目录子树区间和 recordId 顺序表组合过滤。
+  - 大路径范围短查询支持在子树区间内分页计数，覆盖 `C:\Windows`、`C:\Users`、仓库目录等场景。
+  - 根路径和盘符限定查询补充正确性校验，修复限定 C 盘时无法搜到 C 盘内文件的问题。
+
+- 快照恢复与 SLA 压测：
+  - Runtime 快照升级到 v6，持久化子树 enter/exit 区间与 recordId 顺序表，旧快照自动重建兼容。
+  - 快照保存改为后台维护并降低独占锁干扰，保存阶段使用堆上副本承载大数组，减少栈和拷贝压力。
+  - 全量构建完成后先发布可搜索状态，records remap、快照保存等后续阶段异步执行，降低 ready 阻塞。
+  - 压测脚本补齐冷构建、恢复 ready、端到端查询、宿主耗时、锁等待、路径越界和返回错配统计。
+  - Release 压测覆盖冷构建、快照恢复、全盘查询、路径限定查询、根路径查询和额外大路径抽样。
+
+- USN 增量与 overlay 稳定性：
+  - 增加 USN 批量 live-delta 增量更新，统一应用创建、删除、重命名和恢复记录，降低频繁重建成本。
+  - USN Journal 过期时支持单卷 MFT 重新枚举并合并替换对应盘符记录，尽量保留现有索引继续服务。
+  - Overlay 记录覆盖稳定索引时按 key 抑制旧记录，查询结果按路径去重并修正物理/唯一命中统计。
+  - 后台追平区分成功、过期、取消、拒绝访问和读写失败，快照保存与 contains postings 恢复均校验内容指纹。
+
+- 索引宿主、IPC 与启动项体验：
+  - 后台索引宿主改用 MMF IPC，并增加工具包指纹校验、宿主同步和启动失败提示。
+  - 搜索请求改为异步调度并支持过期响应丢弃，避免 Ctrl+Q 搜索和索引状态变更触发刷新风暴。
+  - 搜索结果支持加入启动项分组，右键菜单和工具栏可直接写入 common startup 配置。
+  - 脚本启动项支持 PowerShell 7 终端运行，Ctrl+Q 工作台增加 Ctrl+T 终端入口。
+
+- 局域网文件传输：
+  - 接收文件直接提交到收件箱根目录，保留发送端顶层文件和文件夹结构。
+  - 新增同名时静默覆盖设置，支持同名文件覆盖和同名目录替换。
+  - 接收确认窗口显示真实收件箱目录，不再展示时间戳子目录。
+
+- 提交日志与工程工具：
+  - 新增 git_svn_commitlog_generator 技能，支持 Git/SVN 待提交改动采集、交互排除/加入和提交日志生成。
+  - 提交推送脚本支持限时交互、Git 自动 commit/push、SVN 按仓库合并提交和 PowerShell/Windows Terminal 启动。
+  - 优化大工作区状态采集、未跟踪项过滤、SVN XML 状态读取、CRLF 警告处理和路径规范化。
+
+- 提交参考：
+- 69b23039a187dba03c0566799cbd3b4c4ad05a3a — 性能(PackageManager): 用子树区间优化 MFT 大路径范围短查询
+- e0cba0d3e80e79838d4ef9ea488c9709d6e30357 — 修复(PackageManager): 优化 MFT 短查询路径范围过滤并补充根路径校验
+- e0f452561fb94a7dc351aae638ebeb4ebb7213b9 — feat(PackageManager): 优化文件传输收件箱落盘与同名覆盖策略
+- 545a7d48eecb97f94c9b8da4d4109d08b439cab2 — perf(MftScanner、MftScanner.Core、PackageManager): 修复共享索引重建 SLA 与进度反馈
+- 4a30c12d11f7abadaf244cdc06fc6c6699c6d45a — fix(PackageManager): 修复索引宿主启动失败和 CtrlQ 搜索刷新风暴
+- 6b33ade4ce3a5590108d3c220cba1e16621f2933 — fix(PackageManager): 修正 Native overlay 追平与压测统计口径
+- f6e317d83a919e2c8011f513f3120e30bb897dd7 — perf(MftScanner.Core、PackageManager): 优化 overlay 路径范围查询并补齐冷构建压测指标
+- 3f26c9135be13ed22fca2f6ad13a60b68083bd7b — feat: Native 枚举区分 FSCTL_ENUM_USN_DATA 正常 EOF 和异常退出
+- 0d7c251cbd15b3f540d4ec1aa3157bf6447e0361 — feat: optimize native v2 index build and search
+- 076a2127cf9cb4a31f4b0b97754b00912098506c — feat: add native v2 mft index acceleration
+- 293fe015bc34516f3ab7a2465b6012ae931c4094 — perf(MftScanner.Core、PackageManager): 优化短查询索引快照与路径前缀搜索
+- d80a40f89da766dcdd469bd24742a165983b87c2 — feat(MftScanner、PackageManager): 支持搜索结果加入启动项分组
+- 026ef8231897478d41236d358055f1627bce4394 — fix(MftScanner.Core、MftScanner、PackageManager): 增强 USN 过期恢复与搜索热结构预热
+- 19c69fad7ced4de83a0be1cf3eaca7c8631e37f1 — fix(MftScanner.Core、PackageManager): 稳定快照恢复与 USN 追平流程
+- a5753ceaf59431e83fe2dcb4d0f76ba5aead534a — perf(MftScanner.Core、PackageManager): 优化 Contains 短查询加速与验证覆盖
+- 807554c4f9d70b8aa8be9efd786a54f87705a751 — feat(MftScanner.Core、PackageManager): 增加 USN 批量 live-delta 增量更新
+- 23e86554db18b5700d35212e5c789f3bb7a6f1f0 — feat(PackageManager): 脚本启动项支持终端运行，命令改用 EncodedCommand 传递
+- 89c0b91fbb8b5921bfadba192c419fb06e999a6e — feat(PackageManager、MftScanner): 终端改用 PowerShell 7，启用时清理禁用残留
+- 7064836b3fb3ec891432ebcfebc0d97cf499612e — refactor(PackageManager): 插件启用/禁用从重命名策略改为独立目录隔离
+- a7fd26ba730d187095c063513652b5db833f66c6 — perf(MftScanner.Core): 双字符 ASCII 计数索引与增量更新，ApplyBatch 读写锁分离
+- 92c7c0ae5c6cdfd693f85e7a9b478e6f0ef91c0d — perf(MftScanner.Core): 单字符 ASCII 位图索引、驱动器+类型过滤搜索与路径前置策略扩展
+- 8b72e209a484633843deaf96368e63059a14711a — feat(MftScanner.Core、MftScanner、PackageManager): 软删除覆盖层、搜索请求异步调度与路径前置过滤策略分级
+- d480c8f66ee6a7633e48e8a12fd696e54b603803 — perf(MftScanner.Core、PackageManager): 快照 v7 列式分文件格式并行反序列化、Postings 恢复失败自动触发预热
+- ec29d5bc52efa43c74ec74a49e67bd155da10269 — perf(MftScanner.Core、PackageManager): MFT 硬链接全保留、快照恢复延迟构建派生结构与独立 Postings 文件
+- 4bc761618e539e5044c4f0a6f33c26b27c7e42b7 — feat(MftScanner.Core、MftScanner、PackageManager): 搜索结果按全路径去重、快照升级 Deflate 压缩与内容指纹、IPC 协议 v4
+- e84050ce954a9deae5fffd0eddba7446e6866064 — perf(MftScanner.Core、MftScanner、PackageManager): 新增短查询热桶缓存、索引快照过期标记、搜索空闲等待与基准测试增强
+- 4136ff3b65026bfd163b8c57389814f2bd52c97d — perf(MftScanner.Core、PackageManager): 移除 ExactHashMap 改用二分查找、ContainsAccelerator 增量压缩与目录专用 FRN 映射
+- 7cb1c46a50ce9d5d0e9838ddd9dc5c6488d63b4e — perf(MftScanner.Core): 增量查询缓存、ContainsAccelerator 不可变重构与目录子树缓存优化
+- 7cbe206320d24fd06b36d827bddbb4ea55db0914 — feat(MftScanner.Core): 路径前缀前置过滤替换后置过滤，优化 IPC 共享内存序列化
+- f80d17b0c66af46d45f6e1434b95e3f631227496 — feat: IPC 通信改为 MMF，去除 NamedPipe 实现
+- 822b1d29fa0faad2f0eb0d654cde86ca19c47980 — feat: 添加后台宿主索引服务的必要文件
+
 ## 3.2.0.0 — 2026-04-23
 
 - 拼音搜索支持：
@@ -973,4 +1044,3 @@
 - c130971d — feat(settings): 应用程序设置与数据管理
 - 6468c9d9 — feat(services): 应用查找与数据持久化、FTP 文件解析
 - ea46a3fa — feat: 包管理器主界面
-
