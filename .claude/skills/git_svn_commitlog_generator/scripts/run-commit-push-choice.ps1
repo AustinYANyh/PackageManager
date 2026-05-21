@@ -206,7 +206,7 @@ function Invoke-LoggedCommand {
 
   Write-Host ("> {0} {1}" -f $Tool, (($Arguments | ForEach-Object { Quote-NativeArgument $_ }) -join " ")) -ForegroundColor DarkCyan
 
-  $resolvedTool = Get-Command -Name $Tool -CommandType Application -ErrorAction SilentlyContinue
+  $resolvedTool = @(Get-Command -Name $Tool -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1)
   if (-not $resolvedTool) {
     $message = "找不到命令：$Tool。请确认它已安装并加入 PATH；这类问题按 exitCode=127 返回。"
     Write-Host $message -ForegroundColor Red
@@ -370,13 +370,16 @@ function ConvertTo-CommitGroups([object[]]$GitGroups, [object[]]$SvnGroups, [obj
   $groups = New-Object System.Collections.Generic.List[object]
   $id = 1
   foreach ($g in @($GitGroups | Sort-Object GitRepoRoot)) {
-    $message = if ($messageByKey.ContainsKey($g.Key)) { $messageByKey[$g.Key] } else { $DefaultMessage }
+    $hasGroupMessage = $messageByKey.ContainsKey($g.Key)
+    $message = if ($hasGroupMessage) { $messageByKey[$g.Key] } else { $DefaultMessage }
     [void]$groups.Add([pscustomobject]@{
       GroupId = $id
       Source = "git"
       DisplayName = $g.DisplayName
       GitRepoRoot = $g.GitRepoRoot
       GitRepoRelRoot = $g.GitRepoRelRoot
+      MessageKey = $g.Key
+      HasGroupMessage = $hasGroupMessage
       Items = @($g.Items | Sort-Object Path)
       Paths = @($g.RepoPaths | Sort-Object -Unique)
       CommitMessage = $message
@@ -395,12 +398,15 @@ function ConvertTo-CommitGroups([object[]]$GitGroups, [object[]]$SvnGroups, [obj
       $url = Get-ItemTextProperty -Item $first -Name "SvnRepoRootUrl"
       if ($uuid) { "svn|$uuid" } elseif ($url) { "svn|$url" } else { ("svn|{0}" -f (Get-NormalizedPath $g.WcRoot).ToLowerInvariant()) }
     } else { "" }
-    $message = if ($key -and $messageByKey.ContainsKey($key)) { $messageByKey[$key] } else { $DefaultMessage }
+    $hasGroupMessage = ($key -and $messageByKey.ContainsKey($key))
+    $message = if ($hasGroupMessage) { $messageByKey[$key] } else { $DefaultMessage }
     [void]$groups.Add([pscustomobject]@{
       GroupId = $id
       Source = "svn"
       DisplayName = (Split-Path -Leaf $g.WcRoot)
       SvnWcRoot = $g.WcRoot
+      MessageKey = $key
+      HasGroupMessage = $hasGroupMessage
       Items = @($g.Items | Sort-Object Path)
       Paths = @($g.Items | ForEach-Object { Join-Path -Path $RootFull -ChildPath ($_.Path -replace '/', '\') } | Sort-Object -Unique)
       CommitMessage = $message
@@ -441,6 +447,49 @@ $gitGroupCount = @($commitGroups | Where-Object { $_.Source -eq "git" }).Count
 $svnGroupCount = @($commitGroups | Where-Object { $_.Source -eq "svn" }).Count
 $totalFileCount = 0
 foreach ($group in @($commitGroups)) { $totalFileCount += @($group.Items).Count }
+
+if (@($commitGroups).Count -gt 1) {
+  $missingGroupMessages = @($commitGroups | Where-Object { -not $_.HasGroupMessage })
+  if ($missingGroupMessages.Count -gt 0) {
+    $errors = @($missingGroupMessages | ForEach-Object {
+      "多提交组必须为每个提交组提供专属提交日志，缺少提交组 [{0}] {1} {2} 的 CommitMessage（匹配键：{3}）。请通过 -CommitMessageGroupsBase64Utf8 传入 Groups[].CommitMessage。" -f `
+        $_.GroupId, $_.Source.ToUpperInvariant(), $_.DisplayName, $_.MessageKey
+    })
+    foreach ($group in @($commitGroups)) {
+      if (-not $group.HasGroupMessage) {
+        $group.Status = "failed"
+        $group.Errors = @($group.Errors) + "缺少专属提交日志"
+      } else {
+        $group.Status = "not_started"
+      }
+    }
+
+    Write-Host ""
+    foreach ($errorMessage in $errors) {
+      Write-Host $errorMessage -ForegroundColor Red
+    }
+
+    $result = [pscustomobject]@{
+      Status = "failed"
+      Choice = 0
+      GitPathCount = @($gitItems).Count
+      SvnPathCount = $svnItems.Count
+      Errors = @($errors)
+      Commands = @()
+      CommitMessageSha256 = Get-Utf8Sha256 $messageText
+      CommitMessage = $messageText
+      Groups = @($commitGroups)
+    }
+
+    if ($ResultJsonFile) {
+      $json = ConvertTo-ResultJson $result
+      [System.IO.File]::WriteAllText($ResultJsonFile, $json, [System.Text.UTF8Encoding]::new($false))
+    } else {
+      ConvertTo-ResultJson $result
+    }
+    return
+  }
+}
 
 Write-Host ""
 Write-Host "步骤 3/3：是否现在帮你提交并推送？" -ForegroundColor Cyan
