@@ -630,6 +630,83 @@ function Get-GitRepoRoot([string]$rootFull) {
   return $rootFull
 }
 
+function Find-GitRepositories([string]$rootFull, [bool]$includeRoot) {
+  $repos = New-Object 'System.Collections.Generic.List[string]'
+  $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+
+  if ($includeRoot -and (Test-IsGitRepo -rootFull $rootFull)) {
+    $rootRepo = Get-GitRepoRoot -rootFull $rootFull
+    if ($rootRepo -and $seen.Add($rootRepo)) {
+      [void]$repos.Add($rootRepo)
+    }
+  }
+
+  $skipNames = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+  foreach ($name in @(".git",".svn",".idea",".vscode",".vs",".dotnet","node_modules",".nuget","bin","obj","packages","dist","out",".build")) {
+    [void]$skipNames.Add($name)
+  }
+
+  $queue = New-Object 'System.Collections.Generic.Queue[string]'
+  $queue.Enqueue($rootFull)
+  while ($queue.Count -gt 0) {
+    $dir = $queue.Dequeue()
+    $children = @()
+    try {
+      $children = @(Get-ChildItem -LiteralPath $dir -Directory -Force -ErrorAction SilentlyContinue)
+    } catch {
+      $children = @()
+    }
+
+    foreach ($child in $children) {
+      if ($skipNames.Contains($child.Name)) { continue }
+
+      $gitPath = Join-Path -Path $child.FullName -ChildPath ".git"
+      if (Test-Path -LiteralPath $gitPath) {
+        $repoRoot = Get-GitRepoRoot -rootFull $child.FullName
+        if ($repoRoot -and $seen.Add($repoRoot)) {
+          [void]$repos.Add($repoRoot)
+        }
+      }
+
+      $queue.Enqueue($child.FullName)
+    }
+  }
+
+  return @($repos)
+}
+
+function Add-GitRepositoryMetadata([object[]]$changes, [string]$repoRoot, [string]$workspaceRoot) {
+  $repoRelRoot = Normalize-RelPath -fullPath $repoRoot -rootFull $workspaceRoot
+  if ($repoRelRoot -eq ".") { $repoRelRoot = "" }
+  $repoRelRoot = $repoRelRoot -replace '\\','/'
+
+  $result = New-Object 'System.Collections.Generic.List[object]'
+  foreach ($change in @($changes)) {
+    if (-not $change -or -not $change.Path) { continue }
+    $repoPath = ($change.Path -replace '\\','/')
+    $workspacePath = if ($repoRelRoot) { ("{0}/{1}" -f $repoRelRoot.TrimEnd('/'), $repoPath) } else { $repoPath }
+    $renamedFrom = ""
+    if ($change.PSObject.Properties.Match("RenamedFrom").Count -and $change.RenamedFrom) {
+      $renamedFrom = ($change.RenamedFrom -replace '\\','/')
+      if ($repoRelRoot) { $renamedFrom = ("{0}/{1}" -f $repoRelRoot.TrimEnd('/'), $renamedFrom) }
+    }
+
+    [void]$result.Add([pscustomobject]@{
+      Source = "git"
+      Path = $workspacePath
+      IndexStatus = $change.IndexStatus
+      WorktreeStatus = $change.WorktreeStatus
+      RenamedFrom = $renamedFrom
+      GitRepoRoot = $repoRoot
+      GitRepoRelRoot = $repoRelRoot
+      GitRepoPath = $repoPath
+      GitRepoRenamedFrom = if ($change.PSObject.Properties.Match("RenamedFrom").Count) { ($change.RenamedFrom -replace '\\','/') } else { "" }
+    })
+  }
+
+  return $result.ToArray()
+}
+
 function Get-GitPorcelainChanges(
   [string]$rootFull,
   [bool]$includeUntracked,
@@ -992,9 +1069,14 @@ $gitRepoRoot = $rootFull
 if ($hasGit) {
   $gitRepoRoot = Get-GitRepoRoot -rootFull $rootFull
 }
-if ($hasGit) {
+$gitRepoRoots = @(Find-GitRepositories -rootFull $rootFull -includeRoot $hasGit | Sort-Object -Unique)
+if ($gitRepoRoots.Count -gt 0) {
+  $hasGit = $true
+  $gitRepoRoot = $gitRepoRoots[0]
+}
+foreach ($repoRoot in $gitRepoRoots) {
   try {
-    Push-Location -LiteralPath $gitRepoRoot
+    Push-Location -LiteralPath $repoRoot
     & git update-index -q --refresh 2>$null
   } catch {
   } finally {
@@ -1005,9 +1087,9 @@ if ($hasGit) {
 # 已跟踪的待提交：Git（无 ??）+ SVN（status --xml -q，不含未版本管理，避免海量条目）
 $rawTrackedList = New-Object 'System.Collections.Generic.List[object]'
 $trackedPathSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
-if ($hasGit) {
-  $gitTracked = Get-GitPorcelainChanges -rootFull $gitRepoRoot -includeUntracked $false
-  foreach ($g in $gitTracked) {
+foreach ($repoRoot in $gitRepoRoots) {
+  $gitTracked = Add-GitRepositoryMetadata -changes (Get-GitPorcelainChanges -rootFull $repoRoot -includeUntracked $false) -repoRoot $repoRoot -workspaceRoot $rootFull
+  foreach ($g in @($gitTracked)) {
     [void]$rawTrackedList.Add($g)
     if ($g.Path) { [void]$trackedPathSet.Add(($g.Path -replace '\\', '/')) }
   }
@@ -1030,15 +1112,15 @@ if ($Svn) {
   }
 }
 $svnWcPrefixes = @($wcRoots | ForEach-Object { Format-PathPrefixForCompare $_ } | Where-Object { $_ })
-$svnWcRelPrefixes = @($wcRoots | ForEach-Object { Format-RelPathPrefixForCompare -fullPath $_ -rootFull $gitRepoRoot } | Where-Object { $_ })
 
 $rawTracked = Merge-DuplicateSourcesByPath -rawChanges $rawTrackedList
 
 $rawUntrackedList = New-Object 'System.Collections.Generic.List[object]'
 if ($ScanUntrackedForNeedsAdd) {
-  if ($hasGit) {
-    $gitAll = Get-GitPorcelainChanges -rootFull $gitRepoRoot -includeUntracked $true -SkipFullPathPrefixes $svnWcPrefixes -SkipRelPathPrefixes $svnWcRelPrefixes -CommonAddCandidatesOnly $true -UseDefaultPathExcludes $UseDefaultExcludes
-    foreach ($g in $gitAll) {
+  foreach ($repoRoot in $gitRepoRoots) {
+    $svnWcRelPrefixesForRepo = @($wcRoots | ForEach-Object { Format-RelPathPrefixForCompare -fullPath $_ -rootFull $repoRoot } | Where-Object { $_ })
+    $gitAll = Add-GitRepositoryMetadata -changes (Get-GitPorcelainChanges -rootFull $repoRoot -includeUntracked $true -SkipFullPathPrefixes $svnWcPrefixes -SkipRelPathPrefixes $svnWcRelPrefixesForRepo -CommonAddCandidatesOnly $true -UseDefaultPathExcludes $UseDefaultExcludes) -repoRoot $repoRoot -workspaceRoot $rootFull
+    foreach ($g in @($gitAll)) {
       if ($g.IndexStatus -ne "?" -or $g.WorktreeStatus -ne "?") { continue }
       $pn = ($g.Path -replace '\\', '/')
       if (-not $trackedPathSet.Contains($pn)) { [void]$rawUntrackedList.Add($g) }
@@ -1098,6 +1180,10 @@ foreach ($c in $ordered) {
     GitIndexStatus = if ($c.PSObject.Properties.Match("IndexStatus").Count) { $c.IndexStatus } else { "" }
     GitWorktreeStatus = if ($c.PSObject.Properties.Match("WorktreeStatus").Count) { $c.WorktreeStatus } else { "" }
     GitRenamedFrom = if ($c.PSObject.Properties.Match("RenamedFrom").Count) { $c.RenamedFrom } else { "" }
+    GitRepoRoot = if ($c.PSObject.Properties.Match("GitRepoRoot").Count) { $c.GitRepoRoot } else { "" }
+    GitRepoRelRoot = if ($c.PSObject.Properties.Match("GitRepoRelRoot").Count) { $c.GitRepoRelRoot } else { "" }
+    GitRepoPath = if ($c.PSObject.Properties.Match("GitRepoPath").Count) { $c.GitRepoPath } else { "" }
+    GitRepoRenamedFrom = if ($c.PSObject.Properties.Match("GitRepoRenamedFrom").Count) { $c.GitRepoRenamedFrom } else { "" }
     SvnItem = if ($c.PSObject.Properties.Match("SvnItem").Count) { $c.SvnItem } else { "" }
     SvnWcRoot = if ($c.PSObject.Properties.Match("WcRoot").Count) { $c.WcRoot } else { "" }
     SvnRepoRootUrl = ""
@@ -1156,12 +1242,17 @@ function Is-CommonAddCandidate($item) {
 
 function Add-ToVersionControl($item, [string]$rootFull, [string]$gitRootFull) {
   if (Is-GitUntracked $item) {
-    $gitRoot = if ($gitRootFull) { $gitRootFull } else { $rootFull }
-    $result = Invoke-NativeCommandCaptured -tool "git" -arguments @("add", "--", $item.Path) -workingDirectory $gitRoot
+    $itemGitRoot = Get-ItemPropText -item $item -name "GitRepoRoot"
+    $itemGitPath = Get-ItemPropText -item $item -name "GitRepoPath"
+    $gitRoot = if ($itemGitRoot) { $itemGitRoot } elseif ($gitRootFull) { $gitRootFull } else { $rootFull }
+    $gitPath = if ($itemGitPath) { $itemGitPath } else { $item.Path }
+    $result = Invoke-NativeCommandCaptured -tool "git" -arguments @("add", "--", $gitPath) -workingDirectory $gitRoot
     return [pscustomobject]@{
       id = [int]$item.Id
       action = "git-add"
       path = $item.Path
+      gitRepoRoot = $gitRoot
+      gitRepoPath = $gitPath
       exitCode = [int]$result.exitCode
       warnings = @($result.warnings)
       output = @($result.output)
@@ -1200,7 +1291,7 @@ function Add-ToVersionControl($item, [string]$rootFull, [string]$gitRootFull) {
 function Refresh-ItemsAfterVersionControlAdd(
   [object[]]$items,
   [string]$rootFull,
-  [string]$gitRootFull,
+  [object[]]$gitRepoRoots,
   [bool]$hasGit,
   [bool]$Svn,
   [object[]]$wcRoots,
@@ -1210,14 +1301,17 @@ function Refresh-ItemsAfterVersionControlAdd(
 
   $fresh = @()
   if ($hasGit) {
-    try {
-      Push-Location -LiteralPath $(if ($gitRootFull) { $gitRootFull } else { $rootFull })
-      & git update-index -q --refresh 2>$null
-    } catch {
-    } finally {
-      Pop-Location -ErrorAction SilentlyContinue
+    foreach ($repoRoot in @($gitRepoRoots)) {
+      if (-not $repoRoot) { continue }
+      try {
+        Push-Location -LiteralPath $repoRoot
+        & git update-index -q --refresh 2>$null
+      } catch {
+      } finally {
+        Pop-Location -ErrorAction SilentlyContinue
+      }
+      $fresh += Add-GitRepositoryMetadata -changes (Get-GitPorcelainChanges -rootFull $repoRoot -includeUntracked $true) -repoRoot $repoRoot -workspaceRoot $rootFull
     }
-    $fresh += Get-GitPorcelainChanges -rootFull $(if ($gitRootFull) { $gitRootFull } else { $rootFull }) -includeUntracked $true
   }
 
   if ($Svn) {
@@ -1243,6 +1337,10 @@ function Refresh-ItemsAfterVersionControlAdd(
         $item.GitIndexStatus = if ($change.PSObject.Properties.Match("IndexStatus").Count) { $change.IndexStatus } else { "" }
         $item.GitWorktreeStatus = if ($change.PSObject.Properties.Match("WorktreeStatus").Count) { $change.WorktreeStatus } else { "" }
         $item.GitRenamedFrom = if ($change.PSObject.Properties.Match("RenamedFrom").Count) { $change.RenamedFrom } else { "" }
+        $item.GitRepoRoot = if ($change.PSObject.Properties.Match("GitRepoRoot").Count) { $change.GitRepoRoot } else { $item.GitRepoRoot }
+        $item.GitRepoRelRoot = if ($change.PSObject.Properties.Match("GitRepoRelRoot").Count) { $change.GitRepoRelRoot } else { $item.GitRepoRelRoot }
+        $item.GitRepoPath = if ($change.PSObject.Properties.Match("GitRepoPath").Count) { $change.GitRepoPath } else { $item.GitRepoPath }
+        $item.GitRepoRenamedFrom = if ($change.PSObject.Properties.Match("GitRepoRenamedFrom").Count) { $change.GitRepoRenamedFrom } else { $item.GitRepoRenamedFrom }
       } elseif ($item.Source -eq "svn") {
         $item.SvnItem = if ($change.PSObject.Properties.Match("SvnItem").Count) { $change.SvnItem } else { "" }
         $item.SvnWcRoot = if ($change.PSObject.Properties.Match("WcRoot").Count) { $change.WcRoot } else { $item.SvnWcRoot }
@@ -1329,7 +1427,7 @@ if (@($addActions).Count -gt 0) {
   Refresh-ItemsAfterVersionControlAdd `
     -items $items `
     -rootFull $rootFull `
-    -gitRootFull $gitRepoRoot `
+    -gitRepoRoots $gitRepoRoots `
     -hasGit $hasGit `
     -Svn $Svn `
     -wcRoots $wcRoots `
@@ -1398,8 +1496,12 @@ if ($IncludeDiff) {
   foreach ($it in $includedForDiff) {
     if ($diffCount -ge $MaxFilesWithDiff) { break }
     if ($it.Source -eq "git" -and $hasGit) {
-      $unstaged = Get-GitDiffForPath -rootFull $gitRepoRoot -path $it.Path -cached:$false -maxBytes $MaxDiffBytesPerFile
-      $staged = Get-GitDiffForPath -rootFull $gitRepoRoot -path $it.Path -cached:$true -maxBytes $MaxDiffBytesPerFile
+      $itemGitRoot = Get-ItemPropText -item $it -name "GitRepoRoot"
+      $itemGitPath = Get-ItemPropText -item $it -name "GitRepoPath"
+      $diffRoot = if ($itemGitRoot) { $itemGitRoot } else { $gitRepoRoot }
+      $diffPath = if ($itemGitPath) { $itemGitPath } else { $it.Path }
+      $unstaged = Get-GitDiffForPath -rootFull $diffRoot -path $diffPath -cached:$false -maxBytes $MaxDiffBytesPerFile
+      $staged = Get-GitDiffForPath -rootFull $diffRoot -path $diffPath -cached:$true -maxBytes $MaxDiffBytesPerFile
       $diffById["$($it.Id)"] = [pscustomobject]@{ unstaged = $unstaged; staged = $staged }
       $diffCount += 1
     } elseif ($it.Source -eq "svn" -and $Svn) {
@@ -1474,6 +1576,7 @@ $out = [pscustomobject]@{
   Git = [pscustomobject]@{
     HasRepo = $hasGit
     RepoRoot = $gitRepoRoot
+    RepoRoots = @($gitRepoRoots)
     ItemCount = @($items | Where-Object { $_.Source -eq "git" }).Count
   }
   Svn = [pscustomobject]@{

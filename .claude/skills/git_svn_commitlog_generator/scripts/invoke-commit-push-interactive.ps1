@@ -6,6 +6,8 @@ param(
   [string]$CommitMessageText = "",
   [string]$CommitMessageLines = "",
   [string]$CommitMessageBase64Utf8 = "",
+  [string]$CommitMessageGroupsJsonFile = "",
+  [string]$CommitMessageGroupsBase64Utf8 = "",
   [int]$PromptTimeoutSeconds = 30,
   [string]$StateDir = "",
   [ValidateSet("Normal","Hidden","Minimized","Maximized")]
@@ -23,6 +25,7 @@ $runner = Join-Path $skillRoot "scripts\run-commit-push-choice.ps1"
 $runner = (Resolve-Path -LiteralPath $runner).Path
 $rootFull = (Resolve-Path -LiteralPath $Root).Path
 $createdMessageFile = $false
+$createdMessageGroupsFile = $false
 if (-not $StateDir) { $StateDir = Join-Path $skillRoot ".state" }
 if (-not [System.IO.Path]::IsPathRooted($StateDir)) {
   $StateDir = Join-Path $rootFull $StateDir
@@ -86,11 +89,34 @@ if ($null -ne $messageText) {
 } elseif (-not $CommitMessageFile) {
   throw "缺少提交日志。Claude Code 默认必须使用 -CommitMessageBase64Utf8 传入最终提交日志。"
 }
+
+if ($CommitMessageGroupsJsonFile -and $CommitMessageGroupsBase64Utf8) {
+  throw "CommitMessageGroupsJsonFile 与 CommitMessageGroupsBase64Utf8 只能二选一。"
+}
+if ($CommitMessageGroupsBase64Utf8) {
+  try {
+    $groupBytes = [Convert]::FromBase64String($CommitMessageGroupsBase64Utf8)
+    $groupJson = [System.Text.UTF8Encoding]::new($false, $true).GetString($groupBytes)
+    if ([string]::IsNullOrWhiteSpace($groupJson)) {
+      throw "提交组日志 JSON 为空。"
+    }
+    $null = $groupJson | ConvertFrom-Json
+    $CommitMessageGroupsJsonFile = Join-Path $env:TEMP ("git_svn_commit_message_groups_{0}.json" -f ([guid]::NewGuid()))
+    $createdMessageGroupsFile = $true
+    [System.IO.File]::WriteAllText($CommitMessageGroupsJsonFile, $groupJson, [System.Text.UTF8Encoding]::new($false))
+  } catch {
+    throw "CommitMessageGroupsBase64Utf8 不是合法的 UTF-8 Base64 JSON：$($_.Exception.Message)"
+  }
+}
 $changesFull = (Resolve-Path -LiteralPath $ChangesJsonFile).Path
 if (-not (Test-Path -LiteralPath $CommitMessageFile)) {
   throw "找不到提交日志文件：$CommitMessageFile。请使用 -CommitMessageBase64Utf8 传入最终提交日志。"
 }
 $messageFull = (Resolve-Path -LiteralPath $CommitMessageFile).Path
+$messageGroupsFull = ""
+if ($CommitMessageGroupsJsonFile) {
+  $messageGroupsFull = (Resolve-Path -LiteralPath $CommitMessageGroupsJsonFile).Path
+}
 $out = Join-Path $env:TEMP ("git_svn_commit_push_{0}.json" -f ([guid]::NewGuid()))
 $err = Join-Path $env:TEMP ("git_svn_commit_push_{0}.err.txt" -f ([guid]::NewGuid()))
 
@@ -98,6 +124,11 @@ $runnerQ = Quote-ForSingleQuotedPowerShell $runner
 $rootQ = Quote-ForSingleQuotedPowerShell $rootFull
 $changesQ = Quote-ForSingleQuotedPowerShell $changesFull
 $messageQ = Quote-ForSingleQuotedPowerShell $messageFull
+$messageGroupsArg = ""
+if ($messageGroupsFull) {
+  $messageGroupsQ = Quote-ForSingleQuotedPowerShell $messageGroupsFull
+  $messageGroupsArg = " -CommitMessageGroupsJsonFile '$messageGroupsQ'"
+}
 $outQ = Quote-ForSingleQuotedPowerShell $out
 $errQ = Quote-ForSingleQuotedPowerShell $err
 $assumeDefaultArg = ""
@@ -108,7 +139,7 @@ if ($WindowStyle -eq "Hidden") {
 $innerCommand = @"
 try {
   `$ErrorActionPreference = 'Stop'
-  & '$runnerQ' -Root '$rootQ' -ChangesJsonFile '$changesQ' -CommitMessageFile '$messageQ' -PromptTimeoutSeconds $PromptTimeoutSeconds -ResultJsonFile '$outQ'$assumeDefaultArg -FromWrapper
+  & '$runnerQ' -Root '$rootQ' -ChangesJsonFile '$changesQ' -CommitMessageFile '$messageQ'$messageGroupsArg -PromptTimeoutSeconds $PromptTimeoutSeconds -ResultJsonFile '$outQ'$assumeDefaultArg -FromWrapper
 } catch {
   (`$_ | Out-String) | Set-Content -LiteralPath '$errQ' -Encoding UTF8
   exit 1
@@ -117,7 +148,19 @@ try {
 
 try {
   if ($WindowStyle -eq "Hidden") {
-    & $runner -Root $rootFull -ChangesJsonFile $changesFull -CommitMessageFile $messageFull -PromptTimeoutSeconds $PromptTimeoutSeconds -ResultJsonFile $out -AssumeDefaultChoice -FromWrapper *> $null
+    $runnerArgs = @{
+      Root = $rootFull
+      ChangesJsonFile = $changesFull
+      CommitMessageFile = $messageFull
+      PromptTimeoutSeconds = $PromptTimeoutSeconds
+      ResultJsonFile = $out
+      AssumeDefaultChoice = $true
+      FromWrapper = $true
+    }
+    if ($messageGroupsFull) {
+      $runnerArgs.CommitMessageGroupsJsonFile = $messageGroupsFull
+    }
+    & $runner @runnerArgs *> $null
     $proc = [pscustomobject]@{ ExitCode = 0 }
   } else {
     $proc = Invoke-InteractivePowerShellScript -ScriptText $innerCommand -WindowStyle $WindowStyle -Title "Git/SVN commit and push" -WorkingDirectory $rootFull
@@ -135,5 +178,8 @@ try {
   Remove-Item -LiteralPath $err -Force -ErrorAction SilentlyContinue
   if ($createdMessageFile) {
     Remove-Item -LiteralPath $CommitMessageFile -Force -ErrorAction SilentlyContinue
+  }
+  if ($createdMessageGroupsFile) {
+    Remove-Item -LiteralPath $CommitMessageGroupsJsonFile -Force -ErrorAction SilentlyContinue
   }
 }

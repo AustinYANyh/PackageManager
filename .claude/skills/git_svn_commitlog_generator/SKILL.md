@@ -28,10 +28,10 @@ description: Git+SVN 改动由脚本采集；模型默认打开本机可见 Powe
 1. **脚本 JSON 输出是改动范围与用户选择的唯一数据源**：模型不得自行递归扫描目录来决定「纳入/排除哪些文件」。但生成提交日志时必须理解具体变更；若 `Diffs` 缺失、为空或不足以判断行为变化，模型必须只针对 `ItemsIncludedDefaultLog` 中未排除的路径补取只读差异或读取文件内容，不能只凭路径和项目名编造日志。
 2. **交互在脚本内完成且必须可超时**：是否将 `NeedsAdd` 纳入版本库、是否排除提交项，由 `get-working-changes.ps1` 在 **Windows 可交互控制台** 内处理。脚本优先打开勾选表格；GUI 不可用时才回退编号输入。窗口会显示剩余秒数；点击“确定”或超时都会进入下一步。若超时时当前有勾选，则按当前勾选结果继续；若当前没有任何勾选，则采用默认值（不加入未跟踪 / 全部保留不排除）。回退到编号输入时，输入行同样按 `-PromptTimeoutSeconds` 超时，超时或空输入视为不选择任何 Id。**禁止**由模型在聊天里用 `Start-Sleep`、阻塞式原生选项菜单或「伪后置步骤」替代脚本交互。
 3. **模型默认限时交互调用**：生成提交日志时，模型默认必须打开本机可见 PowerShell 运行脚本 **`-Interactive -PromptTimeoutSeconds 30`**，给用户一次加入/排除机会；无人操作则脚本自动按默认项继续。只有用户明确要求“非交互 / CI / 直接生成 / 不要弹窗”时，才使用 **`-NonInteractive`**。
-4. **一次只生成一条提交日志**：即使涉及多个项目，也不要拆成多条提交；多项目只在 `scope` 中写清楚，并在正文条目中说明各项目关键改动。
+4. **提交日志按版本库提交组生成**：默认只生成一条提交日志；但当 `ItemsIncludedDefaultLog` 横跨多个独立 Git 仓库或多个 SVN 提交组时，必须按提交组分别生成日志。每个日志只描述该组自己的文件改动，不得把其他仓库/工作副本的改动写进去。同一 Git 仓库内不得按文件夹或模块拆成多条提交。
 5. **不要粘贴大段 diff**：提交日志只输出抽象后的变更点，不直接贴 patch 内容。
 6. **长日志必须主动硬换行**：标题与正文按后文「长文本换行规则」处理。
-7. **最终提交/推送也必须限时交互**：模型生成最终提交日志后，默认必须打开本机可见 PowerShell 询问是否提交并推送；`-PromptTimeoutSeconds` 默认 30 秒，超时自动选择 **第 1 个选项：提交并推送**。只有用户明确要求“只生成日志 / 不提交 / 不推送”时才跳过这一步。
+7. **最终提交/推送也必须限时交互**：模型生成最终提交日志后，默认必须打开本机可见 PowerShell 询问是否提交并推送；`-PromptTimeoutSeconds` 默认 30 秒，超时自动选择 **第 1 个选项：提交全部提交组**。只有用户明确要求“只生成日志 / 不提交 / 不推送”时才跳过这一步。
 8. **提交日志 type 必须保持英文**：无论摘要和正文是否为中文，标题开头 `type(scope):` 中的 `type` 都必须是英文小写标识。Step 3 前必须自检标题；若 `(` 前不是英文类型，必须先改正，禁止提交。
 
 ## 执行流程
@@ -85,6 +85,7 @@ JSON 关键字段（与脚本一致）：
 
 - **`ItemsIncludedDefaultLog[]`**：已纳入版本库、将写入「默认/最终」叙事主线的路径（不含 `??` / svn `unversioned`）
 - **`ProjectsDefault[]`**：由上一字段聚合
+- Git 条目会包含 `GitRepoRoot`、`GitRepoRelRoot`、`GitRepoPath`；嵌套 Git 仓库会按自己的 repository root 采集状态和 diff。
 - `ItemsAll[]`、`ItemsIncluded[]`、`ItemsExcluded[]`、`NeedsAdd[]`、`Projects[]`、`Diffs`：含义同脚本输出；`Defaults` 中含 `IncludeDiff`、`MaxDiffBytesPerFile`、`MaxFilesWithDiff`、`NonInteractive`、`PromptTimeoutSeconds`、`ConsoleChoiceUsed`
 
 `NeedsAdd[]` 候选类型规则（脚本侧 `Is-CommonAddCandidate` 与历史技能一致）：常见源码、前端、Markdown、脚本、工程配置、接口/schema 等文本；二进制与产物目录不进入。
@@ -103,22 +104,25 @@ JSON 关键字段（与脚本一致）：
 
 ### 提交日志正文要点
 
-- 只输出一条 `type(scope): 中文摘要`；`type` 必须为英文小写 conventional 类型，`scope` 可含项目/模块名，多项目 scope 用顿号 `、` 连接。
+- 默认只输出一条 `type(scope): 中文摘要`；`type` 必须为英文小写 conventional 类型，`scope` 可含项目/模块名，多项目 scope 用顿号 `、` 连接。
+- 如果最终范围跨多个独立 Git 仓库或多个 SVN 提交组，必须为每个提交组各生成一条日志，并准备 `CommitMessageGroupsBase64Utf8`。每条日志只基于该提交组自己的 `ItemsIncludedDefaultLog` 子集和对应 `Diffs`。
 - 正文 2–8 条 `- ` 条目；若 `ItemsExcluded` 非空，附 `本次排除清单`（`#Id Path`）。
 
 ### Step 3) 限时确认是否提交并推送
 
-生成最终提交日志后，模型默认调用提交/推送 wrapper。它会打开本机可见 PowerShell，显示提交日志、Git/SVN 文件数量和倒计时：
+生成最终提交日志后，模型默认调用提交/推送 wrapper。它会打开本机可见 PowerShell，按提交组显示提交日志、文件数量和倒计时：
 
-- 按 `1`：提交并推送（默认，超时自动执行）。
-- 按 `2`：暂不提交。
-- Git 文件：脚本会按 `ItemsIncludedDefaultLog` 暂存对应 Git 路径，执行 `git commit -F <message>`，然后以非交互方式执行 `git push`；如需凭据则直接失败返回，不阻塞。
-- SVN 文件：若 `ItemsIncludedDefaultLog` 中包含 SVN 路径，脚本会在同一个可见窗口执行 `svn commit -F <message>`；SVN 输出/提示显示在窗口中，不会污染 JSON，SVN 没有 push。
+- 按 `1`：提交全部提交组（默认，超时自动执行）。
+- 按 `2`：选择提交组；随后输入组编号，只提交选中的组。
+- 按 `3`：暂不提交。
+- Git 文件：脚本按 `GitRepoRoot` 分组；每个 Git 仓库最多一次 `git add`、一次 `git commit`、一次 `git push`。Git 无法跨多个 `.git` 数据库生成一个 commit。
+- SVN 文件：脚本按 SVN working copy/repository 分组；每个 SVN 组一次 `svn commit`。SVN 输出/提示显示在窗口中，不会污染 JSON，SVN 没有 push。
+- 任一提交组失败后停止后续组，结果 JSON 的 `Groups[]` 会标记 `completed`、`failed`、`not_started` 或 `skipped`。
 - Step 3 的结果 JSON 由 wrapper 指定的结果文件产生；模型不得解析提交窗口输出，也不得临时创建提交 `.ps1` 替代 wrapper。
 
 Step 1 wrapper 会自动把采集 JSON 保存到 `.claude/skills/git_svn_commitlog_generator/.state/last_changes.json`。
 
-模型只负责生成 **Step 2 的最终提交日志文本**。Claude Code Bash 工具无法可靠传递中文参数，也不能用 `python -c` / `node -e` / `powershell -Command` 在 Bash 内处理中文。**因此模型必须在自身推理中直接得到最终提交日志的 UTF-8 Base64 字符串**，Step 3 命令行只传 ASCII Base64 给 `-CommitMessageBase64Utf8`。
+模型只负责生成 **Step 2 的最终提交日志文本**。Claude Code Bash 工具无法可靠传递中文参数，也不能用 `python -c` / `node -e` / `powershell -Command` 在 Bash 内处理中文。**因此模型必须在自身推理中直接得到最终提交日志的 UTF-8 Base64 字符串**，Step 3 命令行只传 ASCII Base64 给 `-CommitMessageBase64Utf8`。如果存在多个提交组，还必须传 `-CommitMessageGroupsBase64Utf8`，其内容是 UTF-8 JSON 的 Base64。
 
 `-CommitMessageBase64Utf8` 内容必须只包含最终提交日志标题+正文的 UTF-8 Base64，不得包含核对表、说明文字或占位符。模型不得使用 stdin、pipe、heredoc、重定向来传提交日志，不得为了传日志而单独创建或编辑提交日志/Base64 文件（包括 `commit_msg_b64.txt`、`final_commit_message.txt` 等），不得把提交日志作为 `-CommitMessageText` 长参数塞进 Bash/WSL 命令行，不得在 Bash 中执行 `python -c` / `node -e` / `powershell -Command` 等编码命令来处理中文，不得执行 `git add` / `git commit` / `git push` / `svn add` / `svn commit` 等会改变状态或提交推送的命令，不得创建临时 `.ps1` 提交脚本，也不得直接调用 `run-commit-push-choice.ps1`。
 
@@ -128,9 +132,34 @@ Step 1 wrapper 会自动把采集 JSON 保存到 `.claude/skills/git_svn_commitl
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/invoke-commit-push-interactive.ps1 -PromptTimeoutSeconds 30 -CommitMessageBase64Utf8 '<模型已在推理中算好的 ASCII Base64>'
 ```
 
+多提交组时额外传入：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/invoke-commit-push-interactive.ps1 -PromptTimeoutSeconds 30 -CommitMessageBase64Utf8 '<默认/总览日志 Base64>' -CommitMessageGroupsBase64Utf8 '<提交组日志 JSON 的 Base64>'
+```
+
+提交组 JSON 形状：
+
+```json
+{
+  "Groups": [
+    {
+      "Source": "git",
+      "GitRepoRoot": "E:\\HongWaWorkSpace\\MaxiBIMSH_trunk\\HWRevitToolkit",
+      "CommitMessage": "fix(HWRevitToolkit): ..."
+    },
+    {
+      "Source": "svn",
+      "SvnWcRoot": "E:\\HongWaWorkSpace\\MaxiBIMSH_trunk\\HWSupportHangerComponent",
+      "CommitMessage": "fix(HWSupportHangerComponent): ..."
+    }
+  ]
+}
+```
+
 兼容入口：`-CommitMessageLines`、`-CommitMessageText` 仅供 Windows 原生命令行或自动化脚本使用，不再作为 Claude Code 默认路径。最终提交日志的摘要和正文必须使用中文写法，不要照搬英文模板；但标题开头的 `type(scope):` 中 **`type` 必须保持英文小写**，不得翻译。
 
-Step 3 返回 JSON 中的 `CommitMessage` 与 `CommitMessageSha256` 是脚本实际用于 `git commit -F` / `svn commit -F` 的内容。模型最终回复里的“最终版提交日志（可直接复制）”必须逐字复制 `CommitMessage`，不得再根据记忆或上文重新生成一份；如果发现它和准备展示的日志不同，必须报告 `failed` 并停止。
+Step 3 返回 JSON 中的 `CommitMessage` 与 `CommitMessageSha256` 是默认/总览日志；多提交组时 `Groups[].CommitMessage` 与 `Groups[].CommitMessageSha256` 是各组实际用于 `git commit -F` / `svn commit -F` 的内容。模型最终回复里的“最终版提交日志（可直接复制）”必须逐字复制 Step 3 结果：单组复制 `CommitMessage`，多组按组复制 `Groups[].CommitMessage`，不得再根据记忆或上文重新生成。
 
 若执行器是 Bash/WSL，`powershell` 常会因为命令不存在返回 `errorcode 127`；应显式调用 `powershell.exe`。Step 3 在 Bash/WSL 中执行时，命令行只能包含 ASCII Base64，不能包含任何中文提交日志正文或中文编码命令。Step 3 内部若找不到 `git`/`svn`，结果 JSON 会以 `exitCode=127` 返回并写明缺失命令。
 
@@ -138,10 +167,10 @@ Step 3 返回 JSON 中的 `CommitMessage` 与 `CommitMessageSha256` 是脚本实
 
 ## 输出要求（最终给用户的内容）
 
-1. **默认提交日志**：基于 `ItemsIncludedDefaultLog` / `ProjectsDefault` / 相关 `Diffs`，并在 `Diffs` 为空或不足时基于补充只读差异/文件内容。
+1. **默认提交日志**：基于 `ItemsIncludedDefaultLog` / `ProjectsDefault` / 相关 `Diffs`，并在 `Diffs` 为空或不足时基于补充只读差异/文件内容；多提交组时同时列出每个组的日志。
 2. **推荐**在默认日志前附 **`### 待提交文件核对`** Markdown 表（`| # | 状态 | 路径 | 来源 | 项目 |`，行与 `ItemsIncludedDefaultLog` 一一对应；Git `状态` 为 `GitIndexStatus`+`GitWorktreeStatus` 两字符拼接；SVN 为 `SvnItem`）。
 3. **提交/推送结果**：若执行 Step 3，简要说明 `completed` / `skipped` / `failed`，失败时列出失败命令摘要。
-4. **收尾**：若执行了 Step 3，末尾 **`### 最终版提交日志（可直接复制）`** 必须逐字复制 Step 3 结果 JSON 的 `CommitMessage`；若未执行 Step 3，复制 Step 2 的 `$finalCommitLog`。用 ```text 完整贴一遍标题+正文，须全文便于从底部复制。
+4. **收尾**：若执行了 Step 3，末尾 **`### 最终版提交日志（可直接复制）`** 必须逐字复制 Step 3 结果 JSON；单组复制 `CommitMessage`，多组按组复制 `Groups[].CommitMessage`。若未执行 Step 3，复制 Step 2 的日志。用 ```text 完整贴一遍标题+正文，须全文便于从底部复制。
 5. 条目换行、scope/type 细则见下文「## type / scope / 条目生成规则」。
 
 ## type / scope / 条目生成规则（落地细则）
