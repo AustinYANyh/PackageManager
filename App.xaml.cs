@@ -236,7 +236,7 @@ namespace PackageManager
                 if (!IndexHostTaskService.EnsureRegisteredAndRunningOnStartup())
                 {
                     const string message = "后台索引宿主未能就绪，PackageManager 将退出。\n\n"
-                                           + "可能原因：旧版 MftScanner/CommonStartupTool 仍占用索引宿主文件，或管理员授权被取消。\n"
+                                           + "可能原因：旧版 MftScanner/CommonStartupTool 仍占用索引宿主文件、管理员授权被取消，或系统策略/安全软件阻止创建计划任务。\n"
                                            + "请关闭残留工具进程后重试；详细原因已写入日志。";
                     LoggingService.LogWarning("后台索引宿主未能就绪，程序将退出。");
                     MessageBox.Show(message, "PackageManager 启动失败", MessageBoxButton.OK, MessageBoxImage.Error);

@@ -551,12 +551,27 @@ namespace PackageManager.Services
                 }))
                 {
                     process?.WaitForExit();
-                    return process != null && process.ExitCode == 0;
+                    if (process == null)
+                    {
+                        return false;
+                    }
+
+                    if (process.ExitCode != 0)
+                    {
+                        LoggingService.LogWarning($"后台索引宿主计划任务管理员注册失败：ExitCode={process.ExitCode}");
+                    }
+
+                    return process.ExitCode == 0;
                 }
             }
             catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
             {
                 LoggingService.LogWarning("用户取消了后台索引宿主计划任务的管理员授权。");
+                return false;
+            }
+            catch (Win32Exception ex)
+            {
+                LoggingService.LogError(ex, $"拉起后台索引宿主计划任务管理员注册失败：NativeErrorCode={ex.NativeErrorCode}");
                 return false;
             }
         }
@@ -580,12 +595,27 @@ namespace PackageManager.Services
                 }))
                 {
                     process?.WaitForExit();
-                    return process != null && process.ExitCode == 0;
+                    if (process == null)
+                    {
+                        return false;
+                    }
+
+                    if (process.ExitCode != 0)
+                    {
+                        LoggingService.LogWarning($"后台索引宿主管理员修复失败：ExitCode={process.ExitCode}");
+                    }
+
+                    return process.ExitCode == 0;
                 }
             }
             catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
             {
                 LoggingService.LogWarning("用户取消了后台索引宿主同步所需的管理员授权。");
+                return false;
+            }
+            catch (Win32Exception ex)
+            {
+                LoggingService.LogError(ex, $"拉起后台索引宿主管理员修复失败：NativeErrorCode={ex.NativeErrorCode}");
                 return false;
             }
         }
@@ -658,32 +688,52 @@ namespace PackageManager.Services
 
         private static ProcessResult RunSchtasks(string arguments, bool hidden)
         {
+            var systemDirectory = Environment.GetFolderPath(Environment.SpecialFolder.System);
+            var schtasksPath = Path.Combine(systemDirectory, "schtasks.exe");
             var startInfo = new ProcessStartInfo
             {
-                FileName = "schtasks.exe",
+                FileName = File.Exists(schtasksPath) ? schtasksPath : "schtasks.exe",
                 Arguments = arguments,
+                WorkingDirectory = string.IsNullOrWhiteSpace(systemDirectory) ? null : systemDirectory,
                 UseShellExecute = false,
                 CreateNoWindow = hidden,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true
             };
 
-            using (var process = Process.Start(startInfo))
+            try
             {
-                if (process == null)
+                using (var process = Process.Start(startInfo))
                 {
-                    return new ProcessResult(-1, string.Empty, "Process start failed.");
-                }
+                    if (process == null)
+                    {
+                        return new ProcessResult(-1, string.Empty, "Process start failed.");
+                    }
 
-                var stdout = process.StandardOutput.ReadToEnd();
-                var stderr = process.StandardError.ReadToEnd();
-                process.WaitForExit();
-                if (process.ExitCode != 0)
-                {
-                    LoggingService.LogWarning($"schtasks failed. ExitCode={process.ExitCode}, Args={arguments}, Error={stderr}");
-                }
+                    var stdout = process.StandardOutput.ReadToEnd();
+                    var stderr = process.StandardError.ReadToEnd();
+                    process.WaitForExit();
+                    if (process.ExitCode != 0)
+                    {
+                        LoggingService.LogWarning($"schtasks failed. ExitCode={process.ExitCode}, Args={arguments}, Error={stderr}");
+                    }
 
-                return new ProcessResult(process.ExitCode, stdout, stderr);
+                    return new ProcessResult(process.ExitCode, stdout, stderr);
+                }
+            }
+            catch (Win32Exception ex)
+            {
+                LoggingService.LogError(
+                    ex,
+                    $"启动 schtasks 失败：NativeErrorCode={ex.NativeErrorCode}, FileName={startInfo.FileName}, WorkingDirectory={startInfo.WorkingDirectory}, Args={arguments}");
+                return new ProcessResult(-ex.NativeErrorCode, string.Empty, ex.Message);
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(
+                    ex,
+                    $"启动 schtasks 失败：FileName={startInfo.FileName}, WorkingDirectory={startInfo.WorkingDirectory}, Args={arguments}");
+                return new ProcessResult(-1, string.Empty, ex.Message);
             }
         }
 
