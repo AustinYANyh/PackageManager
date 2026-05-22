@@ -4,6 +4,7 @@ param(
   [Parameter(Mandatory = $true)][string]$CommitMessageFile,
   [string]$CommitMessageGroupsJsonFile = "",
   [int]$PromptTimeoutSeconds = 30,
+  [int]$GitIndexLockStaleMinutes = 10,
   [string]$ResultJsonFile = "",
   [switch]$AssumeDefaultChoice,
   [switch]$FromWrapper
@@ -224,25 +225,49 @@ function Invoke-LoggedCommand {
   $psi.WorkingDirectory = $WorkingDirectory
   $psi.UseShellExecute = $false
   $psi.CreateNoWindow = $false
+  $psi.RedirectStandardOutput = $true
+  $psi.RedirectStandardError = $true
+  $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+  $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
   foreach ($key in $Environment.Keys) {
     $psi.EnvironmentVariables[$key] = [string]$Environment[$key]
   }
 
   $proc = New-Object System.Diagnostics.Process
   $proc.StartInfo = $psi
+  $stdoutLines = New-Object System.Collections.Generic.List[string]
+  $stderrLines = New-Object System.Collections.Generic.List[string]
   try {
     [void]$proc.Start()
+    $stdoutText = ""
+    $stderrText = ""
     if ($TimeoutSeconds -gt 0) {
       if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
         try { $proc.Kill() } catch {}
         Write-Host ("命令超时，已终止：{0}" -f $Tool) -ForegroundColor Red
         $exitCode = 124
       } else {
+        $stdoutText = $proc.StandardOutput.ReadToEnd()
+        $stderrText = $proc.StandardError.ReadToEnd()
+        $proc.WaitForExit()
         $exitCode = $proc.ExitCode
       }
     } else {
+      $stdoutText = $proc.StandardOutput.ReadToEnd()
+      $stderrText = $proc.StandardError.ReadToEnd()
       $proc.WaitForExit()
       $exitCode = $proc.ExitCode
+    }
+
+    foreach ($line in @($stdoutText -split "`r?`n")) {
+      if (-not [string]::IsNullOrWhiteSpace($line)) {
+        $stdoutLines.Add($line)
+      }
+    }
+    foreach ($line in @($stderrText -split "`r?`n")) {
+      if (-not [string]::IsNullOrWhiteSpace($line)) {
+        $stderrLines.Add($line)
+      }
     }
   } catch {
     $message = $_ | Out-String
@@ -251,14 +276,205 @@ function Invoke-LoggedCommand {
     if ($_.Exception -is [System.ComponentModel.Win32Exception] -and $_.Exception.NativeErrorCode -eq 2) {
       $exitCode = 127
     }
+    if (-not [string]::IsNullOrWhiteSpace($message)) {
+      $stderrLines.Add($message.Trim())
+    }
   }
+
+  $combinedOutput = New-Object System.Collections.Generic.List[string]
+  foreach ($line in $stdoutLines) { $combinedOutput.Add($line) }
+  foreach ($line in $stderrLines) { $combinedOutput.Add($line) }
 
   return [pscustomobject]@{
     tool = $Tool
     args = @($Arguments)
     exitCode = $exitCode
-    output = @()
+    output = @($combinedOutput)
   }
+}
+
+function Test-GitIndexLockError([object]$command) {
+  if ($null -eq $command) { return $false }
+  if ([int]$command.exitCode -eq 0) { return $false }
+  $joined = (@($command.output) -join "`n")
+  if (-not $joined) { return $false }
+  return $joined -match 'index\.lock' -and $joined -match 'Unable to create|File exists|another git process'
+}
+
+function Get-GitLockRelatedProcesses {
+  $results = @()
+  try {
+    $procs = Get-Process -ErrorAction SilentlyContinue | Where-Object {
+      $name = $_.ProcessName
+      return ($name -ieq "git" -or $name -ieq "ssh" -or $name -like "git-remote-*")
+    }
+    foreach ($proc in @($procs)) {
+      $path = ""
+      try { $path = $proc.Path } catch {}
+      $started = ""
+      try { $started = $proc.StartTime.ToString("s") } catch {}
+      $results += [pscustomobject]@{
+        Id = $proc.Id
+        ProcessName = $proc.ProcessName
+        StartTime = $started
+        Path = $path
+      }
+    }
+  } catch {
+  }
+  return @($results)
+}
+
+function Format-GitLockProcessSummary([object[]]$processes) {
+  if ($null -eq $processes -or @($processes).Count -eq 0) {
+    return "无相关 git 进程"
+  }
+
+  return ((@($processes) | ForEach-Object {
+    $parts = @("PID=$($_.Id)", $_.ProcessName)
+    if ($_.StartTime) { $parts += "Start=$($_.StartTime)" }
+    if ($_.Path) { $parts += "Path=$($_.Path)" }
+    $parts -join " "
+  }) -join "; ")
+}
+
+function Get-GitIndexLockPath([string]$RepoRoot) {
+  $dotGit = Join-Path $RepoRoot ".git"
+  if (Test-Path -LiteralPath $dotGit -PathType Container) {
+    return Join-Path $dotGit "index.lock"
+  }
+
+  if (Test-Path -LiteralPath $dotGit -PathType Leaf) {
+    try {
+      $firstLine = Get-Content -LiteralPath $dotGit -TotalCount 1 -ErrorAction Stop
+      if ($firstLine -match '^gitdir:\s*(.+)\s*$') {
+        $gitDir = $Matches[1].Trim()
+        if (-not [System.IO.Path]::IsPathRooted($gitDir)) {
+          $gitDir = Join-Path $RepoRoot $gitDir
+        }
+        return Join-Path ([System.IO.Path]::GetFullPath($gitDir)) "index.lock"
+      }
+    } catch {
+    }
+  }
+
+  return Join-Path $dotGit "index.lock"
+}
+
+function Get-GitIndexLockInfo([string]$RepoRoot, [int]$StaleMinutes) {
+  $lockPath = Get-GitIndexLockPath -RepoRoot $RepoRoot
+  if (-not (Test-Path -LiteralPath $lockPath)) {
+    return [pscustomobject]@{
+      Exists = $false
+      LockPath = $lockPath
+      LastWriteTime = $null
+      AgeMinutes = 0.0
+      IsStale = $false
+      RelatedProcesses = @()
+      RelatedProcessSummary = "无相关 git 进程"
+    }
+  }
+
+  $item = Get-Item -LiteralPath $lockPath -ErrorAction Stop
+  $now = Get-Date
+  $age = $now - $item.LastWriteTime
+  $related = Get-GitLockRelatedProcesses
+  return [pscustomobject]@{
+    Exists = $true
+    LockPath = $item.FullName
+    LastWriteTime = $item.LastWriteTime
+    AgeMinutes = [Math]::Round($age.TotalMinutes, 2)
+    IsStale = $age.TotalMinutes -ge $StaleMinutes
+    RelatedProcesses = @($related)
+    RelatedProcessSummary = Format-GitLockProcessSummary -processes $related
+  }
+}
+
+function Try-RecoverGitIndexLock([string]$RepoRoot, [int]$StaleMinutes) {
+  $info = Get-GitIndexLockInfo -RepoRoot $RepoRoot -StaleMinutes $StaleMinutes
+  if (-not $info.Exists) {
+    return [pscustomobject]@{
+      Recovered = $false
+      Message = "未发现 .git/index.lock。"
+      Info = $info
+    }
+  }
+
+  if (-not $info.IsStale) {
+    $msg = "检测到 Git index.lock，但锁龄仅 $($info.AgeMinutes) 分钟，小于阈值 $StaleMinutes 分钟；不自动删除。锁文件：$($info.LockPath)。进程：$($info.RelatedProcessSummary)"
+    return [pscustomobject]@{
+      Recovered = $false
+      Message = $msg
+      Info = $info
+    }
+  }
+
+  if (@($info.RelatedProcesses).Count -gt 0) {
+    $msg = "检测到陈旧 Git index.lock，但存在相关 git 进程；不自动删除。锁文件：$($info.LockPath)。锁龄：$($info.AgeMinutes) 分钟。进程：$($info.RelatedProcessSummary)"
+    return [pscustomobject]@{
+      Recovered = $false
+      Message = $msg
+      Info = $info
+    }
+  }
+
+  try {
+    Remove-Item -LiteralPath $info.LockPath -Force -ErrorAction Stop
+    return [pscustomobject]@{
+      Recovered = $true
+      Message = "已清理陈旧 Git index.lock 并准备重试。锁文件：$($info.LockPath)。锁龄：$($info.AgeMinutes) 分钟。"
+      Info = $info
+    }
+  } catch {
+    $msg = "检测到陈旧 Git index.lock，但删除失败：$($_.Exception.Message)。锁文件：$($info.LockPath)。锁龄：$($info.AgeMinutes) 分钟。"
+    return [pscustomobject]@{
+      Recovered = $false
+      Message = $msg
+      Info = $info
+    }
+  }
+}
+
+function Invoke-GitCommandWithIndexLockRecovery {
+  param(
+    [string[]]$Arguments,
+    [string]$WorkingDirectory,
+    [hashtable]$Environment = @{},
+    [int]$TimeoutSeconds = 0,
+    [int]$StaleMinutes = 10
+  )
+
+  $cmd = Invoke-LoggedCommand -Tool "git" -Arguments $Arguments -WorkingDirectory $WorkingDirectory -Environment $Environment -TimeoutSeconds $TimeoutSeconds
+  if (-not (Test-GitIndexLockError -command $cmd)) {
+    return @($cmd)
+  }
+
+  $recovery = Try-RecoverGitIndexLock -RepoRoot $WorkingDirectory -StaleMinutes $StaleMinutes
+  $firstOutput = @($cmd.output)
+  $firstOutput += $recovery.Message
+  $cmd = [pscustomobject]@{
+    tool = $cmd.tool
+    args = @($cmd.args)
+    exitCode = $cmd.exitCode
+    output = @($firstOutput)
+  }
+
+  if (-not $recovery.Recovered) {
+    return @($cmd)
+  }
+
+  Write-Host $recovery.Message -ForegroundColor Yellow
+  $retry = Invoke-LoggedCommand -Tool "git" -Arguments $Arguments -WorkingDirectory $WorkingDirectory -Environment $Environment -TimeoutSeconds $TimeoutSeconds
+  $retryOutput = @($retry.output)
+  $retryOutput = @($recovery.Message) + $retryOutput
+  $retry = [pscustomobject]@{
+    tool = $retry.tool
+    args = @($retry.args)
+    exitCode = $retry.exitCode
+    output = @($retryOutput)
+  }
+
+  return @($cmd, $retry)
 }
 
 function Get-ItemTextProperty([object]$Item, [string]$Name) {
@@ -559,22 +775,37 @@ if ($choice -eq 1 -or $choice -eq 2) {
       if ($group.Source -eq "git") {
         $repoPaths = @($group.Paths | Where-Object { $_ } | Sort-Object -Unique)
         Write-Host "正在暂存 Git 文件..." -ForegroundColor Cyan
-        $cmd = Invoke-LoggedCommand -Tool "git" -Arguments (@("add", "-A", "--") + $repoPaths) -WorkingDirectory $group.GitRepoRoot
-        $commands += $cmd
-        $group.Commands = @($group.Commands) + $cmd
-        if ($cmd.exitCode -ne 0) { throw "git add 失败：$($group.DisplayName)" }
+        $cmds = @(Invoke-GitCommandWithIndexLockRecovery -Arguments (@("add", "-A", "--") + $repoPaths) -WorkingDirectory $group.GitRepoRoot -StaleMinutes $GitIndexLockStaleMinutes)
+        $commands += $cmds
+        $group.Commands = @($group.Commands) + $cmds
+        $cmd = $cmds[-1]
+        if ($cmd.exitCode -ne 0) {
+          $detail = (@($cmd.output) | Where-Object { $_ } | Select-Object -Last 1)
+          if ($detail) { throw "git add 失败：$($group.DisplayName)。$detail" }
+          throw "git add 失败：$($group.DisplayName)"
+        }
 
         Write-Host "正在执行 git commit..." -ForegroundColor Cyan
-        $cmd = Invoke-LoggedCommand -Tool "git" -Arguments (@("commit", "-F", $groupMessageFile, "--") + $repoPaths) -WorkingDirectory $group.GitRepoRoot
-        $commands += $cmd
-        $group.Commands = @($group.Commands) + $cmd
-        if ($cmd.exitCode -ne 0) { throw "git commit 失败：$($group.DisplayName)" }
+        $cmds = @(Invoke-GitCommandWithIndexLockRecovery -Arguments (@("commit", "-F", $groupMessageFile, "--") + $repoPaths) -WorkingDirectory $group.GitRepoRoot -StaleMinutes $GitIndexLockStaleMinutes)
+        $commands += $cmds
+        $group.Commands = @($group.Commands) + $cmds
+        $cmd = $cmds[-1]
+        if ($cmd.exitCode -ne 0) {
+          $detail = (@($cmd.output) | Where-Object { $_ } | Select-Object -Last 1)
+          if ($detail) { throw "git commit 失败：$($group.DisplayName)。$detail" }
+          throw "git commit 失败：$($group.DisplayName)"
+        }
 
         Write-Host "正在执行 git push..." -ForegroundColor Cyan
-        $cmd = Invoke-LoggedCommand -Tool "git" -Arguments @("-c", "credential.interactive=false", "push") -WorkingDirectory $group.GitRepoRoot -Environment @{ GIT_TERMINAL_PROMPT = "0" } -TimeoutSeconds 120
-        $commands += $cmd
-        $group.Commands = @($group.Commands) + $cmd
-        if ($cmd.exitCode -ne 0) { throw "git push 失败：$($group.DisplayName)" }
+        $cmds = @(Invoke-GitCommandWithIndexLockRecovery -Arguments @("-c", "credential.interactive=false", "push") -WorkingDirectory $group.GitRepoRoot -Environment @{ GIT_TERMINAL_PROMPT = "0" } -TimeoutSeconds 120 -StaleMinutes $GitIndexLockStaleMinutes)
+        $commands += $cmds
+        $group.Commands = @($group.Commands) + $cmds
+        $cmd = $cmds[-1]
+        if ($cmd.exitCode -ne 0) {
+          $detail = (@($cmd.output) | Where-Object { $_ } | Select-Object -Last 1)
+          if ($detail) { throw "git push 失败：$($group.DisplayName)。$detail" }
+          throw "git push 失败：$($group.DisplayName)"
+        }
       } elseif ($group.Source -eq "svn") {
         if (-not $group.SvnWcRoot) { throw "SVN 工作副本根目录为空" }
         $svnPaths = @($group.Paths | Sort-Object -Unique)

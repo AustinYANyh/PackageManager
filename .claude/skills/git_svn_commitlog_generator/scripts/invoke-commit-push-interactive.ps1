@@ -9,6 +9,7 @@ param(
   [string]$CommitMessageGroupsJsonFile = "",
   [string]$CommitMessageGroupsBase64Utf8 = "",
   [int]$PromptTimeoutSeconds = 30,
+  [int]$GitIndexLockStaleMinutes = 10,
   [string]$StateDir = "",
   [ValidateSet("Normal","Hidden","Minimized","Maximized")]
   [string]$WindowStyle = "Normal",
@@ -139,7 +140,7 @@ if ($WindowStyle -eq "Hidden") {
 $innerCommand = @"
 try {
   `$ErrorActionPreference = 'Stop'
-  & '$runnerQ' -Root '$rootQ' -ChangesJsonFile '$changesQ' -CommitMessageFile '$messageQ'$messageGroupsArg -PromptTimeoutSeconds $PromptTimeoutSeconds -ResultJsonFile '$outQ'$assumeDefaultArg -FromWrapper
+  & '$runnerQ' -Root '$rootQ' -ChangesJsonFile '$changesQ' -CommitMessageFile '$messageQ'$messageGroupsArg -PromptTimeoutSeconds $PromptTimeoutSeconds -GitIndexLockStaleMinutes $GitIndexLockStaleMinutes -ResultJsonFile '$outQ'$assumeDefaultArg -FromWrapper
 } catch {
   (`$_ | Out-String) | Set-Content -LiteralPath '$errQ' -Encoding UTF8
   exit 1
@@ -153,6 +154,7 @@ try {
       ChangesJsonFile = $changesFull
       CommitMessageFile = $messageFull
       PromptTimeoutSeconds = $PromptTimeoutSeconds
+      GitIndexLockStaleMinutes = $GitIndexLockStaleMinutes
       ResultJsonFile = $out
       AssumeDefaultChoice = $true
       FromWrapper = $true

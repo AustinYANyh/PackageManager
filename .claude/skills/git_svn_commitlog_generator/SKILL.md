@@ -116,6 +116,7 @@ JSON 关键字段（与脚本一致）：
 - 按 `2`：选择提交组；随后输入组编号，只提交选中的组。
 - 按 `3`：暂不提交。
 - Git 文件：脚本按 `GitRepoRoot` 分组；每个 Git 仓库最多一次 `git add`、一次 `git commit`、一次 `git push`。Git 无法跨多个 `.git` 数据库生成一个 commit。
+- Git 提交执行器会对 `git add` / `git commit` / `git push` 中出现的 `.git/index.lock` 失败做一次安全自愈：默认阈值 `-GitIndexLockStaleMinutes 10`，仅当锁文件超过阈值且未发现活动 `git` / `git-remote-*` / `ssh` 进程时，自动删除陈旧锁并重试当前 Git 命令一次；否则失败结果必须包含锁路径、锁龄和相关进程摘要。模型不得绕过 wrapper 手动删除锁或手动执行 Git 提交命令。
 - SVN 文件：脚本按 SVN working copy/repository 分组；每个 SVN 组一次 `svn commit`。SVN 输出/提示显示在窗口中，不会污染 JSON，SVN 没有 push。
 - 任一提交组失败后停止后续组，结果 JSON 的 `Groups[]` 会标记 `completed`、`failed`、`not_started` 或 `skipped`。
 - Step 3 的结果 JSON 由 wrapper 指定的结果文件产生；模型不得解析提交窗口输出，也不得临时创建提交 `.ps1` 替代 wrapper。
@@ -131,6 +132,8 @@ Step 1 wrapper 会自动把采集 JSON 保存到 `.claude/skills/git_svn_commitl
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/invoke-commit-push-interactive.ps1 -PromptTimeoutSeconds 30 -CommitMessageBase64Utf8 '<模型已在推理中算好的 ASCII Base64>'
 ```
+
+需要调整 Git 锁陈旧判定阈值时，可额外传入 `-GitIndexLockStaleMinutes <分钟数>`；默认保持 10 分钟，不需要日常显式传参。
 
 多提交组时额外传入：
 
