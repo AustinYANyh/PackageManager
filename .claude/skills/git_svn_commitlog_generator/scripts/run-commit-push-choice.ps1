@@ -493,6 +493,80 @@ function Invoke-GitCommandWithIndexLockRecovery {
   return @($cmd, $retry)
 }
 
+function Test-GitNoUpstreamPushError([object]$Command) {
+  if ($null -eq $Command) { return $false }
+  $text = (@($Command.output) -join "`n")
+  return ($text -match '(?i)no upstream branch|has no upstream branch|set-upstream')
+}
+
+function Add-GitCommandOutputMessage([object]$Command, [string]$Message) {
+  $output = @()
+  if ($null -ne $Command) { $output += @($Command.output) }
+  if ($Message) { $output += $Message }
+  return [pscustomobject]@{
+    tool = if ($null -ne $Command) { $Command.tool } else { "git" }
+    args = if ($null -ne $Command) { @($Command.args) } else { @("push") }
+    exitCode = if ($null -ne $Command) { $Command.exitCode } else { 128 }
+    output = @($output)
+  }
+}
+
+function New-GitPushResult([object[]]$Commands, [object]$FinalCommand) {
+  return [pscustomobject]@{
+    Commands = @($Commands)
+    FinalCommand = $FinalCommand
+  }
+}
+
+function Invoke-GitPushWithUpstreamRetry {
+  param(
+    [string]$WorkingDirectory,
+    [int]$GitIndexLockStaleMinutes
+  )
+
+  $gitEnv = @{ GIT_TERMINAL_PROMPT = "0" }
+  $commands = @()
+  $cmds = @(Invoke-GitCommandWithIndexLockRecovery -Arguments @("-c", "credential.interactive=false", "push") -WorkingDirectory $WorkingDirectory -Environment $gitEnv -TimeoutSeconds 120 -StaleMinutes $GitIndexLockStaleMinutes)
+  $commands += $cmds
+  $pushCmd = $cmds[-1]
+  if ($pushCmd.exitCode -eq 0 -or -not (Test-GitNoUpstreamPushError -Command $pushCmd)) {
+    return (New-GitPushResult -Commands $commands -FinalCommand $pushCmd)
+  }
+
+  Write-Host "当前分支没有 upstream，准备自动设置 origin 上游分支后重试 push..." -ForegroundColor Yellow
+  $branchCmd = Invoke-LoggedCommand -Tool "git" -Arguments @("rev-parse", "--abbrev-ref", "HEAD") -WorkingDirectory $WorkingDirectory
+  $commands += $branchCmd
+  if ($branchCmd.exitCode -ne 0) {
+    $final = Add-GitCommandOutputMessage -Command $pushCmd -Message "无法自动设置 upstream：获取当前分支失败。"
+    return (New-GitPushResult -Commands $commands -FinalCommand $final)
+  }
+
+  $branch = (@($branchCmd.output) | Where-Object { $_ } | Select-Object -First 1)
+  if ($branch) { $branch = $branch.Trim() }
+  if (-not $branch -or $branch -eq "HEAD") {
+    $final = Add-GitCommandOutputMessage -Command $pushCmd -Message "无法自动设置 upstream：当前不在普通本地分支（detached HEAD）。"
+    return (New-GitPushResult -Commands $commands -FinalCommand $final)
+  }
+
+  $remoteCmd = Invoke-LoggedCommand -Tool "git" -Arguments @("remote") -WorkingDirectory $WorkingDirectory
+  $commands += $remoteCmd
+  if ($remoteCmd.exitCode -ne 0) {
+    $final = Add-GitCommandOutputMessage -Command $pushCmd -Message "无法自动设置 upstream：读取 Git remote 列表失败。"
+    return (New-GitPushResult -Commands $commands -FinalCommand $final)
+  }
+
+  $hasOrigin = @($remoteCmd.output | ForEach-Object { if ($_) { $_.Trim() } } | Where-Object { $_ -eq "origin" }).Count -gt 0
+  if (-not $hasOrigin) {
+    $final = Add-GitCommandOutputMessage -Command $pushCmd -Message "无法自动设置 upstream：仓库没有 origin remote。"
+    return (New-GitPushResult -Commands $commands -FinalCommand $final)
+  }
+
+  Write-Host ("正在执行 git push --set-upstream origin {0}..." -f $branch) -ForegroundColor Cyan
+  $retryCmds = @(Invoke-GitCommandWithIndexLockRecovery -Arguments @("-c", "credential.interactive=false", "push", "--set-upstream", "origin", $branch) -WorkingDirectory $WorkingDirectory -Environment $gitEnv -TimeoutSeconds 120 -StaleMinutes $GitIndexLockStaleMinutes)
+  $commands += $retryCmds
+  return (New-GitPushResult -Commands $commands -FinalCommand $retryCmds[-1])
+}
+
 function Get-ItemTextProperty([object]$Item, [string]$Name) {
   if ($null -eq $Item) { return "" }
   if ($Item.PSObject.Properties.Match($Name).Count -eq 0) { return "" }
@@ -810,10 +884,11 @@ if ($choice -eq 1 -or $choice -eq 2) {
         }
 
         Write-Host "正在执行 git push..." -ForegroundColor Cyan
-        $cmds = @(Invoke-GitCommandWithIndexLockRecovery -Arguments @("-c", "credential.interactive=false", "push") -WorkingDirectory $group.GitRepoRoot -Environment @{ GIT_TERMINAL_PROMPT = "0" } -TimeoutSeconds 120 -StaleMinutes $GitIndexLockStaleMinutes)
+        $pushResult = Invoke-GitPushWithUpstreamRetry -WorkingDirectory $group.GitRepoRoot -GitIndexLockStaleMinutes $GitIndexLockStaleMinutes
+        $cmds = @($pushResult.Commands)
         $commands += $cmds
         $group.Commands = @($group.Commands) + $cmds
-        $cmd = $cmds[-1]
+        $cmd = $pushResult.FinalCommand
         if ($cmd.exitCode -ne 0) {
           $detail = (@($cmd.output) | Where-Object { $_ } | Select-Object -Last 1)
           if ($detail) { throw "git push 失败：$($group.DisplayName)。$detail" }

@@ -123,7 +123,7 @@ JSON 关键字段（与脚本一致）：
 
 Step 1 wrapper 会自动把采集 JSON 保存到 `.claude/skills/git_svn_commitlog_generator/.state/last_changes.json`。
 
-模型只负责生成 **Step 2 的最终提交日志文本**。Claude Code Bash 工具无法可靠传递中文参数，也不能用 `python -c` / `node -e` / `powershell -Command` 在 Bash 内处理中文。**因此模型必须在自身推理中直接得到最终提交日志的 UTF-8 Base64 字符串**，Step 3 命令行只传 ASCII Base64 给 `-CommitMessageBase64Utf8`。如果存在多个提交组，还必须传 `-CommitMessageGroupsBase64Utf8`，其内容是 UTF-8 JSON 的 Base64。
+模型只负责生成 **Step 2 的最终提交日志文本**。所有模型/自动化调用都必须默认使用 `-CommitMessageBase64Utf8` 传递提交日志，不得因为当前执行器是 PowerShell 就改用兼容入口。Claude Code Bash 工具无法可靠传递中文参数，也不能用 `python -c` / `node -e` / `powershell -Command` 在 Bash 内处理中文。**因此模型必须在自身推理中直接得到最终提交日志的 UTF-8 Base64 字符串**，Step 3 命令行只传 ASCII Base64 给 `-CommitMessageBase64Utf8`。如果存在多个提交组，还必须传 `-CommitMessageGroupsBase64Utf8`，其内容是 UTF-8 JSON 的 Base64。
 
 `-CommitMessageBase64Utf8` 内容必须只包含最终提交日志标题+正文的 UTF-8 Base64，不得包含核对表、说明文字或占位符。模型不得使用 stdin、pipe、heredoc、重定向来传提交日志，不得为了传日志而单独创建或编辑提交日志/Base64 文件（包括 `commit_msg_b64.txt`、`final_commit_message.txt` 等），不得把提交日志作为 `-CommitMessageText` 长参数塞进 Bash/WSL 命令行，不得在 Bash 中执行 `python -c` / `node -e` / `powershell -Command` 等编码命令来处理中文，不得执行 `git add` / `git commit` / `git push` / `svn add` / `svn commit` 等会改变状态或提交推送的命令，不得创建临时 `.ps1` 提交脚本，也不得直接调用 `run-commit-push-choice.ps1`。
 
@@ -162,7 +162,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_c
 }
 ```
 
-兼容入口：`-CommitMessageLines`、`-CommitMessageText` 仅供 Windows 原生命令行或自动化脚本使用，不再作为 Claude Code 默认路径。最终提交日志的摘要和正文必须使用中文写法，不要照搬英文模板；但标题开头的 `type(scope):` 中 **`type` 必须保持英文小写**，不得翻译。
+兼容入口：`-CommitMessageLine`、`-CommitMessageLines`、`-CommitMessageText` 仅供人工 Windows 原生命令行或旧自动化脚本使用，不得作为任何模型/自动化调用的默认路径。`-CommitMessageLine` 是数组入口，不能重复写同一个命名参数；人工使用时应传数组或改用单个 `-CommitMessageLines` 分隔字符串。最终提交日志的摘要和正文必须使用中文写法，不要照搬英文模板；但标题开头的 `type(scope):` 中 **`type` 必须保持英文小写**，不得翻译。
 
 Step 3 返回 JSON 中的 `CommitMessage` 与 `CommitMessageSha256` 是默认/总览日志；多提交组时 `Groups[].CommitMessage` 与 `Groups[].CommitMessageSha256` 是各组实际用于 `git commit -F` / `svn commit -F` 的内容。模型最终回复里的“最终版提交日志（可直接复制）”必须逐字复制 Step 3 结果：单组复制 `CommitMessage`，多组按组复制 `Groups[].CommitMessage`，不得再根据记忆或上文重新生成。
 

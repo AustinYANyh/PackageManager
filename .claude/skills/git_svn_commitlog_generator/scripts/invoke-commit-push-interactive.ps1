@@ -40,7 +40,7 @@ if ($CommitMessageLines) { $messageSources++ }
 if ($CommitMessageBase64Utf8) { $messageSources++ }
 if ($CommitMessageLine -and $CommitMessageLine.Count -gt 0) { $messageSources++ }
 if ($messageSources -gt 1) {
-  throw "CommitMessageFile、CommitMessageText、CommitMessageLines、CommitMessageBase64Utf8 与 CommitMessageLine 只能五选一。"
+  throw "CommitMessageFile、CommitMessageText、CommitMessageLines、CommitMessageBase64Utf8 与 CommitMessageLine 只能五选一。CommitMessageLine 是数组入口，不能重复写同一个命名参数；自动化默认应使用 CommitMessageBase64Utf8。"
 }
 
 $messageText = $null
@@ -88,7 +88,7 @@ if ($null -ne $messageText) {
   $createdMessageFile = $true
   [System.IO.File]::WriteAllText($CommitMessageFile, $messageText.TrimEnd("`r", "`n"), [System.Text.UTF8Encoding]::new($false))
 } elseif (-not $CommitMessageFile) {
-  throw "缺少提交日志。Claude Code 默认必须使用 -CommitMessageBase64Utf8 传入最终提交日志。"
+  throw "缺少提交日志。模型/自动化默认必须使用 -CommitMessageBase64Utf8 传入最终提交日志。"
 }
 
 if ($CommitMessageGroupsJsonFile -and $CommitMessageGroupsBase64Utf8) {
@@ -111,7 +111,7 @@ if ($CommitMessageGroupsBase64Utf8) {
 }
 $changesFull = (Resolve-Path -LiteralPath $ChangesJsonFile).Path
 if (-not (Test-Path -LiteralPath $CommitMessageFile)) {
-  throw "找不到提交日志文件：$CommitMessageFile。请使用 -CommitMessageBase64Utf8 传入最终提交日志。"
+  throw "找不到提交日志文件：$CommitMessageFile。模型/自动化请使用 -CommitMessageBase64Utf8 传入最终提交日志。"
 }
 $messageFull = (Resolve-Path -LiteralPath $CommitMessageFile).Path
 $messageGroupsFull = ""
