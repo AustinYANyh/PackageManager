@@ -119,6 +119,22 @@ function Read-TimedConsoleLine {
   return -join $chars
 }
 
+function Expand-IdTokens([string]$raw) {
+  $ids = New-Object System.Collections.Generic.List[int]
+  foreach ($tok in ($raw -split '[,\s;]+')) {
+    if (-not $tok) { continue }
+    if ($tok -match '^(\d+)-(\d+)$') {
+      $lo = [int]$Matches[1]; $hi = [int]$Matches[2]
+      if ($lo -gt $hi) { $lo, $hi = $hi, $lo }
+      for ($i = $lo; $i -le $hi; $i++) { $ids.Add($i) }
+    } else {
+      $tv = 0
+      if ([int]::TryParse($tok, [ref]$tv)) { $ids.Add($tv) }
+    }
+  }
+  return ,$ids
+}
+
 function Quote-NativeArgument([string]$value) {
   if ($null -eq $value) { return '""' }
   if ($value -eq "") { return '""' }
@@ -742,12 +758,9 @@ $selectedGroupIds = New-Object System.Collections.Generic.HashSet[int]
 if ($choice -eq 1) {
   foreach ($group in @($commitGroups)) { [void]$selectedGroupIds.Add([int]$group.GroupId) }
 } elseif ($choice -eq 2) {
-  Write-Host "请输入要提交的组编号，多个编号用逗号/空格分隔，例如：1,3" -ForegroundColor Yellow
+  Write-Host "请输入要提交的组编号，多个编号用逗号/空格分隔，支持范围（如 1-3），例如：1,3" -ForegroundColor Yellow
   $line = Read-TimedConsoleLine -Prompt "要提交的组编号" -TimeoutSec $PromptTimeoutSeconds
-  foreach ($tok in ($line -split '[,\s;]+')) {
-    $v = 0
-    if ([int]::TryParse($tok, [ref]$v)) { [void]$selectedGroupIds.Add($v) }
-  }
+  foreach ($tv in (Expand-IdTokens $line)) { [void]$selectedGroupIds.Add($tv) }
   if ($selectedGroupIds.Count -eq 0) {
     $choice = 3
   }

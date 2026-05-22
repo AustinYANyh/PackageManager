@@ -144,6 +144,22 @@ function Read-TimedConsoleLine {
   return -join $chars
 }
 
+function Expand-IdTokens([string]$raw) {
+  $ids = New-Object System.Collections.Generic.List[int]
+  foreach ($tok in ($raw -split '[,\s;]+')) {
+    if (-not $tok) { continue }
+    if ($tok -match '^(\d+)-(\d+)$') {
+      $lo = [int]$Matches[1]; $hi = [int]$Matches[2]
+      if ($lo -gt $hi) { $lo, $hi = $hi, $lo }
+      for ($i = $lo; $i -le $hi; $i++) { $ids.Add($i) }
+    } else {
+      $tv = 0
+      if ([int]::TryParse($tok, [ref]$tv)) { $ids.Add($tv) }
+    }
+  }
+  return ,$ids
+}
+
 function Get-ItemPropText([object]$item, [string]$name) {
   if ($null -eq $item) { return "" }
   $prop = $item.PSObject.Properties[$name]
@@ -288,7 +304,9 @@ function Invoke-ItemCheckDialog {
   }
 
   $state = [pscustomobject]@{
-    Remaining = $TimeoutSec
+    Remaining                  = $TimeoutSec
+    AnchorRowIndex             = -1
+    SuppressNextCheckboxToggle = $false
   }
 
   $getCheckedCount = {
@@ -305,14 +323,39 @@ function Invoke-ItemCheckDialog {
     $countLabel.Text = ("已勾选 {0}/{1}；剩余 {2} 秒，{3}" -f $checked, $grid.Rows.Count, ([Math]::Max(0, $state.Remaining)), $timeoutText)
   }
 
+  $grid.add_CellMouseDown({
+    param($sender, $eventArgs)
+    if ($eventArgs.RowIndex -lt 0 -or $eventArgs.ColumnIndex -lt 0) { return }
+    $isShift = ([System.Windows.Forms.Control]::ModifierKeys -band [System.Windows.Forms.Keys]::Shift) -ne 0
+    $isCheckboxCol = ($grid.Columns[$eventArgs.ColumnIndex].Name -eq "Checked")
+    if ($isShift -and $state.AnchorRowIndex -ge 0 -and $state.AnchorRowIndex -lt $grid.Rows.Count) {
+      $anchorVal = [bool]$grid.Rows[$state.AnchorRowIndex].Cells["Checked"].Value
+      $lo = [Math]::Min($state.AnchorRowIndex, $eventArgs.RowIndex)
+      $hi = [Math]::Max($state.AnchorRowIndex, $eventArgs.RowIndex)
+      for ($i = $lo; $i -le $hi; $i++) {
+        $grid.Rows[$i].Cells["Checked"].Value = $anchorVal
+      }
+      & $updateCheckedCount
+      $state.Remaining = $TimeoutSec
+      if ($isCheckboxCol) { $state.SuppressNextCheckboxToggle = $true }
+      return
+    }
+    $state.AnchorRowIndex = $eventArgs.RowIndex
+  })
   $grid.add_CurrentCellDirtyStateChanged({
     if ($grid.IsCurrentCellDirty) {
+      if ($state.SuppressNextCheckboxToggle) {
+        $state.SuppressNextCheckboxToggle = $false
+        $grid.CancelEdit()
+        return
+      }
       [void]$grid.CommitEdit([System.Windows.Forms.DataGridViewDataErrorContexts]::Commit)
     }
   })
   $grid.add_CellValueChanged({
     param($sender, $eventArgs)
     if ($eventArgs.RowIndex -ge 0 -and $eventArgs.ColumnIndex -ge 0 -and $grid.Columns[$eventArgs.ColumnIndex].Name -eq "Checked") {
+      $state.Remaining = $TimeoutSec
       & $updateCheckedCount
     }
   })
@@ -320,8 +363,11 @@ function Invoke-ItemCheckDialog {
     param($sender, $eventArgs)
     if ($eventArgs.RowIndex -lt 0 -or $eventArgs.ColumnIndex -lt 0) { return }
     if ($grid.Columns[$eventArgs.ColumnIndex].Name -eq "Checked") { return }
+    $isShift = ([System.Windows.Forms.Control]::ModifierKeys -band [System.Windows.Forms.Keys]::Shift) -ne 0
+    if ($isShift) { return }
     $cell = $grid.Rows[$eventArgs.RowIndex].Cells["Checked"]
     $cell.Value = -not [bool]$cell.Value
+    $state.Remaining = $TimeoutSec
     & $updateCheckedCount
   })
 
@@ -329,21 +375,21 @@ function Invoke-ItemCheckDialog {
   $btnAll.Text = "全选"
   $btnAll.Width = 80
   $btnAll.Height = 30
-  $btnAll.Add_Click({ foreach ($r in $grid.Rows) { $r.Cells["Checked"].Value = $true }; & $updateCheckedCount })
+  $btnAll.Add_Click({ $state.Remaining = $TimeoutSec; foreach ($r in $grid.Rows) { $r.Cells["Checked"].Value = $true }; & $updateCheckedCount })
   $panel.Controls.Add($btnAll)
 
   $btnNone = New-Object System.Windows.Forms.Button
   $btnNone.Text = "全不选"
   $btnNone.Width = 80
   $btnNone.Height = 30
-  $btnNone.Add_Click({ foreach ($r in $grid.Rows) { $r.Cells["Checked"].Value = $false }; & $updateCheckedCount })
+  $btnNone.Add_Click({ $state.Remaining = $TimeoutSec; foreach ($r in $grid.Rows) { $r.Cells["Checked"].Value = $false }; & $updateCheckedCount })
   $panel.Controls.Add($btnNone)
 
   $btnInvert = New-Object System.Windows.Forms.Button
   $btnInvert.Text = "反选"
   $btnInvert.Width = 80
   $btnInvert.Height = 30
-  $btnInvert.Add_Click({ foreach ($r in $grid.Rows) { $r.Cells["Checked"].Value = -not [bool]$r.Cells["Checked"].Value }; & $updateCheckedCount })
+  $btnInvert.Add_Click({ $state.Remaining = $TimeoutSec; foreach ($r in $grid.Rows) { $r.Cells["Checked"].Value = -not [bool]$r.Cells["Checked"].Value }; & $updateCheckedCount })
   $panel.Controls.Add($btnInvert)
 
   $btnOk = New-Object System.Windows.Forms.Button
@@ -1382,7 +1428,7 @@ if (-not $nonInteractiveMode -and (Test-WindowsConsoleChoice)) {
     Write-Host "点击窗口中要加入的文件；点“确定”或超时都会进入下一步；未操作超时/使用默认 = 不加入任何未跟踪文件。" -ForegroundColor Yellow
     Write-Host "文件列表：" -ForegroundColor Cyan
     Write-ItemTable -Items $naList
-    $dlgAdd = Invoke-ItemCheckDialog -Items $naList -Title "步骤 1/2：选择要加入版本管理的文件" -Instruction "勾选要加入本次提交的未跟踪文件。点“确定”或超时都会进入下一步；未操作超时/点击“使用默认”表示不加入任何文件。" -CheckHeader "加入" -DefaultChecked $false -TimeoutSec $PromptTimeoutSeconds
+    $dlgAdd = Invoke-ItemCheckDialog -Items $naList -Title “步骤 1/2：选择要加入版本管理的文件” -Instruction “勾选要加入本次提交的未跟踪文件。支持 Shift+点击批量勾选连续行。点”确定”或超时都会进入下一步；未操作超时/点击”使用默认”表示不加入任何文件。” -CheckHeader “加入” -DefaultChecked $false -TimeoutSec $PromptTimeoutSeconds
     if ($dlgAdd.Used) {
       $consoleChoiceUsed = $true
       foreach ($id in @($dlgAdd.CheckedIds)) { [void]$addIdSet.Add([int]$id) }
@@ -1392,9 +1438,9 @@ if (-not $nonInteractiveMode -and (Test-WindowsConsoleChoice)) {
       $consoleChoiceUsed = $true
       if ($ch -eq 2) { $addAllCandidates = $true }
       elseif ($ch -eq 3) {
-        Write-Host "请输入要加入的编号，多个编号用逗号/空格分隔，例如：3,5,8" -ForegroundColor Yellow
+        Write-Host "请输入要加入的编号，多个编号用逗号/空格分隔，支持范围（如 18-25），例如：3,5,8 或 3,18-25" -ForegroundColor Yellow
         $ln = Read-TimedConsoleLine -Prompt "要加入的编号" -TimeoutSec $PromptTimeoutSeconds
-        foreach ($tok in ($ln -split '[,\s;]+')) { $tv = 0; if ([int]::TryParse($tok, [ref]$tv)) { [void]$addIdSet.Add($tv) } }
+        foreach ($tv in (Expand-IdTokens $ln)) { [void]$addIdSet.Add($tv) }
       }
     }
   }
@@ -1458,7 +1504,7 @@ if (-not $nonInteractiveMode -and (Test-WindowsConsoleChoice)) {
   if ($excludePromptList.Count -eq 0) {
     Write-Host "当前没有可排除的提交日志改动项，跳过排除选择。" -ForegroundColor Yellow
   } else {
-    $dlgExclude = Invoke-ItemCheckDialog -Items $excludePromptList -Title ("{0}：选择要排除的文件" -f $excludeStepTitle) -Instruction "勾选要从本次提交日志中排除的文件；未勾选表示保留。点“确定”或超时都会进入下一步；未操作超时/点击“使用默认”表示全部保留。" -CheckHeader "排除" -DefaultChecked $false -TimeoutSec $PromptTimeoutSeconds
+    $dlgExclude = Invoke-ItemCheckDialog -Items $excludePromptList -Title (“{0}：选择要排除的文件” -f $excludeStepTitle) -Instruction “勾选要从本次提交日志中排除的文件；未勾选表示保留。支持 Shift+点击批量勾选连续行。点”确定”或超时都会进入下一步；未操作超时/点击”使用默认”表示全部保留。” -CheckHeader “排除” -DefaultChecked $false -TimeoutSec $PromptTimeoutSeconds
     if ($dlgExclude.Used) {
       $consoleChoiceUsed = $true
       foreach ($id in @($dlgExclude.CheckedIds)) { [void]$excludeIdSet.Add([int]$id) }
@@ -1466,9 +1512,9 @@ if (-not $nonInteractiveMode -and (Test-WindowsConsoleChoice)) {
       $ch2 = Invoke-TimedChoiceKey -Choices "12" -TimeoutSec $PromptTimeoutSeconds -DefaultKey '1' -Message "请选择：1全部保留 2输入编号排除"
       $consoleChoiceUsed = $true
       if ($ch2 -eq 2) {
-        Write-Host "请输入要排除的编号，多个编号用逗号/空格分隔，例如：3,5,8" -ForegroundColor Yellow
+        Write-Host "请输入要排除的编号，多个编号用逗号/空格分隔，支持范围（如 18-25），例如：3,5,8 或 3,18-25" -ForegroundColor Yellow
         $ln2 = Read-TimedConsoleLine -Prompt "要排除的编号" -TimeoutSec $PromptTimeoutSeconds
-        foreach ($tok in ($ln2 -split '[,\s;]+')) { $tv = 0; if ([int]::TryParse($tok, [ref]$tv)) { [void]$excludeIdSet.Add($tv) } }
+        foreach ($tv in (Expand-IdTokens $ln2)) { [void]$excludeIdSet.Add($tv) }
       }
     }
   }
