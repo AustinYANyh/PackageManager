@@ -625,6 +625,16 @@ function Get-GitCommitGroups([object[]]$Items, [string]$RootFull) {
         $repoPath = $repoPath.Substring($repoRelRoot.TrimEnd('/').Length + 1)
       }
     }
+    $repoPathsForItem = @($repoPath)
+    $renamedFromPath = Get-ItemTextProperty -Item $item -Name "GitRepoRenamedFrom"
+    if ($renamedFromPath -and ($renamedFromPath -ne $repoPath)) {
+      $repoPathsForItem += $renamedFromPath
+      $primaryFull = Join-Path -Path $repoRoot -ChildPath ($repoPath -replace '/', '\')
+      $renamedFull = Join-Path -Path $repoRoot -ChildPath ($renamedFromPath -replace '/', '\')
+      if ((-not (Test-Path -LiteralPath $primaryFull)) -and (Test-Path -LiteralPath $renamedFull)) {
+        $repoPathsForItem = @($renamedFromPath, $repoPath)
+      }
+    }
 
     if (-not $buckets.ContainsKey($repoRoot)) {
       $display = if ($repoRelRoot) { $repoRelRoot } else { Split-Path -Leaf $repoRoot }
@@ -640,7 +650,7 @@ function Get-GitCommitGroups([object[]]$Items, [string]$RootFull) {
     }
 
     $buckets[$repoRoot].Items = @($buckets[$repoRoot].Items) + $item
-    $buckets[$repoRoot].RepoPaths = @($buckets[$repoRoot].RepoPaths) + $repoPath
+    $buckets[$repoRoot].RepoPaths = @($buckets[$repoRoot].RepoPaths) + $repoPathsForItem
   }
 
   return @($buckets.Values)
