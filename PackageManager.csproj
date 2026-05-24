@@ -44,6 +44,9 @@
           <HintPath>Assets\Tools\Endelib.v1.0.1.dll</HintPath>
           <Private>True</Private>
         </Reference>
+        <Reference Include="Microsoft.International.Converters.PinYinConverter">
+          <HintPath>packages\Microsoft.PinYinConverter.1.0.0\lib\ChnCharInfo.dll</HintPath>
+        </Reference>
         <Reference Include="System"/>
         <Reference Include="System.Core"/>
         <Reference Include="System.Data"/>
@@ -99,179 +102,6 @@
             <Generator>MSBuild:Compile</Generator>
             <SubType>Designer</SubType>
         </ApplicationDefinition>
-        <Compile Include="Function\ConfigPreset\AddPresetWindow.xaml.cs" />
-        <Compile Include="Function\ConfigPreset\ConfigPresetWindow.xaml.cs">
-          <DependentUpon>ConfigPresetWindow.xaml</DependentUpon>
-          <SubType>Code</SubType>
-        </Compile>
-        <Compile Include="Function\CsvTool\CsvCryptoWindow.xaml.cs">
-          <DependentUpon>CsvCryptoWindow.xaml</DependentUpon>
-          <SubType>Code</SubType>
-        </Compile>
-        <Compile Include="Function\DnsTool\DnsEditDialog.xaml.cs">
-          <DependentUpon>DnsEditDialog.xaml</DependentUpon>
-          <SubType>Code</SubType>
-        </Compile>
-        <Compile Include="Function\DnsTool\DnsSettingsWindow.xaml.cs">
-          <DependentUpon>DnsSettingsWindow.xaml</DependentUpon>
-          <SubType>Code</SubType>
-        </Compile>
-        <Compile Include="Function\Log\LogDetailsWindow.xaml.cs">
-          <DependentUpon>LogDetailsWindow.xaml</DependentUpon>
-          <SubType>Code</SubType>
-        </Compile>
-        <Compile Include="Function\Log\LogViewerWindow.xaml.cs">
-          <DependentUpon>LogViewerWindow.xaml</DependentUpon>
-          <SubType>Code</SubType>
-        </Compile>
-        <Compile Include="Function\Log\ProductLogsWindow.xaml.cs" />
-        <Compile Include="Function\PackageManage\PackageConfigWindow.xaml.cs" />
-        <Compile Include="Function\PackageManage\IPackageEditorHost.cs" />
-        <Compile Include="Function\PackageManage\PackageEditWindow.xaml.cs">
-          <DependentUpon>PackageEditWindow.xaml</DependentUpon>
-          <SubType>Code</SubType>
-        </Compile>
-        <Compile Include="Function\Path\LocalPathSettingsWindow.xaml.cs">
-          <DependentUpon>LocalPathSettingsWindow.xaml</DependentUpon>
-          <SubType>Code</SubType>
-        </Compile>
-        <Compile Include="Function\SlnTool\Updater.cs" />
-        <Compile Include="Function\UnlockTool\UnlockFilesWindow.xaml.cs">
-          <DependentUpon>UnlockFilesWindow.xaml</DependentUpon>
-          <SubType>Code</SubType>
-        </Compile>
-        <Compile Include="Function\UnlockTool\RevitFileCleanupWindow.xaml.cs">
-          <DependentUpon>RevitFileCleanupWindow.xaml</DependentUpon>
-          <SubType>Code</SubType>
-        </Compile>
-        <Compile Include="Function\StartupTool\CommonStartupWindow.xaml.cs">
-          <DependentUpon>CommonStartupWindow.xaml</DependentUpon>
-          <SubType>Code</SubType>
-        </Compile>
-        <Compile Include="Function\StartupTool\StartupItemEditWindow.xaml.cs">
-          <DependentUpon>StartupItemEditWindow.xaml</DependentUpon>
-          <SubType>Code</SubType>
-        </Compile>
-        <Compile Include="Function\Setting\SettingsWindow.xaml.cs" />
-        <Compile Include="Function\SlnTool\SlnUpdateWindow.xaml.cs">
-          <DependentUpon>SlnUpdateWindow.xaml</DependentUpon>
-          <SubType>Code</SubType>
-        </Compile>
-        <Compile Include="Models\MemberStatsItem.cs" />
-        <Compile Include="Models\CategoryNode.cs" />
-        <Compile Include="Models\ConfigPreset.cs" />
-        <Compile Include="Models\PackageItem.cs" />
-        <Compile Include="Models\ProductLogInfo.cs" />
-        <Compile Include="Models\VisibilityItem.cs" />
-        <Compile Include="Services\AdminElevationService.cs" />
-        <Compile Include="Services\ConfigPresetStore.cs" />
-    <Compile Include="Services\CommonStartupHotkeyService.cs" />
-    <Compile Include="Services\CommonStartupWindowManager.cs" />
-    <Compile Include="Services\MftIndexServiceManager.cs" />
-        <Compile Include="Services\FileSearchWindowManager.cs" />
-        <Compile Include="Services\PinyinMatcher.cs" />
-        <Compile Include="Services\RawInputHotkeySource.cs" />
-        <Compile Include="Services\SystemHotkeyService.cs" />
-        <Compile Include="Services\DebugSettingsService.cs" />
-        <Compile Include="Services\EmbeddedToolRunnerService.cs" />
-        <Compile Include="Services\LoggingService.cs" />
-        <Compile Include="Services\PingCode\Dto\ParticipantDto.cs" />
-        <Compile Include="Services\PingCode\Dto\PriorityDto.cs" />
-        <Compile Include="Services\PingCode\Dto\ProjectDto.cs" />
-        <Compile Include="Services\PingCode\Dto\SprintDto.cs" />
-        <Compile Include="Services\PingCode\Dto\StageDto.cs" />
-        <Compile Include="Services\PingCode\Dto\StateDto.cs" />
-        <Compile Include="Services\PingCode\Dto\TagDto.cs" />
-        <Compile Include="Services\PingCode\Dto\UserDto.cs" />
-        <Compile Include="Services\PingCode\Dto\VersionDto.cs" />
-        <Compile Include="Services\PingCode\Dto\WorkItemDto.cs" />
-        <Compile Include="Services\PingCode\Dto\WorkItemInfo.cs" />
-        <Compile Include="Services\PingCode\Exception\ApiAuthException.cs" />
-        <Compile Include="Services\PingCode\Exception\ApiForbiddenException.cs" />
-        <Compile Include="Services\PingCode\Exception\ApiNotFoundException.cs" />
-        <Compile Include="Services\PingCode\Model\Entity.cs" />
-        <Compile Include="Services\PingCode\Model\StatePlanInfo.cs" />
-        <Compile Include="Services\PingCode\Model\StoryPointBreakdown.cs" />
-        <Compile Include="Services\PingCode\Model\WorkItemComment.cs" />
-        <Compile Include="Services\PingCode\Model\WorkItemDetails.cs" />
-        <Compile Include="Services\PingCode\PingCodeApiService.Attachments.cs" />
-        <Compile Include="Services\PingCode\PingCodeApiService.Authentication.cs" />
-        <Compile Include="Services\PingCode\PingCodeApiService.cs" />
-        <Compile Include="Services\PingCode\PingCodeApiService.Http.cs" />
-        <Compile Include="Services\PingCode\PingCodeApiService.Parsing.cs" />
-        <Compile Include="Services\PingCode\PingCodeApiService.Partials.cs" />
-        <Compile Include="Services\RevitCleanup\EverythingIndexProvider.cs" />
-        <Compile Include="Services\RevitCleanup\LocalIndexProvider.cs" />
-        <Compile Include="Services\RevitCleanup\MftIndexProvider.cs" />
-        <Compile Include="Services\RevitCleanup\RevitFileQueryModels.cs" />
-        <Compile Include="Services\RevitCleanup\RevitFileQueryService.cs" />
-        <Compile Include="Services\RevitCleanup\RevitLocalIndexStore.cs" />
-        <Compile Include="Services\RevitProcessService.cs" />
-        <Compile Include="Services\ToastService.cs" />
-        <Compile Include="Services\AppUpdateService.cs" />
-        <Compile Include="Tools\MftScanner.Core\IndexPerfLog.cs" />
-        <Compile Include="Views\CommonLinksPage.xaml.cs" />
-        <Compile Include="Views\CommonLinksWindow.xaml.cs" />
-        <Compile Include="Views\ICentralPage.cs" />
-        <Compile Include="Views\KanBan\KanbanColumn.cs" />
-        <Compile Include="Views\KanBan\KanbanStatsPage.xaml.cs" />
-        <Compile Include="Views\KanBan\WorkItemDetailsWindow.xaml.cs">
-          <DependentUpon>WorkItemDetailsWindow.xaml</DependentUpon>
-          <SubType>Code</SubType>
-        </Compile>
-        <Compile Include="Views\KanBan\WorkItemKanbanWindow.xaml.cs">
-          <DependentUpon>WorkItemKanbanWindow.xaml</DependentUpon>
-          <SubType>Code</SubType>
-        </Compile>
-        <Compile Include="Views\LocalPathSettingsPage.xaml.cs" />
-        <Compile Include="Views\LogViewerPage.xaml.cs" />
-        <Compile Include="Views\NavigationPanel.xaml.cs" />
-        <Compile Include="Views\PackagesHomePage.xaml.cs" />
-        <Compile Include="Views\ChangelogPage.xaml.cs">
-          <DependentUpon>ChangelogPage.xaml</DependentUpon>
-          <SubType>Code</SubType>
-        </Compile>
-        <Compile Include="Views\PackageConfigPage.xaml.cs" />
-        <Compile Include="Views\PluginManagementPage.xaml.cs" />
-        <Compile Include="Views\ProductLogsPage.xaml.cs" />
-        <Compile Include="Views\SettingsPage.xaml.cs" />
-        <Compile Include="Views\Controls\WorkItemCard.xaml.cs">
-          <DependentUpon>WorkItemCard.xaml</DependentUpon>
-          <SubType>Code</SubType>
-        </Compile>
-        <Page Include="Function\ConfigPreset\AddPresetWindow.xaml" />
-        <Page Include="Function\ConfigPreset\ConfigPresetWindow.xaml" />
-        <Page Include="Function\CsvTool\CsvCryptoWindow.xaml">
-          <Generator>MSBuild:Compile</Generator>
-          <SubType>Designer</SubType>
-        </Page>
-        <Page Include="Function\DnsTool\DnsEditDialog.xaml" />
-        <Page Include="Function\DnsTool\DnsSettingsWindow.xaml" />
-        <Page Include="Function\Log\LogDetailsWindow.xaml">
-          <Generator>MSBuild:Compile</Generator>
-          <SubType>Designer</SubType>
-        </Page>
-        <Page Include="Function\Log\LogViewerWindow.xaml">
-          <Generator>MSBuild:Compile</Generator>
-          <SubType>Designer</SubType>
-        </Page>
-        <Page Include="Function\Log\ProductLogsWindow.xaml" />
-        <Page Include="Function\PackageManage\PackageConfigWindow.xaml" />
-        <Page Include="Function\PackageManage\PackageEditWindow.xaml" />
-        <Page Include="Function\Path\LocalPathSettingsWindow.xaml" />
-        <Page Include="Function\Setting\SettingsWindow.xaml" />
-        <Page Include="Function\Setting\DebugOptionsWindow.xaml" />
-        <Page Include="Function\SlnTool\SlnUpdateWindow.xaml" />
-        <Page Include="Function\UnlockTool\RevitFileCleanupWindow.xaml" />
-        <Page Include="Function\UnlockTool\UnlockFilesWindow.xaml" />
-        <Page Include="Function\StartupTool\CommonStartupWindow.xaml">
-          <Generator>MSBuild:Compile</Generator>
-          <SubType>Designer</SubType>
-        </Page>
-        <Page Include="Function\StartupTool\StartupItemEditWindow.xaml">
-          <Generator>MSBuild:Compile</Generator>
-          <SubType>Designer</SubType>
-        </Page>
         <Page Include="MainWindow.xaml">
             <Generator>MSBuild:Compile</Generator>
             <SubType>Designer</SubType>
@@ -280,69 +110,282 @@
             <DependentUpon>App.xaml</DependentUpon>
             <SubType>Code</SubType>
         </Compile>
-        <Compile Include="Function\Setting\DebugOptionsWindow.xaml.cs">
-          <DependentUpon>DebugOptionsWindow.xaml</DependentUpon>
-          <SubType>Code</SubType>
-        </Compile>
         <Compile Include="MainWindow.xaml.cs">
             <DependentUpon>MainWindow.xaml</DependentUpon>
             <SubType>Code</SubType>
         </Compile>
-        <Compile Include="Models\PackageInfo.cs" />
-        <Compile Include="Models\LogEntry.cs" />
-        <Compile Include="Models\LocalPathInfo.cs" />
-        <Compile Include="Models\PluginAddinInfo.cs" />
+
+        <!-- Infrastructure -->
+        <Compile Include="Infrastructure\AdminElevationService.cs" />
+        <Compile Include="Infrastructure\CredentialProtectionService.cs" />
+        <Compile Include="Infrastructure\CredentialStore.cs" />
+        <Compile Include="Infrastructure\FolderPickerService.cs" />
+        <Compile Include="Infrastructure\LoggingService.cs" />
+        <Compile Include="Infrastructure\RelayCommand.cs" />
+        <Compile Include="Infrastructure\ServiceLocator.cs" />
+        <Compile Include="Infrastructure\ToastService.cs" />
+        <Compile Include="Infrastructure\UserFeatureAccessService.cs" />
+
+        <!-- Shell -->
+        <Compile Include="Shell\ICentralPage.cs" />
+        <Compile Include="Shell\NavigationService.cs" />
+        <Compile Include="Shell\ToolPageDescriptor.cs" />
+        <Compile Include="Shell\ToolRegistry.cs" />
+        <Compile Include="Shell\ToolRegistration.cs" />
+
+        <!-- Cross-cutting Models -->
+        <Compile Include="Models\CategoryNode.cs" />
+        <Compile Include="Models\CommonLinkItem.cs" />
+
+        <!-- Cross-cutting Services -->
         <Compile Include="Services\ApplicationFinderService.cs" />
-        <Compile Include="Services\CredentialProtectionService.cs" />
         <Compile Include="Services\DataPersistenceService.cs" />
-        <Compile Include="Services\FolderPickerService.cs" />
-        <Compile Include="Services\FtpService.cs" />
-        <Compile Include="Services\GitProxyService.cs" />
-        <Compile Include="Services\IndexHostTaskService.cs" />
-        <Compile Include="Services\JenkinsBuildService.cs" />
-        <Compile Include="Services\LanDiscoveryService.cs" />
-        <Compile Include="Services\LanTransferHostService.cs" />
-        <Compile Include="Services\LanTransferLogger.cs" />
-        <Compile Include="Services\LanTransferModels.cs" />
-        <Compile Include="Services\LanTransferService.cs" />
-        <Compile Include="Services\PackageUpdateService.cs" />
-        <Compile Include="Services\UserFeatureAccessService.cs" />
+
+        <!-- Converters -->
         <Compile Include="Converters\StatusConverters.cs" />
         <Compile Include="Converters\LocalPathGroupSummaryConverter.cs" />
         <Compile Include="Converters\PresetToIniConverter.cs" />
-        <Page Include="Views\CommonLinksPage.xaml" />
-        <Page Include="Views\CommonLinksWindow.xaml" />
-        <Page Include="Views\KanBan\KanbanStatsPage.xaml" />
-        <Page Include="Views\KanBan\WorkItemDetailsWindow.xaml" />
-        <Page Include="Views\KanBan\WorkItemKanbanWindow.xaml" />
-        <Page Include="Views\LocalPathSettingsPage.xaml" />
-        <Page Include="Views\LogViewerPage.xaml" />
+
+        <!-- Views (shell-level) -->
         <Page Include="Views\NavigationPanel.xaml" />
-        <Page Include="Views\PackagesHomePage.xaml" />
-        <Page Include="Views\ChangelogPage.xaml">
+        <Compile Include="Views\NavigationPanel.xaml.cs" />
+
+        <!-- Features/PackageManagement -->
+        <Compile Include="Features\PackageManagement\Models\PackageInfo.cs" />
+        <Compile Include="Features\PackageManagement\Models\PackageItem.cs" />
+        <Compile Include="Features\PackageManagement\Models\LocalPathInfo.cs" />
+        <Compile Include="Features\PackageManagement\Services\FtpService.cs" />
+        <Compile Include="Features\PackageManagement\Services\PackageUpdateService.cs" />
+        <Compile Include="Features\PackageManagement\Services\EmbeddedToolRunnerService.cs" />
+        <Page Include="Features\PackageManagement\Views\PackagesHomePage.xaml" />
+        <Compile Include="Features\PackageManagement\Views\PackagesHomePage.xaml.cs" />
+        <Page Include="Features\PackageManagement\Views\PackageConfigPage.xaml" />
+        <Compile Include="Features\PackageManagement\Views\PackageConfigPage.xaml.cs" />
+        <Page Include="Features\PackageManagement\Views\PackageConfigWindow.xaml" />
+        <Compile Include="Features\PackageManagement\Views\PackageConfigWindow.xaml.cs" />
+        <Page Include="Features\PackageManagement\Views\PackageEditWindow.xaml" />
+        <Compile Include="Features\PackageManagement\Views\PackageEditWindow.xaml.cs">
+          <DependentUpon>PackageEditWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Compile Include="Features\PackageManagement\Views\IPackageEditorHost.cs" />
+        <Page Include="Features\PackageManagement\Views\ChangelogPage.xaml">
           <Generator>MSBuild:Compile</Generator>
           <SubType>Designer</SubType>
         </Page>
-        <Page Include="Views\LanTransferConfirmWindow.xaml" />
-        <Page Include="Views\LanTransferPage.xaml" />
-        <Page Include="Views\SecretChatWindow.xaml" />
-        <Page Include="Views\PackageConfigPage.xaml" />
-        <Page Include="Views\PluginManagementPage.xaml" />
-        <Page Include="Views\ProductLogsPage.xaml" />
-        <Page Include="Views\SettingsPage.xaml" />
-        <Page Include="Views\Controls\WorkItemCard.xaml" />
-        <Compile Include="Views\LanTransferConfirmWindow.xaml.cs">
-          <DependentUpon>LanTransferConfirmWindow.xaml</DependentUpon>
+        <Compile Include="Features\PackageManagement\Views\ChangelogPage.xaml.cs">
+          <DependentUpon>ChangelogPage.xaml</DependentUpon>
           <SubType>Code</SubType>
         </Compile>
-        <Compile Include="Views\LanTransferPage.xaml.cs">
+        <Page Include="Features\PackageManagement\Views\CommonLinksPage.xaml" />
+        <Compile Include="Features\PackageManagement\Views\CommonLinksPage.xaml.cs" />
+        <Page Include="Features\PackageManagement\Views\CommonLinksWindow.xaml" />
+        <Compile Include="Features\PackageManagement\Views\CommonLinksWindow.xaml.cs" />
+        <Page Include="Features\PackageManagement\Views\LocalPathSettingsPage.xaml" />
+        <Compile Include="Features\PackageManagement\Views\LocalPathSettingsPage.xaml.cs" />
+        <Page Include="Features\PackageManagement\Views\LocalPathSettingsWindow.xaml" />
+        <Compile Include="Features\PackageManagement\Views\LocalPathSettingsWindow.xaml.cs">
+          <DependentUpon>LocalPathSettingsWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Compile Include="Features\PackageManagement\Views\ProductGroup.cs" />
+
+        <!-- Features/PingCode -->
+        <Compile Include="Features\PingCode\Dto\ParticipantDto.cs" />
+        <Compile Include="Features\PingCode\Dto\PriorityDto.cs" />
+        <Compile Include="Features\PingCode\Dto\ProjectDto.cs" />
+        <Compile Include="Features\PingCode\Dto\SprintDto.cs" />
+        <Compile Include="Features\PingCode\Dto\StageDto.cs" />
+        <Compile Include="Features\PingCode\Dto\StateDto.cs" />
+        <Compile Include="Features\PingCode\Dto\TagDto.cs" />
+        <Compile Include="Features\PingCode\Dto\UserDto.cs" />
+        <Compile Include="Features\PingCode\Dto\VersionDto.cs" />
+        <Compile Include="Features\PingCode\Dto\WorkItemDto.cs" />
+        <Compile Include="Features\PingCode\Dto\WorkItemInfo.cs" />
+        <Compile Include="Features\PingCode\Exception\ApiAuthException.cs" />
+        <Compile Include="Features\PingCode\Exception\ApiForbiddenException.cs" />
+        <Compile Include="Features\PingCode\Exception\ApiNotFoundException.cs" />
+        <Compile Include="Features\PingCode\Model\Entity.cs" />
+        <Compile Include="Features\PingCode\Model\StatePlanInfo.cs" />
+        <Compile Include="Features\PingCode\Model\StoryPointBreakdown.cs" />
+        <Compile Include="Features\PingCode\Model\WorkItemComment.cs" />
+        <Compile Include="Features\PingCode\Model\WorkItemDetails.cs" />
+        <Compile Include="Features\PingCode\Models\MemberStatsItem.cs" />
+        <Compile Include="Features\PingCode\Services\PingCodeApiService.cs" />
+        <Compile Include="Features\PingCode\Services\PingCodeApiService.Attachments.cs" />
+        <Compile Include="Features\PingCode\Services\PingCodeApiService.Authentication.cs" />
+        <Compile Include="Features\PingCode\Services\PingCodeApiService.Http.cs" />
+        <Compile Include="Features\PingCode\Services\PingCodeApiService.Parsing.cs" />
+        <Compile Include="Features\PingCode\Services\PingCodeApiService.Partials.cs" />
+        <Compile Include="Features\PingCode\Views\KanbanColumn.cs" />
+        <Page Include="Features\PingCode\Views\KanbanStatsPage.xaml" />
+        <Compile Include="Features\PingCode\Views\KanbanStatsPage.xaml.cs" />
+        <Page Include="Features\PingCode\Views\WorkItemDetailsWindow.xaml" />
+        <Compile Include="Features\PingCode\Views\WorkItemDetailsWindow.xaml.cs">
+          <DependentUpon>WorkItemDetailsWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Page Include="Features\PingCode\Views\WorkItemKanbanWindow.xaml" />
+        <Compile Include="Features\PingCode\Views\WorkItemKanbanWindow.xaml.cs">
+          <DependentUpon>WorkItemKanbanWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Page Include="Features\PingCode\Views\WorkItemCard.xaml" />
+        <Compile Include="Features\PingCode\Views\WorkItemCard.xaml.cs">
+          <DependentUpon>WorkItemCard.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+
+        <!-- Features/LanTransfer -->
+        <Compile Include="Features\LanTransfer\Models\LanTransferModels.cs" />
+        <Compile Include="Features\LanTransfer\Services\LanTransferService.cs" />
+        <Compile Include="Features\LanTransfer\Services\LanDiscoveryService.cs" />
+        <Compile Include="Features\LanTransfer\Services\LanTransferHostService.cs" />
+        <Compile Include="Features\LanTransfer\Services\LanTransferLogger.cs" />
+        <Page Include="Features\LanTransfer\Views\LanTransferPage.xaml" />
+        <Compile Include="Features\LanTransfer\Views\LanTransferPage.xaml.cs">
           <DependentUpon>LanTransferPage.xaml</DependentUpon>
           <SubType>Code</SubType>
         </Compile>
-        <Compile Include="Views\SecretChatWindow.xaml.cs">
+        <Page Include="Features\LanTransfer\Views\SecretChatWindow.xaml" />
+        <Compile Include="Features\LanTransfer\Views\SecretChatWindow.xaml.cs">
           <DependentUpon>SecretChatWindow.xaml</DependentUpon>
           <SubType>Code</SubType>
         </Compile>
+        <Page Include="Features\LanTransfer\Views\LanTransferConfirmWindow.xaml" />
+        <Compile Include="Features\LanTransfer\Views\LanTransferConfirmWindow.xaml.cs">
+          <DependentUpon>LanTransferConfirmWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+
+        <!-- Features/QuickLaunch -->
+        <Compile Include="Features\QuickLaunch\Services\PinyinMatcher.cs" />
+        <Compile Include="Features\QuickLaunch\Services\CommonStartupWindowManager.cs" />
+        <Compile Include="Features\QuickLaunch\Services\CommonStartupHotkeyService.cs" />
+        <Compile Include="Features\QuickLaunch\Services\SystemHotkeyService.cs" />
+        <Compile Include="Features\QuickLaunch\Services\RawInputHotkeySource.cs" />
+        <Page Include="Features\QuickLaunch\Views\CommonStartupWindow.xaml">
+          <Generator>MSBuild:Compile</Generator>
+          <SubType>Designer</SubType>
+        </Page>
+        <Compile Include="Features\QuickLaunch\Views\CommonStartupWindow.xaml.cs">
+          <DependentUpon>CommonStartupWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Page Include="Features\QuickLaunch\Views\StartupItemEditWindow.xaml">
+          <Generator>MSBuild:Compile</Generator>
+          <SubType>Designer</SubType>
+        </Page>
+        <Compile Include="Features\QuickLaunch\Views\StartupItemEditWindow.xaml.cs">
+          <DependentUpon>StartupItemEditWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+
+        <!-- Features/FileSearch -->
+        <Compile Include="Features\FileSearch\Services\FileSearchWindowManager.cs" />
+        <Compile Include="Features\FileSearch\Services\IndexHostTaskService.cs" />
+
+        <!-- Features/RevitTools -->
+        <Compile Include="Features\RevitTools\Models\PluginAddinInfo.cs" />
+        <Compile Include="Features\RevitTools\Services\RevitProcessService.cs" />
+        <Compile Include="Features\RevitTools\Services\RevitCleanup\EverythingIndexProvider.cs" />
+        <Compile Include="Features\RevitTools\Services\RevitCleanup\LocalIndexProvider.cs" />
+        <Compile Include="Features\RevitTools\Services\RevitCleanup\MftIndexProvider.cs" />
+        <Compile Include="Features\RevitTools\Services\RevitCleanup\RevitFileQueryModels.cs" />
+        <Compile Include="Features\RevitTools\Services\RevitCleanup\RevitFileQueryService.cs" />
+        <Compile Include="Features\RevitTools\Services\RevitCleanup\RevitLocalIndexStore.cs" />
+        <Page Include="Features\RevitTools\Views\PluginManagementPage.xaml" />
+        <Compile Include="Features\RevitTools\Views\PluginManagementPage.xaml.cs" />
+        <Page Include="Features\RevitTools\Views\RevitFileCleanupWindow.xaml" />
+        <Compile Include="Features\RevitTools\Views\RevitFileCleanupWindow.xaml.cs">
+          <DependentUpon>RevitFileCleanupWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+
+        <!-- Features/DevTools -->
+        <Page Include="Features\DevTools\DnsEditor\DnsEditDialog.xaml" />
+        <Compile Include="Features\DevTools\DnsEditor\DnsEditDialog.xaml.cs">
+          <DependentUpon>DnsEditDialog.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Page Include="Features\DevTools\DnsEditor\DnsSettingsWindow.xaml" />
+        <Compile Include="Features\DevTools\DnsEditor\DnsSettingsWindow.xaml.cs">
+          <DependentUpon>DnsSettingsWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Page Include="Features\DevTools\CsvCrypto\CsvCryptoWindow.xaml">
+          <Generator>MSBuild:Compile</Generator>
+          <SubType>Designer</SubType>
+        </Page>
+        <Compile Include="Features\DevTools\CsvCrypto\CsvCryptoWindow.xaml.cs">
+          <DependentUpon>CsvCryptoWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Page Include="Features\DevTools\SlnUpdater\SlnUpdateWindow.xaml" />
+        <Compile Include="Features\DevTools\SlnUpdater\SlnUpdateWindow.xaml.cs">
+          <DependentUpon>SlnUpdateWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Compile Include="Features\DevTools\SlnUpdater\Updater.cs" />
+        <Page Include="Features\DevTools\FileUnlock\UnlockFilesWindow.xaml" />
+        <Compile Include="Features\DevTools\FileUnlock\UnlockFilesWindow.xaml.cs">
+          <DependentUpon>UnlockFilesWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Page Include="Features\DevTools\ConfigPreset\AddPresetWindow.xaml" />
+        <Compile Include="Features\DevTools\ConfigPreset\AddPresetWindow.xaml.cs" />
+        <Page Include="Features\DevTools\ConfigPreset\ConfigPresetWindow.xaml" />
+        <Compile Include="Features\DevTools\ConfigPreset\ConfigPresetWindow.xaml.cs">
+          <DependentUpon>ConfigPresetWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Compile Include="Features\DevTools\ConfigPreset\ConfigPresetStore.cs" />
+        <Compile Include="Features\DevTools\ConfigPreset\ConfigPreset.cs" />
+        <Compile Include="Features\DevTools\GitProxy\GitProxyService.cs" />
+        <Compile Include="Features\DevTools\JenkinsCI\JenkinsBuildService.cs" />
+
+        <!-- Features/Logs -->
+        <Compile Include="Features\Logs\Models\LogEntry.cs" />
+        <Compile Include="Features\Logs\Models\ProductLogInfo.cs" />
+        <Page Include="Features\Logs\Views\LogViewerPage.xaml" />
+        <Compile Include="Features\Logs\Views\LogViewerPage.xaml.cs" />
+        <Page Include="Features\Logs\Views\ProductLogsPage.xaml" />
+        <Compile Include="Features\Logs\Views\ProductLogsPage.xaml.cs" />
+        <Page Include="Features\Logs\Views\LogViewerWindow.xaml">
+          <Generator>MSBuild:Compile</Generator>
+          <SubType>Designer</SubType>
+        </Page>
+        <Compile Include="Features\Logs\Views\LogViewerWindow.xaml.cs">
+          <DependentUpon>LogViewerWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Page Include="Features\Logs\Views\LogDetailsWindow.xaml">
+          <Generator>MSBuild:Compile</Generator>
+          <SubType>Designer</SubType>
+        </Page>
+        <Compile Include="Features\Logs\Views\LogDetailsWindow.xaml.cs">
+          <DependentUpon>LogDetailsWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Page Include="Features\Logs\Views\ProductLogsWindow.xaml" />
+        <Compile Include="Features\Logs\Views\ProductLogsWindow.xaml.cs" />
+
+        <!-- Features/Settings -->
+        <Compile Include="Features\Settings\Models\VisibilityItem.cs" />
+        <Compile Include="Features\Settings\Services\DebugSettingsService.cs" />
+        <Compile Include="Features\Settings\Services\AppUpdateService.cs" />
+        <Page Include="Features\Settings\Views\SettingsPage.xaml" />
+        <Compile Include="Features\Settings\Views\SettingsPage.xaml.cs" />
+        <Page Include="Features\Settings\Views\DebugOptionsWindow.xaml" />
+        <Compile Include="Features\Settings\Views\DebugOptionsWindow.xaml.cs">
+          <DependentUpon>DebugOptionsWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Page Include="Features\Settings\Views\SettingsWindow.xaml" />
+        <Compile Include="Features\Settings\Views\SettingsWindow.xaml.cs" />
+
+        <!-- Tools (shared compile) -->
+        <Compile Include="Tools\MftScanner.Core\IndexPerfLog.cs" />
     </ItemGroup>
     <ItemGroup>
         <EmbeddedResource Include="Assets\kiro-rs\a.cmd" />
@@ -353,7 +396,7 @@
         <Content Include="Assets\Tools\UnlockProcessAdmin.exe" />
         <Content Include="Models\json.txt" />
         <Content Include="scripts\Test-MftScannerSearchCorrectness.ps1" />
-        <Content Include="Views\WorkItemKanban.html">
+        <Content Include="Features\PingCode\Views\WorkItemKanban.html">
             <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
         </Content>
     </ItemGroup>
@@ -428,7 +471,7 @@
     <ItemGroup>
       <EmbeddedResource Include="Assets\Tools\Autodesk.Universal.Activation.Tools_1.3.3.1_x64_CHS_BDGroup-lab.com\**\*" />
       <EmbeddedResource Include="CHANGELOG.md" />
-        <EmbeddedResource Include="Views\Templates\workitem-details.html" />
+        <EmbeddedResource Include="Features\PingCode\Templates\workitem-details.html" />
         <EmbeddedResource Include="Assets\Tools\runtimes\win-x64\native\WebView2Loader.dll" />
         <EmbeddedResource Include="Assets\Tools\runtimes\win-x86\native\WebView2Loader.dll" />
         <EmbeddedResource Include="Assets\Tools\runtimes\win-arm64\native\WebView2Loader.dll" />

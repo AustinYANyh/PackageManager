@@ -1,0 +1,1194 @@
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Net.Sockets;
+using System.Threading;
+using System.Threading.Tasks;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
+
+namespace PackageManager.Services;
+
+/// <summary>
+/// 局域网文件传输主机服务，负责监听传入连接、处理传输请求和密语会话。
+/// </summary>
+internal sealed class LanTransferHostService : IDisposable
+{
+    internal const int DefaultPort = 48931;
+    internal const int MaxPortProbeCount = 12;
+
+    private readonly Func<LanHostConfiguration> _configurationProvider;
+    private readonly Func<LanTransferRequest, Task<LanIncomingTransferDecision>> _requestApprovalAsync;
+    private readonly Func<LanSecretChatSessionRequest, Task<bool>> _secretChatApprovalAsync;
+    private readonly Action<LanSecretChatSessionRequest> _secretChatAccepted;
+    private readonly ConcurrentDictionary<string, CancellationTokenSource> _incomingTransferCancels = new ConcurrentDictionary<string, CancellationTokenSource>(StringComparer.OrdinalIgnoreCase);
+    private readonly CancellationTokenSource _cts = new CancellationTokenSource();
+
+    private TcpListener _listener;
+    private Task _acceptLoopTask;
+
+    /// <summary>
+    /// 初始化 <see cref="LanTransferHostService"/> 的新实例。
+    /// </summary>
+    /// <param name="configurationProvider">用于获取本机主机配置的延迟委托。</param>
+    /// <param name="requestApprovalAsync">当收到传输请求时的审批回调，返回是否接受及收件箱路径。</param>
+    /// <param name="secretChatApprovalAsync">当收到密语会话请求时的审批回调，可选。</param>
+    /// <param name="secretChatAccepted">密语会话被接受后的通知回调，可选。</param>
+    /// <exception cref="ArgumentNullException"><paramref name="configurationProvider"/> 或 <paramref name="requestApprovalAsync"/> 为 null。</exception>
+    public LanTransferHostService(
+        Func<LanHostConfiguration> configurationProvider,
+        Func<LanTransferRequest, Task<LanIncomingTransferDecision>> requestApprovalAsync,
+        Func<LanSecretChatSessionRequest, Task<bool>> secretChatApprovalAsync = null,
+        Action<LanSecretChatSessionRequest> secretChatAccepted = null)
+    {
+        _configurationProvider = configurationProvider ?? throw new ArgumentNullException(nameof(configurationProvider));
+        _requestApprovalAsync = requestApprovalAsync ?? throw new ArgumentNullException(nameof(requestApprovalAsync));
+        _secretChatApprovalAsync = secretChatApprovalAsync;
+        _secretChatAccepted = secretChatAccepted;
+    }
+
+    /// <summary>当前监听端口号。</summary>
+    public int ListenPort { get; private set; }
+
+    /// <summary>当传输会话开始时触发。</summary>
+    public event Action<LanTransferSession> SessionStarted;
+
+    /// <summary>当传输会话完成（成功、失败或取消）时触发。</summary>
+    public event Action<LanTransferSession> SessionCompleted;
+
+    /// <summary>当接收完成并记录传输历史时触发。</summary>
+    public event Action<LanTransferRecord> ReceiveRecorded;
+
+    /// <summary>当收到密语消息时触发。</summary>
+    public event Action<LanSecretMessageFrame> SecretMessageReceived;
+
+    /// <summary>当收到密语回执（已读/销毁）时触发。</summary>
+    public event Action<LanSecretReceiptFrame> SecretReceiptReceived;
+
+    /// <summary>
+    /// 启动 TCP 监听，从默认端口开始尝试，最多探测 <see cref="MaxPortProbeCount"/> 个端口。
+    /// </summary>
+    /// <exception cref="InvalidOperationException">所有候选端口均绑定失败。</exception>
+    public void Start()
+    {
+        if (_listener != null)
+        {
+            return;
+        }
+
+        Exception lastError = null;
+        for (var i = 0; i < MaxPortProbeCount; i++)
+        {
+            var port = DefaultPort + i;
+            try
+            {
+                var listener = new TcpListener(IPAddress.Any, port);
+                listener.Start();
+                _listener = listener;
+                ListenPort = port;
+                _acceptLoopTask = Task.Run(() => AcceptLoopAsync(_cts.Token));
+                LanTransferLogger.LogInfo($"文件传输监听已启动，端口 {ListenPort}");
+                return;
+            }
+            catch (Exception ex)
+            {
+                lastError = ex;
+            }
+        }
+
+        throw new InvalidOperationException("文件传输监听启动失败", lastError);
+    }
+
+    /// <summary>
+    /// 取消指定的传入传输任务。
+    /// </summary>
+    /// <param name="transferId">传输标识。</param>
+    public void CancelIncomingTransfer(string transferId)
+    {
+        if (string.IsNullOrWhiteSpace(transferId))
+        {
+            return;
+        }
+
+        if (_incomingTransferCancels.TryGetValue(transferId, out var cts))
+        {
+            cts.Cancel();
+        }
+    }
+
+    /// <summary>
+    /// 停止监听、取消所有传入传输并释放资源。
+    /// </summary>
+    public void Dispose()
+    {
+        _cts.Cancel();
+        try
+        {
+            _listener?.Stop();
+        }
+        catch
+        {
+        }
+
+        foreach (var pair in _incomingTransferCancels)
+        {
+            pair.Value.Cancel();
+            pair.Value.Dispose();
+        }
+
+        _incomingTransferCancels.Clear();
+    }
+
+    /// <summary>
+    /// 向指定远端探测握手，发送 hello 帧并等待应答。
+    /// </summary>
+    /// <param name="hostOrAddress">目标主机名或 IP 地址。</param>
+    /// <param name="port">目标端口号。</param>
+    /// <param name="localConfiguration">本机配置，用于构建握手帧。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>远端的握手应答帧，若连接失败则返回 null。</returns>
+    public static async Task<LanHelloAckFrame> ProbePeerAsync(string hostOrAddress, int port, LanHostConfiguration localConfiguration, CancellationToken cancellationToken)
+    {
+        using (var client = new TcpClient())
+        {
+            await client.ConnectAsync(hostOrAddress, port);
+            using (var stream = client.GetStream())
+            {
+                var hello = new LanHelloFrame
+                {
+                    Type = "hello",
+                    ProtocolVersion = LanTransferProtocol.ProtocolVersion,
+                    DeviceId = localConfiguration?.DeviceId,
+                    DisplayName = localConfiguration?.DisplayName,
+                    MachineName = localConfiguration?.MachineName,
+                    AppVersion = localConfiguration?.AppVersion,
+                    Capabilities = localConfiguration?.Capabilities,
+                    SecretChatPublicKey = localConfiguration?.SecretChatPublicKey,
+                };
+
+                await LanTransferWireProtocol.WriteFrameAsync(stream, hello, cancellationToken);
+                var ackObject = await LanTransferWireProtocol.ReadFrameAsync(stream, cancellationToken);
+                return ackObject?.ToObject<LanHelloAckFrame>();
+            }
+        }
+    }
+
+    private async Task AcceptLoopAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            TcpClient client = null;
+            try
+            {
+                client = await _listener.AcceptTcpClientAsync();
+                _ = Task.Run(() => HandleClientAsync(client, cancellationToken), cancellationToken);
+            }
+            catch (ObjectDisposedException)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                client?.Dispose();
+                if (!cancellationToken.IsCancellationRequested)
+                {
+                    LanTransferLogger.LogError(ex, "接受局域网连接失败");
+                }
+            }
+        }
+    }
+
+    private async Task HandleClientAsync(TcpClient client, CancellationToken cancellationToken)
+    {
+        using (client)
+        using (var stream = client.GetStream())
+        {
+            stream.ReadTimeout = 30000;
+            stream.WriteTimeout = 30000;
+
+            try
+            {
+                var helloObject = await LanTransferWireProtocol.ReadFrameAsync(stream, cancellationToken);
+                var hello = helloObject?.ToObject<LanHelloFrame>();
+                if ((hello == null) || !string.Equals(hello.Type, "hello", StringComparison.OrdinalIgnoreCase))
+                {
+                    return;
+                }
+
+                var config = _configurationProvider();
+                var compatible = hello.ProtocolVersion == LanTransferProtocol.ProtocolVersion;
+                var helloAck = new LanHelloAckFrame
+                {
+                    Type = "helloAck",
+                    ProtocolVersion = LanTransferProtocol.ProtocolVersion,
+                    Compatible = compatible,
+                    DeviceId = config?.DeviceId,
+                    DisplayName = config?.DisplayName,
+                    MachineName = config?.MachineName,
+                    AppVersion = config?.AppVersion,
+                    Capabilities = config?.Capabilities,
+                    SecretChatPublicKey = config?.SecretChatPublicKey,
+                    Message = compatible ? "OK" : "协议版本不兼容",
+                };
+
+                await LanTransferWireProtocol.WriteFrameAsync(stream, helloAck, cancellationToken);
+                if (!compatible)
+                {
+                    return;
+                }
+
+                var nextFrameObject = await LanTransferWireProtocol.ReadFrameAsync(stream, cancellationToken);
+                if (nextFrameObject == null)
+                {
+                    return;
+                }
+
+                var frameType = nextFrameObject.Value<string>("Type");
+                if (string.Equals(frameType, "transferRequest", StringComparison.OrdinalIgnoreCase))
+                {
+                    await HandleTransferRequestAsync(stream, nextFrameObject, hello, cancellationToken);
+                }
+                else if (string.Equals(frameType, "secretSessionRequest", StringComparison.OrdinalIgnoreCase))
+                {
+                    await HandleSecretSessionRequestAsync(stream, nextFrameObject, hello, cancellationToken);
+                }
+                else if (string.Equals(frameType, "secretMessage", StringComparison.OrdinalIgnoreCase))
+                {
+                    SecretMessageReceived?.Invoke(nextFrameObject.ToObject<LanSecretMessageFrame>());
+                }
+                else if (string.Equals(frameType, "secretReadReceipt", StringComparison.OrdinalIgnoreCase)
+                         || string.Equals(frameType, "secretDestroy", StringComparison.OrdinalIgnoreCase))
+                {
+                    SecretReceiptReceived?.Invoke(nextFrameObject.ToObject<LanSecretReceiptFrame>());
+                }
+            }
+            catch (EndOfStreamException)
+            {
+            }
+            catch (IOException)
+            {
+            }
+            catch (Exception ex)
+            {
+                LanTransferLogger.LogError(ex, "处理局域网传输连接失败");
+            }
+        }
+    }
+
+    private async Task HandleSecretSessionRequestAsync(NetworkStream stream, JObject requestObject, LanHelloFrame hello, CancellationToken cancellationToken)
+    {
+        var requestFrame = requestObject.ToObject<LanSecretSessionRequestFrame>();
+        if ((requestFrame == null) || string.IsNullOrWhiteSpace(requestFrame.SessionId))
+        {
+            return;
+        }
+
+        var request = new LanSecretChatSessionRequest
+        {
+            SessionId = requestFrame.SessionId,
+            PeerDeviceId = hello.DeviceId,
+            PeerDisplayName = requestFrame.SenderDisplayName ?? hello.DisplayName,
+            PeerMachineName = requestFrame.SenderMachineName ?? hello.MachineName,
+            PeerAddress = requestFrame.SenderAddress,
+            PeerPort = requestFrame.SenderPort,
+            PeerPublicKey = hello.SecretChatPublicKey,
+        };
+
+        var accepted = _secretChatApprovalAsync != null && await _secretChatApprovalAsync(request);
+        await LanTransferWireProtocol.WriteFrameAsync(stream, new LanSecretSessionResponseFrame
+        {
+            Type = "secretSessionAccept",
+            SessionId = request.SessionId,
+            Accepted = accepted,
+            Message = accepted ? "OK" : "对方拒绝密语请求",
+        }, cancellationToken);
+
+        if (accepted)
+        {
+            _secretChatAccepted?.Invoke(request);
+        }
+    }
+
+    private async Task HandleTransferRequestAsync(NetworkStream stream, JObject requestObject, LanHelloFrame hello, CancellationToken serverCancellationToken)
+    {
+        var requestFrame = requestObject.ToObject<LanTransferRequestFrame>();
+        if ((requestFrame == null) || string.IsNullOrWhiteSpace(requestFrame.TransferId))
+        {
+            return;
+        }
+
+        var request = new LanTransferRequest
+        {
+            TransferId = requestFrame.TransferId,
+            SenderDeviceId = hello.DeviceId,
+            SenderDisplayName = requestFrame.SenderDisplayName ?? hello.DisplayName,
+            SenderMachineName = requestFrame.SenderMachineName ?? hello.MachineName,
+            SenderAddress = requestFrame.SenderAddress,
+            SenderPort = requestFrame.SenderPort,
+            Items = requestFrame.Items ?? new List<LanTransferItem>(),
+            TopLevelNames = requestFrame.TopLevelNames ?? new List<string>(),
+            TotalBytes = requestFrame.TotalBytes,
+            StatusText = "等待确认",
+        };
+
+        var decision = await _requestApprovalAsync(request) ?? LanIncomingTransferDecision.Reject("接收方拒绝");
+        if (!decision.Accepted)
+        {
+            await LanTransferWireProtocol.WriteFrameAsync(stream, new LanTransferResponseFrame
+            {
+                Type = "transferResponse",
+                Accepted = false,
+                Message = string.IsNullOrWhiteSpace(decision.Message) ? "接收方拒绝" : decision.Message,
+            }, serverCancellationToken);
+            return;
+        }
+
+        var config = _configurationProvider();
+        var inboxPath = string.IsNullOrWhiteSpace(decision.InboxPath) ? config?.InboxPath : decision.InboxPath;
+        var silentOverwrite = decision.SilentOverwrite || (config?.SilentOverwrite ?? false);
+        var preparedPath = PrepareReceiveDirectories(inboxPath);
+
+        try
+        {
+            EnsureInboxReady(inboxPath, request.TotalBytes);
+            Directory.CreateDirectory(preparedPath.TempDirectory);
+        }
+        catch (Exception ex)
+        {
+            await LanTransferWireProtocol.WriteFrameAsync(stream, new LanTransferResponseFrame
+            {
+                Type = "transferResponse",
+                Accepted = false,
+                Message = ex.Message,
+            }, serverCancellationToken);
+            LanTransferLogger.LogError(ex, "创建接收目录失败");
+            return;
+        }
+
+        await LanTransferWireProtocol.WriteFrameAsync(stream, new LanTransferResponseFrame
+        {
+            Type = "transferResponse",
+            Accepted = true,
+            SaveDirectory = preparedPath.FinalDirectory,
+            Message = "接收方已同意",
+        }, serverCancellationToken);
+
+        var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(serverCancellationToken);
+        _incomingTransferCancels[request.TransferId] = linkedCts;
+
+        var session = new LanTransferSession
+        {
+            TransferId = request.TransferId,
+            Direction = "Receive",
+            PeerDisplayName = request.SenderLabel,
+            Summary = request.TopLevelSummary,
+            StatusText = "正在接收",
+            TotalBytes = request.TotalBytes,
+            BytesTransferred = 0,
+            CanCancel = true,
+        };
+
+        SessionStarted?.Invoke(session);
+
+        try
+        {
+            await ReceiveFilesAsync(stream, preparedPath.TempDirectory, session, linkedCts.Token);
+            CommitReceivedItems(preparedPath.TempDirectory, preparedPath.FinalDirectory, request, silentOverwrite);
+            session.StatusText = "接收完成";
+            session.CanCancel = false;
+
+            ReceiveRecorded?.Invoke(new LanTransferRecord
+            {
+                TransferId = request.TransferId,
+                Direction = "Receive",
+                PeerDisplayName = request.SenderLabel,
+                PeerAddress = request.SenderAddress,
+                ItemCount = request.ItemCount,
+                TotalBytes = request.TotalBytes,
+                Status = "成功",
+                Summary = request.TopLevelSummary,
+                TargetPath = preparedPath.FinalDirectory,
+                StartedAtUtc = request.ReceivedAtUtc,
+                CompletedAtUtc = DateTime.UtcNow,
+                Detail = "接收成功",
+            });
+
+            LanTransferLogger.LogInfo($"接收完成：{request.SenderLabel} -> {preparedPath.FinalDirectory}");
+        }
+        catch (OperationCanceledException)
+        {
+            session.StatusText = "已取消";
+            session.CanCancel = false;
+            TryDeleteDirectory(preparedPath.TempDirectory);
+            await TrySendCancelAsync(stream, linkedCts.Token, "接收方取消");
+
+            ReceiveRecorded?.Invoke(new LanTransferRecord
+            {
+                TransferId = request.TransferId,
+                Direction = "Receive",
+                PeerDisplayName = request.SenderLabel,
+                PeerAddress = request.SenderAddress,
+                ItemCount = request.ItemCount,
+                TotalBytes = request.TotalBytes,
+                Status = "已取消",
+                Summary = request.TopLevelSummary,
+                TargetPath = preparedPath.FinalDirectory,
+                StartedAtUtc = request.ReceivedAtUtc,
+                CompletedAtUtc = DateTime.UtcNow,
+                Detail = "接收方取消",
+            });
+        }
+        catch (Exception ex)
+        {
+            session.StatusText = "接收失败";
+            session.CanCancel = false;
+            TryDeleteDirectory(preparedPath.TempDirectory);
+            await TrySendErrorAsync(stream, linkedCts.Token, ex.Message);
+
+            ReceiveRecorded?.Invoke(new LanTransferRecord
+            {
+                TransferId = request.TransferId,
+                Direction = "Receive",
+                PeerDisplayName = request.SenderLabel,
+                PeerAddress = request.SenderAddress,
+                ItemCount = request.ItemCount,
+                TotalBytes = request.TotalBytes,
+                Status = "失败",
+                Summary = request.TopLevelSummary,
+                TargetPath = preparedPath.FinalDirectory,
+                StartedAtUtc = request.ReceivedAtUtc,
+                CompletedAtUtc = DateTime.UtcNow,
+                Detail = ex.Message,
+            });
+
+            LanTransferLogger.LogError(ex, $"接收传输失败：{request.TransferId}");
+        }
+        finally
+        {
+            _incomingTransferCancels.TryRemove(request.TransferId, out _);
+            linkedCts.Dispose();
+            SessionCompleted?.Invoke(session);
+        }
+    }
+
+    private static void EnsureInboxReady(string inboxPath, long totalBytes)
+    {
+        if (string.IsNullOrWhiteSpace(inboxPath))
+        {
+            throw new InvalidOperationException("未配置收件箱目录。");
+        }
+
+        Directory.CreateDirectory(inboxPath);
+        var probeFile = Path.Combine(inboxPath, ".pm_write_test.tmp");
+        File.WriteAllText(probeFile, "ok");
+        File.Delete(probeFile);
+
+        var root = Path.GetPathRoot(inboxPath);
+        if (string.IsNullOrWhiteSpace(root))
+        {
+            return;
+        }
+
+        var drive = new DriveInfo(root);
+        if (drive.AvailableFreeSpace < (totalBytes + (32L * 1024 * 1024)))
+        {
+            throw new IOException("目标磁盘剩余空间不足。");
+        }
+    }
+
+    private static async Task ReceiveFilesAsync(NetworkStream stream, string tempDirectory, LanTransferSession session, CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var frameObject = await LanTransferWireProtocol.ReadFrameAsync(stream, cancellationToken);
+            var frameType = frameObject?.Value<string>("Type");
+            if (string.Equals(frameType, "complete", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            if (string.Equals(frameType, "cancel", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new IOException(frameObject.Value<string>("Message") ?? "发送方已取消传输。");
+            }
+
+            if (string.Equals(frameType, "error", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new IOException(frameObject.Value<string>("Message") ?? "发送方发生错误。");
+            }
+
+            if (!string.Equals(frameType, "fileHeader", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new IOException("收到未知传输帧。");
+            }
+
+            var header = frameObject.ToObject<LanFileHeaderFrame>();
+            var safeRelativePath = NormalizeRelativePath(header.RelativePath);
+            var targetPath = Path.Combine(tempDirectory, safeRelativePath);
+            if (header.IsDirectory)
+            {
+                Directory.CreateDirectory(targetPath);
+                continue;
+            }
+
+            var parentDirectory = Path.GetDirectoryName(targetPath);
+            if (!string.IsNullOrWhiteSpace(parentDirectory))
+            {
+                Directory.CreateDirectory(parentDirectory);
+            }
+
+            await LanTransferWireProtocol.CopyFixedLengthToFileAsync(stream, targetPath, header.Length, cancellationToken, transferredBytes =>
+            {
+                session.BytesTransferred += transferredBytes;
+            });
+        }
+    }
+
+    private static string NormalizeRelativePath(string relativePath)
+    {
+        if (string.IsNullOrWhiteSpace(relativePath))
+        {
+            throw new IOException("收到空的相对路径。");
+        }
+
+        var replaced = relativePath.Replace('/', Path.DirectorySeparatorChar).Replace('\\', Path.DirectorySeparatorChar);
+        if (Path.IsPathRooted(replaced))
+        {
+            throw new IOException("收到非法绝对路径。");
+        }
+
+        var full = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "pm-lan-sandbox", replaced));
+        var root = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "pm-lan-sandbox"));
+        if (!full.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new IOException("收到越界相对路径。");
+        }
+
+        return replaced.TrimStart(Path.DirectorySeparatorChar);
+    }
+
+    private static LanPreparedReceivePath PrepareReceiveDirectories(string inboxPath)
+    {
+        var tempDirectory = Path.Combine(inboxPath, ".pm_lan_receive_" + Guid.NewGuid().ToString("N"));
+        return new LanPreparedReceivePath
+        {
+            FinalDirectory = inboxPath,
+            TempDirectory = tempDirectory,
+        };
+    }
+
+    private static void CommitReceivedItems(string tempDirectory, string inboxPath, LanTransferRequest request, bool silentOverwrite)
+    {
+        Directory.CreateDirectory(inboxPath);
+
+        var topLevelNames = GetReceiveTopLevelNames(request, tempDirectory);
+        foreach (var topLevelName in topLevelNames)
+        {
+            var sourcePath = Path.Combine(tempDirectory, topLevelName);
+            if (!File.Exists(sourcePath) && !Directory.Exists(sourcePath))
+            {
+                continue;
+            }
+
+            var destinationPath = Path.Combine(inboxPath, topLevelName);
+            var isDirectory = Directory.Exists(sourcePath);
+            if (silentOverwrite)
+            {
+                DeleteExistingDestination(destinationPath);
+            }
+            else
+            {
+                destinationPath = GetNonConflictingPath(destinationPath, isDirectory);
+            }
+
+            if (isDirectory)
+            {
+                Directory.Move(sourcePath, destinationPath);
+            }
+            else
+            {
+                File.Move(sourcePath, destinationPath);
+            }
+        }
+
+        TryDeleteDirectory(tempDirectory);
+    }
+
+    private static List<string> GetReceiveTopLevelNames(LanTransferRequest request, string tempDirectory)
+    {
+        var actualNames = Directory.EnumerateFileSystemEntries(tempDirectory)
+            .Select(Path.GetFileName)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .ToList();
+
+        var requestedNames = (request.TopLevelNames ?? new List<string>())
+            .Select(name => NormalizeRelativePath(name))
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Select(name => name.Split(Path.DirectorySeparatorChar)[0])
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return requestedNames
+            .Where(name => actualNames.Contains(name, StringComparer.OrdinalIgnoreCase))
+            .Concat(actualNames.Where(name => !requestedNames.Contains(name, StringComparer.OrdinalIgnoreCase)))
+            .ToList();
+    }
+
+    private static void DeleteExistingDestination(string destinationPath)
+    {
+        if (File.Exists(destinationPath))
+        {
+            File.Delete(destinationPath);
+        }
+
+        if (Directory.Exists(destinationPath))
+        {
+            Directory.Delete(destinationPath, true);
+        }
+    }
+
+    private static string GetNonConflictingPath(string destinationPath, bool isDirectory)
+    {
+        if (!File.Exists(destinationPath) && !Directory.Exists(destinationPath))
+        {
+            return destinationPath;
+        }
+
+        var directory = Path.GetDirectoryName(destinationPath);
+        var fileName = isDirectory ? Path.GetFileName(destinationPath) : Path.GetFileNameWithoutExtension(destinationPath);
+        var extension = isDirectory ? string.Empty : Path.GetExtension(destinationPath);
+
+        for (var index = 1; index < 10000; index++)
+        {
+            var candidateName = string.IsNullOrEmpty(extension)
+                ? $"{fileName} ({index})"
+                : $"{fileName} ({index}){extension}";
+            var candidatePath = Path.Combine(directory ?? string.Empty, candidateName);
+            if (!File.Exists(candidatePath) && !Directory.Exists(candidatePath))
+            {
+                return candidatePath;
+            }
+        }
+
+        throw new IOException("无法生成不冲突的保存路径。");
+    }
+
+    private static void TryDeleteDirectory(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+            {
+                Directory.Delete(path, true);
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private static async Task TrySendCancelAsync(NetworkStream stream, CancellationToken cancellationToken, string message)
+    {
+        try
+        {
+            await LanTransferWireProtocol.WriteFrameAsync(stream, new LanCancelFrame
+            {
+                Type = "cancel",
+                Message = message,
+            }, cancellationToken);
+        }
+        catch
+        {
+        }
+    }
+
+    private static async Task TrySendErrorAsync(NetworkStream stream, CancellationToken cancellationToken, string message)
+    {
+        try
+        {
+            await LanTransferWireProtocol.WriteFrameAsync(stream, new LanErrorFrame
+            {
+                Type = "error",
+                Message = message,
+            }, cancellationToken);
+        }
+        catch
+        {
+        }
+    }
+}
+
+/// <summary>
+/// 文件传输主机的本机配置信息。
+/// </summary>
+internal sealed class LanHostConfiguration
+{
+    /// <summary>设备唯一标识。</summary>
+    public string DeviceId { get; set; }
+
+    /// <summary>用户显示名称。</summary>
+    public string DisplayName { get; set; }
+
+    /// <summary>机器名称。</summary>
+    public string MachineName { get; set; }
+
+    /// <summary>应用程序版本号。</summary>
+    public string AppVersion { get; set; }
+
+    /// <summary>收件箱目录路径。</summary>
+    public string InboxPath { get; set; }
+
+    /// <summary>接收文件时是否静默覆盖同名文件或目录。</summary>
+    public bool SilentOverwrite { get; set; }
+
+    /// <summary>设备支持的能力列表。</summary>
+    public List<string> Capabilities { get; set; } = new List<string>();
+
+    /// <summary>密语聊天的 RSA 公钥（XML 格式）。</summary>
+    public string SecretChatPublicKey { get; set; }
+}
+
+/// <summary>
+/// 传入传输请求的审批决定。
+/// </summary>
+internal sealed class LanIncomingTransferDecision
+{
+    /// <summary>是否接受传输。</summary>
+    public bool Accepted { get; set; }
+
+    /// <summary>附加消息，如拒绝原因。</summary>
+    public string Message { get; set; }
+
+    /// <summary>自定义收件箱路径，为 null 时使用默认路径。</summary>
+    public string InboxPath { get; set; }
+
+    /// <summary>是否静默覆盖同名文件或目录。</summary>
+    public bool SilentOverwrite { get; set; }
+
+    /// <summary>
+    /// 创建一个接受传输的决定。
+    /// </summary>
+    /// <param name="inboxPath">收件箱路径。</param>
+    /// <returns>接受决定。</returns>
+    public static LanIncomingTransferDecision Accept(string inboxPath, bool silentOverwrite = false)
+    {
+        return new LanIncomingTransferDecision
+        {
+            Accepted = true,
+            InboxPath = inboxPath,
+            SilentOverwrite = silentOverwrite,
+        };
+    }
+
+    /// <summary>
+    /// 创建一个拒绝传输的决定。
+    /// </summary>
+    /// <param name="message">拒绝原因。</param>
+    /// <returns>拒绝决定。</returns>
+    public static LanIncomingTransferDecision Reject(string message)
+    {
+        return new LanIncomingTransferDecision
+        {
+            Accepted = false,
+            Message = message,
+        };
+    }
+}
+
+/// <summary>
+/// 接收目录准备结果，包含最终目录和临时目录路径。
+/// </summary>
+internal sealed class LanPreparedReceivePath
+{
+    /// <summary>接收完成后的最终目录路径。</summary>
+    public string FinalDirectory { get; set; }
+
+    /// <summary>接收过程中使用的临时目录路径。</summary>
+    public string TempDirectory { get; set; }
+}
+
+/// <summary>
+/// 握手帧，连接建立后发送的第一条消息。
+/// </summary>
+internal class LanHelloFrame
+{
+    /// <summary>帧类型标识。</summary>
+    public string Type { get; set; }
+
+    /// <summary>协议版本号。</summary>
+    public int ProtocolVersion { get; set; }
+
+    /// <summary>设备唯一标识。</summary>
+    public string DeviceId { get; set; }
+
+    /// <summary>用户显示名称。</summary>
+    public string DisplayName { get; set; }
+
+    /// <summary>机器名称。</summary>
+    public string MachineName { get; set; }
+
+    /// <summary>应用程序版本号。</summary>
+    public string AppVersion { get; set; }
+
+    /// <summary>设备支持的能力列表。</summary>
+    public List<string> Capabilities { get; set; } = new List<string>();
+
+    /// <summary>密语聊天的 RSA 公钥（XML 格式）。</summary>
+    public string SecretChatPublicKey { get; set; }
+}
+
+/// <summary>
+/// 握手应答帧，包含兼容性信息。
+/// </summary>
+internal sealed class LanHelloAckFrame : LanHelloFrame
+{
+    /// <summary>协议版本是否兼容。</summary>
+    public bool Compatible { get; set; }
+
+    /// <summary>附加消息，如错误说明。</summary>
+    public string Message { get; set; }
+}
+
+/// <summary>
+/// 文件传输请求帧。
+/// </summary>
+internal sealed class LanTransferRequestFrame
+{
+    /// <summary>帧类型标识。</summary>
+    public string Type { get; set; }
+
+    /// <summary>传输唯一标识。</summary>
+    public string TransferId { get; set; }
+
+    /// <summary>发送方显示名称。</summary>
+    public string SenderDisplayName { get; set; }
+
+    /// <summary>发送方机器名称。</summary>
+    public string SenderMachineName { get; set; }
+
+    /// <summary>发送方 IP 地址。</summary>
+    public string SenderAddress { get; set; }
+
+    /// <summary>发送方监听端口。</summary>
+    public int SenderPort { get; set; }
+
+    /// <summary>待传输的文件/目录项列表。</summary>
+    public List<LanTransferItem> Items { get; set; } = new List<LanTransferItem>();
+
+    /// <summary>顶层项名称列表。</summary>
+    public List<string> TopLevelNames { get; set; } = new List<string>();
+
+    /// <summary>传输总字节数。</summary>
+    public long TotalBytes { get; set; }
+}
+
+/// <summary>
+/// 文件传输响应帧。
+/// </summary>
+internal sealed class LanTransferResponseFrame
+{
+    /// <summary>帧类型标识。</summary>
+    public string Type { get; set; }
+
+    /// <summary>是否接受传输。</summary>
+    public bool Accepted { get; set; }
+
+    /// <summary>接收方保存文件的目录路径。</summary>
+    public string SaveDirectory { get; set; }
+
+    /// <summary>附加消息。</summary>
+    public string Message { get; set; }
+}
+
+/// <summary>
+/// 文件头帧，描述待传输的单个文件或目录。
+/// </summary>
+internal sealed class LanFileHeaderFrame
+{
+    /// <summary>帧类型标识。</summary>
+    public string Type { get; set; }
+
+    /// <summary>文件相对路径。</summary>
+    public string RelativePath { get; set; }
+
+    /// <summary>是否为目录。</summary>
+    public bool IsDirectory { get; set; }
+
+    /// <summary>文件字节长度，目录时为 0。</summary>
+    public long Length { get; set; }
+}
+
+/// <summary>
+/// 传输取消帧。
+/// </summary>
+internal sealed class LanCancelFrame
+{
+    /// <summary>帧类型标识。</summary>
+    public string Type { get; set; }
+
+    /// <summary>取消原因。</summary>
+    public string Message { get; set; }
+}
+
+/// <summary>
+/// 传输错误帧。
+/// </summary>
+internal sealed class LanErrorFrame
+{
+    /// <summary>帧类型标识。</summary>
+    public string Type { get; set; }
+
+    /// <summary>错误描述。</summary>
+    public string Message { get; set; }
+}
+
+/// <summary>
+/// 密语会话请求帧。
+/// </summary>
+internal sealed class LanSecretSessionRequestFrame
+{
+    /// <summary>帧类型标识。</summary>
+    public string Type { get; set; }
+
+    /// <summary>会话唯一标识。</summary>
+    public string SessionId { get; set; }
+
+    /// <summary>发送方显示名称。</summary>
+    public string SenderDisplayName { get; set; }
+
+    /// <summary>发送方机器名称。</summary>
+    public string SenderMachineName { get; set; }
+
+    /// <summary>发送方 IP 地址。</summary>
+    public string SenderAddress { get; set; }
+
+    /// <summary>发送方监听端口。</summary>
+    public int SenderPort { get; set; }
+}
+
+/// <summary>
+/// 密语会话响应帧。
+/// </summary>
+internal sealed class LanSecretSessionResponseFrame
+{
+    /// <summary>帧类型标识。</summary>
+    public string Type { get; set; }
+
+    /// <summary>会话唯一标识。</summary>
+    public string SessionId { get; set; }
+
+    /// <summary>是否接受密语会话。</summary>
+    public bool Accepted { get; set; }
+
+    /// <summary>附加消息。</summary>
+    public string Message { get; set; }
+}
+
+/// <summary>
+/// 密语消息帧，携带加密后的消息内容。
+/// </summary>
+internal sealed class LanSecretMessageFrame
+{
+    /// <summary>帧类型标识。</summary>
+    public string Type { get; set; }
+
+    /// <summary>会话唯一标识。</summary>
+    public string SessionId { get; set; }
+
+    /// <summary>消息唯一标识。</summary>
+    public string MessageId { get; set; }
+
+    /// <summary>发送方设备标识。</summary>
+    public string SenderDeviceId { get; set; }
+
+    /// <summary>发送方显示名称。</summary>
+    public string SenderDisplayName { get; set; }
+
+    /// <summary>发送方机器名称。</summary>
+    public string SenderMachineName { get; set; }
+
+    /// <summary>发送方 IP 地址。</summary>
+    public string SenderAddress { get; set; }
+
+    /// <summary>发送方监听端口。</summary>
+    public int SenderPort { get; set; }
+
+    /// <summary>AES 加密后的密文（Base64）。</summary>
+    public string CipherText { get; set; }
+
+    /// <summary>RSA 加密后的 AES 密钥（Base64）。</summary>
+    public string EncryptedKey { get; set; }
+
+    /// <summary>AES 初始化向量（Base64）。</summary>
+    public string Iv { get; set; }
+
+    /// <summary>HMAC-SHA256 消息认证码（Base64）。</summary>
+    public string Hmac { get; set; }
+
+    /// <summary>发送方 RSA 公钥（XML 格式）。</summary>
+    public string SenderPublicKey { get; set; }
+}
+
+/// <summary>
+/// 密语回执帧（已读或销毁通知）。
+/// </summary>
+internal sealed class LanSecretReceiptFrame
+{
+    /// <summary>帧类型标识。</summary>
+    public string Type { get; set; }
+
+    /// <summary>会话唯一标识。</summary>
+    public string SessionId { get; set; }
+
+    /// <summary>消息唯一标识。</summary>
+    public string MessageId { get; set; }
+
+    /// <summary>回执类型，如 "read" 或 "destroy"。</summary>
+    public string Receipt { get; set; }
+
+    /// <summary>发送方设备标识。</summary>
+    public string SenderDeviceId { get; set; }
+
+    /// <summary>发送方 IP 地址。</summary>
+    public string SenderAddress { get; set; }
+
+    /// <summary>发送方监听端口。</summary>
+    public int SenderPort { get; set; }
+}
+
+/// <summary>
+/// 密语聊天会话请求，由主机服务传递给上层进行审批。
+/// </summary>
+internal sealed class LanSecretChatSessionRequest
+{
+    /// <summary>会话唯一标识。</summary>
+    public string SessionId { get; set; }
+
+    /// <summary>对方设备标识。</summary>
+    public string PeerDeviceId { get; set; }
+
+    /// <summary>对方显示名称。</summary>
+    public string PeerDisplayName { get; set; }
+
+    /// <summary>对方机器名称。</summary>
+    public string PeerMachineName { get; set; }
+
+    /// <summary>对方 IP 地址。</summary>
+    public string PeerAddress { get; set; }
+
+    /// <summary>对方监听端口。</summary>
+    public int PeerPort { get; set; }
+
+    /// <summary>对方 RSA 公钥（XML 格式）。</summary>
+    public string PeerPublicKey { get; set; }
+
+    /// <summary>对方的组合显示标签。</summary>
+    public string PeerLabel => string.IsNullOrWhiteSpace(PeerMachineName)
+        ? (PeerDisplayName ?? "未知同事")
+        : $"{PeerDisplayName} ({PeerMachineName})";
+}
+
+/// <summary>
+/// 局域网传输线路协议工具类，提供帧的读写和文件流传输能力。
+/// </summary>
+internal static class LanTransferWireProtocol
+{
+    /// <summary>
+    /// 将对象序列化为 JSON 并作为帧写入网络流。
+    /// </summary>
+    /// <param name="stream">网络流。</param>
+    /// <param name="frame">待写入的帧对象。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    public static async Task WriteFrameAsync(NetworkStream stream, object frame, CancellationToken cancellationToken)
+    {
+        var json = JsonConvert.SerializeObject(frame);
+        var payload = System.Text.Encoding.UTF8.GetBytes(json);
+        var lengthBuffer = BitConverter.GetBytes(payload.Length);
+        await stream.WriteAsync(lengthBuffer, 0, lengthBuffer.Length, cancellationToken);
+        await stream.WriteAsync(payload, 0, payload.Length, cancellationToken);
+        await stream.FlushAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// 从网络流中读取一帧并解析为 JSON 对象。
+    /// </summary>
+    /// <param name="stream">网络流。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>解析后的 JSON 对象。</returns>
+    /// <exception cref="IOException">帧长度非法。</exception>
+    public static async Task<JObject> ReadFrameAsync(NetworkStream stream, CancellationToken cancellationToken)
+    {
+        var lengthBuffer = new byte[sizeof(int)];
+        await ReadExactAsync(stream, lengthBuffer, 0, lengthBuffer.Length, cancellationToken);
+        var length = BitConverter.ToInt32(lengthBuffer, 0);
+        if ((length <= 0) || (length > 4 * 1024 * 1024))
+        {
+            throw new IOException("收到非法控制帧长度。");
+        }
+
+        var payload = new byte[length];
+        await ReadExactAsync(stream, payload, 0, payload.Length, cancellationToken);
+        var json = System.Text.Encoding.UTF8.GetString(payload);
+        return JObject.Parse(json);
+    }
+
+    /// <summary>
+    /// 从网络流中读取指定长度的数据并写入文件，支持进度回调。
+    /// </summary>
+    /// <param name="stream">网络流。</param>
+    /// <param name="filePath">目标文件路径。</param>
+    /// <param name="length">要读取的字节数。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <param name="progressCallback">每次写入后的进度回调，参数为本次写入字节数。</param>
+    public static async Task CopyFixedLengthToFileAsync(NetworkStream stream, string filePath, long length, CancellationToken cancellationToken, Action<long> progressCallback)
+    {
+        using (var fileStream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None, 81920, true))
+        {
+            var remaining = length;
+            var buffer = new byte[81920];
+            while (remaining > 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var count = remaining > buffer.Length ? buffer.Length : (int)remaining;
+                var read = await stream.ReadAsync(buffer, 0, count, cancellationToken);
+                if (read <= 0)
+                {
+                    throw new EndOfStreamException("读取文件内容时连接已中断。");
+                }
+
+                await fileStream.WriteAsync(buffer, 0, read, cancellationToken);
+                remaining -= read;
+                progressCallback?.Invoke(read);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 从网络流中精确读取指定字节数到缓冲区。
+    /// </summary>
+    /// <param name="stream">网络流。</param>
+    /// <param name="buffer">目标缓冲区。</param>
+    /// <param name="offset">缓冲区偏移量。</param>
+    /// <param name="count">要读取的字节数。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <exception cref="EndOfStreamException">连接在读取完成前关闭。</exception>
+    public static async Task ReadExactAsync(NetworkStream stream, byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+    {
+        while (count > 0)
+        {
+            var read = await stream.ReadAsync(buffer, offset, count, cancellationToken);
+            if (read <= 0)
+            {
+                throw new EndOfStreamException("连接已关闭。");
+            }
+
+            offset += read;
+            count -= read;
+        }
+    }
+}

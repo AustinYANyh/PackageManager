@@ -1041,6 +1041,36 @@ namespace PackageManager.Services
         public bool EnableIndexServicePerformanceAnalysis { get; set; } = false;
 
         /// <summary>
+        /// 获取或设置 FTP 只读账号用户名（DPAPI 加密）。
+        /// </summary>
+        public string FtpReadUser { get; set; } = null;
+
+        /// <summary>
+        /// 获取或设置 FTP 只读账号密码（DPAPI 加密）。
+        /// </summary>
+        public string FtpReadPassword { get; set; } = null;
+
+        /// <summary>
+        /// 获取或设置 FTP 下载账号用户名（DPAPI 加密）。
+        /// </summary>
+        public string FtpDownloadUser { get; set; } = null;
+
+        /// <summary>
+        /// 获取或设置 FTP 下载账号密码（DPAPI 加密）。
+        /// </summary>
+        public string FtpDownloadPassword { get; set; } = null;
+
+        /// <summary>
+        /// 获取或设置 FTP 写入账号用户名（DPAPI 加密）。
+        /// </summary>
+        public string FtpWriteUser { get; set; } = null;
+
+        /// <summary>
+        /// 获取或设置 FTP 写入账号密码（DPAPI 加密）。
+        /// </summary>
+        public string FtpWritePassword { get; set; } = null;
+
+        /// <summary>
         /// 获取或设置是否启用文件传输功能。
         /// </summary>
         public bool EnableLanTransfer { get; set; } = true;

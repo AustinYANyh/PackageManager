@@ -3,6 +3,9 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using PackageManager.Models;
+using PackageManager.Services;
+using PackageManager.Shell;
 
 namespace PackageManager.Views;
 
@@ -14,6 +17,8 @@ public partial class NavigationPanel : UserControl
     private NavigationActionItem lastSelectedItem;
 
     private bool revertingSelection;
+
+    private NavigationService _navigationService;
 
     /// <summary>
     /// 初始化 <see cref="NavigationPanel"/> 的新实例。
@@ -49,49 +54,53 @@ public partial class NavigationPanel : UserControl
 
     private void NavigationPanel_Loaded(object sender, RoutedEventArgs e)
     {
-        var mw = Window.GetWindow(this) as MainWindow;
-        if (mw == null)
+        _navigationService = ServiceLocator.Resolve<NavigationService>();
+        if (_navigationService == null)
         {
             return;
         }
 
+        var registry = _navigationService.Registry;
+
         // 构建统一的导航动作列表
         ActionItems.Clear();
 
-        ActionItems.Add(new NavigationActionItem { Name = "产品分类", Glyph = "\uE8D2", Command = mw.NavigateHomeCommand });
-        ActionItems.Add(new NavigationActionItem { Name = "产品日志", Glyph = "\uE7BA", Command = mw.OpenProductLogsCommand });
-        ActionItems.Add(new NavigationActionItem { Name = "看板统计", Glyph = "\uE9D9", Command = mw.OpenKanbanStatsPageCommand });
-        ActionItems.Add(new NavigationActionItem { Name = "插件管理", Glyph = "\uE943", Command = mw.OpenPluginManagerPageCommand });
-        ActionItems.Add(new NavigationActionItem { Name = "文件传输", Glyph = "\uE701", Command = mw.OpenLanTransferPageCommand });
-        ActionItems.Add(new NavigationActionItem { Name = "路径设置", Glyph = "\uE8B7", Command = mw.LocalPathSettingsCommand });
-        ActionItems.Add(new NavigationActionItem { Name = "产品管理", Glyph = "\uE8F1", Command = mw.OpenPackageConfigCommand });
-        ActionItems.Add(new NavigationActionItem { Name = "软件日志", Glyph = "\uE7BA", Command = mw.OpenLogViewerCommand });
-        ActionItems.Add(new NavigationActionItem { Name = "更新日志", Glyph = "\uE8A5", Command = mw.OpenChangelogPageCommand });
-        ActionItems.Add(new NavigationActionItem { Name = "软件设置", Glyph = "\uE713", Command = mw.SettingsCommand });
+        // 主页入口
+        ActionItems.Add(new NavigationActionItem
+        {
+            Name = "产品分类",
+            Glyph = "",
+            Command = new RelayCommand(() => _navigationService.NavigateHome())
+        });
 
-        // 启动时默认选中“产品分类”，确保左侧有选中高亮
+        // 从 ToolRegistry 构建其余导航项
+        foreach (var tool in registry.Tools)
+        {
+            var key = tool.Key;
+            ActionItems.Add(new NavigationActionItem
+            {
+                Name = tool.DisplayName,
+                Glyph = tool.Glyph,
+                Command = new RelayCommand(() => _navigationService.NavigateTo(key))
+            });
+        }
+
+        // 启动时默认选中"产品分类"
         lastSelectedItem = ActionItems.FirstOrDefault(i => i.Name == "产品分类") ?? ActionItems.FirstOrDefault();
         if (lastSelectedItem != null)
         {
-            revertingSelection = true; // 防止触发 SelectionChanged 导航
+            revertingSelection = true;
             ActionListBox.SelectedItem = lastSelectedItem;
             revertingSelection = false;
         }
 
-        // 监听主窗口是否切回主页，以同步左侧导航选中项
-        mw.PropertyChanged += (s, args) =>
+        // 监听导航事件以同步选中项
+        _navigationService.Navigated += name =>
         {
-            if ((args.PropertyName == nameof(MainWindow.IsHomeActive)) && mw.IsHomeActive)
+            Dispatcher.BeginInvoke(new System.Action(() =>
             {
-                var homeItem = ActionItems.FirstOrDefault(i => i.Name == "产品分类") ?? ActionItems.FirstOrDefault();
-                if ((homeItem != null) && !ReferenceEquals(ActionListBox.SelectedItem, homeItem))
-                {
-                    revertingSelection = true;
-                    ActionListBox.SelectedItem = homeItem;
-                    lastSelectedItem = homeItem;
-                    revertingSelection = false;
-                }
-            }
+                SelectActionByName(name);
+            }));
         };
     }
 
@@ -106,25 +115,22 @@ public partial class NavigationPanel : UserControl
         var item = listBox?.SelectedItem as NavigationActionItem;
         var cmd = item?.Command;
 
-        var mw = Window.GetWindow(this) as MainWindow;
-        var before = mw?.NavigationVersion ?? 0;
+        var before = _navigationService?.NavigationVersion ?? 0;
 
         if (cmd?.CanExecute(null) == true)
         {
             cmd.Execute(null);
         }
 
-        var after = mw?.NavigationVersion ?? before;
+        var after = _navigationService?.NavigationVersion ?? before;
         if (after == before)
         {
-            // 导航未发生，回退到先前选中项
             revertingSelection = true;
             listBox.SelectedItem = lastSelectedItem;
             revertingSelection = false;
         }
         else
         {
-            // 导航成功，记录为最近选中项
             lastSelectedItem = item;
         }
     }
@@ -140,15 +146,14 @@ public partial class NavigationPanel : UserControl
         var item = listBox?.SelectedItem as NavigationActionItem;
         var cmd = item?.Command;
 
-        var mw = Window.GetWindow(this) as MainWindow;
-        var before = mw?.NavigationVersion ?? 0;
+        var before = _navigationService?.NavigationVersion ?? 0;
 
         if (cmd?.CanExecute(null) == true)
         {
             cmd.Execute(null);
         }
 
-        var after = mw?.NavigationVersion ?? before;
+        var after = _navigationService?.NavigationVersion ?? before;
         if (after == before)
         {
             revertingSelection = true;

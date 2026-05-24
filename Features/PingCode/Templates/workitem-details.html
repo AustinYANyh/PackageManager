@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="workitem-details-template-version" content="1.3.3"/>
+  <style>
+    html,body{height:100%}
+    body{margin:0;background:#fff;font-family:'Segoe UI','Microsoft YaHei',Arial,sans-serif;color:#111827;height:100%}
+    .wrap{padding:0;height:100%}
+    .drawer{width:100%;max-width:100%;margin:0;border-radius:0;box-shadow:none;height:100%}
+    .crumb{padding:8px 24px;border-bottom:1px solid #f0f0f0;background:#fff;display:flex;align-items:center;gap:8px}
+    .crumb-link{color:#2563EB;text-decoration:none}
+    .crumb-link:hover{text-decoration:underline}
+    .crumb-current{color:#111827;font-weight:600}
+    .crumb-sep{color:#6B7280}
+    .header{padding:16px 24px;border-bottom:1px solid #f0f0f0;background:#fff;display:flex;align-items:center;gap:10px}
+    .id{color:#6B7280;font-weight:600}
+    .title{font-size:18px;font-weight:700}
+    .quick{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;padding:8px 24px;border-bottom:1px solid #f0f0f0;background:#fff}
+    .quick .item{display:flex;flex-direction:column;gap:6px}
+    .quick .label{color:#6B7280}
+    .quick .value{font-weight:600}
+    .base-info{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;padding-top:4px}
+    .base-info .item{display:flex;flex-direction:column;gap:6px}
+    .base-info .label{color:#6B7280}
+    .base-info .value{font-weight:600}
+    .layout{display:grid;grid-template-columns:1fr;gap:16px;padding:16px 24px;background:#fff}
+    .tabs{display:flex;gap:8px;border-bottom:1px solid #f0f0f0;margin:0 24px;padding:0 0 8px 0}
+    .tab{padding:6px 12px;border:1px solid #D1D5DB;border-bottom:none;border-radius:6px 6px 0 0;background:#F9FAFB;cursor:pointer;color:#374151}
+    .tab.active{background:#fff;color:#111827;border-color:#D1D5DB}
+    .tab-panel{display:none;padding:16px 24px}
+    .tab-panel.active{display:block}
+    .section-title{font-size:16px;font-weight:700;margin:12px 0 8px}
+    .desc-card,.sketch-card,.comments-card{border:1px solid #f0f0f0;border-radius:8px;padding:12px;background:#fff}
+    .ant-descriptions-item-label{color:#6B7280}
+    .tag{display:inline-block;margin:0 8px 8px 0}
+    .ant-tag{display:inline-block;border:1px solid #D1D5DB;border-radius:999px;padding:2px 8px;background:#F9FAFB;color:#374151;font-size:12px}
+    .ant-tag-pink{border-color:#FDA4AF;background:#FFE4E6;color:#9D174D}
+    .comment-item{border-bottom:1px solid #f0f0f0;padding:12px 0}
+    .comment-item:last-child{border-bottom:none}
+    .comment-row{display:flex;align-items:flex-start;gap:10px}
+    .comment-avatar{flex:0 0 24px}
+    .comment-main{flex:1 1 auto}
+    .comment-meta{color:#6B7280;margin-bottom:6px;font-size:12px}
+    .comment-time{background:#F3F4F6;border:1px solid #E5E7EB;border-radius:999px;padding:2px 8px}
+    .comment-avatar .ant-avatar{width:24px;height:24px;line-height:24px}
+    .comment-avatar img{width:24px;height:24px;border-radius:50%;object-fit:cover}
+    .comment-body img{max-width:300px;height:auto}
+    .comment-attachment img{max-width:100%;height:auto}
+    .comment-body .mention{display:inline-block;border:1px solid #E5E7EB;border-radius:999px;padding:0 6px;margin:0 2px;background:#F3F4F6;color:#374151}
+    .mention-panel{position:absolute;display:none;z-index:9999;max-height:220px;overflow:auto;background:#fff;border:1px solid #D1D5DB;border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,0.12)}
+    .mention-panel ul{list-style:none;margin:0;padding:6px 0;min-width:220px}
+    .mention-panel li{padding:6px 12px;cursor:pointer}
+    .mention-panel li:hover,.mention-panel li.active{background:#F3F4F6}
+    .mention{color:#2563EB;background:#EFF6FF;border-radius:4px;padding:0 4px;margin:0 2px;display:inline-block}
+    .badge{display:inline-block;border:1px solid #D1D5DB;border-radius:999px;padding:2px 8px;background:#F3F4F6;color:#374151}
+    .state-badge{min-width:70px;display:inline-block;text-align:center}
+    .state-badge.state-inprogress{background:#F59E0B;color:#fff;border-color:#FDBA74}
+    .state-badge.state-testable{background:#3B82F6;color:#fff;border-color:#93C5FD}
+    .state-badge.state-testing{background:#A855F7;color:#fff;border-color:#C4B5FD}
+    .state-badge.state-done{background:#10B981;color:#fff;border-color:#6EE7B7}
+    .state-badge.state-closed{background:#9CA3AF;color:#fff;border-color:#D1D5DB}
+    .state-badge.state-pending{background:#E5E7EB;color:#374151;border-color:#D1D5DB}
+    .ant-comment-avatar .ant-avatar{width:24px;height:24px;line-height:24px}
+    .ant-comment-avatar img{width:24px;height:24px;border-radius:50%}
+    .ant-comment-content-detail img,.desc-card img,.sketch-card img{max-width:100%;border-radius:8px;border:1px solid #E5E7EB}
+    .ant-comment-content-detail pre, .ant-comment-content-detail code{background:#F7F7F9;border:1px solid #E5E7EB;border-radius:6px}
+    .ant-comment-content-detail pre{padding:10px;overflow:auto}
+    .ant-comment-content-detail code{padding:2px 4px}
+    .comment-editor{border:1px solid #E5E7EB;border-radius:8px;padding:8px;margin-bottom:12px;background:#FAFAFA}
+    .comment-collapsed{display:flex;align-items:center;gap:8px}
+    .comment-collapsed input{flex:1 1 auto;padding:8px 10px;border:1px solid #D1D5DB;border-radius:6px}
+    .comment-expanded{display:none}
+    .edit-area{min-height:180px;border:1px solid #D1D5DB;border-radius:6px;padding:8px;background:#fff;overflow:auto}
+    .toolbar{display:flex;align-items:center;justify-content:space-between;margin-top:8px}
+    .toolbar .tips{color:#6B7280;font-size:12px}
+    .actions{display:flex;gap:8px;margin-top:8px}
+    .actions button{padding:6px 12px;border:1px solid #D1D5DB;border-radius:6px;background:#fff;cursor:pointer}
+    .actions button:hover{background:#F3F4F6}
+    .children-list{padding:0 24px}
+    .children-summary{display:flex;align-items:center;gap:10px;margin:8px 0}
+    .children-summary .count{font-weight:600;color:#111827}
+    .children-progress{flex:0 0 160px;height:8px;background:#E5E7EB;border-radius:4px;overflow:hidden}
+    .children-progress .bar{height:100%;background:#10B981;width:0}
+    .children-rows{border:1px solid #E5E7EB;border-radius:10px;overflow:hidden;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,0.04)}
+    .children-row{display:grid;grid-template-columns:140px 1fr 120px 140px 140px 160px;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid #F3F4F6}
+    .children-row:last-child{border-bottom:none}
+    .children-row .id a,.children-row .title a{color:#2563EB;text-decoration:none}
+    .children-row .id a:hover,.children-row .title a:hover{text-decoration:underline}
+    .children-row .id{font-size:12px;color:#374151}
+    .children-row .title a{font-size:14px;color:#111827}
+    .children-row .assignee,.children-row .start,.children-row .end{font-size:12px;color:#374151}
+    .children-row .status .state-badge{min-width:auto}
+    .state-badge{border:1px solid #E5E7EB;border-radius:999px;padding:2px 10px;display:inline-block;text-align:center;font-size:12px;line-height:1}
+    .state-badge.state-inprogress{border-color:#FDBA74}
+    .state-badge.state-testable{border-color:#93C5FD}
+    .state-badge.state-testing{border-color:#C4B5FD}
+    .state-badge.state-done{border-color:#6EE7B7}
+    .state-badge.state-closed{border-color:#D1D5DB}
+    .state-badge.state-pending{border-color:#D1D5DB}
+  </style>
+  <title>工作项详情</title>
+  </head>
+<body>
+  <div class="wrap">
+    <div class="ant-drawer ant-drawer-open ant-drawer-right">
+      <div class="ant-drawer-content-wrapper drawer">
+        <div class="ant-drawer-content">
+          <div class="ant-drawer-wrapper-body">
+            <div class="ant-drawer-body" style="padding:0;height:100%;overflow:auto">
+              <div class="crumb">{{ParentCrumbHtml}}</div>
+              <div class="header"><span class="id">{{Identifier}}</span><span class="title">{{Title}}</span></div>
+              <div class="quick">
+                <div class="item"><div class="label">负责人</div><div class="value">{{AssigneeName}}</div></div>
+                <div class="item"><div class="label">状态</div><div class="value"><select id="stateSelect" style="width:160px;padding:4px;border:1px solid #D1D5DB;border-radius:6px"><option selected>{{StateName}}</option></select></div></div>
+                <div class="item"><div class="label">开始时间</div><div class="value">{{StartAt}}</div></div>
+                <div class="item"><div class="label">结束时间</div><div class="value">{{EndAt}}</div></div>
+              </div>
+              <div class="tabs">
+                <button class="tab active" data-tab="base">基本信息</button>
+                <button id="tabChildren" class="tab" data-tab="children" style="{{ChildrenTabStyle}}">{{ChildrenTabText}}</button>
+              </div>
+              <div id="tab-base" class="tab-panel active">
+                <div class="section-title">基本信息</div>
+                <div class="base-info">
+                  <div class="item"><div class="label">优先级</div><div class="value"><span class="badge">{{PriorityName}}</span></div></div>
+                  <div class="item"><div class="label">严重程度</div><div class="value">{{SeverityText}}</div></div>
+                  <div class="item"><div class="label">故事点</div><div class="value">
+                    <input id="spInput" type="number" min="0" step="0.01" style="width:120px;padding:4px;border:1px solid #D1D5DB;border-radius:6px" value="{{StoryPointsInput}}">
+                  </div></div>
+                  <div class="item"><div class="label">所属产品</div><div class="value">{{ProductName}}</div></div>
+                  <div class="item"><div class="label">缺陷类别</div><div class="value">{{DefectCategory}}</div></div>
+                  <div class="item"><div class="label">复现版本号</div><div class="value">{{ReproduceVersion}}</div></div>
+                  <div class="item"><div class="label">复现概率</div><div class="value">{{ReproduceProbability}}</div></div>
+                  <div class="item"><div class="label">故事点汇总</div><div class="value">{{StoryPointsSum}}</div></div>
+                </div>
+                <div class="section-title">标签</div>
+                <div>{{TagsHtml}}</div>
+                <div class="section-title">描述</div>
+                <div class="desc-card">{{DescriptionHtml}}</div>
+                <div class="section-title">示意图</div>
+                <div class="sketch-card">{{SketchHtml}}</div>
+                <div class="section-title">评论</div>
+                <div class="comments-card">{{CommentsHtml}}</div>
+                <div class="comment-editor" id="commentEditor">
+                  <div id="commentCollapsed" class="comment-collapsed">
+                    <input id="commentCollapsedInput" type="text" placeholder="添加评论..."/>
+                  </div>
+                  <div id="commentExpanded" class="comment-expanded">
+                    <div id="commentEdit" class="edit-area" contenteditable="true"></div>
+                    <div class="toolbar">
+                      <span class="tips">Ctrl+Enter 提交</span>
+                    </div>
+                    <div id="attachmentsPreview" class="attachments-preview" style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 6px 0;"></div>
+                    <div id="mentionPanel" class="mention-panel">
+                      <ul id="mentionList"></ul>
+                    </div>
+                    <div class="actions">
+                      <button id="commentSubmitBtn" type="button">提交</button>
+                      <button id="commentCancelBtn" type="button">取消</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div id="tab-children" class="tab-panel">
+                <div class="section-title">子工作项</div>
+                <div id="childrenList" class="children-list"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+<script>
+  (function(){
+    // Tabs
+    try{
+      var tabButtons = document.querySelectorAll('.tabs .tab');
+      var panels = {
+        base: document.getElementById('tab-base'),
+        children: document.getElementById('tab-children')
+      };
+      function activateTab(name){
+        for(var i=0;i<tabButtons.length;i++){
+          var b = tabButtons[i];
+          var is = (b.getAttribute('data-tab')===name);
+          if(is){ b.classList.add('active'); } else { b.classList.remove('active'); }
+        }
+        for(var key in panels){
+          if(panels.hasOwnProperty(key)){
+            var el = panels[key];
+            if(el){ el.classList.toggle('active', key===name); }
+          }
+        }
+      }
+      for(var i=0;i<tabButtons.length;i++){
+        tabButtons[i].addEventListener('click', function(){
+          var name = this.getAttribute('data-tab');
+          activateTab(name||'base');
+          try{
+            if(name==='children'){
+              if(window.chrome && window.chrome.webview){
+                window.chrome.webview.postMessage({type:'loadChildren', id:'{{WorkItemId}}'});
+              }
+            }
+          }catch(ex){}
+        });
+      }
+      activateTab('base');
+    }catch(e){}
+
+    function parseVal(v){
+      try{
+        var n=parseFloat(v);
+        if(isNaN(n)||n<0){return 0;}
+        return n;
+      }catch(e){return 0;}
+    }
+    window.pendingAttachments=[];
+    function addAttachment(url){
+      try{
+        if(!url){return;}
+        var u=(url||'').trim();
+        if(!u){return;}
+        var list=window.pendingAttachments||(window.pendingAttachments=[]);
+        if(list.indexOf(u)>=0){return;}
+        list.push(u);
+        var pre=document.getElementById('attachmentsPreview');
+        if(pre){
+          var img=document.createElement('img');
+          img.src=u;
+          img.alt='image';
+          img.style.maxWidth='120px';
+          img.style.maxHeight='90px';
+          img.style.objectFit='contain';
+          img.style.border='1px solid #e5e5e5';
+          img.style.borderRadius='4px';
+          pre.appendChild(img);
+        }
+        scrollToBottomDeferred();
+      }catch(e){}
+    }
+    window.addAttachment=addAttachment;
+    function scrollToBottom(){
+      try{
+        var body=document.querySelector('.ant-drawer-body');
+        var expanded=document.getElementById('commentExpanded');
+        var submit=document.getElementById('commentSubmitBtn');
+        var cancel=document.getElementById('commentCancelBtn');
+        var editor=document.getElementById('commentEditor');
+        var target=submit||cancel||expanded||editor;
+        if(target&&target.scrollIntoView){ target.scrollIntoView({block:'end'}); }
+        if(body&&typeof body.scrollTo==='function'){ body.scrollTo({top: body.scrollHeight}); }
+        else if(body){ body.scrollTop=body.scrollHeight; }
+        var sc=document.scrollingElement||document.documentElement;
+        if(sc){ sc.scrollTop=sc.scrollHeight; } else { window.scrollTo(0, (document.documentElement&&document.documentElement.scrollHeight)||document.body.scrollHeight); }
+      }catch(e){}
+    }
+    function scrollToBottomDeferred(){
+      try{
+        if(window.requestAnimationFrame){
+          window.requestAnimationFrame(function(){ window.requestAnimationFrame(scrollToBottom); });
+        }else{
+          setTimeout(scrollToBottom,30);
+        }
+      }catch(e){}
+    }
+    function save(){
+      try{
+        var ip=document.getElementById('spInput');
+        if(!ip){return;}
+        var val=parseVal(ip.value);
+        if(window.chrome&&window.chrome.webview){
+          window.chrome.webview.postMessage({type:'updateStoryPoints', id:'{{WorkItemId}}', value:val});
+        }
+      }catch(e){}
+    }
+    function onStateChange(){
+      try{
+        var sel=document.getElementById('stateSelect');
+        var val=sel&&sel.value;
+        if(val&&window.chrome&&window.chrome.webview){
+          window.chrome.webview.postMessage({type:'updateState', id:'{{WorkItemId}}', stateId:val});
+        }
+      }catch(e){}
+    }
+    try{
+      var ip=document.getElementById('spInput');
+      if(ip){
+        ip.addEventListener('blur', save);
+        ip.addEventListener('keydown', function(e){ if(e.key==='Enter'){ save(); } });
+      }
+      var sel=document.getElementById('stateSelect');
+      if(sel){
+        sel.addEventListener('change', onStateChange);
+      }
+      var collapsed=document.getElementById('commentCollapsed');
+      var collapsedInput=document.getElementById('commentCollapsedInput');
+      var expanded=document.getElementById('commentExpanded');
+      var edit=document.getElementById('commentEdit');
+      var submitBtn=document.getElementById('commentSubmitBtn');
+      var cancelBtn=document.getElementById('commentCancelBtn');
+      var insertImgBtn=document.getElementById('insertImageLinkBtn');
+      function expandEditor(){
+        if(collapsed&&expanded){
+          collapsed.style.display='none';
+          expanded.style.display='block';
+        }
+        try{
+          var pre=document.getElementById('attachmentsPreview');
+          if(pre){ pre.innerHTML=''; }
+          if(window.pendingAttachments){ window.pendingAttachments=[]; }
+        }catch(e){}
+        if(edit){ edit.focus(); }
+        if(collapsedInput&&edit&&collapsedInput.value){
+          edit.innerText=collapsedInput.value;
+          collapsedInput.value='';
+        }
+        scrollToBottomDeferred();
+      }
+      function collapseEditor(){
+        if(collapsed&&expanded){
+          expanded.style.display='none';
+          collapsed.style.display='flex';
+        }
+        if(edit){ edit.innerHTML=''; }
+        try{
+          var pre=document.getElementById('attachmentsPreview');
+          if(pre){ pre.innerHTML=''; }
+          if(window.pendingAttachments){ window.pendingAttachments=[]; }
+        }catch(e){}
+      }
+      function submitComment(){
+        try{
+          var text=(edit&&edit.innerText||'').trim();
+          var list=window.pendingAttachments||[];
+          var payload = buildStructuredContent(edit);
+          var contentArr = (payload && payload.content) ? payload.content : [];
+          if(contentArr.length===0 && !text && list.length===0){ return; }
+          if(window.chrome&&window.chrome.webview){
+            window.chrome.webview.postMessage({type:'submitComment', id:'{{WorkItemId}}', content: contentArr, text: text, attachments: list.slice(0)});
+          }
+          scrollToBottom();
+        }catch(e){}
+      }
+      var members = [];
+      var mentionState = { active:false, query:'', anchorRect:null, index:0 };
+      window.setProjectMembers = function(list){
+        try{ members = Array.isArray(list) ? list : []; }catch(e){}
+      };
+      function getCaretRect(){
+        try{
+          var sel = window.getSelection();
+          if(!sel || sel.rangeCount===0){ return null; }
+          var r = sel.getRangeAt(0).cloneRange();
+          var rect = r.getBoundingClientRect();
+          return rect;
+        }catch(e){ return null; }
+      }
+      function openMentionPanel(){
+        mentionState.active = true;
+        mentionState.query = '';
+        mentionState.anchorRect = getCaretRect();
+        mentionState.index = 0;
+        renderMentionList();
+      }
+      function closeMentionPanel(){
+        mentionState.active = false;
+        var panel = document.getElementById('mentionPanel');
+        if(panel){ panel.style.display='none'; }
+      }
+      function updateMentionQueryFromSelection(){
+        try{
+          var sel = window.getSelection();
+          if(!sel || sel.rangeCount===0){ closeMentionPanel(); return; }
+          var node = sel.anchorNode;
+          var offset = sel.anchorOffset;
+          if(node && node.nodeType===Node.TEXT_NODE){
+            var text = node.nodeValue.substring(0, offset);
+            var idx = text.lastIndexOf('@');
+            if(idx>=0){
+              // Ensure @ is not preceded by text (unless it's a space) to avoid email confusion, or just simple check
+              // Check if @ is deleted? No, this function runs on selection change/input
+              // If text does not contain @ before cursor, idx will be -1 and we close panel
+              mentionState.query = text.substring(idx+1);
+            }else{
+              closeMentionPanel();
+            }
+          }else{
+            closeMentionPanel();
+          }
+        }catch(e){ closeMentionPanel(); }
+      }
+      function getMentionItems(){
+        var q = (mentionState.query||'').toLowerCase();
+        return members.filter(function(m){
+          var nm = (m.name||'').toLowerCase();
+          return q? nm.indexOf(q)>=0 : true;
+        }).slice(0,50);
+      }
+      function renderMentionList(){
+        if(!mentionState.active){
+          var panel = document.getElementById('mentionPanel');
+          if(panel) panel.style.display='none';
+          return;
+        }
+        var panel = document.getElementById('mentionPanel');
+        var listEl = document.getElementById('mentionList');
+        if(!panel || !listEl){ return; }
+        var rect = mentionState.anchorRect || getCaretRect();
+        if(rect){
+          panel.style.display='block';
+          var top = rect.bottom + window.scrollY + 4;
+          var left = rect.left + window.scrollX;
+          panel.style.top = top+'px';
+          panel.style.left = left+'px';
+        }else{
+          panel.style.display='block';
+        }
+        var items = getMentionItems();
+        if(mentionState.index < 0){ mentionState.index = 0; }
+        if(mentionState.index >= items.length){ mentionState.index = items.length - 1; }
+        listEl.innerHTML='';
+        items.forEach(function(m, idx){
+          var li = document.createElement('li');
+          if(idx===mentionState.index){ li.classList.add('active'); }
+          li.textContent = m.name;
+          li.addEventListener('mousedown', function(e){ e.preventDefault(); });
+          li.addEventListener('click', function(){ insertMention(m); });
+          listEl.appendChild(li);
+        });
+        if(items.length===0){
+          var li = document.createElement('li');
+          li.textContent = '无匹配成员';
+          listEl.appendChild(li);
+        }
+        if(items.length>0 && mentionState.index>=0){
+          var activeEl = listEl.children[mentionState.index];
+          if(activeEl){
+            var elTop = activeEl.offsetTop;
+            var elBottom = elTop + activeEl.offsetHeight;
+            var viewTop = panel.scrollTop;
+            var viewBottom = viewTop + panel.clientHeight;
+            if(elTop < viewTop){ panel.scrollTop = elTop; }
+            else if(elBottom > viewBottom){ panel.scrollTop = elBottom - panel.clientHeight; }
+          }
+        }
+      }
+      function insertMention(m){
+        try{
+          closeMentionPanel();
+          var sel = window.getSelection();
+          if(!sel || sel.rangeCount===0){ return; }
+          var range = sel.getRangeAt(0);
+          var edit = document.getElementById('commentEdit');
+          if(edit && !edit.contains(range.commonAncestorContainer) && edit !== range.commonAncestorContainer){ return; }
+
+          var node = range.endContainer;
+          var offset = range.endOffset;
+          if(node.nodeType === Node.TEXT_NODE){
+            var text = node.nodeValue || '';
+            var atIdx = text.lastIndexOf('@', offset - 1);
+            if(atIdx >= 0){
+               var deleteRange = document.createRange();
+               deleteRange.setStart(node, atIdx);
+               deleteRange.setEnd(node, offset);
+               deleteRange.deleteContents();
+               
+               var span = document.createElement('span');
+               span.className = 'mention';
+               span.setAttribute('data-uid', m.id||m.uid||'');
+               span.setAttribute('data-name', m.name||'');
+               span.contentEditable = 'false';
+               span.textContent = '@'+(m.name||'');
+               deleteRange.insertNode(span);
+               
+               var space = document.createTextNode('\u00A0');
+               var afterRange = document.createRange();
+               afterRange.setStartAfter(span);
+               afterRange.collapse(true);
+               afterRange.insertNode(space);
+               
+               var newRange = document.createRange();
+               newRange.setStartAfter(space);
+               newRange.collapse(true);
+               sel.removeAllRanges();
+               sel.addRange(newRange);
+            }
+          }
+        }catch(e){}
+      }
+      function buildStructuredContent(edit){
+        try{
+          var para = { type:'paragraph', key: genKey(), children: [] };
+          var nodes = edit ? edit.childNodes : [];
+          function appendText(txt){
+            if(!txt) return;
+            if(para.children.length>0){
+              var last = para.children[para.children.length-1];
+              if(last && typeof last.text==='string' && !last.type){
+                last.text += txt;
+                return;
+              }
+            }
+            para.children.push({ text: txt });
+          }
+          for(var i=0;i<nodes.length;i++){
+            var n = nodes[i];
+            if(n.nodeType===Node.TEXT_NODE){
+              appendText(n.nodeValue||'');
+            }else if(n.nodeType===Node.ELEMENT_NODE && n.classList.contains('mention')){
+              var uid = n.getAttribute('data-uid')||'';
+              var nm = n.getAttribute('data-name')||'';
+              if(para.children.length===0){ para.children.push({ text: '' }); }
+              para.children.push({ type:'mention', uid: uid, data: { name: nm }, children:[{text:''}], key: genKey() });
+              para.children.push({ text: '' });
+            }else{
+              appendText(n.textContent||'');
+            }
+          }
+          if(para.children.length===0){ para.children.push({ text: '' }); }
+          return { content: [para], attachments: [], pages: [] };
+        }catch(e){
+          return null;
+        }
+      }
+      function genKey(){
+        return Math.random().toString(36).slice(2,7) + Math.random().toString(36).slice(2,5);
+      }
+      var body = document.querySelector('.ant-drawer-body');
+      if(body){
+        body.addEventListener('scroll', function(){
+          closeMentionPanel();
+        }, {passive: true});
+      }
+      if(collapsedInput){
+        collapsedInput.addEventListener('focus', expandEditor);
+        collapsedInput.addEventListener('click', expandEditor);
+      }
+      if(cancelBtn){
+        cancelBtn.addEventListener('click', collapseEditor);
+      }
+      if(submitBtn){
+        submitBtn.addEventListener('click', submitComment);
+      }
+      if(edit){
+        edit.addEventListener('blur', function(){
+          setTimeout(closeMentionPanel, 200);
+        });
+        edit.addEventListener('click', function(){
+          if(mentionState.active){
+            updateMentionQueryFromSelection();
+            renderMentionList();
+          }
+        });
+        edit.addEventListener('keydown', function(e){
+          if(mentionState.active){
+            if(e.key==='ArrowDown'){
+              mentionState.index = mentionState.index + 1;
+              renderMentionList();
+              e.preventDefault();
+              return;
+            }
+            if(e.key==='ArrowUp'){
+              mentionState.index = mentionState.index - 1;
+              renderMentionList();
+              e.preventDefault();
+              return;
+            }
+            if(e.key==='Enter'){
+              var items = getMentionItems();
+              if(items.length>0 && mentionState.index>=0){
+                insertMention(items[mentionState.index]);
+                e.preventDefault();
+                return;
+              }
+            }
+            if(e.key==='Escape'){
+              closeMentionPanel();
+              e.preventDefault();
+              return;
+            }
+          }
+          if((e.ctrlKey||e.metaKey)&&e.key==='Enter'){ submitComment(); }
+        });
+        edit.addEventListener('input', function(e){
+          if(e.data === '@'){
+             try{
+               var sel = window.getSelection();
+               if(sel && sel.rangeCount>0){
+                 var node = sel.anchorNode;
+                 var offset = sel.anchorOffset;
+                 if(node && node.nodeType===Node.TEXT_NODE){
+                   var txt = node.nodeValue||'';
+                   if(offset>=2 && txt.substring(offset-2, offset)==='@@'){
+                     var del = document.createRange();
+                     del.setStart(node, offset-1);
+                     del.setEnd(node, offset);
+                     del.deleteContents();
+                   }
+                 }
+               }
+             }catch(ex){}
+             openMentionPanel();
+          } else if(mentionState.active) {
+             updateMentionQueryFromSelection();
+             renderMentionList();
+          }
+        });
+        edit.addEventListener('keyup', function(e){
+          if(mentionState.active){
+            updateMentionQueryFromSelection();
+            renderMentionList();
+          }
+        });
+        edit.addEventListener('paste', function(e){
+          try{
+            var items=(e.clipboardData&&e.clipboardData.items)||[];
+            var handled=false;
+            for(var i=0;i<items.length;i++){
+              var it=items[i];
+              if(it&&it.type&&it.type.indexOf('image/')===0){
+                var file=it.getAsFile();
+                if(file){
+                  var reader=new FileReader();
+                  reader.onload=function(evt){
+                    try{
+                      var url=evt.target.result;
+                      if(url){
+                        if(window.chrome&&window.chrome.webview){
+                          var localId='local_'+Math.random().toString(36).substr(2,9);
+                          window.chrome.webview.postMessage({type:'uploadImageData', id:'{{WorkItemId}}', localId: localId, dataUrl: url, contentType: file.type});
+                        }
+                      }
+                    }catch(ex){}
+                  };
+                  reader.readAsDataURL(file);
+                  handled=true;
+                }
+              }
+            }
+            if(handled){ e.preventDefault(); }
+          }catch(ex){}
+        });
+      }
+    }catch(e){}
+  })();
+</script>
+</body>
+</html>

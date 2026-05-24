@@ -33,6 +33,14 @@ namespace PackageManager
             TryEnsureWebView2Loader();
             LoggingService.Initialize();
 
+            var dataPersistence = new DataPersistenceService();
+            ServiceLocator.Register(dataPersistence);
+            ServiceLocator.Register(new CredentialStore(dataPersistence));
+            ServiceLocator.Register(new FtpService(dataPersistence));
+            ServiceLocator.Register(new PackageUpdateService());
+            ServiceLocator.Register(new ApplicationFinderService());
+            ServiceLocator.Register(new LanTransferService(dataPersistence));
+
             AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
             DispatcherUnhandledException += App_DispatcherUnhandledException;
             TaskScheduler.UnobservedTaskException += TaskScheduler_UnobservedTaskException;
@@ -165,26 +173,26 @@ namespace PackageManager
                     return true;
                 }
 
-                if (args != null && args.Length >= 1 && string.Equals(args[0], "--install-index-service", StringComparison.OrdinalIgnoreCase))
-                {
-                    var exitCode = MftIndexServiceManager.RunAdminInstallOrUpdate();
-                    Environment.Exit(exitCode);
-                    return true;
-                }
-
-                if (args != null && args.Length >= 1 && string.Equals(args[0], "--uninstall-index-service", StringComparison.OrdinalIgnoreCase))
-                {
-                    var exitCode = MftIndexServiceManager.RunAdminUninstall();
-                    Environment.Exit(exitCode);
-                    return true;
-                }
-
-                if (args != null && args.Length >= 1 && string.Equals(args[0], "--service-status", StringComparison.OrdinalIgnoreCase))
-                {
-                    Console.WriteLine(MftIndexServiceManager.GetStatusJson());
-                    Environment.Exit(0);
-                    return true;
-                }
+                // if (args != null && args.Length >= 1 && string.Equals(args[0], "--install-index-service", StringComparison.OrdinalIgnoreCase))
+                // {
+                //     var exitCode = MftIndexServiceManager.RunAdminInstallOrUpdate();
+                //     Environment.Exit(exitCode);
+                //     return true;
+                // }
+                //
+                // if (args != null && args.Length >= 1 && string.Equals(args[0], "--uninstall-index-service", StringComparison.OrdinalIgnoreCase))
+                // {
+                //     var exitCode = MftIndexServiceManager.RunAdminUninstall();
+                //     Environment.Exit(exitCode);
+                //     return true;
+                // }
+                //
+                // if (args != null && args.Length >= 1 && string.Equals(args[0], "--service-status", StringComparison.OrdinalIgnoreCase))
+                // {
+                //     Console.WriteLine(MftIndexServiceManager.GetStatusJson());
+                //     Environment.Exit(0);
+                //     return true;
+                // }
             }
             catch (Exception ex)
             {
