@@ -71,11 +71,17 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         DataContext = this;
 
-        // 首次进入主界面
-        navService.NavigateHome();
         InitializePackages();
         BuildCategoryTree();
         InitializeCommonLinks();
+
+        // 首次进入主界面（必须在 BuildCategoryTree 之后，否则 ApplyCategorySelection 会覆盖仪表盘）
+        navService.NavigateHome();
+        navService.PropertyChanged += (s, args) =>
+        {
+            if (args.PropertyName == nameof(NavigationService.IsHomeActive))
+                BackToDashboardButton.Visibility = navService.IsHomeActive ? Visibility.Collapsed : Visibility.Visible;
+        };
         Loaded += MainWindow_Loaded;
         Closing += MainWindow_Closing;
 
@@ -376,7 +382,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     /// <param name="name">要选中的导航项名称。</param>
     public void UpdateLeftNavSelection(string name)
     {
-        try { LeftNavPanel?.SelectActionByName(name); } catch { }
+        // try { LeftNavPanel?.SelectActionByName(name); } catch { }
     }
 
     internal PackagesHomePage GetOrCreateHomePage()
@@ -1145,6 +1151,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             dataGrid.SelectedItem = candidate;
         }
+    }
+
+    private void BackToDashboardButton_Click(object sender, RoutedEventArgs e)
+    {
+        ServiceLocator.Resolve<NavigationService>()?.NavigateHome();
     }
 
     /// <summary>

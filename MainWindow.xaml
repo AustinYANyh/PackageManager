@@ -25,12 +25,21 @@
         <Grid Grid.Row="0" Margin="0,0,0,12">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="260" />
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
             <controls:CTextBlock Grid.Column="0" Text="DevKit" FontSize="20" FontWeight="Bold" VerticalAlignment="Center" />
-            <TextBox Grid.Column="1" x:Name="SearchBox" Height="28" Margin="16,0,0,0" Visibility="Hidden" />
-            <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right">
+
+            <!-- 返回仪表盘按钮：非首页时显示 -->
+            <button:CButton x:Name="BackToDashboardButton" Grid.Column="1"
+                            Content="← 仪表盘"
+                            Margin="16,0,0,0" Padding="10,6"
+                            Click="BackToDashboardButton_Click"
+                            Visibility="Collapsed" />
+
+            <TextBox Grid.Column="2" x:Name="SearchBox" Height="28" Margin="16,0,0,0" Visibility="Hidden" />
+            <StackPanel Grid.Column="3" Orientation="Horizontal" HorizontalAlignment="Right">
                 <button:CButton Content="刷新" Margin="0,0,8,0" Padding="10,6" Click="RefreshButton_Click" />
 
                 <!-- 常用网址导航 -->
@@ -45,29 +54,11 @@
             </StackPanel>
         </Grid>
 
-    <Grid Grid.Row="1">
-        <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="240" />
-                <ColumnDefinition Width="6" />
-                <ColumnDefinition Width="*" />
-        </Grid.ColumnDefinitions>
-
-            <!-- 左侧导航面板 -->
-            <views:NavigationPanel x:Name="LeftNavPanel" Grid.Column="0" />
-
-            <!-- 左侧与中间的分隔条 -->
-            <GridSplitter Grid.Column="1"
-                          Width="6"
-                          HorizontalAlignment="Stretch"
-                          VerticalAlignment="Stretch"
-                          Background="#22000000" />
-
-            <!-- 中央内容区：统一使用 Page，通过 Frame 载入 -->
-            <Frame x:Name="CentralFrame"
-                   Grid.Column="2"
-                   NavigationUIVisibility="Hidden"
-                   Background="Transparent" />
-        </Grid>
+        <!-- 中央内容区：全宽使用 -->
+        <Frame x:Name="CentralFrame"
+               Grid.Row="1"
+               NavigationUIVisibility="Hidden"
+               Background="Transparent" />
 
         <StatusBar Grid.Row="2" Margin="0,12,0,0">
             <StatusBarItem>

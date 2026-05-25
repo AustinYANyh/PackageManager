@@ -42,15 +42,6 @@ namespace PackageManager.Services
                 Factory = () => new PackageConfigPage()
             });
 
-            registry.Register(new ToolPageDescriptor
-            {
-                Key = "changelog",
-                DisplayName = "更新日志",
-                Glyph = "",
-                Group = "包管理",
-                Factory = () => new ChangelogPage()
-            });
-
             // --- 项目与协作 ---
 
             registry.Register(new ToolPageDescriptor
@@ -100,6 +91,15 @@ namespace PackageManager.Services
                 Glyph = "",
                 Group = "日志",
                 Factory = () => new LogViewerPage()
+            });
+
+            registry.Register(new ToolPageDescriptor
+            {
+                Key = "changelog",
+                DisplayName = "更新日志",
+                Glyph = "",
+                Group = "日志",
+                Factory = () => new ChangelogPage()
             });
 
             // --- 设置 ---

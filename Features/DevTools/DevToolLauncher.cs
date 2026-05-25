@@ -89,7 +89,10 @@ namespace PackageManager.Features.DevTools
             {
                 statusCallback?.Invoke("正在切换 Git 代理...");
                 var result = await GitProxyService.ToggleAsync();
-                statusCallback?.Invoke(result.Message);
+                if (statusCallback != null)
+                    statusCallback(result.Message);
+                else
+                    MessageBox.Show(result.Message, "Git代理", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             catch (Exception ex)
             {

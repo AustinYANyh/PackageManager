@@ -52,13 +52,6 @@
                         <controls:CTextBlock Text="产品包配置与可见性管理" Foreground="#6B6B6B" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Left" TextAlignment="Left"/>
                     </StackPanel>
                 </Border>
-                <Border Style="{StaticResource DashboardCard}" Tag="changelog" MouseLeftButtonUp="NavigationCard_Click">
-                    <StackPanel>
-                        <TextBlock Text="&#xE81C;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#2B7FFF" Margin="0,0,0,8"/>
-                        <controls:CTextBlock Text="更新日志" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" TextAlignment="Left"/>
-                        <controls:CTextBlock Text="查看软件版本更新记录" Foreground="#6B6B6B" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Left" TextAlignment="Left"/>
-                    </StackPanel>
-                </Border>
             </WrapPanel>
 
             <!-- 项目与协作 -->
@@ -149,6 +142,13 @@
                         <TextBlock Text="&#xE9D9;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#2B7FFF" Margin="0,0,0,8"/>
                         <controls:CTextBlock Text="软件日志" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" TextAlignment="Left"/>
                         <controls:CTextBlock Text="查看 DevKit 软件日志" Foreground="#6B6B6B" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Left" TextAlignment="Left"/>
+                    </StackPanel>
+                </Border>
+                <Border Style="{StaticResource DashboardCard}" Tag="changelog" MouseLeftButtonUp="NavigationCard_Click">
+                    <StackPanel>
+                        <TextBlock Text="&#xE81C;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#2B7FFF" Margin="0,0,0,8"/>
+                        <controls:CTextBlock Text="更新日志" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" TextAlignment="Left"/>
+                        <controls:CTextBlock Text="查看软件版本更新记录" Foreground="#6B6B6B" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Left" TextAlignment="Left"/>
                     </StackPanel>
                 </Border>
             </WrapPanel>
