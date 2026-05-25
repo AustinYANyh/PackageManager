@@ -58,26 +58,42 @@ namespace PackageManager.Services
         /// 记录信息级别日志。
         /// </summary>
         /// <param name="message">日志消息内容。</param>
-        public static void LogInfo(string message) => Append(infoDir, "INFO", message, null);
+        public static void LogInfo(string message)
+        {
+            EnsureInitialized();
+            Append(infoDir, "INFO", message, null);
+        }
 
         /// <summary>
         /// 记录调试级别日志。
         /// </summary>
         /// <param name="message">调试消息内容。</param>
-        public static void LogDebug(string message) => Append(debugDir, "DEBUG", message, null);
+        public static void LogDebug(string message)
+        {
+            EnsureInitialized();
+            Append(debugDir, "DEBUG", message, null);
+        }
 
         /// <summary>
         /// 记录警告级别日志。
         /// </summary>
         /// <param name="message">警告消息内容。</param>
-        public static void LogWarning(string message) => Append(infoDir, "WARN", message, null);
+        public static void LogWarning(string message)
+        {
+            EnsureInitialized();
+            Append(infoDir, "WARN", message, null);
+        }
 
         /// <summary>
         /// 记录错误级别日志，包含异常详细信息。
         /// </summary>
         /// <param name="ex">异常对象。</param>
         /// <param name="message">附加描述消息，可为 null。</param>
-        public static void LogError(Exception ex, string message = null) => Append(errorDir, "ERROR", message, ex);
+        public static void LogError(Exception ex, string message = null)
+        {
+            EnsureInitialized();
+            Append(errorDir, "ERROR", message, ex);
+        }
 
         private static void EnsureInitialized()
         {
