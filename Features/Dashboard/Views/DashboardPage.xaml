@@ -1,0 +1,169 @@
+<Page x:Class="PackageManager.Views.DashboardPage"
+      xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:controls="clr-namespace:CustomControlLibrary.CustomControl.Controls;assembly=CustomControlLibrary"
+      xmlns:button="clr-namespace:CustomControlLibrary.CustomControl.Controls.Button;assembly=CustomControlLibrary">
+    <Page.Resources>
+        <Style x:Key="DashboardCard" TargetType="Border">
+            <Setter Property="Background" Value="#06000000"/>
+            <Setter Property="BorderBrush" Value="#12000000"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="8"/>
+            <Setter Property="Padding" Value="16"/>
+            <Setter Property="Margin" Value="0,0,12,12"/>
+            <Setter Property="Width" Value="210"/>
+            <Setter Property="MinHeight" Value="100"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#0D000000"/>
+                    <Setter Property="BorderBrush" Value="#22000000"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+    </Page.Resources>
+    <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="24,16">
+        <StackPanel Margin="8">
+            <!-- 标题区 -->
+            <controls:CTextBlock Text="欢迎使用 DevKit" FontSize="22" FontWeight="Bold" Margin="0,0,0,4"/>
+            <controls:CTextBlock Text="集成式开发者工具箱" Foreground="#6B6B6B" FontSize="13" Margin="0,0,0,24"/>
+
+            <!-- 包管理 -->
+            <controls:CTextBlock Text="包管理" FontSize="13" FontWeight="SemiBold" Foreground="#99000000" Margin="0,0,0,8"/>
+            <WrapPanel Margin="0,0,0,20">
+                <Border Style="{StaticResource DashboardCard}" Tag="packages-home" MouseLeftButtonUp="NavigationCard_Click">
+                    <StackPanel>
+                        <TextBlock Text="&#xE8F1;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#2B7FFF" Margin="0,0,0,8"/>
+                        <controls:CTextBlock Text="产品分类" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" TextAlignment="Left"/>
+                        <controls:CTextBlock Text="产品列表、下载更新与定版操作" Foreground="#6B6B6B" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Left" TextAlignment="Left"/>
+                    </StackPanel>
+                </Border>
+                <Border Style="{StaticResource DashboardCard}" Tag="local-path-settings" MouseLeftButtonUp="NavigationCard_Click">
+                    <StackPanel>
+                        <TextBlock Text="&#xE8B7;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#2B7FFF" Margin="0,0,0,8"/>
+                        <controls:CTextBlock Text="路径设置" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" TextAlignment="Left"/>
+                        <controls:CTextBlock Text="按产品和版本配置本地包路径" Foreground="#6B6B6B" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Left" TextAlignment="Left"/>
+                    </StackPanel>
+                </Border>
+                <Border Style="{StaticResource DashboardCard}" Tag="package-config" MouseLeftButtonUp="NavigationCard_Click">
+                    <StackPanel>
+                        <TextBlock Text="&#xE762;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#2B7FFF" Margin="0,0,0,8"/>
+                        <controls:CTextBlock Text="产品管理" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" TextAlignment="Left"/>
+                        <controls:CTextBlock Text="产品包配置与可见性管理" Foreground="#6B6B6B" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Left" TextAlignment="Left"/>
+                    </StackPanel>
+                </Border>
+                <Border Style="{StaticResource DashboardCard}" Tag="changelog" MouseLeftButtonUp="NavigationCard_Click">
+                    <StackPanel>
+                        <TextBlock Text="&#xE81C;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#2B7FFF" Margin="0,0,0,8"/>
+                        <controls:CTextBlock Text="更新日志" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" TextAlignment="Left"/>
+                        <controls:CTextBlock Text="查看软件版本更新记录" Foreground="#6B6B6B" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Left" TextAlignment="Left"/>
+                    </StackPanel>
+                </Border>
+            </WrapPanel>
+
+            <!-- 项目与协作 -->
+            <controls:CTextBlock Text="项目与协作" FontSize="13" FontWeight="SemiBold" Foreground="#99000000" Margin="0,0,0,8"/>
+            <WrapPanel Margin="0,0,0,20">
+                <Border Style="{StaticResource DashboardCard}" Tag="kanban" MouseLeftButtonUp="NavigationCard_Click">
+                    <StackPanel>
+                        <TextBlock Text="&#xE9D2;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#2B7FFF" Margin="0,0,0,8"/>
+                        <controls:CTextBlock Text="看板统计" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" TextAlignment="Left"/>
+                        <controls:CTextBlock Text="PingCode 看板数据统计" Foreground="#6B6B6B" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Left" TextAlignment="Left"/>
+                    </StackPanel>
+                </Border>
+                <Border Style="{StaticResource DashboardCard}" Tag="lan-transfer" MouseLeftButtonUp="NavigationCard_Click">
+                    <StackPanel>
+                        <TextBlock Text="&#xEC51;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#2B7FFF" Margin="0,0,0,8"/>
+                        <controls:CTextBlock Text="文件传输" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" TextAlignment="Left"/>
+                        <controls:CTextBlock Text="局域网设备间文件传输" Foreground="#6B6B6B" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Left" TextAlignment="Left"/>
+                    </StackPanel>
+                </Border>
+            </WrapPanel>
+
+            <!-- 开发工具 -->
+            <controls:CTextBlock Text="开发工具" FontSize="13" FontWeight="SemiBold" Foreground="#99000000" Margin="0,0,0,8"/>
+            <WrapPanel Margin="0,0,0,20">
+                <Border Style="{StaticResource DashboardCard}" Tag="plugin-management" MouseLeftButtonUp="NavigationCard_Click">
+                    <StackPanel>
+                        <TextBlock Text="&#xEA86;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#2B7FFF" Margin="0,0,0,8"/>
+                        <controls:CTextBlock Text="插件管理" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" TextAlignment="Left"/>
+                        <controls:CTextBlock Text="管理 Revit Addin 插件启用/禁用" Foreground="#6B6B6B" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Left" TextAlignment="Left"/>
+                    </StackPanel>
+                </Border>
+                <Border Style="{StaticResource DashboardCard}" Tag="tool:csv-crypto" MouseLeftButtonUp="ToolCard_Click">
+                    <StackPanel>
+                        <TextBlock Text="&#xE8D7;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#107C10" Margin="0,0,0,8"/>
+                        <controls:CTextBlock Text="CSV加解密" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" TextAlignment="Left"/>
+                        <controls:CTextBlock Text="CSV 文件的加密与解密" Foreground="#6B6B6B" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Left" TextAlignment="Left"/>
+                    </StackPanel>
+                </Border>
+                <Border Style="{StaticResource DashboardCard}" Tag="tool:revit-cleanup" MouseLeftButtonUp="ToolCard_Click">
+                    <StackPanel>
+                        <TextBlock Text="&#xE74D;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#107C10" Margin="0,0,0,8"/>
+                        <controls:CTextBlock Text="清理rvt" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" TextAlignment="Left"/>
+                        <controls:CTextBlock Text="批量清理 Revit 缓存文件" Foreground="#6B6B6B" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Left" TextAlignment="Left"/>
+                    </StackPanel>
+                </Border>
+                <Border Style="{StaticResource DashboardCard}" Tag="tool:unlock-files" MouseLeftButtonUp="ToolCard_Click">
+                    <StackPanel>
+                        <TextBlock Text="&#xE785;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#107C10" Margin="0,0,0,8"/>
+                        <controls:CTextBlock Text="解除占用" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" TextAlignment="Left"/>
+                        <controls:CTextBlock Text="查找并解除被进程锁定的文件" Foreground="#6B6B6B" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Left" TextAlignment="Left"/>
+                    </StackPanel>
+                </Border>
+                <Border Style="{StaticResource DashboardCard}" Tag="tool:sln-updater" MouseLeftButtonUp="ToolCard_Click">
+                    <StackPanel>
+                        <TextBlock Text="&#xE943;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#107C10" Margin="0,0,0,8"/>
+                        <controls:CTextBlock Text="编译顺序" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" TextAlignment="Left"/>
+                        <controls:CTextBlock Text="更新 sln 解决方案编译顺序" Foreground="#6B6B6B" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Left" TextAlignment="Left"/>
+                    </StackPanel>
+                </Border>
+                <Border Style="{StaticResource DashboardCard}" Tag="tool:git-proxy" MouseLeftButtonUp="ToolCard_Click">
+                    <StackPanel>
+                        <TextBlock Text="&#xE968;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#107C10" Margin="0,0,0,8"/>
+                        <controls:CTextBlock Text="Git代理" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" TextAlignment="Left"/>
+                        <controls:CTextBlock Text="一键切换 Git 全局代理" Foreground="#6B6B6B" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Left" TextAlignment="Left"/>
+                    </StackPanel>
+                </Border>
+                <Border Style="{StaticResource DashboardCard}" Tag="tool:vcs-mapping" MouseLeftButtonUp="ToolCard_Click">
+                    <StackPanel>
+                        <TextBlock Text="&#xE8B3;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#107C10" Margin="0,0,0,8"/>
+                        <controls:CTextBlock Text="VCS映射" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" TextAlignment="Left"/>
+                        <controls:CTextBlock Text="扫描目录自动更新 VCS 映射" Foreground="#6B6B6B" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Left" TextAlignment="Left"/>
+                    </StackPanel>
+                </Border>
+            </WrapPanel>
+
+            <!-- 日志 -->
+            <controls:CTextBlock Text="日志" FontSize="13" FontWeight="SemiBold" Foreground="#99000000" Margin="0,0,0,8"/>
+            <WrapPanel Margin="0,0,0,20">
+                <Border Style="{StaticResource DashboardCard}" Tag="product-logs" MouseLeftButtonUp="NavigationCard_Click">
+                    <StackPanel>
+                        <TextBlock Text="&#xE7BA;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#2B7FFF" Margin="0,0,0,8"/>
+                        <controls:CTextBlock Text="产品日志" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" TextAlignment="Left"/>
+                        <controls:CTextBlock Text="查看产品运行日志" Foreground="#6B6B6B" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Left" TextAlignment="Left"/>
+                    </StackPanel>
+                </Border>
+                <Border Style="{StaticResource DashboardCard}" Tag="log-viewer" MouseLeftButtonUp="NavigationCard_Click">
+                    <StackPanel>
+                        <TextBlock Text="&#xE9D9;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#2B7FFF" Margin="0,0,0,8"/>
+                        <controls:CTextBlock Text="软件日志" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" TextAlignment="Left"/>
+                        <controls:CTextBlock Text="查看 DevKit 软件日志" Foreground="#6B6B6B" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Left" TextAlignment="Left"/>
+                    </StackPanel>
+                </Border>
+            </WrapPanel>
+
+            <!-- 设置 -->
+            <controls:CTextBlock Text="设置" FontSize="13" FontWeight="SemiBold" Foreground="#99000000" Margin="0,0,0,8"/>
+            <WrapPanel Margin="0,0,0,12">
+                <Border Style="{StaticResource DashboardCard}" Tag="settings" MouseLeftButtonUp="NavigationCard_Click">
+                    <StackPanel>
+                        <TextBlock Text="&#xE713;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#2B7FFF" Margin="0,0,0,8"/>
+                        <controls:CTextBlock Text="软件设置" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" TextAlignment="Left"/>
+                        <controls:CTextBlock Text="应用程序路径与连接配置" Foreground="#6B6B6B" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Left" TextAlignment="Left"/>
+                    </StackPanel>
+                </Border>
+            </WrapPanel>
+        </StackPanel>
+    </ScrollViewer>
+</Page>

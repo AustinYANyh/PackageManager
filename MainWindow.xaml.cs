@@ -62,14 +62,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         _lanTransferService = ServiceLocator.Resolve<LanTransferService>();
 
         // 设置导航服务
+        ServiceLocator.Register(this);
         var registry = new ToolRegistry();
         ToolRegistration.RegisterAll(registry);
         var navService = new NavigationService(CentralFrame, registry);
-        navService.SetHomePageFactory(() =>
-        {
-            _homePage = new PackagesHomePage { DataContext = this };
-            return _homePage;
-        });
+        navService.SetHomePageFactory(() => new DashboardPage());
         ServiceLocator.Register(navService);
 
         DataContext = this;
@@ -380,6 +377,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     public void UpdateLeftNavSelection(string name)
     {
         try { LeftNavPanel?.SelectActionByName(name); } catch { }
+    }
+
+    internal PackagesHomePage GetOrCreateHomePage()
+    {
+        if (_homePage == null)
+            _homePage = new PackagesHomePage { DataContext = this };
+        return _homePage;
     }
 
     private CustomControlLibrary.CustomControl.Controls.DataGrid.CDataGrid GetPackageDataGrid()
@@ -852,8 +856,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             // 更新左侧分类导航
             BuildCategoryTree();
 
-            // 返回主页以显示最新列表
-            NavigateHome();
+            // 返回包列表主页以显示最新列表
+            ServiceLocator.Resolve<NavigationService>()?.NavigateTo("packages-home");
 
             // 自动加载各包的版本与文件信息（异步，不阻塞UI）
             // _ = LoadVersionsFromFtpAsync();
@@ -1059,7 +1063,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         try
         {
             // 无论当前是否在其它页面，切换分类后回到包列表主页
-            NavigateHome();
+            ServiceLocator.Resolve<NavigationService>()?.NavigateTo("packages-home");
 
             var view = CollectionViewSource.GetDefaultView(Packages);
             if (view == null)

@@ -342,7 +342,14 @@
         <Compile Include="Features\DevTools\ConfigPreset\ConfigPresetStore.cs" />
         <Compile Include="Features\DevTools\ConfigPreset\ConfigPreset.cs" />
         <Compile Include="Features\DevTools\GitProxy\GitProxyService.cs" />
+        <Compile Include="Features\DevTools\DevToolLauncher.cs" />
         <Compile Include="Features\DevTools\JenkinsCI\JenkinsBuildService.cs" />
+
+        <!-- Features/Dashboard -->
+        <Page Include="Features\Dashboard\Views\DashboardPage.xaml" />
+        <Compile Include="Features\Dashboard\Views\DashboardPage.xaml.cs">
+          <DependentUpon>DashboardPage.xaml</DependentUpon>
+        </Compile>
 
         <!-- Features/Logs -->
         <Compile Include="Features\Logs\Models\LogEntry.cs" />
@@ -394,6 +401,14 @@
         <EmbeddedResource Include="Assets\kiro-rs\kiro-rs.exe" />
         <EmbeddedResource Include="Assets\kiro-rs\kiro_stats.json" />
         <Content Include="Assets\Tools\UnlockProcessAdmin.exe" />
+        <Content Include="docs\analysis\mftscanner-bucket-build-performance-after-optimization-2026-04-24.md" />
+        <Content Include="docs\analysis\mftscanner-index-performance-analysis-2026-04-24.md" />
+        <Content Include="docs\design\common-startup-workbench-ui-design.md" />
+        <Content Include="docs\design\prototypes\common-startup-workbench-mockup-v2.html" />
+        <Content Include="docs\design\prototypes\common-startup-workbench-mockup.html" />
+        <Content Include="docs\design\prototypes\mftscanner-file-search-mockup.html" />
+        <Content Include="docs\design\window-interaction-and-shortcuts-design.md" />
+        <Content Include="docs\requirements\file-search-and-common-startup-prd.md" />
         <Content Include="Models\json.txt" />
         <Content Include="scripts\Test-MftScannerSearchCorrectness.ps1" />
         <Content Include="Features\PingCode\Views\WorkItemKanban.html">

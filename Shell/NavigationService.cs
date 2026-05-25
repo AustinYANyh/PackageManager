@@ -57,7 +57,7 @@ namespace PackageManager.Shell
                 _frame.Navigate(_homePage);
                 NavigationVersion++;
                 IsHomeActive = true;
-                Navigated?.Invoke("产品分类");
+                Navigated?.Invoke("仪表盘");
             }
         }
 

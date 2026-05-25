@@ -7,12 +7,9 @@ using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
-using System.Xml.Linq;
 using CustomControlLibrary.CustomControl.Controls.Navigation;
-using PackageManager.Function.CsvTool;
+using PackageManager.Features.DevTools;
 using PackageManager.Function.DnsTool;
-using PackageManager.Function.SlnTool;
-using PackageManager.Function.UnlockTool;
 using PackageManager.Models;
 using PackageManager.Services;
 
@@ -329,33 +326,9 @@ public partial class PackagesHomePage : Page
         }
     }
 
-    private static string DetectVcs(string path)
-    {
-        if (Directory.Exists(Path.Combine(path, ".git")))
-        {
-            return "Git";
-        }
-
-        if (Directory.Exists(Path.Combine(path, ".svn")))
-        {
-            return "svn";
-        }
-
-        return null;
-    }
-
     private void OpenCsvCryptoWindowButton_Click(object sender, RoutedEventArgs e)
     {
-        try
-        {
-            var win = new CsvCryptoWindow();
-            win.Owner = Window.GetWindow(this);
-            win.Show();
-        }
-        catch
-        {
-            MessageBox.Show("打开CSV加解密窗口失败", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
+        DevToolLauncher.OpenCsvCrypto(Window.GetWindow(this));
     }
 
     private void OpenDnsSettingsWindowButton_Click(object sender, RoutedEventArgs e)
@@ -485,28 +458,12 @@ public partial class PackagesHomePage : Page
 
     private void OpenUnlockFilesWindowButton_Click(object sender, RoutedEventArgs e)
     {
-        try
-        {
-            var win = new UnlockFilesWindow { Owner = Window.GetWindow(this) };
-            win.Show();
-        }
-        catch
-        {
-            MessageBox.Show("打开解除占用窗口失败", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
+        DevToolLauncher.OpenUnlockFiles(Window.GetWindow(this));
     }
 
     private void OpenSlnUpdateWindowButton_Click(object sender, RoutedEventArgs e)
     {
-        try
-        {
-            var win = new SlnUpdateWindow { Owner = Window.GetWindow(this) };
-            win.Show();
-        }
-        catch
-        {
-            MessageBox.Show("打开编译顺序窗口失败", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
+        DevToolLauncher.OpenSlnUpdate(Window.GetWindow(this));
     }
 
     private void OpenRevitActivationToolButton_Click(object sender, RoutedEventArgs e)
@@ -630,32 +587,7 @@ public partial class PackagesHomePage : Page
 
     private void OpenRevitFileCleanupWindowButton_Click(object sender, RoutedEventArgs e)
     {
-        try
-        {
-            var exePath = AdminElevationService.ExtractEmbeddedTool("MftScanner.exe", "MftScanner.exe");
-            if (string.IsNullOrEmpty(exePath))
-            {
-                MessageBox.Show("未找到 MftScanner.exe 工具，请检查安装。", "清理RVT", MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
-            }
-
-            var psi = new ProcessStartInfo
-            {
-                FileName = exePath,
-                Arguments = "--window cleanup",
-                UseShellExecute = true
-            };
-            Process.Start(psi);
-        }
-        catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
-        {
-            // 用户取消了 UAC 提权
-        }
-        catch (Exception ex)
-        {
-            LoggingService.LogError(ex, "打开 Revit 文件清理窗口失败");
-            MessageBox.Show($"打开清理窗口失败：{ex.Message}", "清理RVT", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
+        DevToolLauncher.OpenRevitFileCleanup();
     }
 
     private void OpenCommonStartupWindowButton_Click(object sender, RoutedEventArgs e)
@@ -674,107 +606,9 @@ public partial class PackagesHomePage : Page
         }
     }
 
-    private void OpenVcsMappingButton_Click(object sender, RoutedEventArgs e)    {
-        try
-        {
-            var rootDir = FolderPickerService.PickFolder("选择根目录（包含各子项目文件夹）");
-            if (rootDir == null)
-                return;
-
-            var vcsXmlFiles = Directory.GetFiles(rootDir, "vcs.xml", SearchOption.AllDirectories);
-            var vcsXmlPath = vcsXmlFiles.FirstOrDefault(f =>
-            {
-                try
-                {
-                    var doc2 = XDocument.Load(f);
-                    return doc2.Descendants("component")
-                               .Any(c => (string)c.Attribute("name") == "VcsDirectoryMappings");
-                }
-                catch
-                {
-                    return false;
-                }
-            });
-
-            if (vcsXmlPath == null)
-            {
-                MessageBox.Show("未在根目录下找到包含 VcsDirectoryMappings 的 vcs.xml", "VCS映射", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-
-            var doc = XDocument.Load(vcsXmlPath);
-            var component = doc.Descendants("component")
-                               .First(c => (string)c.Attribute("name") == "VcsDirectoryMappings");
-
-            // 收集已有映射的目录（相对路径形式）
-            var existingDirs = new System.Collections.Generic.HashSet<string>(component.Elements("mapping")
-                                                                                       .Select(m => (string)m.Attribute("directory"))
-                                                                                       .Where(d => !string.IsNullOrEmpty(d)),
-                                                                              StringComparer.OrdinalIgnoreCase);
-
-            int updated = 0;
-            int added = 0;
-
-            // 1. 更新已有映射
-            foreach (var mapping in component.Elements("mapping").ToList())
-            {
-                var dir = (string)mapping.Attribute("directory");
-                if (string.IsNullOrEmpty(dir) || (dir == "$PROJECT_DIR$"))
-                {
-                    continue;
-                }
-
-                var absPath = dir.Replace("$PROJECT_DIR$", rootDir).Replace('/', Path.DirectorySeparatorChar);
-                if (!Directory.Exists(absPath))
-                {
-                    continue;
-                }
-
-                string detectedVcs = DetectVcs(absPath);
-                if (detectedVcs == null)
-                {
-                    continue;
-                }
-
-                var current = (string)mapping.Attribute("vcs");
-                if (!string.Equals(current, detectedVcs, StringComparison.OrdinalIgnoreCase))
-                {
-                    mapping.SetAttributeValue("vcs", detectedVcs);
-                    updated++;
-                }
-            }
-
-            // 2. 扫描根目录下所有一级子文件夹，补充缺失的映射
-            foreach (var subDir in Directory.GetDirectories(rootDir))
-            {
-                var detectedVcs = DetectVcs(subDir);
-                if (detectedVcs == null)
-                {
-                    continue;
-                }
-
-                var folderName = Path.GetFileName(subDir);
-                var relKey = $"$PROJECT_DIR$/{folderName}";
-
-                if (existingDirs.Contains(relKey))
-                {
-                    continue;
-                }
-
-                component.Add(new XElement("mapping",
-                                           new XAttribute("directory", relKey),
-                                           new XAttribute("vcs", detectedVcs)));
-                existingDirs.Add(relKey);
-                added++;
-            }
-
-            doc.Save(vcsXmlPath);
-            MessageBox.Show($"VCS映射已更新：修正 {updated} 项，新增 {added} 项。\n文件：{vcsXmlPath}", "VCS映射", MessageBoxButton.OK, MessageBoxImage.Information);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"VCS映射失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
+    private void OpenVcsMappingButton_Click(object sender, RoutedEventArgs e)
+    {
+        DevToolLauncher.OpenVcsMapping();
     }
 
     private async void ToggleGitProxyButton_Click(object sender, RoutedEventArgs e)
@@ -786,37 +620,18 @@ public partial class PackagesHomePage : Page
         try
         {
             if (button != null)
-            {
                 button.IsEnabled = false;
-            }
 
-            if (package != null)
+            await DevToolLauncher.ToggleGitProxy(msg =>
             {
-                package.StatusText = "正在切换 Git 代理...";
-            }
-
-            var result = await GitProxyService.ToggleAsync();
-            if (package != null)
-            {
-                package.StatusText = result.Message;
-            }
-        }
-        catch (Exception ex)
-        {
-            LoggingService.LogError(ex, "切换 Git 代理失败");
-            if (package != null)
-            {
-                package.StatusText = $"Git代理切换失败：{ex.Message}";
-            }
-
-            MessageBox.Show($"切换 Git 代理失败：{ex.Message}", "Git代理", MessageBoxButton.OK, MessageBoxImage.Error);
+                if (package != null)
+                    package.StatusText = msg;
+            });
         }
         finally
         {
             if (button != null)
-            {
                 button.IsEnabled = true;
-            }
         }
     }
 }

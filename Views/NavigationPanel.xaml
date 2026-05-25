@@ -14,24 +14,39 @@
                  MinWidth="200">
             <ListBox.ItemTemplate>
                 <DataTemplate>
-                    <Grid Margin="0,4" VerticalAlignment="Center">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="28" />
-                            <ColumnDefinition Width="*" />
-                        </Grid.ColumnDefinitions>
-                        <!-- 左侧图标（MDL2字体图标） -->
-                        <TextBlock Grid.Column="0"
-                                   Text="{Binding Glyph}"
-                                   FontFamily="Segoe MDL2 Assets"
-                                   FontSize="16"
-                                   VerticalAlignment="Center"
-                                   Foreground="#66000000" />
-                        <!-- 文本 -->
-                        <controls:CTextBlock Grid.Column="1"
-                                             Text="{Binding Name}"
-                                             VerticalAlignment="Center"
-                                             TextAlignment="Center"/>
+                    <Grid>
+                        <!-- 普通导航项 -->
+                        <Grid x:Name="NavItemGrid" Margin="0,4" VerticalAlignment="Center">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="28" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0"
+                                       Text="{Binding Glyph}"
+                                       FontFamily="Segoe MDL2 Assets"
+                                       FontSize="16"
+                                       VerticalAlignment="Center"
+                                       Foreground="#66000000" />
+                            <controls:CTextBlock Grid.Column="1"
+                                                 Text="{Binding Name}"
+                                                 VerticalAlignment="Center"
+                                                 TextAlignment="Center"/>
+                        </Grid>
+                        <!-- 分组标题 -->
+                        <TextBlock x:Name="HeaderText"
+                                   Text="{Binding Name}"
+                                   FontWeight="SemiBold"
+                                   FontSize="11"
+                                   Foreground="#99000000"
+                                   Margin="4,12,0,2"
+                                   Visibility="Collapsed"/>
                     </Grid>
+                    <DataTemplate.Triggers>
+                        <DataTrigger Binding="{Binding IsGroupHeader}" Value="True">
+                            <Setter TargetName="NavItemGrid" Property="Visibility" Value="Collapsed"/>
+                            <Setter TargetName="HeaderText" Property="Visibility" Value="Visible"/>
+                        </DataTrigger>
+                    </DataTemplate.Triggers>
                 </DataTemplate>
             </ListBox.ItemTemplate>
             <ListBox.ItemContainerStyle>
@@ -57,6 +72,14 @@
                                     <Trigger Property="IsMouseOver" Value="True">
                                         <Setter TargetName="Bd" Property="Background" Value="#08000000" />
                                     </Trigger>
+                                    <DataTrigger Binding="{Binding IsGroupHeader}" Value="True">
+                                        <Setter Property="IsEnabled" Value="False"/>
+                                        <Setter Property="MinHeight" Value="0"/>
+                                        <Setter Property="Padding" Value="0"/>
+                                        <Setter Property="Focusable" Value="False"/>
+                                        <Setter TargetName="LeftBar" Property="Visibility" Value="Collapsed"/>
+                                        <Setter TargetName="Bd" Property="Background" Value="Transparent"/>
+                                    </DataTrigger>
                                 </ControlTemplate.Triggers>
                             </ControlTemplate>
                         </Setter.Value>

@@ -9,9 +9,6 @@ using PackageManager.Shell;
 
 namespace PackageManager.Views;
 
-/// <summary>
-/// 左侧导航面板，承载系统功能入口列表。
-/// </summary>
 public partial class NavigationPanel : UserControl
 {
     private NavigationActionItem lastSelectedItem;
@@ -20,27 +17,17 @@ public partial class NavigationPanel : UserControl
 
     private NavigationService _navigationService;
 
-    /// <summary>
-    /// 初始化 <see cref="NavigationPanel"/> 的新实例。
-    /// </summary>
     public NavigationPanel()
     {
         InitializeComponent();
         Loaded += NavigationPanel_Loaded;
     }
 
-    /// <summary>
-    /// 获取统一的系统入口列表数据源。
-    /// </summary>
     public ObservableCollection<NavigationActionItem> ActionItems { get; } = new();
 
-    /// <summary>
-    /// 按名称选中对应的导航项。
-    /// </summary>
-    /// <param name="name">要选中的导航项名称。</param>
     public void SelectActionByName(string name)
     {
-        var item = ActionItems.FirstOrDefault(i => i.Name == name);
+        var item = ActionItems.FirstOrDefault(i => i.Name == name && !i.IsGroupHeader);
         if (item == null)
         {
             return;
@@ -62,20 +49,30 @@ public partial class NavigationPanel : UserControl
 
         var registry = _navigationService.Registry;
 
-        // 构建统一的导航动作列表
         ActionItems.Clear();
 
-        // 主页入口
+        // 仪表盘入口（Home）
         ActionItems.Add(new NavigationActionItem
         {
-            Name = "产品分类",
-            Glyph = "",
+            Name = "仪表盘",
+            Glyph = "",
             Command = new RelayCommand(() => _navigationService.NavigateHome())
         });
 
-        // 从 ToolRegistry 构建其余导航项
+        // 按 Group 分组构建导航项
+        string lastGroup = null;
         foreach (var tool in registry.Tools)
         {
+            if (!string.IsNullOrEmpty(tool.Group) && tool.Group != lastGroup)
+            {
+                ActionItems.Add(new NavigationActionItem
+                {
+                    Name = tool.Group,
+                    IsGroupHeader = true
+                });
+                lastGroup = tool.Group;
+            }
+
             var key = tool.Key;
             ActionItems.Add(new NavigationActionItem
             {
@@ -85,8 +82,8 @@ public partial class NavigationPanel : UserControl
             });
         }
 
-        // 启动时默认选中"产品分类"
-        lastSelectedItem = ActionItems.FirstOrDefault(i => i.Name == "产品分类") ?? ActionItems.FirstOrDefault();
+        // 启动时默认选中"仪表盘"
+        lastSelectedItem = ActionItems.FirstOrDefault(i => i.Name == "仪表盘");
         if (lastSelectedItem != null)
         {
             revertingSelection = true;
@@ -94,7 +91,6 @@ public partial class NavigationPanel : UserControl
             revertingSelection = false;
         }
 
-        // 监听导航事件以同步选中项
         _navigationService.Navigated += name =>
         {
             Dispatcher.BeginInvoke(new System.Action(() =>
@@ -113,6 +109,15 @@ public partial class NavigationPanel : UserControl
 
         var listBox = sender as ListBox;
         var item = listBox?.SelectedItem as NavigationActionItem;
+
+        if (item?.IsGroupHeader == true)
+        {
+            revertingSelection = true;
+            listBox.SelectedItem = lastSelectedItem;
+            revertingSelection = false;
+            return;
+        }
+
         var cmd = item?.Command;
 
         var before = _navigationService?.NavigationVersion ?? 0;
@@ -144,6 +149,15 @@ public partial class NavigationPanel : UserControl
 
         var listBox = sender as ListBox;
         var item = listBox?.SelectedItem as NavigationActionItem;
+
+        if (item?.IsGroupHeader == true)
+        {
+            revertingSelection = true;
+            listBox.SelectedItem = lastSelectedItem;
+            revertingSelection = false;
+            return;
+        }
+
         var cmd = item?.Command;
 
         var before = _navigationService?.NavigationVersion ?? 0;
@@ -166,29 +180,16 @@ public partial class NavigationPanel : UserControl
         }
     }
 
-    /// <summary>
-    /// 导航动作项，表示左侧面板中的单个功能入口。
-    /// </summary>
     public class NavigationActionItem
     {
-        /// <summary>
-        /// 获取或设置导航项的显示名称。
-        /// </summary>
         public string Name { get; set; }
 
-        /// <summary>
-        /// 获取或设置导航项的图标字形。
-        /// </summary>
         public string Glyph { get; set; }
 
-        /// <summary>
-        /// 获取或设置点击该导航项时执行的命令。
-        /// </summary>
         public ICommand Command { get; set; }
 
-        /// <summary>
-        /// 获取子导航项集合。
-        /// </summary>
+        public bool IsGroupHeader { get; set; }
+
         public ObservableCollection<NavigationActionItem> Children { get; } = new();
     }
 }

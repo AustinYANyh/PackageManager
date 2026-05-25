@@ -11,6 +11,8 @@ namespace PackageManager.Shell
 
         public string Glyph { get; set; }
 
+        public string Group { get; set; }
+
         public Func<Page> Factory { get; set; }
     }
 }
