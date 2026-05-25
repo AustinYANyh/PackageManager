@@ -1,25 +1,19 @@
 using System;
-using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Input;
-using PackageManager.Features.Notifications.Models;
 using PackageManager.Features.Notifications.Services;
 using PackageManager.Models;
 using PackageManager.Services;
 
 namespace PackageManager.Features.Dashboard.ViewModels
 {
-    /// <summary>
-    /// 仪表盘视图模型，聚合概览统计和最近活动数据。
-    /// </summary>
     public sealed class DashboardViewModel : INotifyPropertyChanged
     {
-        private int _packagesUpdatedToday;
+        private int _newVersionCount;
         private int _packagesPendingUpdate;
-        private string _latestPackageInfo;
         private int _todayNotificationCount;
         private int _unreadNotificationCount;
         private int _lanPeersOnline;
@@ -27,26 +21,47 @@ namespace PackageManager.Features.Dashboard.ViewModels
 
         public DashboardViewModel()
         {
-            RecentActivities = new ObservableCollection<NotificationItem>();
             RefreshCommand = new RelayCommand(Refresh);
+
+            var monitor = ServiceLocator.Resolve<PackageVersionMonitorService>();
+            if (monitor != null)
+            {
+                monitor.VersionsChanged += () =>
+                    Application.Current?.Dispatcher?.BeginInvoke(new Action(RefreshPackageStats));
+            }
+
+            var notifService = ServiceLocator.Resolve<NotificationService>();
+            if (notifService != null)
+            {
+                notifService.Notifications.CollectionChanged += (s, e) =>
+                    Application.Current?.Dispatcher?.BeginInvoke(new Action(() =>
+                    {
+                        RefreshNotificationStats();
+                        RefreshPackageStats();
+                    }));
+            }
         }
 
-        public int PackagesUpdatedToday
+        public int NewVersionCount
         {
-            get => _packagesUpdatedToday;
-            set { if (_packagesUpdatedToday != value) { _packagesUpdatedToday = value; OnPropertyChanged(); } }
+            get => _newVersionCount;
+            set
+            {
+                if (_newVersionCount != value)
+                {
+                    _newVersionCount = value;
+                    OnPropertyChanged();
+                    OnPropertyChanged(nameof(HasNewVersions));
+                }
+            }
         }
+
+        public bool HasNewVersions => _newVersionCount > 0;
 
         public int PackagesPendingUpdate
         {
             get => _packagesPendingUpdate;
             set { if (_packagesPendingUpdate != value) { _packagesPendingUpdate = value; OnPropertyChanged(); } }
-        }
-
-        public string LatestPackageInfo
-        {
-            get => _latestPackageInfo;
-            set { if (_latestPackageInfo != value) { _latestPackageInfo = value; OnPropertyChanged(); } }
         }
 
         public int TodayNotificationCount
@@ -73,50 +88,35 @@ namespace PackageManager.Features.Dashboard.ViewModels
             set { if (_lanActiveTransfers != value) { _lanActiveTransfers = value; OnPropertyChanged(); } }
         }
 
-        public ObservableCollection<NotificationItem> RecentActivities { get; }
-
         public ICommand RefreshCommand { get; }
 
-        /// <summary>
-        /// 刷新所有概览数据。在 DashboardPage.Loaded 时调用。
-        /// </summary>
         public void Refresh()
         {
             RefreshPackageStats();
             RefreshNotificationStats();
             RefreshLanStats();
-            RefreshRecentActivities();
         }
 
         private void RefreshPackageStats()
         {
             try
             {
+                var monitor = ServiceLocator.Resolve<PackageVersionMonitorService>();
                 var mainWindow = Application.Current?.MainWindow as MainWindow;
                 var packages = mainWindow?.Packages;
-                if (packages == null) return;
 
-                var completed = packages.Count(p => p.Status == PackageStatus.Completed);
-                var busy = packages.Count(p =>
-                    p.Status == PackageStatus.Downloading ||
-                    p.Status == PackageStatus.Extracting ||
-                    p.Status == PackageStatus.VerifyingSignature ||
-                    p.Status == PackageStatus.VerifyingEncryption);
+                NewVersionCount = monitor?.NewVersionCount ?? 0;
 
-                PackagesUpdatedToday = completed;
-                PackagesPendingUpdate = busy;
-
-                var latest = packages
-                    .Where(p => p.Status == PackageStatus.Completed)
-                    .FirstOrDefault();
-                LatestPackageInfo = latest != null
-                    ? $"{latest.ProductName} {latest.Version}"
-                    : null;
+                if (packages != null)
+                {
+                    PackagesPendingUpdate = packages.Count(p =>
+                        p.Status == PackageStatus.Downloading ||
+                        p.Status == PackageStatus.Extracting ||
+                        p.Status == PackageStatus.VerifyingSignature ||
+                        p.Status == PackageStatus.VerifyingEncryption);
+                }
             }
-            catch
-            {
-                // 包数据不可用时静默
-            }
+            catch { }
         }
 
         private void RefreshNotificationStats()
@@ -129,10 +129,7 @@ namespace PackageManager.Features.Dashboard.ViewModels
                 TodayNotificationCount = service.GetTodayCount();
                 UnreadNotificationCount = service.UnreadCount;
             }
-            catch
-            {
-                // ignore
-            }
+            catch { }
         }
 
         private void RefreshLanStats()
@@ -145,29 +142,7 @@ namespace PackageManager.Features.Dashboard.ViewModels
                 LanPeersOnline = lanService.Peers.Count(p => p.IsOnline);
                 LanActiveTransfers = lanService.ActiveTransfers.Count;
             }
-            catch
-            {
-                // ignore
-            }
-        }
-
-        private void RefreshRecentActivities()
-        {
-            try
-            {
-                var service = ServiceLocator.Resolve<NotificationService>();
-                if (service == null) return;
-
-                RecentActivities.Clear();
-                foreach (var item in service.Notifications.Take(5))
-                {
-                    RecentActivities.Add(item);
-                }
-            }
-            catch
-            {
-                // ignore
-            }
+            catch { }
         }
 
         public event PropertyChangedEventHandler PropertyChanged;

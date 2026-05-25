@@ -10,7 +10,7 @@
         xmlns:views="clr-namespace:PackageManager.Views"
         xmlns:notif="clr-namespace:PackageManager.Features.Notifications.Views"
         mc:Ignorable="d"
-        Title="DevKit" Height="820" Width="1500" MinWidth="960"
+        Title="DevKit" Height="890" Width="1500" MinWidth="960"
         Icon="/Assets/Icons/App.ico"
         ResizeMode="CanResize" WindowStartupLocation="CenterScreen" AllowDrop="True">
     <Window.Resources>

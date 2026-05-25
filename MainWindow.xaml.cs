@@ -424,6 +424,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         // 加载可执行文件版本
         await LoadExecutableVersionsAsync();
         EnsureLatestActivePackageSelected();
+
+        // 启动后台版本检测（包列表已初始化完毕）
+        ServiceLocator.Resolve<PackageVersionMonitorService>()?.Start();
     }
 
     private void InitializeCommonLinks()
@@ -650,7 +653,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     /// <summary>
     /// 从FTP服务器加载版本信息
     /// </summary>
-    private async Task LoadVersionsWhichVisiableFromFtpAsync()
+    internal async Task LoadVersionsWhichVisiableFromFtpAsync()
     {
         var dataGrid = GetPackageDataGrid();
         if (dataGrid == null)

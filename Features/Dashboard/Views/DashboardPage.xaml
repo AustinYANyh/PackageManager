@@ -3,7 +3,7 @@
       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
       xmlns:controls="clr-namespace:CustomControlLibrary.CustomControl.Controls;assembly=CustomControlLibrary"
       xmlns:button="clr-namespace:CustomControlLibrary.CustomControl.Controls.Button;assembly=CustomControlLibrary"
-      xmlns:notifModels="clr-namespace:PackageManager.Features.Notifications.Models">
+      >
     <Page.Resources>
         <Style x:Key="DashboardCard" TargetType="Border">
             <Setter Property="Background" Value="#06000000"/>
@@ -44,16 +44,6 @@
             </Style.Triggers>
         </Style>
 
-        <Style x:Key="ActivityRow" TargetType="Border">
-            <Setter Property="Padding" Value="12,8"/>
-            <Setter Property="Background" Value="Transparent"/>
-            <Setter Property="Cursor" Value="Hand"/>
-            <Style.Triggers>
-                <Trigger Property="IsMouseOver" Value="True">
-                    <Setter Property="Background" Value="#08000000"/>
-                </Trigger>
-            </Style.Triggers>
-        </Style>
     </Page.Resources>
 
     <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="24,16">
@@ -86,20 +76,30 @@
                 </TextBlock>
             </Grid>
             <WrapPanel Margin="0,0,0,20">
-                <!-- 包状态卡片 -->
+                <!-- 包更新卡片 -->
                 <Border Style="{StaticResource OverviewCard}" Background="#F5F8FF"
                         Tag="packages-home" MouseLeftButtonUp="NavigationCard_Click">
                     <StackPanel>
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
                             <TextBlock Text="&#xE7B8;" FontFamily="Segoe MDL2 Assets" FontSize="16" Foreground="#2B7FFF" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                            <controls:CTextBlock Text="包状态" FontSize="12" Foreground="#666666" VerticalAlignment="Center"/>
+                            <controls:CTextBlock Text="包更新" FontSize="12" Foreground="#666666" VerticalAlignment="Center"/>
                         </StackPanel>
                         <StackPanel Orientation="Horizontal" Margin="0,6,0,0">
-                            <controls:CTextBlock Text="{Binding PackagesUpdatedToday}" FontSize="28" FontWeight="Bold" Foreground="#2B7FFF"/>
-                            <controls:CTextBlock Text=" 已完成" FontSize="12" Foreground="#999999" VerticalAlignment="Bottom" Margin="0,0,0,5"/>
+                            <controls:CTextBlock Text="{Binding NewVersionCount}" FontSize="28" FontWeight="Bold">
+                                <controls:CTextBlock.Style>
+                                    <Style TargetType="controls:CTextBlock">
+                                        <Setter Property="Foreground" Value="#107C10"/>
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding HasNewVersions}" Value="True">
+                                                <Setter Property="Foreground" Value="#FF8C00"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </controls:CTextBlock.Style>
+                            </controls:CTextBlock>
+                            <controls:CTextBlock Text=" 个新版本" FontSize="12" Foreground="#999999" VerticalAlignment="Bottom" Margin="0,0,0,5"/>
                         </StackPanel>
                         <controls:CTextBlock Text="{Binding PackagesPendingUpdate, StringFormat={}{0} 进行中}" FontSize="12" Foreground="#999999" Margin="0,2,0,0"/>
-                        <controls:CTextBlock Text="{Binding LatestPackageInfo}" FontSize="11" Foreground="#AAAAAA" Margin="0,4,0,0" TextTrimming="CharacterEllipsis"/>
                     </StackPanel>
                 </Border>
 
@@ -136,68 +136,8 @@
                 </Border>
             </WrapPanel>
 
-            <!-- ===== 最近活动区 ===== -->
-            <controls:CTextBlock Text="最近活动" FontSize="13" FontWeight="SemiBold" Foreground="#99000000" Margin="0,0,0,8"/>
-            <Border Background="#FAFAFA" CornerRadius="8" BorderBrush="#0F000000" BorderThickness="1" Margin="0,0,0,24" MinHeight="48">
-                <!-- 有活动时显示列表 -->
-                <ItemsControl x:Name="RecentActivityList" ItemsSource="{Binding RecentActivities}">
-                    <ItemsControl.ItemTemplate>
-                        <DataTemplate DataType="{x:Type notifModels:NotificationItem}">
-                            <Border Style="{StaticResource ActivityRow}"
-                                    BorderBrush="#08000000" BorderThickness="0,0,0,1"
-                                    Tag="{Binding}" MouseLeftButtonUp="ActivityItem_Click">
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="22"/>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="Auto"/>
-                                    </Grid.ColumnDefinitions>
-
-                                    <TextBlock Grid.Column="0" FontFamily="Segoe MDL2 Assets" FontSize="12"
-                                               VerticalAlignment="Center" x:Name="ActivityIcon"/>
-
-                                    <controls:CTextBlock Grid.Column="1" Text="{Binding Message}"
-                                                        FontSize="13" Foreground="#333333"
-                                                        TextTrimming="CharacterEllipsis"
-                                                        VerticalAlignment="Center" Margin="0,0,12,0"/>
-
-                                    <TextBlock Grid.Column="2" Text="{Binding TimestampText}"
-                                               FontSize="11" Foreground="#999999"
-                                               VerticalAlignment="Center"/>
-                                </Grid>
-                            </Border>
-
-                            <DataTemplate.Triggers>
-                                <DataTrigger Binding="{Binding Level}" Value="Success">
-                                    <Setter TargetName="ActivityIcon" Property="Text" Value="&#xE8FB;"/>
-                                    <Setter TargetName="ActivityIcon" Property="Foreground" Value="#107C10"/>
-                                </DataTrigger>
-                                <DataTrigger Binding="{Binding Level}" Value="Warning">
-                                    <Setter TargetName="ActivityIcon" Property="Text" Value="&#xE7BA;"/>
-                                    <Setter TargetName="ActivityIcon" Property="Foreground" Value="#FF8C00"/>
-                                </DataTrigger>
-                                <DataTrigger Binding="{Binding Level}" Value="Error">
-                                    <Setter TargetName="ActivityIcon" Property="Text" Value="&#xE711;"/>
-                                    <Setter TargetName="ActivityIcon" Property="Foreground" Value="#E81123"/>
-                                </DataTrigger>
-                                <DataTrigger Binding="{Binding Level}" Value="Info">
-                                    <Setter TargetName="ActivityIcon" Property="Text" Value="&#xE946;"/>
-                                    <Setter TargetName="ActivityIcon" Property="Foreground" Value="#2B7FFF"/>
-                                </DataTrigger>
-                            </DataTemplate.Triggers>
-                        </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                </ItemsControl>
-            </Border>
-
-            <!-- 空状态提示（覆盖在最近活动区域上） -->
-            <StackPanel x:Name="ActivityEmptyState" Visibility="Collapsed"
-                        Margin="0,-80,0,24" HorizontalAlignment="Center">
-                <controls:CTextBlock Text="暂无活动记录" FontSize="12" Foreground="#BBBBBB" HorizontalAlignment="Center"/>
-            </StackPanel>
-
             <!-- 包管理 -->
-            <controls:CTextBlock Text="包管理" FontSize="13" FontWeight="SemiBold" Foreground="#99000000" Margin="0,0,0,8"/>
+            <controls:CTextBlock Text="包管理" FontSize="13" FontWeight="SemiBold" Foreground="#99000000" Margin="0,0,0,8" HorizontalAlignment="Left"/>
             <WrapPanel Margin="0,0,0,20">
                 <Border Style="{StaticResource DashboardCard}" Tag="packages-home" MouseLeftButtonUp="NavigationCard_Click">
                     <StackPanel>
@@ -237,7 +177,7 @@
             </WrapPanel>
 
             <!-- 项目与协作 -->
-            <controls:CTextBlock Text="项目与协作" FontSize="13" FontWeight="SemiBold" Foreground="#99000000" Margin="0,0,0,8"/>
+            <controls:CTextBlock Text="项目与协作" FontSize="13" FontWeight="SemiBold" Foreground="#99000000" Margin="0,0,0,8" HorizontalAlignment="Left"/>
             <WrapPanel Margin="0,0,0,20">
                 <Border Style="{StaticResource DashboardCard}" Tag="kanban" MouseLeftButtonUp="NavigationCard_Click">
                     <StackPanel>
@@ -256,7 +196,7 @@
             </WrapPanel>
 
             <!-- 开发工具 -->
-            <controls:CTextBlock Text="开发工具" FontSize="13" FontWeight="SemiBold" Foreground="#99000000" Margin="0,0,0,8"/>
+            <controls:CTextBlock Text="开发工具" FontSize="13" FontWeight="SemiBold" Foreground="#99000000" Margin="0,0,0,8" HorizontalAlignment="Left"/>
             <WrapPanel Margin="0,0,0,20">
                 <Border Style="{StaticResource DashboardCard}" Tag="tool:csv-crypto" MouseLeftButtonUp="ToolCard_Click">
                     <StackPanel>
@@ -303,7 +243,7 @@
             </WrapPanel>
 
             <!-- 日志 -->
-            <controls:CTextBlock Text="日志" FontSize="13" FontWeight="SemiBold" Foreground="#99000000" Margin="0,0,0,8"/>
+            <controls:CTextBlock Text="日志" FontSize="13" FontWeight="SemiBold" Foreground="#99000000" Margin="0,0,0,8" HorizontalAlignment="Left"/>
             <WrapPanel Margin="0,0,0,20">
                 <Border Style="{StaticResource DashboardCard}" Tag="product-logs" MouseLeftButtonUp="NavigationCard_Click">
                     <StackPanel>
@@ -329,7 +269,7 @@
             </WrapPanel>
 
             <!-- 设置 -->
-            <controls:CTextBlock Text="设置" FontSize="13" FontWeight="SemiBold" Foreground="#99000000" Margin="0,0,0,8"/>
+            <controls:CTextBlock Text="设置" FontSize="13" FontWeight="SemiBold" Foreground="#99000000" Margin="0,0,0,8" HorizontalAlignment="Left"/>
             <WrapPanel Margin="0,0,0,12">
                 <Border Style="{StaticResource DashboardCard}" Tag="settings" MouseLeftButtonUp="NavigationCard_Click">
                     <StackPanel>

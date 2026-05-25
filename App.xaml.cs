@@ -43,6 +43,10 @@ namespace PackageManager
             ServiceLocator.Register(new LanTransferService(dataPersistence));
             ServiceLocator.Register(new NotificationService());
 
+            var ftpService = ServiceLocator.Resolve<FtpService>();
+            var monitor = new PackageVersionMonitorService(ftpService);
+            ServiceLocator.Register(monitor);
+
             AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
             DispatcherUnhandledException += App_DispatcherUnhandledException;
             TaskScheduler.UnobservedTaskException += TaskScheduler_UnobservedTaskException;

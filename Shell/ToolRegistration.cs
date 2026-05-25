@@ -21,7 +21,13 @@ namespace PackageManager.Services
                 DisplayName = "产品分类",
                 Glyph = "",
                 Group = "包管理",
-                Factory = () => ServiceLocator.Resolve<MainWindow>().GetOrCreateHomePage()
+                Factory = () =>
+                {
+                    var mainWindow = ServiceLocator.Resolve<MainWindow>();
+                    var page = mainWindow.GetOrCreateHomePage();
+                    _ = mainWindow.LoadVersionsWhichVisiableFromFtpAsync();
+                    return page;
+                }
             });
 
             registry.Register(new ToolPageDescriptor

@@ -119,6 +119,7 @@ namespace PackageManager.Models
         private string finalizeFtpServerPath;
         private bool isFinalizing;
         private string downloadUrlOverride;
+        private string latestServerVersion;
 
         /// <summary>
         /// 更新请求事件
@@ -179,6 +180,7 @@ namespace PackageManager.Models
                 if (SetProperty(ref version, value))
                 {
                     OnPropertyChanged(nameof(DownloadUrl));
+                    UpdateNewVersionTag();
                     VersionChanged?.Invoke(this, value);
                 }
             }
@@ -441,6 +443,35 @@ namespace PackageManager.Models
                         ToolTip = "进行签名加密的校验，并输出结果",
                         IsVisible = false)]
         public string SignatureEncryption { get; set; }
+
+        public string LatestServerVersion
+        {
+            get => latestServerVersion;
+            set
+            {
+                if (SetProperty(ref latestServerVersion, value))
+                    UpdateNewVersionTag();
+            }
+        }
+
+        private string _newVersionTag = "";
+
+        [DataGridColumn(13, DisplayName = "更新", Width = "110", IsReadOnly = true)]
+        public string NewVersionTag
+        {
+            get => _newVersionTag;
+            set => SetProperty(ref _newVersionTag, value);
+        }
+
+        private void UpdateNewVersionTag()
+        {
+            if (string.IsNullOrEmpty(latestServerVersion))
+                NewVersionTag = "";
+            else if (string.Equals(Version, latestServerVersion, StringComparison.OrdinalIgnoreCase))
+                NewVersionTag = "✓ 已是最新";
+            else
+                NewVersionTag = $"↑ {latestServerVersion}";
+        }
 
         /// <summary>
         /// 配置操作动态按钮配置列表
@@ -892,14 +923,13 @@ namespace PackageManager.Models
                 AvailableVersions.Add(version);
             }
 
-            // 刷新时默认选择：Dazzle 强制首项，其他包仅在未选择时选末项
             if (AvailableVersions.Count > 0)
             {
                 if (string.Equals(ProductName, "BuildMaster(Dazzle)", StringComparison.OrdinalIgnoreCase))
                 {
                     Version = AvailableVersions.First();
                 }
-                else if (string.IsNullOrEmpty(Version))
+                else
                 {
                     Version = AvailableVersions.Last();
                 }

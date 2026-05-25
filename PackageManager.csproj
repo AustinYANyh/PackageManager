@@ -156,6 +156,7 @@
         <Compile Include="Features\PackageManagement\Models\LocalPathInfo.cs" />
         <Compile Include="Features\PackageManagement\Services\FtpService.cs" />
         <Compile Include="Features\PackageManagement\Services\PackageUpdateService.cs" />
+        <Compile Include="Features\PackageManagement\Services\PackageVersionMonitorService.cs" />
         <Compile Include="Features\PackageManagement\Services\EmbeddedToolRunnerService.cs" />
         <Page Include="Features\PackageManagement\Views\PackagesHomePage.xaml" />
         <Compile Include="Features\PackageManagement\Views\PackagesHomePage.xaml.cs" />
