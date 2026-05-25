@@ -5,6 +5,7 @@ using System.Security.Principal;
 using System.Windows;
 using System.Threading.Tasks;
 using PackageManager.Services;
+using PackageManager.Features.Notifications.Services;
 using System.Runtime.InteropServices;
 using System.IO;
 
@@ -40,6 +41,7 @@ namespace PackageManager
             ServiceLocator.Register(new PackageUpdateService());
             ServiceLocator.Register(new ApplicationFinderService());
             ServiceLocator.Register(new LanTransferService(dataPersistence));
+            ServiceLocator.Register(new NotificationService());
 
             AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
             DispatcherUnhandledException += App_DispatcherUnhandledException;

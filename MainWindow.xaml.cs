@@ -18,6 +18,7 @@ using PackageManager.Models;
 using PackageManager.Services;
 using PackageManager.Views;
 using PackageManager.Shell;
+using PackageManager.Features.Notifications.Services;
 
 namespace PackageManager;
 
@@ -90,6 +91,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         };
         Loaded += MainWindow_Loaded;
         Closing += MainWindow_Closing;
+
+        InitializeNotificationBell();
 
         // 刷新命令（顶部按钮使用）
         RefreshCommand = new RelayCommand(() => { _ = LoadVersionsFromFtpAsync(); });
@@ -1162,6 +1165,27 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void BackToDashboardButton_Click(object sender, MouseButtonEventArgs e)
     {
         ServiceLocator.Resolve<NavigationService>()?.NavigateHome();
+    }
+
+    private void InitializeNotificationBell()
+    {
+        var service = ServiceLocator.Resolve<NotificationService>();
+        if (service == null) return;
+
+        service.PropertyChanged += (s, args) =>
+        {
+            if (args.PropertyName == nameof(NotificationService.UnreadCount))
+            {
+                var count = service.UnreadCount;
+                UnreadBadge.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
+                UnreadCountText.Text = count > 99 ? "99+" : count.ToString();
+            }
+        };
+    }
+
+    private void NotificationBell_Click(object sender, MouseButtonEventArgs e)
+    {
+        NotificationPopup.IsOpen = !NotificationPopup.IsOpen;
     }
 
     /// <summary>

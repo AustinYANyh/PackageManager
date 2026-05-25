@@ -1,7 +1,9 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using PackageManager.Features.Dashboard.ViewModels;
 using PackageManager.Features.DevTools;
+using PackageManager.Features.Notifications.Models;
 using PackageManager.Services;
 using PackageManager.Shell;
 
@@ -9,9 +11,35 @@ namespace PackageManager.Views
 {
     public partial class DashboardPage : Page
     {
+        private readonly DashboardViewModel _viewModel;
+
         public DashboardPage()
         {
             InitializeComponent();
+
+            _viewModel = new DashboardViewModel();
+            DataContext = _viewModel;
+
+            Loaded += OnLoaded;
+        }
+
+        private void OnLoaded(object sender, RoutedEventArgs e)
+        {
+            _viewModel.Refresh();
+            UpdateActivityEmptyState();
+        }
+
+        private void UpdateActivityEmptyState()
+        {
+            ActivityEmptyState.Visibility = _viewModel.RecentActivities.Count == 0
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+        }
+
+        private void RefreshOverview_Click(object sender, MouseButtonEventArgs e)
+        {
+            _viewModel.Refresh();
+            UpdateActivityEmptyState();
         }
 
         private void NavigationCard_Click(object sender, MouseButtonEventArgs e)
@@ -24,6 +52,25 @@ namespace PackageManager.Views
             if (navService == null) return;
 
             navService.NavigateTo(key);
+        }
+
+        private void NotificationCard_Click(object sender, MouseButtonEventArgs e)
+        {
+            var mainWindow = Application.Current?.MainWindow as MainWindow;
+            if (mainWindow != null)
+            {
+                mainWindow.NotificationPopup.IsOpen = true;
+            }
+        }
+
+        private void ActivityItem_Click(object sender, MouseButtonEventArgs e)
+        {
+            var border = sender as FrameworkElement;
+            var item = border?.Tag as NotificationItem;
+            if (item == null || string.IsNullOrEmpty(item.NavigationTarget)) return;
+
+            var navService = ServiceLocator.Resolve<NavigationService>();
+            navService?.NavigateTo(item.NavigationTarget);
         }
 
         private void ToolCard_Click(object sender, MouseButtonEventArgs e)

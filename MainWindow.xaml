@@ -8,6 +8,7 @@
         xmlns:controls="clr-namespace:CustomControlLibrary.CustomControl.Controls;assembly=CustomControlLibrary"
         xmlns:button="clr-namespace:CustomControlLibrary.CustomControl.Controls.Button;assembly=CustomControlLibrary"
         xmlns:views="clr-namespace:PackageManager.Views"
+        xmlns:notif="clr-namespace:PackageManager.Features.Notifications.Views"
         mc:Ignorable="d"
         Title="DevKit" Height="820" Width="1500" MinWidth="960"
         Icon="/Assets/Icons/App.ico"
@@ -28,6 +29,7 @@
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="260" />
                 <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
             <controls:CTextBlock Grid.Column="0" Text="DevKit" FontSize="20" FontWeight="Bold" VerticalAlignment="Center" />
 
@@ -71,6 +73,34 @@
                                     SelectedItem="{Binding SelectedCommonLink, Mode=TwoWay}" />
                 <button:CButton Content="打开" Margin="8,0,0,0" Padding="10,6" Click="OpenSelectedLinkButton_Click" />
             </StackPanel>
+
+            <!-- 通知铃铛 -->
+            <Grid x:Name="NotificationBell" Grid.Column="4" Margin="12,0,0,0"
+                  Cursor="Hand" VerticalAlignment="Center"
+                  MouseLeftButtonUp="NotificationBell_Click">
+                <TextBlock Text="&#xEA8F;" FontFamily="Segoe MDL2 Assets" FontSize="18"
+                           Foreground="#555555" VerticalAlignment="Center"/>
+                <!-- 未读徽章 -->
+                <Border x:Name="UnreadBadge"
+                        Background="#E81123" CornerRadius="8"
+                        MinWidth="16" Height="16"
+                        Padding="3,0" Margin="10,-10,-6,0"
+                        HorizontalAlignment="Right" VerticalAlignment="Top"
+                        Visibility="Collapsed">
+                    <TextBlock x:Name="UnreadCountText" Text="0"
+                               FontSize="10" Foreground="White" FontWeight="Bold"
+                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Border>
+            </Grid>
+
+            <!-- 通知面板 Popup -->
+            <Popup x:Name="NotificationPopup"
+                   PlacementTarget="{Binding ElementName=NotificationBell}"
+                   Placement="Bottom" StaysOpen="False"
+                   HorizontalOffset="-330" VerticalOffset="8"
+                   AllowsTransparency="True">
+                <notif:NotificationPanel x:Name="NotificationPanelControl"/>
+            </Popup>
         </Grid>
 
         <!-- 中央内容区：全宽使用 -->
