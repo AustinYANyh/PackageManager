@@ -32,10 +32,6 @@ public partial class PackagesHomePage : Page
     public PackagesHomePage()
     {
         InitializeComponent();
-        if (!UserFeatureAccessService.CanUseAustinOnlyFeatures)
-        {
-            KiroProxyButton.IsEnabled = false;
-        }
     }
 
     /// <summary>
@@ -468,71 +464,7 @@ public partial class PackagesHomePage : Page
 
     private void OpenRevitActivationToolButton_Click(object sender, RoutedEventArgs e)
     {
-        try
-        {
-            var asm = typeof(PackagesHomePage).Assembly;
-            var names = asm.GetManifestResourceNames();
-            var suffixes = new[]
-            {
-                "AdskUAT.exe",
-                "BDGroupCore.bpf",
-                "Uninstall.exe",
-                "启用日志跟踪EnableLogTrack.cmd",
-                "疑难解答Faqs.txt",
-                "禁用日志跟踪DisableLogTrack.cmd",
-            };
-            var targetDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                                         "PackageManager",
-                                         "AutodeskActivation");
-            Directory.CreateDirectory(targetDir);
-            try
-            {
-                Directory.CreateDirectory(Path.Combine(targetDir, "Logs"));
-            }
-            catch
-            {
-            }
-
-            foreach (var suffix in suffixes)
-            {
-                var name = names.FirstOrDefault(n =>
-                                                    n.EndsWith(suffix, StringComparison.OrdinalIgnoreCase) &&
-                                                    n.Contains("Assets.Tools.Autodesk.Universal.Activation.Tools"));
-                if (string.IsNullOrEmpty(name))
-                {
-                    continue;
-                }
-
-                var path = Path.Combine(targetDir, suffix);
-                if (!File.Exists(path))
-                {
-                    using (var s = asm.GetManifestResourceStream(name))
-                    using (var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read))
-                    {
-                        s.CopyTo(fs);
-                    }
-                }
-            }
-
-            var exePath = Path.Combine(targetDir, "AdskUAT.exe");
-            if (!File.Exists(exePath))
-            {
-                MessageBox.Show("未找到资源：AdskUAT.exe", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
-                return;
-            }
-
-            var psi = new ProcessStartInfo
-            {
-                FileName = exePath,
-                UseShellExecute = true,
-                WorkingDirectory = targetDir,
-            };
-            Process.Start(psi);
-        }
-        catch
-        {
-            MessageBox.Show("运行Revit破解工具失败", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
+        DevToolLauncher.OpenRevitActivation();
     }
 
     private void OpenKiroProxyButton_Click(object sender, RoutedEventArgs e)

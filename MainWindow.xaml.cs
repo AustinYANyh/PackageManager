@@ -80,7 +80,13 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         navService.PropertyChanged += (s, args) =>
         {
             if (args.PropertyName == nameof(NavigationService.IsHomeActive))
+            {
                 BackToDashboardButton.Visibility = navService.IsHomeActive ? Visibility.Collapsed : Visibility.Visible;
+            }
+            if (args.PropertyName == nameof(NavigationService.CurrentKey))
+            {
+                PackageToolbar.Visibility = navService.CurrentKey == "packages-home" ? Visibility.Visible : Visibility.Collapsed;
+            }
         };
         Loaded += MainWindow_Loaded;
         Closing += MainWindow_Closing;
@@ -1153,7 +1159,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
-    private void BackToDashboardButton_Click(object sender, RoutedEventArgs e)
+    private void BackToDashboardButton_Click(object sender, MouseButtonEventArgs e)
     {
         ServiceLocator.Resolve<NavigationService>()?.NavigateHome();
     }

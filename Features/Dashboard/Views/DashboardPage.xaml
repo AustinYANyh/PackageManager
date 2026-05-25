@@ -52,6 +52,20 @@
                         <controls:CTextBlock Text="产品包配置与可见性管理" Foreground="#6B6B6B" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Left" TextAlignment="Left"/>
                     </StackPanel>
                 </Border>
+                <Border Style="{StaticResource DashboardCard}" Tag="plugin-management" MouseLeftButtonUp="NavigationCard_Click">
+                    <StackPanel>
+                        <TextBlock Text="&#xEA86;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#2B7FFF" Margin="0,0,0,8"/>
+                        <controls:CTextBlock Text="插件管理" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" TextAlignment="Left"/>
+                        <controls:CTextBlock Text="管理 Revit Addin 插件启用/禁用" Foreground="#6B6B6B" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Left" TextAlignment="Left"/>
+                    </StackPanel>
+                </Border>
+                <Border Style="{StaticResource DashboardCard}" Tag="tool:revit-activation" MouseLeftButtonUp="ToolCard_Click">
+                    <StackPanel>
+                        <TextBlock Text="&#xECAD;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#2B7FFF" Margin="0,0,0,8"/>
+                        <controls:CTextBlock Text="Revit破解" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" TextAlignment="Left"/>
+                        <controls:CTextBlock Text="一键运行 Revit 激活工具" Foreground="#6B6B6B" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Left" TextAlignment="Left"/>
+                    </StackPanel>
+                </Border>
             </WrapPanel>
 
             <!-- 项目与协作 -->
@@ -76,13 +90,6 @@
             <!-- 开发工具 -->
             <controls:CTextBlock Text="开发工具" FontSize="13" FontWeight="SemiBold" Foreground="#99000000" Margin="0,0,0,8"/>
             <WrapPanel Margin="0,0,0,20">
-                <Border Style="{StaticResource DashboardCard}" Tag="plugin-management" MouseLeftButtonUp="NavigationCard_Click">
-                    <StackPanel>
-                        <TextBlock Text="&#xEA86;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#2B7FFF" Margin="0,0,0,8"/>
-                        <controls:CTextBlock Text="插件管理" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" TextAlignment="Left"/>
-                        <controls:CTextBlock Text="管理 Revit Addin 插件启用/禁用" Foreground="#6B6B6B" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Left" TextAlignment="Left"/>
-                    </StackPanel>
-                </Border>
                 <Border Style="{StaticResource DashboardCard}" Tag="tool:csv-crypto" MouseLeftButtonUp="ToolCard_Click">
                     <StackPanel>
                         <TextBlock Text="&#xE8D7;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#107C10" Margin="0,0,0,8"/>

@@ -54,6 +54,9 @@ namespace PackageManager.Views
                 case "tool:vcs-mapping":
                     DevToolLauncher.OpenVcsMapping();
                     break;
+                case "tool:revit-activation":
+                    DevToolLauncher.OpenRevitActivation();
+                    break;
             }
         }
     }

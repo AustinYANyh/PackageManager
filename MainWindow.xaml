@@ -32,14 +32,33 @@
             <controls:CTextBlock Grid.Column="0" Text="DevKit" FontSize="20" FontWeight="Bold" VerticalAlignment="Center" />
 
             <!-- 返回仪表盘按钮：非首页时显示 -->
-            <button:CButton x:Name="BackToDashboardButton" Grid.Column="1"
-                            Content="← 仪表盘"
-                            Margin="16,0,0,0" Padding="10,6"
-                            Click="BackToDashboardButton_Click"
-                            Visibility="Collapsed" />
+            <Border x:Name="BackToDashboardButton" Grid.Column="1"
+                    Margin="16,0,0,0" Padding="10,5"
+                    Background="#08000000"
+                    BorderBrush="#15000000"
+                    BorderThickness="1"
+                    CornerRadius="6"
+                    Cursor="Hand"
+                    MouseLeftButtonUp="BackToDashboardButton_Click"
+                    Visibility="Collapsed">
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Style.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="#10000000"/>
+                                <Setter Property="BorderBrush" Value="#25000000"/>
+                            </Trigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="&#xE80F;" FontFamily="Segoe MDL2 Assets" FontSize="13" Foreground="#2B7FFF" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                    <controls:CTextBlock Text="仪表盘" FontSize="13" VerticalAlignment="Center" Foreground="#333333"/>
+                </StackPanel>
+            </Border>
 
             <TextBox Grid.Column="2" x:Name="SearchBox" Height="28" Margin="16,0,0,0" Visibility="Hidden" />
-            <StackPanel Grid.Column="3" Orientation="Horizontal" HorizontalAlignment="Right">
+            <StackPanel x:Name="PackageToolbar" Grid.Column="3" Orientation="Horizontal" HorizontalAlignment="Right" Visibility="Collapsed">
                 <button:CButton Content="刷新" Margin="0,0,8,0" Padding="10,6" Click="RefreshButton_Click" />
 
                 <!-- 常用网址导航 -->

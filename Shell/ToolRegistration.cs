@@ -69,7 +69,7 @@ namespace PackageManager.Services
                 Key = "plugin-management",
                 DisplayName = "插件管理",
                 Glyph = "",
-                Group = "开发工具",
+                Group = "包管理",
                 Factory = () => new PluginManagementPage(persistence, appFinder)
             });
 

@@ -169,48 +169,12 @@
                                                         Width="96"
                                                         Margin="0,0,8,8"
                                                         IsEnabled="{Binding LatestActivePackage.SignatureCancelEnabled}" />
-                                        <button:CButton Content="CSV加解密"
-                                                        Width="110"
-                                                        Margin="0,0,8,8"
-                                                        Click="OpenCsvCryptoWindowButton_Click"/>
                                          <button:CButton Content="Jenkins编译"
                                                          Width="110"
                                                          Margin="0,0,8,8"
                                                          Click="TriggerJenkinsBuildButton_Click"
                                                          IsEnabled="{Binding LatestActivePackage.IsEnabled}" />
-                                         <button:CButton Content="清理rvt"
-                                                         Width="110"
-                                                         Margin="0,0,8,8"
-                                                         Click="OpenRevitFileCleanupWindowButton_Click"/>
                                          </StackPanel>
-                                        <StackPanel Orientation="Horizontal">
-                                        <button:CButton Content="解除占用"
-                                                        Width="96"
-                                                        Margin="0,0,8,8"
-                                                        Click="OpenUnlockFilesWindowButton_Click"/>
-                                        <button:CButton Content="编译顺序"
-                                                        Width="110"
-                                                        Margin="0,0,8,8"
-                                                        Click="OpenSlnUpdateWindowButton_Click"/>
-                                        <button:CButton Content="Revit破解"
-                                                        Width="110"
-                                                        Margin="0,0,8,8"
-                                                        Click="OpenRevitActivationToolButton_Click"/>
-                                        <button:CButton Content="Git代理"
-                                                        Width="110"
-                                                        Margin="0,0,8,8"
-                                                        Click="ToggleGitProxyButton_Click"/>
-                                         </StackPanel>
-                                        <StackPanel Orientation="Horizontal">
-                                        <button:CButton x:Name="KiroProxyButton" Content="Kiro反代"
-                                                        Width="96"
-                                                        Margin="0,0,8,8"
-                                                        Click="OpenKiroProxyButton_Click"/>
-                                        <button:CButton Content="VCS映射"
-                                                        Width="110"
-                                                        Margin="0,0,8,8"
-                                                        Click="OpenVcsMappingButton_Click"/>
-                                        </StackPanel>
                                      </StackPanel>
                                  </StackPanel>
                              </Border>

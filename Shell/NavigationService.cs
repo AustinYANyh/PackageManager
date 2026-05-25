@@ -16,6 +16,7 @@ namespace PackageManager.Shell
         private Func<Page> _homePageFactory;
         private int _navigationVersion;
         private bool _isHomeActive;
+        private string _currentKey;
 
         public NavigationService(Frame frame, ToolRegistry registry)
         {
@@ -38,6 +39,12 @@ namespace PackageManager.Shell
             private set { _isHomeActive = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsHomeActive))); }
         }
 
+        public string CurrentKey
+        {
+            get => _currentKey;
+            private set { _currentKey = value; PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CurrentKey))); }
+        }
+
         public ToolRegistry Registry => _registry;
 
         public void SetHomePageFactory(Func<Page> factory)
@@ -57,6 +64,7 @@ namespace PackageManager.Shell
                 _frame.Navigate(_homePage);
                 NavigationVersion++;
                 IsHomeActive = true;
+                CurrentKey = null;
                 Navigated?.Invoke("仪表盘");
             }
         }
@@ -79,6 +87,7 @@ namespace PackageManager.Shell
                 _frame.Navigate(page);
                 NavigationVersion++;
                 IsHomeActive = false;
+                CurrentKey = key;
                 Navigated?.Invoke(descriptor.DisplayName);
                 return true;
             }
@@ -102,6 +111,7 @@ namespace PackageManager.Shell
             _frame.Navigate(page);
             NavigationVersion++;
             IsHomeActive = false;
+            CurrentKey = null;
             if (displayName != null)
             {
                 Navigated?.Invoke(displayName);
