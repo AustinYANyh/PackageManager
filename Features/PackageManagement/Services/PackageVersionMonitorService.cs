@@ -80,11 +80,28 @@ namespace PackageManager.Services
                     try
                     {
                         var versions = await _ftpService.GetDirectoriesAsync(pkg.FtpServerPath);
-                        return (pkg.ProductName, LatestVersion: versions.Count > 0 ? versions.Last() : null, pkg);
+                        var latestVersion = versions.Count > 0 ? versions.Last() : null;
+                        string latestTime = null;
+                        if (!string.IsNullOrEmpty(latestVersion))
+                        {
+                            try
+                            {
+                                var path = pkg.FtpServerPath.TrimEnd('/') + "/" + latestVersion + "/";
+                                var files = await _ftpService.GetFilesAsync(path);
+                                var lastFile = files.LastOrDefault();
+                                if (!string.IsNullOrEmpty(lastFile))
+                                {
+                                    var t = FtpService.ParseTimeFromFileName(lastFile);
+                                    latestTime = t != DateTime.MinValue ? t.ToString("yyyy-MM-dd HH:mm") : "";
+                                }
+                            }
+                            catch { }
+                        }
+                        return (pkg.ProductName, LatestVersion: latestVersion, LatestTime: latestTime, pkg);
                     }
                     catch
                     {
-                        return (pkg.ProductName, LatestVersion: (string)null, pkg);
+                        return (pkg.ProductName, LatestVersion: (string)null, LatestTime: (string)null, pkg);
                     }
                 }).ToArray();
 
@@ -92,10 +109,12 @@ namespace PackageManager.Services
 
                 int newCount = 0;
 
-                foreach (var (productName, latestVersion, pkg) in results)
+                foreach (var (productName, latestVersion, latestTime, pkg) in results)
                 {
                     if (string.IsNullOrEmpty(latestVersion)) continue;
 
+                    if (latestTime != null)
+                        pkg.LatestServerTime = latestTime;
                     pkg.LatestServerVersion = latestVersion;
 
                     if (!_isFirstCheck && _knownLatestVersions.TryGetValue(productName, out var known) && known != latestVersion)

@@ -170,7 +170,7 @@ namespace PackageManager.Models
         /// <summary>
         /// 当前版本
         /// </summary>
-        [DataGridComboBox(2, "版本", "AvailableVersions", Width = "120", IsReadOnlyProperty = "IsReadOnly")]
+        [DataGridComboBox(2, "版本", "AvailableVersions", Width = "150", IsReadOnlyProperty = "IsReadOnly")]
         public string Version
         {
             get => version;
@@ -456,7 +456,7 @@ namespace PackageManager.Models
 
         private string _newVersionTag = "";
 
-        [DataGridColumn(13, DisplayName = "更新", Width = "110", IsReadOnly = true)]
+        [DataGridColumn(13, DisplayName = "更新", Width = "140", IsReadOnly = true)]
         public string NewVersionTag
         {
             get => _newVersionTag;
@@ -471,6 +471,22 @@ namespace PackageManager.Models
                 NewVersionTag = "✓ 已是最新";
             else
                 NewVersionTag = $"↑ {latestServerVersion}";
+            OnPropertyChanged(nameof(LatestServerTime));
+        }
+
+        private string _latestServerTime = "";
+
+        [DataGridColumn(14, DisplayName = "最新时间", Width = "150", IsReadOnly = true)]
+        public string LatestServerTime
+        {
+            get
+            {
+                if (string.IsNullOrEmpty(latestServerVersion)) return "";
+                if (string.Equals(Version, latestServerVersion, StringComparison.OrdinalIgnoreCase))
+                    return Time;
+                return _latestServerTime;
+            }
+            set => SetProperty(ref _latestServerTime, value);
         }
 
         /// <summary>
@@ -747,7 +763,8 @@ namespace PackageManager.Models
                 if (SetProperty(ref uploadPackageName, value))
                 {
                     OnPropertyChanged(nameof(DownloadUrl));
-                    OnPropertyChanged(nameof(Time)); // 通知Time属性更新
+                    OnPropertyChanged(nameof(Time));
+                    OnPropertyChanged(nameof(LatestServerTime));
                 }
             }
         }
@@ -915,12 +932,13 @@ namespace PackageManager.Models
         /// 更新可用版本列表
         /// </summary>
         /// <param name="versions">版本列表</param>
-        public void UpdateAvailableVersions(IEnumerable<string> versions)
+        public void UpdateAvailableVersions(IEnumerable<string> versions, bool forceLatest = false)
         {
+            var savedVersion = version;
             AvailableVersions.Clear();
-            foreach (var version in versions)
+            foreach (var v in versions)
             {
-                AvailableVersions.Add(version);
+                AvailableVersions.Add(v);
             }
 
             if (AvailableVersions.Count > 0)
@@ -929,9 +947,15 @@ namespace PackageManager.Models
                 {
                     Version = AvailableVersions.First();
                 }
-                else
+                else if (forceLatest || string.IsNullOrEmpty(savedVersion))
                 {
                     Version = AvailableVersions.Last();
+                }
+                else
+                {
+                    version = savedVersion;
+                    OnPropertyChanged(nameof(Version));
+                    UpdateNewVersionTag();
                 }
             }
         }

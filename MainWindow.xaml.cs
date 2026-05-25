@@ -653,7 +653,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     /// <summary>
     /// 从FTP服务器加载版本信息
     /// </summary>
-    internal async Task LoadVersionsWhichVisiableFromFtpAsync()
+    internal async Task LoadVersionsWhichVisiableFromFtpAsync(bool forceLatest = false)
     {
         var dataGrid = GetPackageDataGrid();
         if (dataGrid == null)
@@ -692,8 +692,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             foreach (var pkg in filteredPackages)
             {
-                pkg.Version = string.Empty;
-                pkg.UploadPackageName = string.Empty;
+                if (forceLatest)
+                {
+                    pkg.Version = string.Empty;
+                    pkg.UploadPackageName = string.Empty;
+                }
             }
 
             foreach (var pkg in filteredPackages)
@@ -724,8 +727,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             // 如果有版本，加载第一个版本的文件列表作为上传时间
             if (versions.Count > 0)
             {
-                var selectedVersion = package.Version ?? versions.Last();
+                var latestVersion = versions.Last();
+                var selectedVersion = package.Version ?? latestVersion;
                 await LoadPackageFilesAsync(package, selectedVersion);
+
                 package.StatusText = $"已加载 {versions.Count} 个版本";
             }
             else
@@ -1197,10 +1202,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private async void RefreshButton_Click(object sender, RoutedEventArgs e)
     {
         // 重新加载可见包的版本和文件信息
-        await LoadVersionsWhichVisiableFromFtpAsync();
-        
-        // 重新加载所有包的版本和文件信息
-        //await LoadVersionsFromFtpAsync();
+        await LoadVersionsWhichVisiableFromFtpAsync(forceLatest: true);
     }
 
     /// <summary>
