@@ -18,6 +18,7 @@ namespace PackageManager.Services
         private readonly FtpService _ftpService;
         private readonly DispatcherTimer _timer;
         private readonly Dictionary<string, string> _knownLatestVersions = new Dictionary<string, string>();
+        private readonly Dictionary<string, string> _knownLatestTimes = new Dictionary<string, string>();
 
         private int _newVersionCount;
         private DateTime _lastCheckTime;
@@ -121,13 +122,28 @@ namespace PackageManager.Services
                     {
                         ToastService.ShowToast("新版本", $"{productName} 有新版本 {latestVersion}", "Info");
                     }
+                    else if (!_isFirstCheck && !string.IsNullOrEmpty(latestTime) &&
+                             _knownLatestTimes.TryGetValue(productName, out var knownTime) &&
+                             string.Compare(latestTime, knownTime, StringComparison.Ordinal) > 0)
+                    {
+                        ToastService.ShowToast("新包", $"{productName}\n有更新的包 {latestTime}", "Info");
+                    }
 
                     _knownLatestVersions[productName] = latestVersion;
+                    if (!string.IsNullOrEmpty(latestTime))
+                        _knownLatestTimes[productName] = latestTime;
 
-                    if (!string.IsNullOrEmpty(pkg.Version) &&
-                        !string.Equals(pkg.Version, latestVersion, StringComparison.OrdinalIgnoreCase))
+                    if (!string.IsNullOrEmpty(pkg.Version))
                     {
-                        newCount++;
+                        if (!string.Equals(pkg.Version, latestVersion, StringComparison.OrdinalIgnoreCase))
+                        {
+                            newCount++;
+                        }
+                        else if (!string.IsNullOrEmpty(latestTime) && !string.IsNullOrEmpty(pkg.Time) &&
+                                 string.Compare(latestTime, pkg.Time, StringComparison.Ordinal) > 0)
+                        {
+                            newCount++;
+                        }
                     }
                 }
 

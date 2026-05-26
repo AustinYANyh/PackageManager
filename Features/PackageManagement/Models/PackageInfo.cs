@@ -466,11 +466,27 @@ namespace PackageManager.Models
         private void UpdateNewVersionTag()
         {
             if (string.IsNullOrEmpty(latestServerVersion))
+            {
                 NewVersionTag = "";
+            }
             else if (string.Equals(Version, latestServerVersion, StringComparison.OrdinalIgnoreCase))
-                NewVersionTag = "✓ 已是最新";
+            {
+                var currentTime = Time;
+                if (!string.IsNullOrEmpty(_latestServerTime) &&
+                    !string.IsNullOrEmpty(currentTime) &&
+                    string.Compare(_latestServerTime, currentTime, StringComparison.Ordinal) > 0)
+                {
+                    NewVersionTag = $"↑ {latestServerVersion}";
+                }
+                else
+                {
+                    NewVersionTag = "✓ 已是最新";
+                }
+            }
             else
+            {
                 NewVersionTag = $"↑ {latestServerVersion}";
+            }
             OnPropertyChanged(nameof(LatestServerTime));
         }
 
@@ -482,11 +498,13 @@ namespace PackageManager.Models
             get
             {
                 if (string.IsNullOrEmpty(latestServerVersion)) return "";
-                if (string.Equals(Version, latestServerVersion, StringComparison.OrdinalIgnoreCase))
-                    return Time;
                 return _latestServerTime;
             }
-            set => SetProperty(ref _latestServerTime, value);
+            set
+            {
+                if (SetProperty(ref _latestServerTime, value))
+                    UpdateNewVersionTag();
+            }
         }
 
         /// <summary>
@@ -764,7 +782,7 @@ namespace PackageManager.Models
                 {
                     OnPropertyChanged(nameof(DownloadUrl));
                     OnPropertyChanged(nameof(Time));
-                    OnPropertyChanged(nameof(LatestServerTime));
+                    UpdateNewVersionTag();
                 }
             }
         }
@@ -966,16 +984,23 @@ namespace PackageManager.Models
         /// <param name="packages">包列表</param>
         public void UpdateAvailablePackages(IEnumerable<string> packages)
         {
+            var savedPackageName = uploadPackageName;
             AvailablePackages.Clear();
             foreach (var package in packages)
             {
                 AvailablePackages.Add(package);
             }
 
-            // 如果有包且当前上传时间为空，则选择最后一个包
-            if ((AvailablePackages.Count > 0) && string.IsNullOrEmpty(UploadPackageName))
+            if (AvailablePackages.Count > 0)
             {
-                UploadPackageName = AvailablePackages.Last();
+                if (!string.IsNullOrEmpty(savedPackageName) && AvailablePackages.Contains(savedPackageName))
+                {
+                    UploadPackageName = savedPackageName;
+                }
+                else
+                {
+                    UploadPackageName = AvailablePackages.Last();
+                }
             }
         }
 
