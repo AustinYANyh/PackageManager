@@ -6,6 +6,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using PackageManager.Features.CodeWorkspace.Models;
@@ -140,16 +141,24 @@ namespace PackageManager.Features.CodeWorkspace.Views
         {
             EnsureCommandExists("claude");
             var skillInfo = _aiCommitSkillService.EnsureSkillAvailable(repo.Path);
-            var syncedTargets = string.Join(Environment.NewLine, skillInfo.SyncedTargets.Select(path => $"Write-Host '  - {TerminalHelper.EscapePowerShellSingleQuoted(path)}'"));
+            var syncedUserSkills = skillInfo.SyncedUserSkillPaths.Count == 0
+                ? "Write-Host '  - 未找到用户 skill 目录。'"
+                : string.Join(Environment.NewLine, skillInfo.SyncedUserSkillPaths.Select(path => $"Write-Host '  - {TerminalHelper.EscapePowerShellSingleQuoted(path)}'"));
+            var repositorySkill = string.IsNullOrWhiteSpace(skillInfo.RepositorySkillPath)
+                ? "Write-Host '  - 当前仓库没有自己的 .claude skill。'"
+                : $"Write-Host '  - {TerminalHelper.EscapePowerShellSingleQuoted(skillInfo.RepositorySkillPath)}（只检测，不覆盖）'";
             var prompt = BuildCommitPrompt(skillInfo.WorkingChangesScriptPath);
             var command = $@"
 Set-Location -LiteralPath {PsQuote(repo.Path)}
 Write-Host 'PackageManager AI 提交入口' -ForegroundColor Cyan
-Write-Host '脚本来源：{TerminalHelper.EscapePowerShellSingleQuoted(skillInfo.SourcePath)}' -ForegroundColor DarkCyan
-Write-Host '本次使用：{TerminalHelper.EscapePowerShellSingleQuoted(skillInfo.PrimarySkillPath)}' -ForegroundColor DarkCyan
+Write-Host '内嵌解压：{TerminalHelper.EscapePowerShellSingleQuoted(skillInfo.SourcePath)}' -ForegroundColor DarkCyan
+Write-Host '本次执行：{TerminalHelper.EscapePowerShellSingleQuoted(skillInfo.PrimarySkillPath)}' -ForegroundColor DarkCyan
+Write-Host '规则文件：{TerminalHelper.EscapePowerShellSingleQuoted(skillInfo.SkillMarkdownPath)}' -ForegroundColor DarkCyan
 Write-Host '采集脚本：{TerminalHelper.EscapePowerShellSingleQuoted(skillInfo.WorkingChangesScriptPath)}' -ForegroundColor DarkCyan
-Write-Host '已同步目标：' -ForegroundColor DarkCyan
-{syncedTargets}
+Write-Host '已覆盖用户级 skill：' -ForegroundColor DarkCyan
+{syncedUserSkills}
+Write-Host '仓库内 skill：' -ForegroundColor DarkCyan
+{repositorySkill}
 claude --dangerously-skip-permissions {PsQuote(prompt)}
 ";
             TerminalHelper.LaunchTerminalWithCommand(repo.Path, command, $"代码提交 - {repo.Name}");
@@ -310,18 +319,72 @@ codex --sandbox danger-full-access --ask-for-approval never
 
             foreach (var name in possibleNames.Where(n => !string.IsNullOrWhiteSpace(n)))
             {
-                var item = items.FirstOrDefault(i =>
+                foreach (var item in items.Where(i =>
                     !string.IsNullOrWhiteSpace(i?.FullPath) &&
                     File.Exists(i.FullPath) &&
-                    (MatchesToolName(i.Name, name) || MatchesToolPath(i.FullPath, name)));
-
-                if (item != null)
+                    (MatchesToolName(i.Name, name) || MatchesToolPath(i.FullPath, name))))
                 {
-                    return item.FullPath;
+                    var launchPath = ResolveLaunchablePath(item.FullPath);
+                    if (!string.IsNullOrWhiteSpace(launchPath))
+                    {
+                        return launchPath;
+                    }
                 }
             }
 
             return null;
+        }
+
+        private static string ResolveLaunchablePath(string fullPath)
+        {
+            if (string.IsNullOrWhiteSpace(fullPath) || !File.Exists(fullPath))
+            {
+                return null;
+            }
+
+            if (!string.Equals(Path.GetExtension(fullPath), ".lnk", StringComparison.OrdinalIgnoreCase))
+            {
+                return fullPath;
+            }
+
+            var targetPath = TryResolveShortcutTarget(fullPath);
+            return !string.IsNullOrWhiteSpace(targetPath) && File.Exists(targetPath) ? targetPath : null;
+        }
+
+        private static string TryResolveShortcutTarget(string shortcutPath)
+        {
+            object shell = null;
+            object shortcut = null;
+            try
+            {
+                var shellType = Type.GetTypeFromProgID("WScript.Shell");
+                if (shellType == null)
+                {
+                    return null;
+                }
+
+                shell = Activator.CreateInstance(shellType);
+                shortcut = shellType.InvokeMember("CreateShortcut", System.Reflection.BindingFlags.InvokeMethod, null, shell, new object[] { shortcutPath });
+                return shortcut?.GetType()
+                    .InvokeMember("TargetPath", System.Reflection.BindingFlags.GetProperty, null, shortcut, null)
+                    ?.ToString();
+            }
+            catch
+            {
+                return null;
+            }
+            finally
+            {
+                if (shortcut != null && Marshal.IsComObject(shortcut))
+                {
+                    Marshal.FinalReleaseComObject(shortcut);
+                }
+
+                if (shell != null && Marshal.IsComObject(shell))
+                {
+                    Marshal.FinalReleaseComObject(shell);
+                }
+            }
         }
 
         private static string ResolveVisualStudioPath()
@@ -356,23 +419,15 @@ codex --sandbox danger-full-access --ask-for-approval never
 
         private static void StartToolWithTarget(string toolPath, string target, string workingDirectory)
         {
-            var extension = Path.GetExtension(toolPath);
-            if (string.Equals(extension, ".lnk", StringComparison.OrdinalIgnoreCase))
+            var launchPath = ResolveLaunchablePath(toolPath);
+            if (string.IsNullOrWhiteSpace(launchPath))
             {
-                Process.Start(new ProcessStartInfo
-                {
-                    FileName = "cmd.exe",
-                    Arguments = $"/c start \"\" {QuoteArgument(toolPath)} {QuoteArgument(target)}",
-                    WorkingDirectory = Directory.Exists(workingDirectory) ? workingDirectory : null,
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                });
-                return;
+                throw new FileNotFoundException($"工具路径无效或快捷方式目标不存在：{toolPath}");
             }
 
             Process.Start(new ProcessStartInfo
             {
-                FileName = toolPath,
+                FileName = launchPath,
                 Arguments = QuoteArgument(target),
                 WorkingDirectory = Directory.Exists(workingDirectory) ? workingDirectory : null,
                 UseShellExecute = true,
@@ -409,8 +464,11 @@ codex --sandbox danger-full-access --ask-for-approval never
 
         private static string BuildCommitPrompt(string workingChangesScriptPath)
         {
-            return "使用 git-svn-commitlog-generator skill 完成本次 Git/SVN 提交流程。"
-                   + "如果当前 AI 环境没有安装或识别该 skill，必须直接运行下面这个绝对路径脚本完成 Step 1："
+            var skillMarkdownPath = Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(workingChangesScriptPath)), "SKILL.md");
+            return "按这个内嵌同步后的 git-svn-commitlog-generator skill 完成本次 Git/SVN 提交流程："
+                   + $"SKILL.md=\"{skillMarkdownPath}\"。"
+                   + "不要依赖当前目录或用户目录里原本安装的旧 skill；如果自动加载了同名 skill，也以这里给出的 SKILL.md 和脚本绝对路径为准。"
+                   + "必须直接运行下面这个绝对路径脚本完成 Step 1："
                    + $"powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{workingChangesScriptPath}\" -PromptTimeoutSeconds 30。"
                    + "脚本会打开/等待交互并生成 JSON；之后按脚本包 SKILL.md 的规则生成提交日志，并调用 invoke-commit-push-interactive.ps1 做最终提交确认。"
                    + "不要手动执行 git add、git commit、git push、svn add 或 svn commit；这些操作必须由脚本完成。";

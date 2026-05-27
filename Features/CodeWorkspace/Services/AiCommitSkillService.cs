@@ -23,33 +23,32 @@ namespace PackageManager.Features.CodeWorkspace.Services
         public AiCommitSkillInfo EnsureSkillAvailable(string repositoryPath)
         {
             var sourcePath = ExtractEmbeddedSkill();
-
-            var targets = GetSkillTargets(repositoryPath).ToList();
-            if (targets.Count == 0)
+            var skillMarkdownPath = Path.Combine(sourcePath, "SKILL.md");
+            var wrapperPath = Path.Combine(sourcePath, "scripts", "invoke-working-changes-interactive.ps1");
+            if (!File.Exists(skillMarkdownPath))
             {
-                throw new InvalidOperationException("没有可用的 skill 同步目标。");
+                throw new FileNotFoundException($"找不到内嵌提交 skill 说明文件：{skillMarkdownPath}");
             }
 
-            var syncedTargets = new List<string>();
-            foreach (var target in targets)
-            {
-                SyncSkillDirectory(sourcePath, target);
-                syncedTargets.Add(target);
-            }
-
-            var primarySkillPath = targets.FirstOrDefault(Directory.Exists);
-            if (string.IsNullOrWhiteSpace(primarySkillPath))
-            {
-                throw new DirectoryNotFoundException("提交 skill 同步后仍不可用。");
-            }
-
-            var wrapperPath = Path.Combine(primarySkillPath, "scripts", "invoke-working-changes-interactive.ps1");
             if (!File.Exists(wrapperPath))
             {
-                throw new FileNotFoundException($"找不到提交采集脚本：{wrapperPath}");
+                throw new FileNotFoundException($"找不到内嵌提交采集脚本：{wrapperPath}");
             }
 
-            return new AiCommitSkillInfo(sourcePath, primarySkillPath, wrapperPath, syncedTargets);
+            var userSkillTargets = GetUserSkillTargets().ToList();
+            var syncedUserSkillPaths = new List<string>();
+            foreach (var target in userSkillTargets)
+            {
+                SyncSkillDirectory(sourcePath, target);
+                syncedUserSkillPaths.Add(target);
+            }
+
+            var repositorySkillPath = GetRepositorySkillTarget(repositoryPath);
+            var detectedRepositorySkillPath = !string.IsNullOrWhiteSpace(repositorySkillPath) && Directory.Exists(repositorySkillPath)
+                ? repositorySkillPath
+                : null;
+
+            return new AiCommitSkillInfo(sourcePath, sourcePath, skillMarkdownPath, wrapperPath, syncedUserSkillPaths, detectedRepositorySkillPath);
         }
 
         private static string ExtractEmbeddedSkill()
@@ -88,13 +87,15 @@ namespace PackageManager.Features.CodeWorkspace.Services
             return cacheRoot;
         }
 
-        private static IEnumerable<string> GetSkillTargets(string repositoryPath)
+        private static string GetRepositorySkillTarget(string repositoryPath)
         {
-            if (!string.IsNullOrWhiteSpace(repositoryPath))
-            {
-                yield return Path.Combine(repositoryPath, ".claude", "skills", SkillDirectoryName);
-            }
+            return string.IsNullOrWhiteSpace(repositoryPath)
+                ? null
+                : Path.Combine(repositoryPath, ".claude", "skills", SkillDirectoryName);
+        }
 
+        private static IEnumerable<string> GetUserSkillTargets()
+        {
             var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             if (!string.IsNullOrWhiteSpace(userProfile))
             {
@@ -113,8 +114,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
         {
             foreach (var directory in Directory.EnumerateDirectories(sourcePath))
             {
-                var name = Path.GetFileName(directory);
-                CopyDirectory(directory, Path.Combine(targetPath, name));
+                CopyDirectory(directory, Path.Combine(targetPath, Path.GetFileName(directory)));
             }
 
             Directory.CreateDirectory(targetPath);
@@ -127,20 +127,26 @@ namespace PackageManager.Features.CodeWorkspace.Services
 
     public sealed class AiCommitSkillInfo
     {
-        public AiCommitSkillInfo(string sourcePath, string primarySkillPath, string workingChangesScriptPath, IReadOnlyList<string> syncedTargets)
+        public AiCommitSkillInfo(string sourcePath, string primarySkillPath, string skillMarkdownPath, string workingChangesScriptPath, IReadOnlyList<string> syncedUserSkillPaths, string repositorySkillPath)
         {
             SourcePath = sourcePath;
             PrimarySkillPath = primarySkillPath;
+            SkillMarkdownPath = skillMarkdownPath;
             WorkingChangesScriptPath = workingChangesScriptPath;
-            SyncedTargets = syncedTargets;
+            SyncedUserSkillPaths = syncedUserSkillPaths;
+            RepositorySkillPath = repositorySkillPath;
         }
 
         public string SourcePath { get; }
 
         public string PrimarySkillPath { get; }
 
+        public string SkillMarkdownPath { get; }
+
         public string WorkingChangesScriptPath { get; }
 
-        public IReadOnlyList<string> SyncedTargets { get; }
+        public IReadOnlyList<string> SyncedUserSkillPaths { get; }
+
+        public string RepositorySkillPath { get; }
     }
 }
