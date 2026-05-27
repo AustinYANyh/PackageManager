@@ -114,9 +114,22 @@ JSON 关键字段（与脚本一致）：
 - 多提交组时，**先按组列文件，再写该组日志**；不得先凭记忆写出一个总日志，再把其中的项目名机械拆到各组。
 - 如果某个提交组最终只有 16 个文件，就只允许围绕这 16 个文件归纳 `scope`、摘要和条目；不得因为同仓里还有别的改动、上一轮出现过别的项目名，或 `Diffs` 里能联想到别的模块，就把它们写进这条日志。
 
+### 输出前自检（必须执行）
+
+模型在向用户展示最终提交日志之前，**必须**逐项自检；不通过则重写，不得直接输出：
+
+1. **标题长度**：标题是否过长？若单行显示明显拥挤，必须压缩 summary（缩短摘要、合并信息），不得删除 scope。
+2. **标题 type**：`(` 前是否为英文小写 conventional 类型？若不是，必须改正。
+3. **条目数量**：能否合并或删除条目？条目应围绕行为与影响归纳，不得把 diff 翻译成条目。改动简单时 2 条即可，不要凑数。
+4. **条目质量**：是否存在"改了 A / 改了 B"这类低信息量条目？是否存在整条都在复述 diff 内容而非归纳行为？如有，必须重写或删除。
+5. **紧凑性**：短条目是否保持单行？是否有多余续行？是否在不该换行的地方换了行？
+6. **scope 归源**：标题和正文里出现的每个项目/模块名，是否都能在 `ItemsIncludedDefaultLog` 里找到来源？
+
+自检只需在内部完成，不需要向用户展示自检过程。
+
 ### Step 3) 限时确认是否提交并推送
 
-生成最终提交日志后，模型默认调用提交/推送 wrapper。它会打开本机可见 PowerShell，按提交组显示提交日志、文件数量和倒计时：
+自检通过后，模型默认调用提交/推送 wrapper。它会打开本机可见 PowerShell，按提交组显示提交日志、文件数量和倒计时：
 
 - 按 `1`：提交全部提交组（默认，超时自动执行）。
 - 按 `2`：选择提交组；随后输入组编号，只提交选中的组。
@@ -133,9 +146,35 @@ Step 1 wrapper 会自动把采集 JSON 保存到 `.claude/skills/git_svn_commitl
 
 `-CommitMessageBase64Utf8` 内容必须只包含最终提交日志标题+正文的 UTF-8 Base64，不得包含核对表、说明文字或占位符。模型不得使用 stdin、pipe、heredoc、重定向来传提交日志，不得为了传日志而单独创建或编辑提交日志/Base64 文件（包括 `commit_msg_b64.txt`、`final_commit_message.txt` 等），不得把提交日志作为 `-CommitMessageText` 长参数塞进 Bash/WSL 命令行，不得在 Bash 中执行 `python -c` / `node -e` / `powershell -Command` 等编码命令来处理中文，不得执行 `git add` / `git commit` / `git push` / `svn add` / `svn commit` 等会改变状态或提交推送的命令，不得创建临时 `.ps1` 提交脚本，也不得直接调用 `run-commit-push-choice.ps1`。
 
-不得因为“无法确信 Base64 与中文原文逐字一致”而跳过 Step 3；Step 3 窗口会显示脚本实际解码后的提交日志和 SHA256，并由用户按 `1` 提交或按 `2` 取消。模型仍不得调用任何 shell 命令来“辅助计算” Base64。
+不得因为“无法确信 Base64 与中文原文逐字一致”而跳过 Step 3；Step 3 窗口会显示脚本实际解码后的提交日志和 SHA256，并由用户按 `1` 提交或按 `2` 取消。模型应优先在自身推理中直接计算 UTF-8 Base64；若模型无法可靠计算含 CJK 字符的 Base64（常见情况），**允许使用 Python `chr(0xNNNN)` 兜底方案**（见下文），这是唯一许可的 shell 辅助 Base64 计算方式，其他 shell 编码命令仍在禁止之列。
 
-若 `-CommitMessageBase64Utf8` 在 Step 3 返回“不是合法的 UTF-8 Base64 提交日志”、解码后文本与 Step 2 原日志不一致，或窗口回显的 `CommitMessage` 明显缺字、乱码、错行，模型必须把这次 Step 3 视为**传参失败**，而不是日志需要降级：必须回到 Step 2 的最终中文日志逐字核对标题、空行、bullet 与全文内容，重新得到准确的 UTF-8 Base64 后再次发起 Step 3。必要时可以连续重试多次，直到解码结果与原日志逐字一致，或用户明确要求停止；**禁止**为了“先通过解码/先弹出确认窗口”擅自把日志改写成更短、更空泛或信息降级的版本，尤其禁止把原本基于 diff 得出的具体摘要和条目替换成“更新规则”“优化流程”“修复问题”之类无法审阅的空话。
+### Bash 非 ASCII 兜底：Python chr() 计算 Base64
+
+Claude Code 的 Bash 工具会将命令行中的非 ASCII 字符（含中文）在 `eval` 阶段破坏，导致命令执行失败（exit code 127）。若模型无法在推理中可靠计算含 CJK 文本的 UTF-8 Base64，可使用本兜底方案。
+
+**原理**：用纯 ASCII 的 Python `chr(0xNNNN)` 构造提交日志字符串，再由 Python 计算 Base64 输出。整个命令行不含任何非 ASCII 字符，绕过 Bash 工具的 eval 编码问题。
+
+**命令模板**：
+
+```bash
+python -c “import base64;cp=[0x64,0x6F,...,0x63D0,0x4EA4,...,0x0A];s=''.join(chr(c) for c in cp);print(base64.b64encode(s.encode()).decode())”
+```
+
+- `cp=[]` 内是提交日志每个字符的 Unicode 码点（ASCII 字符直接写 `0xHH`，CJK 字符写 `0xNNNN`，换行写 `0x0A`）。
+- 逐字符列出码点，不得省略、不得用原始中文替代。
+- 命令行必须为纯 ASCII；任何原始中文字符都会导致 `eval` 失败。
+
+**使用流程**：
+
+1. 模型在 Step 2 生成最终中文提交日志文本。
+2. 将日志逐字符转为 Unicode 码点数组 `cp=[...]`。
+3. 执行上述 Python 命令，获取 Base64 字符串。
+4. **必须验证**：用 `python -c “import base64;print(base64.b64decode('<得到的Base64>').decode('utf-8'))”` 回解码，确认与 Step 2 原文逐字一致。
+5. 验证通过后，用该 Base64 调用 Step 3 的 `invoke-commit-push-interactive.ps1 -CommitMessageBase64Utf8`。
+
+**多提交组**时，对每组分别执行上述流程，再将各组 Base64 组装为 JSON 并整体编码为 `CommitMessageGroupsBase64Utf8`（同样用本方案计算该 JSON 的 Base64）。
+
+若 `-CommitMessageBase64Utf8` 在 Step 3 返回”不是合法的 UTF-8 Base64 提交日志”、解码后文本与 Step 2 原日志不一致，或窗口回显的 `CommitMessage` 明显缺字、乱码、错行，模型必须把这次 Step 3 视为**传参失败**，而不是日志需要降级：必须回到 Step 2 的最终中文日志逐字核对标题、空行、bullet 与全文内容，重新得到准确的 UTF-8 Base64 后再次发起 Step 3。必要时可以连续重试多次，直到解码结果与原日志逐字一致，或用户明确要求停止；**禁止**为了“先通过解码/先弹出确认窗口”擅自把日志改写成更短、更空泛或信息降级的版本，尤其禁止把原本基于 diff 得出的具体摘要和条目替换成“更新规则”“优化流程”“修复问题”之类无法审阅的空话。
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/invoke-commit-push-interactive.ps1 -PromptTimeoutSeconds 30 -CommitMessageBase64Utf8 '<模型已在推理中算好的 ASCII Base64>'
