@@ -83,6 +83,25 @@ namespace PackageManager.Features.DevTools
             }
         }
 
+        public static void OpenCodeWorkspace(Window owner = null)
+        {
+            try
+            {
+                var navService = ServiceLocator.Resolve<PackageManager.Shell.NavigationService>();
+                if (navService != null)
+                {
+                    navService.NavigateTo("code-workspace");
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, "打开代码工作区失败");
+            }
+
+            MessageBox.Show("无法打开代码工作区，请从主界面导航。", "代码工作区", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+
         public static async Task ToggleGitProxy(Action<string> statusCallback)
         {
             try

@@ -304,6 +304,35 @@
         </Compile>
 
         <!-- Features/DevTools -->
+        <Compile Include="Features\CodeWorkspace\Models\CodeRepository.cs" />
+        <Compile Include="Features\CodeWorkspace\Services\AiCommitSkillService.cs" />
+        <Compile Include="Features\CodeWorkspace\Services\TerminalHelper.cs" />
+        <Page Include="Features\CodeWorkspace\Views\CodeRepositoryManagementPage.xaml">
+          <Generator>MSBuild:Compile</Generator>
+          <SubType>Designer</SubType>
+        </Page>
+        <Compile Include="Features\CodeWorkspace\Views\CodeRepositoryManagementPage.xaml.cs">
+          <DependentUpon>CodeRepositoryManagementPage.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Page Include="Features\CodeWorkspace\Views\CodeWorkspacePage.xaml">
+          <Generator>MSBuild:Compile</Generator>
+          <SubType>Designer</SubType>
+        </Page>
+        <Compile Include="Features\CodeWorkspace\Views\CodeWorkspacePage.xaml.cs">
+          <DependentUpon>CodeWorkspacePage.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Page Include="Features\CodeWorkspace\Views\ProjectFileSelectionDialog.xaml">
+          <Generator>MSBuild:Compile</Generator>
+          <SubType>Designer</SubType>
+        </Page>
+        <Compile Include="Features\CodeWorkspace\Views\ProjectFileSelectionDialog.xaml.cs">
+          <DependentUpon>ProjectFileSelectionDialog.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+
+        <!-- Features/DevTools -->
         <Page Include="Features\DevTools\DnsEditor\DnsEditDialog.xaml" />
         <Compile Include="Features\DevTools\DnsEditor\DnsEditDialog.xaml.cs">
           <DependentUpon>DnsEditDialog.xaml</DependentUpon>
@@ -418,7 +447,10 @@
         <Content Include="docs\design\prototypes\common-startup-workbench-mockup.html" />
         <Content Include="docs\design\prototypes\mftscanner-file-search-mockup.html" />
         <Content Include="docs\design\window-interaction-and-shortcuts-design.md" />
+        <Content Include="docs\image-1-image-2-eager-lynx.md" />
+        <Content Include="docs\packagemanager-image-1-image-2-adaptive-cupcake.md" />
         <Content Include="docs\requirements\file-search-and-common-startup-prd.md" />
+        <Content Include="docs\skill-ok-ok-ai-cli-skill-cryptic-duckling.md" />
         <Content Include="Models\json.txt" />
         <Content Include="scripts\Test-MftScannerSearchCorrectness.ps1" />
         <Content Include="Features\PingCode\Views\WorkItemKanban.html">
@@ -497,6 +529,24 @@
       <EmbeddedResource Include="Assets\Tools\Autodesk.Universal.Activation.Tools_1.3.3.1_x64_CHS_BDGroup-lab.com\**\*" />
       <EmbeddedResource Include="CHANGELOG.md" />
         <EmbeddedResource Include="Features\PingCode\Templates\workitem-details.html" />
+        <EmbeddedResource Include=".claude\skills\git_svn_commitlog_generator\SKILL.md">
+          <LogicalName>PackageManager.AiCommitSkill.SKILL.md</LogicalName>
+        </EmbeddedResource>
+        <EmbeddedResource Include=".claude\skills\git_svn_commitlog_generator\scripts\get-working-changes.ps1">
+          <LogicalName>PackageManager.AiCommitSkill.scripts.get-working-changes.ps1</LogicalName>
+        </EmbeddedResource>
+        <EmbeddedResource Include=".claude\skills\git_svn_commitlog_generator\scripts\invoke-commit-push-interactive.ps1">
+          <LogicalName>PackageManager.AiCommitSkill.scripts.invoke-commit-push-interactive.ps1</LogicalName>
+        </EmbeddedResource>
+        <EmbeddedResource Include=".claude\skills\git_svn_commitlog_generator\scripts\invoke-working-changes-interactive.ps1">
+          <LogicalName>PackageManager.AiCommitSkill.scripts.invoke-working-changes-interactive.ps1</LogicalName>
+        </EmbeddedResource>
+        <EmbeddedResource Include=".claude\skills\git_svn_commitlog_generator\scripts\run-commit-push-choice.ps1">
+          <LogicalName>PackageManager.AiCommitSkill.scripts.run-commit-push-choice.ps1</LogicalName>
+        </EmbeddedResource>
+        <EmbeddedResource Include=".claude\skills\git_svn_commitlog_generator\scripts\terminal-host.ps1">
+          <LogicalName>PackageManager.AiCommitSkill.scripts.terminal-host.ps1</LogicalName>
+        </EmbeddedResource>
         <EmbeddedResource Include="Assets\Tools\runtimes\win-x64\native\WebView2Loader.dll" />
         <EmbeddedResource Include="Assets\Tools\runtimes\win-x86\native\WebView2Loader.dll" />
         <EmbeddedResource Include="Assets\Tools\runtimes\win-arm64\native\WebView2Loader.dll" />

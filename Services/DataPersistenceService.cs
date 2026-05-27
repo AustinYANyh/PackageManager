@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using Newtonsoft.Json;
+using PackageManager.Features.CodeWorkspace.Models;
 using PackageManager.Models;
 using System.Collections.ObjectModel;
 using System.Linq;
@@ -758,6 +759,7 @@ namespace PackageManager.Services
                 var startupSettings = LoadCommonStartupSettingsInternal();
                 settings.CommonStartupItems = startupSettings.CommonStartupItems ?? new List<CommonStartupItem>();
                 settings.CommonStartupGroups = startupSettings.CommonStartupGroups ?? new List<CommonStartupGroup>();
+                settings.CodeRepositories ??= new List<CodeRepository>();
                 return settings;
             }
             catch (Exception ex)
@@ -767,6 +769,7 @@ namespace PackageManager.Services
                 var startupSettings = LoadCommonStartupSettingsInternal();
                 settings.CommonStartupItems = startupSettings.CommonStartupItems ?? new List<CommonStartupItem>();
                 settings.CommonStartupGroups = startupSettings.CommonStartupGroups ?? new List<CommonStartupGroup>();
+                settings.CodeRepositories ??= new List<CodeRepository>();
                 return settings;
             }
         }
@@ -1029,6 +1032,16 @@ namespace PackageManager.Services
         /// 获取或设置常用启动项分组定义。
         /// </summary>
         public List<CommonStartupGroup> CommonStartupGroups { get; set; } = new List<CommonStartupGroup>();
+
+        /// <summary>
+        /// 获取或设置代码工作区仓库列表。
+        /// </summary>
+        public List<CodeRepository> CodeRepositories { get; set; } = new List<CodeRepository>();
+
+        /// <summary>
+        /// 获取或设置最近使用的代码仓库路径。
+        /// </summary>
+        public string LastUsedRepositoryPath { get; set; }
 
         /// <summary>
         /// 获取或设置常用启动项全局热键显示文本。

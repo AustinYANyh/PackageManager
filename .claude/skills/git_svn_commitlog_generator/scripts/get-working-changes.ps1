@@ -563,6 +563,18 @@ function Quote-NativeArgument([string]$value) {
   return '"' + (($value -replace '\\(?=")', '$0$0') -replace '"', '\"') + '"'
 }
 
+function Resolve-NativeToolPath([string]$Tool) {
+  $commands = @(Get-Command -Name $Tool -CommandType Application -ErrorAction SilentlyContinue | Where-Object { $_.Source })
+  if ($commands.Count -eq 0) { return "" }
+
+  if ($Tool -and $Tool.Equals("git", [System.StringComparison]::OrdinalIgnoreCase)) {
+    $gitCmd = @($commands | Where-Object { $_.Source -match '\\Git\\cmd\\git\.exe$' } | Select-Object -First 1)
+    if ($gitCmd.Count -gt 0) { return [string]$gitCmd[0].Source }
+  }
+
+  return [string]$commands[0].Source
+}
+
 function Invoke-NativeText {
   param(
     [string]$Tool,
@@ -572,11 +584,11 @@ function Invoke-NativeText {
   )
 
   try {
-    $cmd = Get-Command -Name $Tool -CommandType Application -ErrorAction SilentlyContinue
-    if (-not $cmd) { return "" }
+    $toolPath = Resolve-NativeToolPath $Tool
+    if (-not $toolPath) { return "" }
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $cmd.Source
+    $psi.FileName = $toolPath
     $psi.Arguments = (@($Arguments) | ForEach-Object { Quote-NativeArgument $_ }) -join " "
     $psi.WorkingDirectory = $WorkingDirectory
     $psi.UseShellExecute = $false
@@ -610,8 +622,8 @@ function Invoke-NativeText {
 
 function Invoke-NativeCommandCaptured([string]$tool, [string[]]$arguments, [string]$workingDirectory) {
   try {
-    $cmd = Get-Command -Name $tool -CommandType Application -ErrorAction SilentlyContinue
-    if (-not $cmd) {
+    $toolPath = Resolve-NativeToolPath $tool
+    if (-not $toolPath) {
       return [pscustomobject]@{
         exitCode = 127
         output = @()
@@ -621,7 +633,7 @@ function Invoke-NativeCommandCaptured([string]$tool, [string[]]$arguments, [stri
     }
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $cmd.Source
+    $psi.FileName = $toolPath
     $psi.Arguments = (@($arguments) | ForEach-Object { Quote-NativeArgument $_ }) -join " "
     $psi.WorkingDirectory = $workingDirectory
     $psi.UseShellExecute = $false

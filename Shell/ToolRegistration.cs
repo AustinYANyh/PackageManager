@@ -1,4 +1,5 @@
 using System.IO;
+using PackageManager.Features.CodeWorkspace.Views;
 using PackageManager.Shell;
 using PackageManager.Views;
 using PackageManager.Views.KanBan;
@@ -69,6 +70,24 @@ namespace PackageManager.Services
             });
 
             // --- 开发工具 ---
+
+            registry.Register(new ToolPageDescriptor
+            {
+                Key = "code-workspace",
+                DisplayName = "代码工作区",
+                Glyph = "",
+                Group = "项目与协作",
+                Factory = () => new CodeWorkspacePage()
+            });
+
+            registry.Register(new ToolPageDescriptor
+            {
+                Key = "code-repository-management",
+                DisplayName = "代码仓库管理",
+                Glyph = "",
+                Group = "开发工具",
+                Factory = () => new CodeRepositoryManagementPage()
+            });
 
             registry.Register(new ToolPageDescriptor
             {

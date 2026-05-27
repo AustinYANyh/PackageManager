@@ -75,6 +75,9 @@ namespace PackageManager.Views
                 case "tool:sln-updater":
                     DevToolLauncher.OpenSlnUpdate(owner);
                     break;
+                case "tool:code-workspace":
+                    DevToolLauncher.OpenCodeWorkspace(owner);
+                    break;
                 case "tool:git-proxy":
                     _ = DevToolLauncher.ToggleGitProxy(null);
                     break;
