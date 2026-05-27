@@ -134,6 +134,8 @@ Step 1 wrapper 会自动把采集 JSON 保存到 `.claude/skills/git_svn_commitl
 
 不得因为“无法确信 Base64 与中文原文逐字一致”而跳过 Step 3；Step 3 窗口会显示脚本实际解码后的提交日志和 SHA256，并由用户按 `1` 提交或按 `2` 取消。模型仍不得调用任何 shell 命令来“辅助计算” Base64。
 
+若 `-CommitMessageBase64Utf8` 在 Step 3 返回“不是合法的 UTF-8 Base64 提交日志”、解码后文本与 Step 2 原日志不一致，或窗口回显的 `CommitMessage` 明显缺字、乱码、错行，模型必须把这次 Step 3 视为**传参失败**，而不是日志需要降级：必须回到 Step 2 的最终中文日志逐字核对标题、空行、bullet 与全文内容，重新得到准确的 UTF-8 Base64 后再次发起 Step 3。必要时可以连续重试多次，直到解码结果与原日志逐字一致，或用户明确要求停止；**禁止**为了“先通过解码/先弹出确认窗口”擅自把日志改写成更短、更空泛或信息降级的版本，尤其禁止把原本基于 diff 得出的具体摘要和条目替换成“更新规则”“优化流程”“修复问题”之类无法审阅的空话。
+
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/invoke-commit-push-interactive.ps1 -PromptTimeoutSeconds 30 -CommitMessageBase64Utf8 '<模型已在推理中算好的 ASCII Base64>'
 ```
