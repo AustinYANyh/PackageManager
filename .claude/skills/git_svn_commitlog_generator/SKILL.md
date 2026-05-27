@@ -41,8 +41,10 @@ description: Git+SVN 改动由脚本采集；模型默认打开本机可见 Powe
 **模型默认（推荐）**：调用 wrapper 脚本打开本机可见 PowerShell，让脚本完成中文限时交互，并把 JSON 回传给模型；窗口退出后模型读取该 JSON 生成提交日志。Claude Code 当前只有 Bash 工具时，允许用 Bash 调 `powershell.exe` 启动 wrapper，但命令行不得包含中文提交日志正文。
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/invoke-working-changes-interactive.ps1 -PromptTimeoutSeconds 30
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File <skill-root>/scripts/invoke-working-changes-interactive.ps1 -PromptTimeoutSeconds 30
 ```
+
+由 PackageManager 启动时，`<skill-root>` 是 EXE 内嵌 skill 解压后的绝对目录（通常在 `%LocalAppData%\PackageManager\Skills\git_svn_commitlog_generator`），不得改读仓库 `.claude/skills/...` 下的旧 skill 或旧 `.state`。
 
 若当前工具显示为 `Bash(...)`，只允许执行这种固定短命令；不要在 Bash 中拼接多行 `powershell -Command`。
 
@@ -140,7 +142,7 @@ JSON 关键字段（与脚本一致）：
 - 任一提交组失败后停止后续组，结果 JSON 的 `Groups[]` 会标记 `completed`、`failed`、`not_started` 或 `skipped`。
 - Step 3 的结果 JSON 由 wrapper 指定的结果文件产生；模型不得解析提交窗口输出，也不得临时创建提交 `.ps1` 替代 wrapper。
 
-Step 1 wrapper 会自动把采集 JSON 保存到 `.claude/skills/git_svn_commitlog_generator/.state/last_changes.json`。
+Step 1 wrapper 会自动把采集 JSON 保存到 **本次执行的 skill root** 下的 `.state/last_changes.json`。由 PackageManager 启动时，只能读取 prompt 中给出的绝对 `last_changes.json` 路径；不得读取仓库 `.claude/skills/git_svn_commitlog_generator/.state/last_changes.json`。
 
 模型只负责生成 **Step 2 的最终提交日志文本**。所有模型/自动化调用都必须默认使用 `-CommitMessageBase64Utf8` 传递提交日志，不得因为当前执行器是 PowerShell 就改用兼容入口。Claude Code Bash 工具无法可靠传递中文参数，也不能用 `python -c` / `node -e` / `powershell -Command` 在 Bash 内处理中文。**因此模型必须在自身推理中直接得到最终提交日志的 UTF-8 Base64 字符串**，Step 3 命令行只传 ASCII Base64 给 `-CommitMessageBase64Utf8`。如果存在多个提交组，还必须传 `-CommitMessageGroupsBase64Utf8`，其内容是 UTF-8 JSON 的 Base64。
 

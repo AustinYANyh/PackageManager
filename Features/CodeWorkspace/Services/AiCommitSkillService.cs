@@ -25,6 +25,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
             var sourcePath = ExtractEmbeddedSkill();
             var skillMarkdownPath = Path.Combine(sourcePath, "SKILL.md");
             var wrapperPath = Path.Combine(sourcePath, "scripts", "invoke-working-changes-interactive.ps1");
+            var lastChangesJsonPath = Path.Combine(sourcePath, ".state", "last_changes.json");
             if (!File.Exists(skillMarkdownPath))
             {
                 throw new FileNotFoundException($"找不到内嵌提交 skill 说明文件：{skillMarkdownPath}");
@@ -48,7 +49,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
                 ? repositorySkillPath
                 : null;
 
-            return new AiCommitSkillInfo(sourcePath, sourcePath, skillMarkdownPath, wrapperPath, syncedUserSkillPaths, detectedRepositorySkillPath);
+            return new AiCommitSkillInfo(sourcePath, sourcePath, skillMarkdownPath, wrapperPath, lastChangesJsonPath, syncedUserSkillPaths, detectedRepositorySkillPath);
         }
 
         private static string ExtractEmbeddedSkill()
@@ -127,12 +128,13 @@ namespace PackageManager.Features.CodeWorkspace.Services
 
     public sealed class AiCommitSkillInfo
     {
-        public AiCommitSkillInfo(string sourcePath, string primarySkillPath, string skillMarkdownPath, string workingChangesScriptPath, IReadOnlyList<string> syncedUserSkillPaths, string repositorySkillPath)
+        public AiCommitSkillInfo(string sourcePath, string primarySkillPath, string skillMarkdownPath, string workingChangesScriptPath, string lastChangesJsonPath, IReadOnlyList<string> syncedUserSkillPaths, string repositorySkillPath)
         {
             SourcePath = sourcePath;
             PrimarySkillPath = primarySkillPath;
             SkillMarkdownPath = skillMarkdownPath;
             WorkingChangesScriptPath = workingChangesScriptPath;
+            LastChangesJsonPath = lastChangesJsonPath;
             SyncedUserSkillPaths = syncedUserSkillPaths;
             RepositorySkillPath = repositorySkillPath;
         }
@@ -144,6 +146,8 @@ namespace PackageManager.Features.CodeWorkspace.Services
         public string SkillMarkdownPath { get; }
 
         public string WorkingChangesScriptPath { get; }
+
+        public string LastChangesJsonPath { get; }
 
         public IReadOnlyList<string> SyncedUserSkillPaths { get; }
 
