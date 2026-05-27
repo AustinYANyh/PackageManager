@@ -86,10 +86,12 @@ namespace PackageManager.Features.CodeWorkspace.Models
             set { }
         }
 
-        [DataGridMultiButton(nameof(ActionButtons), 6, DisplayName = "操作", Width = "680", ButtonSpacing = 12)]
+        [DataGridMultiButton(nameof(ActionButtons), 6, DisplayName = "操作", Width = "880", ButtonSpacing = 10)]
         public string Actions { get; set; }
 
-        public ICommand CommitCommand { get; set; }
+        public ICommand ClaudeCommitCommand { get; set; }
+
+        public ICommand CodexCommitCommand { get; set; }
 
         public ICommand OpenVSCommand { get; set; }
 
@@ -105,7 +107,8 @@ namespace PackageManager.Features.CodeWorkspace.Models
 
         public List<ButtonConfig> ActionButtons => new List<ButtonConfig>
         {
-            new ButtonConfig { Text = "提交", Width = 60, Height = 26, CommandProperty = nameof(CommitCommand) },
+            new ButtonConfig { Text = "Claude提交", Width = 110, Height = 26, CommandProperty = nameof(ClaudeCommitCommand) },
+            new ButtonConfig { Text = "Codex提交", Width = 100, Height = 26, CommandProperty = nameof(CodexCommitCommand) },
             new ButtonConfig { Text = "VS", Width = 54, Height = 26, CommandProperty = nameof(OpenVSCommand) },
             new ButtonConfig { Text = "Rider", Width = 60, Height = 26, CommandProperty = nameof(OpenRiderCommand) },
             new ButtonConfig { Text = "Cursor", Width = 64, Height = 26, CommandProperty = nameof(OpenCursorCommand) },

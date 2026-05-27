@@ -71,7 +71,8 @@ namespace PackageManager.Features.CodeWorkspace.Views
 
         private void SetupRepositoryCommands(CodeRepository repo)
         {
-            repo.CommitCommand = new RelayCommand(() => RunRepositoryAction(repo, DoCodeCommit));
+            repo.ClaudeCommitCommand = new RelayCommand(() => RunRepositoryAction(repo, DoClaudeCommit));
+            repo.CodexCommitCommand = new RelayCommand(() => RunRepositoryAction(repo, DoCodexCommit));
             repo.OpenVSCommand = new RelayCommand(() => RunRepositoryAction(repo, DoOpenVisualStudio));
             repo.OpenRiderCommand = new RelayCommand(() => RunRepositoryAction(repo, r => DoOpenIde(r, new[] { "Rider", "JetBrains Rider" }, "Rider")));
             repo.OpenCursorCommand = new RelayCommand(() => RunRepositoryAction(repo, DoOpenCursor));
@@ -137,9 +138,19 @@ namespace PackageManager.Features.CodeWorkspace.Views
             RequestExit?.Invoke();
         }
 
-        private void DoCodeCommit(CodeRepository repo)
+        private void DoClaudeCommit(CodeRepository repo)
         {
-            EnsureCommandExists("claude");
+            DoAiCommit(repo, "Claude", "claude", "claude --dangerously-skip-permissions");
+        }
+
+        private void DoCodexCommit(CodeRepository repo)
+        {
+            DoAiCommit(repo, "Codex", "codex", "codex --sandbox danger-full-access --ask-for-approval never");
+        }
+
+        private void DoAiCommit(CodeRepository repo, string engineName, string commandName, string commandPrefix)
+        {
+            EnsureCommandExists(commandName);
             var skillInfo = _aiCommitSkillService.EnsureSkillAvailable(repo.Path);
             var syncedUserSkills = skillInfo.SyncedUserSkillPaths.Count == 0
                 ? "Write-Host '  - 未找到用户 skill 目录。'"
@@ -147,22 +158,24 @@ namespace PackageManager.Features.CodeWorkspace.Views
             var repositorySkill = string.IsNullOrWhiteSpace(skillInfo.RepositorySkillPath)
                 ? "Write-Host '  - 当前仓库没有自己的 .claude skill。'"
                 : $"Write-Host '  - {TerminalHelper.EscapePowerShellSingleQuoted(skillInfo.RepositorySkillPath)}（只检测，不覆盖）'";
-            var prompt = BuildCommitPrompt(skillInfo.WorkingChangesScriptPath);
+            var prompt = BuildCommitPrompt(skillInfo.WorkingChangesScriptPath, skillInfo.LastChangesJsonPath);
             var command = $@"
 Set-Location -LiteralPath {PsQuote(repo.Path)}
 Write-Host 'PackageManager AI 提交入口' -ForegroundColor Cyan
+Write-Host '提交引擎：{TerminalHelper.EscapePowerShellSingleQuoted(engineName)}' -ForegroundColor DarkCyan
 Write-Host '内嵌解压：{TerminalHelper.EscapePowerShellSingleQuoted(skillInfo.SourcePath)}' -ForegroundColor DarkCyan
 Write-Host '本次执行：{TerminalHelper.EscapePowerShellSingleQuoted(skillInfo.PrimarySkillPath)}' -ForegroundColor DarkCyan
 Write-Host '规则文件：{TerminalHelper.EscapePowerShellSingleQuoted(skillInfo.SkillMarkdownPath)}' -ForegroundColor DarkCyan
 Write-Host '采集脚本：{TerminalHelper.EscapePowerShellSingleQuoted(skillInfo.WorkingChangesScriptPath)}' -ForegroundColor DarkCyan
+Write-Host '状态文件：{TerminalHelper.EscapePowerShellSingleQuoted(skillInfo.LastChangesJsonPath)}' -ForegroundColor DarkCyan
 Write-Host '已覆盖用户级 skill：' -ForegroundColor DarkCyan
 {syncedUserSkills}
 Write-Host '仓库内 skill：' -ForegroundColor DarkCyan
 {repositorySkill}
-claude --dangerously-skip-permissions {PsQuote(prompt)}
+{commandPrefix} {PsQuote(prompt)}
 ";
-            TerminalHelper.LaunchTerminalWithCommand(repo.Path, command, $"代码提交 - {repo.Name}");
-            StatusText = $"已启动代码提交：{repo.Name}；使用脚本 {skillInfo.WorkingChangesScriptPath}";
+            TerminalHelper.LaunchTerminalWithCommand(repo.Path, command, $"{engineName} 代码提交 - {repo.Name}");
+            StatusText = $"已启动 {engineName} 代码提交：{repo.Name}；使用脚本 {skillInfo.WorkingChangesScriptPath}";
         }
 
         private void DoOpenIde(CodeRepository repo, string[] possibleNames, string displayName)
@@ -462,7 +475,7 @@ codex --sandbox danger-full-access --ask-for-approval never
             throw new FileNotFoundException($"未找到 {commandName} 命令，请确认已安装并加入 PATH。");
         }
 
-        private static string BuildCommitPrompt(string workingChangesScriptPath)
+        private static string BuildCommitPrompt(string workingChangesScriptPath, string lastChangesJsonPath)
         {
             var skillMarkdownPath = Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(workingChangesScriptPath)), "SKILL.md");
             return "按这个内嵌同步后的 git-svn-commitlog-generator skill 完成本次 Git/SVN 提交流程："
@@ -470,7 +483,8 @@ codex --sandbox danger-full-access --ask-for-approval never
                    + "不要依赖当前目录或用户目录里原本安装的旧 skill；如果自动加载了同名 skill，也以这里给出的 SKILL.md 和脚本绝对路径为准。"
                    + "必须直接运行下面这个绝对路径脚本完成 Step 1："
                    + $"powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{workingChangesScriptPath}\" -PromptTimeoutSeconds 30。"
-                   + "脚本会打开/等待交互并生成 JSON；之后按脚本包 SKILL.md 的规则生成提交日志，并调用 invoke-commit-push-interactive.ps1 做最终提交确认。"
+                   + $"脚本会打开/等待交互并生成 JSON；Step 1 结束后只能从这个绝对路径读取采集结果：\"{lastChangesJsonPath}\"，不要读取仓库 .claude/skills 里的 .state/last_changes.json。"
+                   + "之后按脚本包 SKILL.md 的规则生成提交日志，并调用同一个内嵌解压目录下的 invoke-commit-push-interactive.ps1 做最终提交确认。"
                    + "不要手动执行 git add、git commit、git push、svn add 或 svn commit；这些操作必须由脚本完成。";
         }
 
