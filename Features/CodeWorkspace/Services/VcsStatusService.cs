@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -43,7 +44,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
             }
             catch (Exception)
             {
-                repo.VcsStatus = VcsStatus.Error;
+                ApplySnapshot(repo, RepositoryVcsSnapshot.CreateError(repo));
             }
             finally
             {
@@ -89,7 +90,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
                         }
                         catch
                         {
-                            return new RepositoryRefreshResult(repo, RepositoryVcsSnapshot.CreateError());
+                            return new RepositoryRefreshResult(repo, RepositoryVcsSnapshot.CreateError(repo));
                         }
                         finally
                         {
@@ -131,7 +132,9 @@ namespace PackageManager.Features.CodeWorkspace.Services
             repo.DeletedCount = snapshot.DeletedCount;
             repo.StagedCount = snapshot.StagedCount;
             repo.SvnRevision = snapshot.SvnRevision;
-            repo.SubRepositories = new System.Collections.ObjectModel.ObservableCollection<SubRepository>(snapshot.SubRepositories);
+            repo.GitChangedFiles = new ObservableCollection<VcsChangedFile>(snapshot.GitChangedFiles.Select(file => file.Clone()));
+            repo.RootSvnChangedFiles = new ObservableCollection<VcsChangedFile>(snapshot.RootSvnChangedFiles.Select(file => file.Clone()));
+            repo.SubRepositories = new ObservableCollection<SubRepository>(snapshot.SubRepositories);
             repo.VcsType = snapshot.VcsType;
             repo.VcsStatus = snapshot.VcsStatus;
             repo.LastStatusRefresh = snapshot.LastStatusRefresh;
@@ -202,6 +205,17 @@ namespace PackageManager.Features.CodeWorkspace.Services
                     snapshot.GitBranch = headResult.ExitCode == 0 ? $"({headResult.Output.Trim()})" : "(detached)";
                 }
             }
+            else
+            {
+                var fallbackBranchResult = await RunCommandAsync("git", "rev-parse --abbrev-ref HEAD", repoPath, ct);
+                if (fallbackBranchResult.ExitCode == 0)
+                {
+                    var branch = fallbackBranchResult.Output.Trim();
+                    snapshot.GitBranch = string.Equals(branch, "HEAD", StringComparison.OrdinalIgnoreCase)
+                        ? null
+                        : branch;
+                }
+            }
 
             var abResult = await RunCommandAsync("git", "rev-list --left-right --count HEAD...@{upstream}", repoPath, ct);
             if (abResult.ExitCode == 0)
@@ -216,7 +230,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
                 }
             }
 
-            var statusResult = await RunCommandAsync("git", "status --porcelain", repoPath, ct);
+            var statusResult = await RunCommandAsync("git", "-c core.quotepath=false status --porcelain --untracked-files=no", repoPath, ct);
             if (statusResult.ExitCode != 0)
             {
                 snapshot.VcsStatus = VcsStatus.Error;
@@ -260,6 +274,11 @@ namespace PackageManager.Features.CodeWorkspace.Services
                 else
                 {
                     modified++;
+                }
+
+                if (TryCreateGitChangedFile(repoPath, line, indexStatus, workStatus, out var changedFile))
+                {
+                    snapshot.GitChangedFiles.Add(changedFile);
                 }
             }
 
@@ -307,6 +326,11 @@ namespace PackageManager.Features.CodeWorkspace.Services
                     default:
                         modified++;
                         break;
+                }
+
+                if (TryCreateSvnChangedFile(svnPath, svnPath, "SVN 根目录", line, out var changedFile))
+                {
+                    snapshot.RootSvnChangedFiles.Add(changedFile);
                 }
             }
 
@@ -394,6 +418,12 @@ namespace PackageManager.Features.CodeWorkspace.Services
                     var lines = SplitLines(statusResult.Output)
                         .Where(line => line.Length > 0 && IsValidSvnChangeStatus(line[0]))
                         .ToList();
+                    subRepo.ChangedFiles = new ObservableCollection<VcsChangedFile>(
+                        lines.Select(line =>
+                            TryCreateSvnChangedFile(repoPath, svnDir, $"SVN 子仓库/{subRepo.RelativePath}", line, out var changedFile)
+                                ? changedFile
+                                : null)
+                            .Where(file => file != null));
                     subRepo.ChangedFileCount = lines.Count;
                     subRepo.Status = lines.Count == 0
                         ? VcsStatus.Clean
@@ -429,14 +459,32 @@ namespace PackageManager.Features.CodeWorkspace.Services
                 return VcsStatus.Conflict;
             }
 
-            if (snapshot.SubRepositories.Any(s => s.Status == VcsStatus.Error))
-            {
-                return VcsStatus.Error;
-            }
-
             var hasRootChanges = snapshot.AddedCount + snapshot.ModifiedCount + snapshot.DeletedCount > 0;
             var hasSubChanges = snapshot.SubRepositories.Any(s => s.ChangedFileCount > 0);
             return hasRootChanges || hasSubChanges ? VcsStatus.Modified : VcsStatus.Clean;
+        }
+
+        private static VcsType DetectRepositoryVcsType(string repoPath)
+        {
+            if (string.IsNullOrWhiteSpace(repoPath) || !Directory.Exists(repoPath))
+            {
+                return VcsType.None;
+            }
+
+            var hasGit = Directory.Exists(Path.Combine(repoPath, ".git")) || File.Exists(Path.Combine(repoPath, ".git"));
+            var hasSvn = Directory.Exists(Path.Combine(repoPath, ".svn"));
+            var hasSvnSubDirs = FindSvnSubDirectories(repoPath).Count > 0;
+            if (hasGit && hasSvnSubDirs)
+            {
+                return VcsType.Mixed;
+            }
+
+            if (hasGit)
+            {
+                return VcsType.Git;
+            }
+
+            return hasSvn || hasSvnSubDirs ? VcsType.Svn : VcsType.None;
         }
 
         private static bool IsGitConflict(char indexStatus, char workStatus)
@@ -445,6 +493,137 @@ namespace PackageManager.Features.CodeWorkspace.Services
                    workStatus == 'U' ||
                    (indexStatus == 'A' && workStatus == 'A') ||
                    (indexStatus == 'D' && workStatus == 'D');
+        }
+
+        private static bool TryCreateGitChangedFile(string repoPath, string statusLine, char indexStatus, char workStatus, out VcsChangedFile changedFile)
+        {
+            try
+            {
+                changedFile = CreateGitChangedFile(repoPath, statusLine, indexStatus, workStatus);
+                return changedFile != null;
+            }
+            catch
+            {
+                changedFile = null;
+                return false;
+            }
+        }
+
+        private static VcsChangedFile CreateGitChangedFile(string repoPath, string statusLine, char indexStatus, char workStatus)
+        {
+            var pathPart = statusLine.Length > 3 ? statusLine.Substring(3).Trim() : string.Empty;
+            var originalPath = TryParseRenameOriginalPath(pathPart, out var currentPath);
+            var statusCode = ResolveGitStatusCode(indexStatus, workStatus);
+            var relativePath = NormalizeVcsPath(currentPath);
+            return new VcsChangedFile
+            {
+                VcsType = VcsType.Git,
+                StatusCode = statusCode,
+                RelativePath = relativePath,
+                OriginalRelativePath = NormalizeVcsPath(originalPath),
+                AbsolutePath = Path.Combine(repoPath, relativePath ?? string.Empty),
+                WorkingDirectory = repoPath,
+                GroupName = "Git 根仓库",
+            };
+        }
+
+        private static bool TryCreateSvnChangedFile(string repoPath, string svnDir, string groupName, string statusLine, out VcsChangedFile changedFile)
+        {
+            try
+            {
+                changedFile = CreateSvnChangedFile(repoPath, svnDir, groupName, statusLine);
+                return changedFile != null;
+            }
+            catch
+            {
+                changedFile = null;
+                return false;
+            }
+        }
+
+        private static VcsChangedFile CreateSvnChangedFile(string repoPath, string svnDir, string groupName, string statusLine)
+        {
+            var statusCode = statusLine.Length == 0 ? '?' : statusLine[0];
+            var pathPart = statusLine.Length > 1 ? statusLine.Substring(1).Trim() : string.Empty;
+            var absolutePath = Path.IsPathRooted(pathPart) ? pathPart : Path.Combine(svnDir, pathPart);
+            var relativePath = GetRelativePath(svnDir, absolutePath);
+            return new VcsChangedFile
+            {
+                VcsType = VcsType.Svn,
+                StatusCode = statusCode,
+                RelativePath = relativePath,
+                AbsolutePath = absolutePath,
+                WorkingDirectory = svnDir,
+                GroupName = groupName,
+            };
+        }
+
+        private static char ResolveGitStatusCode(char indexStatus, char workStatus)
+        {
+            if (IsGitConflict(indexStatus, workStatus))
+            {
+                return 'U';
+            }
+
+            if (indexStatus == 'D' || workStatus == 'D')
+            {
+                return 'D';
+            }
+
+            if (indexStatus == 'A' || workStatus == 'A' || indexStatus == '?' || workStatus == '?')
+            {
+                return 'A';
+            }
+
+            if (indexStatus == 'R' || workStatus == 'R')
+            {
+                return 'R';
+            }
+
+            return 'M';
+        }
+
+        private static string TryParseRenameOriginalPath(string pathPart, out string currentPath)
+        {
+            currentPath = NormalizeGitStatusPath(pathPart);
+            if (string.IsNullOrWhiteSpace(pathPart))
+            {
+                return null;
+            }
+
+            var marker = " -> ";
+            var index = pathPart.IndexOf(marker, StringComparison.Ordinal);
+            if (index < 0)
+            {
+                return null;
+            }
+
+            var originalPath = NormalizeGitStatusPath(pathPart.Substring(0, index).Trim());
+            currentPath = NormalizeGitStatusPath(pathPart.Substring(index + marker.Length).Trim());
+            return originalPath;
+        }
+
+        private static string NormalizeGitStatusPath(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return path;
+            }
+
+            path = path.Trim();
+            if (path.Length >= 2 && path[0] == '"' && path[path.Length - 1] == '"')
+            {
+                path = path.Substring(1, path.Length - 2)
+                    .Replace("\\\"", "\"")
+                    .Replace("\\\\", "\\");
+            }
+
+            return path;
+        }
+
+        private static string NormalizeVcsPath(string path)
+        {
+            return string.IsNullOrWhiteSpace(path) ? path : path.Replace('/', Path.DirectorySeparatorChar);
         }
 
         private static bool IsValidSvnChangeStatus(char statusCode)
@@ -590,15 +769,46 @@ namespace PackageManager.Features.CodeWorkspace.Services
 
             public DateTime LastStatusRefresh { get; set; }
 
+            public List<VcsChangedFile> GitChangedFiles { get; } = new List<VcsChangedFile>();
+
+            public List<VcsChangedFile> RootSvnChangedFiles { get; } = new List<VcsChangedFile>();
+
             public List<SubRepository> SubRepositories { get; } = new List<SubRepository>();
 
-            public static RepositoryVcsSnapshot CreateError()
+            public static RepositoryVcsSnapshot CreateError(CodeRepository repo)
             {
-                return new RepositoryVcsSnapshot
+                var snapshot = new RepositoryVcsSnapshot
                 {
+                    VcsType = repo?.VcsType != VcsType.None ? repo.VcsType : DetectRepositoryVcsType(repo?.Path),
                     VcsStatus = VcsStatus.Error,
+                    GitBranch = repo?.GitBranch,
+                    GitAheadCount = repo?.GitAheadCount ?? 0,
+                    GitBehindCount = repo?.GitBehindCount ?? 0,
+                    AddedCount = repo?.AddedCount ?? 0,
+                    ModifiedCount = repo?.ModifiedCount ?? 0,
+                    DeletedCount = repo?.DeletedCount ?? 0,
+                    StagedCount = repo?.StagedCount ?? 0,
+                    SvnRevision = repo?.SvnRevision ?? 0,
+                    HasConflict = repo?.HasConflict ?? false,
                     LastStatusRefresh = DateTime.Now,
                 };
+
+                if (repo?.GitChangedFiles != null)
+                {
+                    snapshot.GitChangedFiles.AddRange(repo.GitChangedFiles.Select(file => file.Clone()));
+                }
+
+                if (repo?.RootSvnChangedFiles != null)
+                {
+                    snapshot.RootSvnChangedFiles.AddRange(repo.RootSvnChangedFiles.Select(file => file.Clone()));
+                }
+
+                if (repo?.SubRepositories != null)
+                {
+                    snapshot.SubRepositories.AddRange(repo.SubRepositories.Select(sub => sub.Clone()));
+                }
+
+                return snapshot;
             }
         }
 

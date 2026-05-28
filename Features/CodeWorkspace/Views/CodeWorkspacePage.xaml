@@ -189,10 +189,13 @@
                             <DataGridTemplateColumn Header="操作" Width="64">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
-                                        <button:CButton Width="34"
-                                                        Height="24"
+                                        <button:CButton Width="36"
+                                                        Height="26"
                                                         Padding="0"
-                                                        Content="..."
+                                                        HorizontalContentAlignment="Center"
+                                                        VerticalContentAlignment="Center"
+                                                        FontSize="18"
+                                                        Content="⋯"
                                                         ToolTip="操作"
                                                         Click="ActionMenuButton_Click">
                                             <button:CButton.ContextMenu>
@@ -234,7 +237,10 @@
 
                     <DockPanel Grid.Row="0"
                                Margin="14,12,14,10"
-                               LastChildFill="True">
+                               LastChildFill="True"
+                               Cursor="{Binding DetailCursor}"
+                               ToolTip="{Binding DiffHint}"
+                               MouseLeftButtonDown="RepositoryDetailHeader_MouseLeftButtonDown">
                         <button:CButton DockPanel.Dock="Right"
                                         Width="58"
                                         Height="26"
@@ -274,9 +280,12 @@
                         </Grid.RowDefinitions>
 
                         <Border Grid.Row="0"
-                                BorderBrush="#E3E8F0"
-                                BorderThickness="1"
-                                Padding="12">
+                                BorderBrush="{Binding GitAccentBrush}"
+                                BorderThickness="{Binding GitAccentThickness}"
+                                Padding="12"
+                                Cursor="{Binding GitCursor}"
+                                ToolTip="{Binding GitDiffHint}"
+                                MouseLeftButtonDown="GitDetailCard_MouseLeftButtonDown">
                             <StackPanel>
                                 <TextBlock Text="Git"
                                            FontWeight="SemiBold"
@@ -289,9 +298,12 @@
                         </Border>
 
                         <Border Grid.Row="2"
-                                BorderBrush="#E3E8F0"
-                                BorderThickness="1"
-                                Padding="12">
+                                BorderBrush="{Binding SvnAccentBrush}"
+                                BorderThickness="{Binding SvnAccentThickness}"
+                                Padding="12"
+                                Cursor="{Binding SvnCursor}"
+                                ToolTip="{Binding SvnDiffHint}"
+                                MouseLeftButtonDown="SvnDetailCard_MouseLeftButtonDown">
                             <StackPanel>
                                 <TextBlock Text="SVN"
                                            FontWeight="SemiBold"
@@ -342,7 +354,10 @@
                                                 ScrollViewer.VerticalScrollBarVisibility="Auto">
                                 <controls:CListView.ItemTemplate>
                                     <DataTemplate>
-                                        <DockPanel Margin="4,4,8,6">
+                                        <DockPanel Margin="4,4,8,6"
+                                                   Cursor="{Binding DetailCursor}"
+                                                   ToolTip="{Binding DiffHint}"
+                                                   MouseLeftButtonDown="SubRepositoryItem_MouseLeftButtonDown">
                                             <Ellipse DockPanel.Dock="Left"
                                                      Width="8"
                                                      Height="8"

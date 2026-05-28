@@ -4,6 +4,7 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Windows;
 using System.Windows.Media;
 using System.Windows.Input;
 using CustomControlLibrary.CustomControl.Attribute.DataGrid;
@@ -33,6 +34,8 @@ namespace PackageManager.Features.CodeWorkspace.Models
         private int _stagedCount;
         private int _svnRevision;
         private ObservableCollection<SubRepository> _subRepositories = new ObservableCollection<SubRepository>();
+        private ObservableCollection<VcsChangedFile> _gitChangedFiles = new ObservableCollection<VcsChangedFile>();
+        private ObservableCollection<VcsChangedFile> _rootSvnChangedFiles = new ObservableCollection<VcsChangedFile>();
         private DateTime _lastStatusRefresh;
         private bool _isRefreshing;
         private bool _hasConflict;
@@ -44,6 +47,7 @@ namespace PackageManager.Features.CodeWorkspace.Models
         private static readonly Brush GitBrush = CreateBrush(0x34, 0x6D, 0xDB);
         private static readonly Brush SvnBrush = CreateBrush(0x7A, 0x52, 0xC7);
         private static readonly Brush NeutralTextBrush = CreateBrush(0x46, 0x52, 0x66);
+        private static readonly Brush CardBorderBrush = CreateBrush(0xE3, 0xE8, 0xF0);
 
         public event PropertyChangedEventHandler PropertyChanged;
 
@@ -371,6 +375,32 @@ namespace PackageManager.Features.CodeWorkspace.Models
         }
 
         [JsonIgnore]
+        public ObservableCollection<VcsChangedFile> GitChangedFiles
+        {
+            get => _gitChangedFiles;
+            set
+            {
+                if (SetProperty(ref _gitChangedFiles, value ?? new ObservableCollection<VcsChangedFile>()))
+                {
+                    OnVcsSummaryChanged();
+                }
+            }
+        }
+
+        [JsonIgnore]
+        public ObservableCollection<VcsChangedFile> RootSvnChangedFiles
+        {
+            get => _rootSvnChangedFiles;
+            set
+            {
+                if (SetProperty(ref _rootSvnChangedFiles, value ?? new ObservableCollection<VcsChangedFile>()))
+                {
+                    OnVcsSummaryChanged();
+                }
+            }
+        }
+
+        [JsonIgnore]
         public bool IsRefreshing
         {
             get => _isRefreshing;
@@ -587,8 +617,9 @@ namespace PackageManager.Features.CodeWorkspace.Models
                 }
 
                 var changed = SubRepositories.Sum(s => s.ChangedFileCount);
+                var changedRepos = SubRepositories.Count(s => s.ChangedFileCount > 0);
                 var clean = SubRepositories.Count(s => s.Status == VcsStatus.Clean);
-                return $"SVN 子仓库: {SubRepositories.Count} 个  |  变更 {changed} 项  |  干净 {clean} 个";
+                return $"SVN 子仓库: {SubRepositories.Count} 个  |  变更仓库 {changedRepos} 个  |  变更 {changed} 项  |  干净 {clean} 个";
             }
             set { }
         }
@@ -723,6 +754,12 @@ namespace PackageManager.Features.CodeWorkspace.Models
             SubRepositories = source.SubRepositories == null
                 ? new ObservableCollection<SubRepository>()
                 : new ObservableCollection<SubRepository>(source.SubRepositories.Select(s => s.Clone()));
+            GitChangedFiles = source.GitChangedFiles == null
+                ? new ObservableCollection<VcsChangedFile>()
+                : new ObservableCollection<VcsChangedFile>(source.GitChangedFiles.Select(file => file.Clone()));
+            RootSvnChangedFiles = source.RootSvnChangedFiles == null
+                ? new ObservableCollection<VcsChangedFile>()
+                : new ObservableCollection<VcsChangedFile>(source.RootSvnChangedFiles.Select(file => file.Clone()));
             LastStatusRefresh = source.LastStatusRefresh;
             IsRefreshing = source.IsRefreshing;
             HasConflict = source.HasConflict;
@@ -730,6 +767,45 @@ namespace PackageManager.Features.CodeWorkspace.Models
 
         private bool HasSubRepoChanges =>
             SubRepositories?.Any(s => s.ChangedFileCount > 0) == true;
+
+        [JsonIgnore]
+        public bool HasGitChanges => GitChangedFiles?.Count > 0 || AddedCount + ModifiedCount + DeletedCount > 0;
+
+        [JsonIgnore]
+        public bool HasSvnChanges => RootSvnChangedFiles?.Count > 0 || SubRepositories?.Any(s => s.ChangedFileCount > 0) == true;
+
+        [JsonIgnore]
+        public bool HasAnyChanges => HasGitChanges || HasSvnChanges;
+
+        [JsonIgnore]
+        public string DiffHint => HasAnyChanges ? "双击查看差异" : null;
+
+        [JsonIgnore]
+        public string GitDiffHint => HasGitChanges ? "双击查看差异" : null;
+
+        [JsonIgnore]
+        public string SvnDiffHint => HasSvnChanges ? "双击查看差异" : null;
+
+        [JsonIgnore]
+        public Cursor DetailCursor => HasAnyChanges ? Cursors.Hand : Cursors.Arrow;
+
+        [JsonIgnore]
+        public Cursor GitCursor => HasGitChanges ? Cursors.Hand : Cursors.Arrow;
+
+        [JsonIgnore]
+        public Cursor SvnCursor => HasSvnChanges ? Cursors.Hand : Cursors.Arrow;
+
+        [JsonIgnore]
+        public Thickness GitAccentThickness => HasGitChanges ? new Thickness(3, 1, 1, 1) : new Thickness(1);
+
+        [JsonIgnore]
+        public Thickness SvnAccentThickness => HasSvnChanges ? new Thickness(3, 1, 1, 1) : new Thickness(1);
+
+        [JsonIgnore]
+        public Brush GitAccentBrush => HasGitChanges ? GitBrush : CardBorderBrush;
+
+        [JsonIgnore]
+        public Brush SvnAccentBrush => HasSvnChanges ? SvnBrush : CardBorderBrush;
 
         private string GetStatusSymbol()
         {
@@ -752,6 +828,14 @@ namespace PackageManager.Features.CodeWorkspace.Models
             OnPropertyChanged(nameof(ChangesSummary));
             OnPropertyChanged(nameof(VcsTooltip));
             OnPropertyChanged(nameof(RootStatusDetail));
+            OnPropertyChanged(nameof(HasGitChanges));
+            OnPropertyChanged(nameof(HasAnyChanges));
+            OnPropertyChanged(nameof(DiffHint));
+            OnPropertyChanged(nameof(GitDiffHint));
+            OnPropertyChanged(nameof(DetailCursor));
+            OnPropertyChanged(nameof(GitCursor));
+            OnPropertyChanged(nameof(GitAccentThickness));
+            OnPropertyChanged(nameof(GitAccentBrush));
         }
 
         private void OnVcsSummaryChanged()
@@ -772,6 +856,19 @@ namespace PackageManager.Features.CodeWorkspace.Models
             OnPropertyChanged(nameof(LastStatusRefreshText));
             OnPropertyChanged(nameof(GitDetailLine));
             OnPropertyChanged(nameof(SvnDetailLine));
+            OnPropertyChanged(nameof(HasGitChanges));
+            OnPropertyChanged(nameof(HasSvnChanges));
+            OnPropertyChanged(nameof(HasAnyChanges));
+            OnPropertyChanged(nameof(DiffHint));
+            OnPropertyChanged(nameof(GitDiffHint));
+            OnPropertyChanged(nameof(SvnDiffHint));
+            OnPropertyChanged(nameof(DetailCursor));
+            OnPropertyChanged(nameof(GitCursor));
+            OnPropertyChanged(nameof(SvnCursor));
+            OnPropertyChanged(nameof(GitAccentThickness));
+            OnPropertyChanged(nameof(SvnAccentThickness));
+            OnPropertyChanged(nameof(GitAccentBrush));
+            OnPropertyChanged(nameof(SvnAccentBrush));
         }
 
         private static string FormatStatus(VcsStatus status)

@@ -1,5 +1,8 @@
 using System.ComponentModel;
+using System.Collections.ObjectModel;
+using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Windows.Input;
 using System.Windows.Media;
 
 namespace PackageManager.Features.CodeWorkspace.Models
@@ -13,6 +16,7 @@ namespace PackageManager.Features.CodeWorkspace.Models
         private VcsStatus _status;
         private int _changedFileCount;
         private string _statusSummary;
+        private ObservableCollection<VcsChangedFile> _changedFiles = new ObservableCollection<VcsChangedFile>();
         private static readonly Brush CleanBrush = CreateBrush(0x2E, 0xA0, 0x43);
         private static readonly Brush ModifiedBrush = CreateBrush(0xD9, 0x7A, 0x00);
         private static readonly Brush ErrorBrush = CreateBrush(0xD1, 0x24, 0x2F);
@@ -59,13 +63,31 @@ namespace PackageManager.Features.CodeWorkspace.Models
         public int ChangedFileCount
         {
             get => _changedFileCount;
-            set => SetProperty(ref _changedFileCount, value);
+            set
+            {
+                if (SetProperty(ref _changedFileCount, value))
+                {
+                    OnChangeStateChanged();
+                }
+            }
         }
 
         public string StatusSummary
         {
             get => _statusSummary;
             set => SetProperty(ref _statusSummary, value);
+        }
+
+        public ObservableCollection<VcsChangedFile> ChangedFiles
+        {
+            get => _changedFiles;
+            set
+            {
+                if (SetProperty(ref _changedFiles, value ?? new ObservableCollection<VcsChangedFile>()))
+                {
+                    OnChangeStateChanged();
+                }
+            }
         }
 
         public Brush StatusBrush
@@ -87,6 +109,12 @@ namespace PackageManager.Features.CodeWorkspace.Models
             }
         }
 
+        public bool HasChanges => ChangedFileCount > 0 || ChangedFiles?.Count > 0;
+
+        public string DiffHint => HasChanges ? "双击查看差异" : null;
+
+        public Cursor DetailCursor => HasChanges ? Cursors.Hand : Cursors.Arrow;
+
         public SubRepository Clone()
         {
             return new SubRepository
@@ -98,6 +126,9 @@ namespace PackageManager.Features.CodeWorkspace.Models
                 Status = Status,
                 ChangedFileCount = ChangedFileCount,
                 StatusSummary = StatusSummary,
+                ChangedFiles = ChangedFiles == null
+                    ? new ObservableCollection<VcsChangedFile>()
+                    : new ObservableCollection<VcsChangedFile>(ChangedFiles.Select(file => file.Clone())),
             };
         }
 
@@ -111,6 +142,13 @@ namespace PackageManager.Features.CodeWorkspace.Models
             field = value;
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
             return true;
+        }
+
+        private void OnChangeStateChanged()
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasChanges)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DiffHint)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DetailCursor)));
         }
 
         private static SolidColorBrush CreateBrush(byte r, byte g, byte b)

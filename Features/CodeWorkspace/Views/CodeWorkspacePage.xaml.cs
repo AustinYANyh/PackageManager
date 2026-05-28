@@ -199,15 +199,56 @@ namespace PackageManager.Features.CodeWorkspace.Views
 
         private void RepositoryRow_MouseDoubleClick(object sender, MouseButtonEventArgs e)
         {
-            if (FindAncestor<Button>(e.OriginalSource as DependencyObject) != null)
+            if ((sender as FrameworkElement)?.DataContext is CodeRepository repo)
+            {
+                SelectedRepository = repo;
+                e.Handled = true;
+            }
+        }
+
+        private void RepositoryDetailHeader_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (e.ClickCount < 2)
             {
                 return;
             }
 
-            if ((sender as FrameworkElement)?.DataContext is CodeRepository repo)
+            OpenDiffWindowForRepository("全部变更", BuildAllChangedFiles(SelectedRepository));
+            e.Handled = true;
+        }
+
+        private void GitDetailCard_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (e.ClickCount < 2)
             {
-                SelectedRepository = repo;
-                RunRepositoryAction(repo, DoOpenFolder);
+                return;
+            }
+
+            OpenDiffWindowForRepository("Git 根仓库", SelectedRepository?.GitChangedFiles);
+            e.Handled = true;
+        }
+
+        private void SvnDetailCard_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (e.ClickCount < 2)
+            {
+                return;
+            }
+
+            OpenDiffWindowForRepository("SVN 变更", BuildSvnChangedFiles(SelectedRepository));
+            e.Handled = true;
+        }
+
+        private void SubRepositoryItem_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (e.ClickCount < 2)
+            {
+                return;
+            }
+
+            if ((sender as FrameworkElement)?.DataContext is SubRepository subRepository)
+            {
+                OpenDiffWindowForRepository($"SVN 子仓库/{subRepository.RelativePath}", subRepository.ChangedFiles);
                 e.Handled = true;
             }
         }
@@ -220,6 +261,53 @@ namespace PackageManager.Features.CodeWorkspace.Views
                 button.ContextMenu.IsOpen = true;
                 e.Handled = true;
             }
+        }
+
+        private void OpenDiffWindowForRepository(string scopeTitle, IEnumerable<VcsChangedFile> files)
+        {
+            if (SelectedRepository == null)
+            {
+                return;
+            }
+
+            var changedFiles = files?
+                .Where(file => file != null)
+                .Select(file => file.Clone())
+                .ToList() ?? new List<VcsChangedFile>();
+            if (changedFiles.Count == 0)
+            {
+                return;
+            }
+
+            var window = new CodeWorkspaceDiffWindow(SelectedRepository, changedFiles, scopeTitle)
+            {
+                Owner = Window.GetWindow(this),
+            };
+            window.Show();
+        }
+
+        private static IEnumerable<VcsChangedFile> BuildAllChangedFiles(CodeRepository repository)
+        {
+            return BuildGitChangedFiles(repository).Concat(BuildSvnChangedFiles(repository));
+        }
+
+        private static IEnumerable<VcsChangedFile> BuildGitChangedFiles(CodeRepository repository)
+        {
+            return repository?.GitChangedFiles ?? Enumerable.Empty<VcsChangedFile>();
+        }
+
+        private static IEnumerable<VcsChangedFile> BuildSvnChangedFiles(CodeRepository repository)
+        {
+            if (repository == null)
+            {
+                return Enumerable.Empty<VcsChangedFile>();
+            }
+
+            var rootFiles = repository.RootSvnChangedFiles ?? Enumerable.Empty<VcsChangedFile>();
+            var subFiles = repository.SubRepositories?
+                .SelectMany(sub => sub.ChangedFiles ?? Enumerable.Empty<VcsChangedFile>())
+                ?? Enumerable.Empty<VcsChangedFile>();
+            return rootFiles.Concat(subFiles);
         }
 
         private void RunRepositoryAction(CodeRepository repo, Action<CodeRepository> action)
@@ -1153,22 +1241,6 @@ codex --sandbox danger-full-access --ask-for-approval never
             {
                 return path.Trim();
             }
-        }
-
-        private static T FindAncestor<T>(DependencyObject current)
-            where T : DependencyObject
-        {
-            while (current != null)
-            {
-                if (current is T target)
-                {
-                    return target;
-                }
-
-                current = VisualTreeHelper.GetParent(current);
-            }
-
-            return null;
         }
 
         private bool SetProperty<T>(ref T field, T value, [CallerMemberName] string propertyName = null)

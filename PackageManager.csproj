@@ -80,6 +80,7 @@
         </PackageReference>
         <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
         <PackageReference Include="Microsoft.PinYinConverter" Version="1.0.0" />
+        <PackageReference Include="DiffPlex.Wpf" Version="1.9.1" />
     </ItemGroup>
     <ItemGroup>
         <ProjectReference Include="Tools\MftScanner.Core\MftScanner.Core.csproj">
@@ -306,10 +307,13 @@
         <!-- Features/DevTools -->
         <Compile Include="Features\CodeWorkspace\Models\CodeRepository.cs" />
         <Compile Include="Features\CodeWorkspace\Models\SubRepository.cs" />
+        <Compile Include="Features\CodeWorkspace\Models\VcsChangedFile.cs" />
         <Compile Include="Features\CodeWorkspace\Models\VcsStatus.cs" />
         <Compile Include="Features\CodeWorkspace\Models\VcsType.cs" />
         <Compile Include="Features\CodeWorkspace\Services\AiCommitSkillService.cs" />
         <Compile Include="Features\CodeWorkspace\Services\CodeWorkspaceVcsCacheService.cs" />
+        <Compile Include="Features\CodeWorkspace\Services\VcsExternalDiffToolService.cs" />
+        <Compile Include="Features\CodeWorkspace\Services\VcsDiffService.cs" />
         <Compile Include="Features\CodeWorkspace\Services\TerminalHelper.cs" />
         <Compile Include="Features\CodeWorkspace\Services\VcsStatusService.cs" />
         <Page Include="Features\CodeWorkspace\Views\CodeRepositoryManagementPage.xaml">
@@ -326,6 +330,14 @@
         </Page>
         <Compile Include="Features\CodeWorkspace\Views\CodeWorkspacePage.xaml.cs">
           <DependentUpon>CodeWorkspacePage.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Page Include="Features\CodeWorkspace\Views\CodeWorkspaceDiffWindow.xaml">
+          <Generator>MSBuild:Compile</Generator>
+          <SubType>Designer</SubType>
+        </Page>
+        <Compile Include="Features\CodeWorkspace\Views\CodeWorkspaceDiffWindow.xaml.cs">
+          <DependentUpon>CodeWorkspaceDiffWindow.xaml</DependentUpon>
           <SubType>Code</SubType>
         </Compile>
         <Page Include="Features\CodeWorkspace\Views\ProjectFileSelectionDialog.xaml">
