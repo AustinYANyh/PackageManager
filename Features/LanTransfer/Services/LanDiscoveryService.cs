@@ -278,8 +278,11 @@ internal static class LanTransferProtocol
     /// <summary>密语聊天能力标识。</summary>
     public const string SecretChatCapability = "secret-chat-v1";
 
+    /// <summary>文件传输完成后回传接收端落盘结果的能力标识。</summary>
+    public const string TransferCompleteAckCapability = "transfer-complete-ack-v1";
+
     /// <summary>当前实例支持的能力列表。</summary>
-    public static List<string> CurrentCapabilities => new List<string> { SecretChatCapability };
+    public static List<string> CurrentCapabilities => new List<string> { SecretChatCapability, TransferCompleteAckCapability };
 
     /// <summary>
     /// 判断对方能力列表是否包含密语聊天支持。
@@ -290,5 +293,16 @@ internal static class LanTransferProtocol
     {
         return capabilities != null && capabilities.Any(capability =>
             string.Equals(capability, SecretChatCapability, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// 判断对方能力列表是否支持传输完成确认。
+    /// </summary>
+    /// <param name="capabilities">对方能力列表。</param>
+    /// <returns>若支持传输完成确认则返回 true，否则返回 false。</returns>
+    public static bool SupportsTransferCompleteAck(IEnumerable<string> capabilities)
+    {
+        return capabilities != null && capabilities.Any(capability =>
+            string.Equals(capability, TransferCompleteAckCapability, StringComparison.OrdinalIgnoreCase));
     }
 }

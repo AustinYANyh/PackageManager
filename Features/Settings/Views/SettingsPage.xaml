@@ -132,6 +132,14 @@
                                    FontSize="11"
                                    Margin="120,5,0,0"
                                    TextWrapping="Wrap"/>
+                        <CheckBox Content="自动接收文件（跳过确认）"
+                                  IsChecked="{Binding LanTransferAutoAccept, UpdateSourceTrigger=PropertyChanged}"
+                                  Margin="120,10,0,0"/>
+                        <TextBlock Text="开启后收到的文件传输请求将自动接受，不再弹出确认窗口。建议仅在信任的局域网环境中使用。"
+                                   Foreground="Gray"
+                                   FontSize="11"
+                                   Margin="120,5,0,0"
+                                   TextWrapping="Wrap"/>
                     </StackPanel>
                 </GroupBox>
 

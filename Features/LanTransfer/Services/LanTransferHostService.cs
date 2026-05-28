@@ -396,8 +396,8 @@ internal sealed class LanTransferHostService : IDisposable
         try
         {
             await ReceiveFilesAsync(stream, preparedPath.TempDirectory, session, linkedCts.Token);
-            CommitReceivedItems(preparedPath.TempDirectory, preparedPath.FinalDirectory, request, silentOverwrite);
-            session.StatusText = "接收完成";
+            var commitResult = await CommitReceivedItemsAsync(preparedPath.TempDirectory, preparedPath.FinalDirectory, request, silentOverwrite, linkedCts.Token);
+            session.StatusText = commitResult.SessionStatusText;
             session.CanCancel = false;
 
             ReceiveRecorded?.Invoke(new LanTransferRecord
@@ -408,15 +408,25 @@ internal sealed class LanTransferHostService : IDisposable
                 PeerAddress = request.SenderAddress,
                 ItemCount = request.ItemCount,
                 TotalBytes = request.TotalBytes,
-                Status = "成功",
+                Status = commitResult.Status,
                 Summary = request.TopLevelSummary,
                 TargetPath = preparedPath.FinalDirectory,
                 StartedAtUtc = request.ReceivedAtUtc,
                 CompletedAtUtc = DateTime.UtcNow,
-                Detail = "接收成功",
+                Detail = commitResult.Message,
             });
 
-            LanTransferLogger.LogInfo($"接收完成：{request.SenderLabel} -> {preparedPath.FinalDirectory}");
+            if (commitResult.Success)
+            {
+                LanTransferLogger.LogInfo($"接收完成：{request.SenderLabel} -> {preparedPath.FinalDirectory}");
+            }
+            else
+            {
+                ToastService.ShowToast("文件接收未完全生效", commitResult.Message, commitResult.IsPartialFailure ? "Warning" : "Error", 6000);
+                LanTransferLogger.LogWarning($"接收落盘失败：TransferId={request.TransferId}，{commitResult.Message}");
+            }
+
+            await TrySendCompleteAckAsync(stream, linkedCts.Token, commitResult, preparedPath.FinalDirectory);
         }
         catch (OperationCanceledException)
         {
@@ -447,6 +457,7 @@ internal sealed class LanTransferHostService : IDisposable
             session.CanCancel = false;
             TryDeleteDirectory(preparedPath.TempDirectory);
             await TrySendErrorAsync(stream, linkedCts.Token, ex.Message);
+            await TrySendCompleteAckAsync(stream, linkedCts.Token, LanReceiveCommitResult.Failed("失败", ex.Message, preparedPath.TempDirectory), preparedPath.FinalDirectory);
 
             ReceiveRecorded?.Invoke(new LanTransferRecord
             {
@@ -582,13 +593,21 @@ internal sealed class LanTransferHostService : IDisposable
         };
     }
 
-    private static void CommitReceivedItems(string tempDirectory, string inboxPath, LanTransferRequest request, bool silentOverwrite)
+    private static async Task<LanReceiveCommitResult> CommitReceivedItemsAsync(
+        string tempDirectory,
+        string inboxPath,
+        LanTransferRequest request,
+        bool silentOverwrite,
+        CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(inboxPath);
 
         var topLevelNames = GetReceiveTopLevelNames(request, tempDirectory);
+        var failures = new List<LanReceiveCommitFailure>();
         foreach (var topLevelName in topLevelNames)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             var sourcePath = Path.Combine(tempDirectory, topLevelName);
             if (!File.Exists(sourcePath) && !Directory.Exists(sourcePath))
             {
@@ -597,26 +616,144 @@ internal sealed class LanTransferHostService : IDisposable
 
             var destinationPath = Path.Combine(inboxPath, topLevelName);
             var isDirectory = Directory.Exists(sourcePath);
-            if (silentOverwrite)
-            {
-                DeleteExistingDestination(destinationPath);
-            }
-            else
-            {
-                destinationPath = GetNonConflictingPath(destinationPath, isDirectory);
-            }
 
-            if (isDirectory)
+            try
             {
-                Directory.Move(sourcePath, destinationPath);
+                if (silentOverwrite)
+                {
+                    await CommitOverwriteItemAsync(sourcePath, destinationPath, isDirectory, cancellationToken);
+                }
+                else
+                {
+                    destinationPath = GetNonConflictingPath(destinationPath, isDirectory);
+                    MoveWithCrossVolumeFallback(sourcePath, destinationPath, isDirectory, allowDestinationRename: true);
+                }
             }
-            else
+            catch (Exception ex)
+            when (!(ex is OperationCanceledException))
             {
-                File.Move(sourcePath, destinationPath);
+                LanTransferLogger.LogError(ex, $"提交接收项失败，源：{sourcePath}，目标：{destinationPath}");
+                failures.Add(new LanReceiveCommitFailure
+                {
+                    Name = topLevelName,
+                    SourcePath = sourcePath,
+                    DestinationPath = destinationPath,
+                    Message = ex.Message,
+                });
             }
         }
 
-        TryDeleteDirectory(tempDirectory);
+        if (failures.Count == 0)
+        {
+            TryDeleteDirectory(tempDirectory);
+            return LanReceiveCommitResult.Succeeded(topLevelNames.Count);
+        }
+
+        LanTransferLogger.LogWarning($"接收项部分提交失败，临时目录已保留：{tempDirectory}");
+        return failures.Count >= topLevelNames.Count
+            ? LanReceiveCommitResult.Failed("失败", BuildCommitFailureMessage(failures, tempDirectory), tempDirectory, failures)
+            : LanReceiveCommitResult.Failed("部分失败", BuildCommitFailureMessage(failures, tempDirectory), tempDirectory, failures);
+    }
+
+    private static async Task CommitOverwriteItemAsync(string sourcePath, string destinationPath, bool isDirectory, CancellationToken cancellationToken)
+    {
+        const int maxAttempts = 5;
+        var unlockService = new PackageUpdateService();
+        Exception lastError = null;
+
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                if (File.Exists(destinationPath) || Directory.Exists(destinationPath))
+                {
+                    TryRemoveExistingDestination(destinationPath);
+                    if (File.Exists(destinationPath) || Directory.Exists(destinationPath))
+                    {
+                        throw new IOException("同名目标仍存在，无法覆盖。");
+                    }
+                }
+
+                MoveWithCrossVolumeFallback(sourcePath, destinationPath, isDirectory, allowDestinationRename: false);
+                return;
+            }
+            catch (Exception ex) when (IsRecoverableOverwriteException(ex) && attempt < maxAttempts)
+            {
+                lastError = ex;
+                LanTransferLogger.LogWarning($"覆盖目标失败，准备解除占用后重试：Attempt={attempt}/{maxAttempts}，Target={destinationPath}，{ex.Message}");
+                await TryUnlockDestinationAsync(unlockService, destinationPath, cancellationToken);
+                await Task.Delay(TimeSpan.FromMilliseconds(300 * attempt), cancellationToken);
+            }
+        }
+
+        throw new IOException($"覆盖目标失败，已达到最大重试次数：{destinationPath}", lastError);
+    }
+
+    private static async Task TryUnlockDestinationAsync(PackageUpdateService unlockService, string destinationPath, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var targets = new[] { destinationPath };
+            var lockingProcesses = await unlockService.ListLockingProcessesForTargetsAsync(targets, cancellationToken).ConfigureAwait(false);
+            var processIds = lockingProcesses
+                .Select(process => process.Id)
+                .Where(id => id > 0)
+                .Distinct()
+                .ToArray();
+            if (processIds.Length == 0)
+            {
+                return;
+            }
+
+            LanTransferLogger.LogWarning($"检测到目标占用进程，准备自动终止：Target={destinationPath}，Pids={string.Join(",", processIds)}");
+            await unlockService.KillProcessesAsync(processIds, cancellationToken).ConfigureAwait(false);
+            await WaitForProcessesExitAsync(processIds, TimeSpan.FromSeconds(10), cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (!(ex is OperationCanceledException))
+        {
+            LanTransferLogger.LogWarning($"自动解除目标占用失败：Target={destinationPath}，{ex.Message}");
+        }
+    }
+
+    private static async Task WaitForProcessesExitAsync(IEnumerable<int> processIds, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        var ids = processIds?.Where(id => id > 0).Distinct().ToArray() ?? Array.Empty<int>();
+        while (ids.Any(IsProcessAlive) && DateTime.UtcNow < deadline)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            await Task.Delay(250, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    private static bool IsProcessAlive(int processId)
+    {
+        try
+        {
+            using (var process = System.Diagnostics.Process.GetProcessById(processId))
+            {
+                return !process.HasExited;
+            }
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool IsRecoverableOverwriteException(Exception ex)
+    {
+        return ex is IOException || ex is UnauthorizedAccessException;
+    }
+
+    private static string BuildCommitFailureMessage(IReadOnlyCollection<LanReceiveCommitFailure> failures, string tempDirectory)
+    {
+        var names = failures == null || failures.Count == 0
+            ? "未知项"
+            : string.Join("、", failures.Take(5).Select(failure => failure.Name));
+        var suffix = failures != null && failures.Count > 5 ? $" 等 {failures.Count} 项" : string.Empty;
+        return $"接收文件已下载，但 {names}{suffix} 未能覆盖到目标路径；临时目录已保留：{tempDirectory}";
     }
 
     private static List<string> GetReceiveTopLevelNames(LanTransferRequest request, string tempDirectory)
@@ -639,16 +776,153 @@ internal sealed class LanTransferHostService : IDisposable
             .ToList();
     }
 
-    private static void DeleteExistingDestination(string destinationPath)
+    private static bool TryRemoveExistingDestination(string destinationPath, int maxRetries = 3)
     {
-        if (File.Exists(destinationPath))
+        Exception lastError = null;
+        for (var attempt = 0; attempt < maxRetries; attempt++)
         {
-            File.Delete(destinationPath);
+            try
+            {
+                if (File.Exists(destinationPath))
+                {
+                    ClearRestrictiveAttributes(destinationPath);
+                    File.Delete(destinationPath);
+                }
+
+                if (Directory.Exists(destinationPath))
+                {
+                    ClearReadOnlyRecursive(destinationPath);
+                    Directory.Delete(destinationPath, true);
+                }
+
+                return !File.Exists(destinationPath) && !Directory.Exists(destinationPath);
+            }
+            catch (IOException) when (attempt < maxRetries - 1)
+            {
+                Thread.Sleep(300 * (attempt + 1));
+            }
+            catch (UnauthorizedAccessException) when (attempt < maxRetries - 1)
+            {
+                Thread.Sleep(300 * (attempt + 1));
+            }
+            catch (IOException ex)
+            {
+                lastError = ex;
+                break;
+            }
+            catch (UnauthorizedAccessException ex)
+            {
+                lastError = ex;
+                break;
+            }
+            catch (Exception ex)
+            {
+                LanTransferLogger.LogWarning($"删除同名目标失败：{destinationPath}，{ex.Message}");
+                throw;
+            }
         }
 
-        if (Directory.Exists(destinationPath))
+        LanTransferLogger.LogWarning($"删除同名目标重试后仍失败：{destinationPath}");
+        if (lastError != null)
         {
-            Directory.Delete(destinationPath, true);
+            throw lastError;
+        }
+
+        return false;
+    }
+
+    private static void ClearReadOnlyRecursive(string directoryPath)
+    {
+        foreach (var file in Directory.EnumerateFiles(directoryPath, "*", SearchOption.AllDirectories))
+        {
+            ClearRestrictiveAttributes(file);
+        }
+
+        foreach (var directory in Directory.EnumerateDirectories(directoryPath, "*", SearchOption.AllDirectories))
+        {
+            ClearRestrictiveAttributes(directory);
+        }
+
+        ClearRestrictiveAttributes(directoryPath);
+    }
+
+    private static void ClearRestrictiveAttributes(string path)
+    {
+        var attributes = File.GetAttributes(path);
+        var restrictiveAttributes = FileAttributes.ReadOnly | FileAttributes.Hidden | FileAttributes.System;
+        if ((attributes & restrictiveAttributes) != 0)
+        {
+            File.SetAttributes(path, attributes & ~restrictiveAttributes);
+        }
+    }
+
+    private static void MoveWithCrossVolumeFallback(string source, string destination, bool isDirectory, bool allowDestinationRename)
+    {
+        try
+        {
+            if (isDirectory)
+            {
+                Directory.Move(source, destination);
+            }
+            else
+            {
+                File.Move(source, destination);
+            }
+        }
+        catch (IOException)
+        {
+            if (File.Exists(destination) || Directory.Exists(destination))
+            {
+                if (!allowDestinationRename)
+                {
+                    throw;
+                }
+
+                destination = GetNonConflictingPath(destination, isDirectory);
+            }
+
+            if (isDirectory)
+            {
+                CopyDirectoryRecursive(source, destination);
+                TryDeleteDirectory(source);
+            }
+            else
+            {
+                File.Copy(source, destination, false);
+                TryDeleteFile(source);
+            }
+        }
+    }
+
+    private static void CopyDirectoryRecursive(string sourceDirectory, string destinationDirectory)
+    {
+        Directory.CreateDirectory(destinationDirectory);
+
+        foreach (var file in Directory.GetFiles(sourceDirectory))
+        {
+            var destinationFile = Path.Combine(destinationDirectory, Path.GetFileName(file));
+            File.Copy(file, destinationFile, false);
+        }
+
+        foreach (var directory in Directory.GetDirectories(sourceDirectory))
+        {
+            var destinationSubDirectory = Path.Combine(destinationDirectory, Path.GetFileName(directory));
+            CopyDirectoryRecursive(directory, destinationSubDirectory);
+        }
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                ClearRestrictiveAttributes(path);
+                File.Delete(path);
+            }
+        }
+        catch
+        {
         }
     }
 
@@ -715,6 +989,24 @@ internal sealed class LanTransferHostService : IDisposable
             {
                 Type = "error",
                 Message = message,
+            }, cancellationToken);
+        }
+        catch
+        {
+        }
+    }
+
+    private static async Task TrySendCompleteAckAsync(NetworkStream stream, CancellationToken cancellationToken, LanReceiveCommitResult result, string saveDirectory)
+    {
+        try
+        {
+            await LanTransferWireProtocol.WriteFrameAsync(stream, new LanTransferCompleteAckFrame
+            {
+                Type = "transferCompleteAck",
+                Success = result?.Success == true,
+                Status = result?.Status ?? "失败",
+                SaveDirectory = saveDirectory,
+                Message = result?.Message,
             }, cancellationToken);
         }
         catch
@@ -810,6 +1102,96 @@ internal sealed class LanPreparedReceivePath
 
     /// <summary>接收过程中使用的临时目录路径。</summary>
     public string TempDirectory { get; set; }
+}
+
+/// <summary>
+/// 接收文件提交到收件箱后的结果。
+/// </summary>
+internal sealed class LanReceiveCommitResult
+{
+    /// <summary>是否全部提交成功。</summary>
+    public bool Success { get; set; }
+
+    /// <summary>是否部分失败。</summary>
+    public bool IsPartialFailure => !Success && string.Equals(Status, "部分失败", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>接收历史状态。</summary>
+    public string Status { get; set; }
+
+    /// <summary>传输会话状态文本。</summary>
+    public string SessionStatusText { get; set; }
+
+    /// <summary>详细消息。</summary>
+    public string Message { get; set; }
+
+    /// <summary>保留的临时目录。</summary>
+    public string TempDirectory { get; set; }
+
+    /// <summary>失败项列表。</summary>
+    public List<LanReceiveCommitFailure> Failures { get; set; } = new List<LanReceiveCommitFailure>();
+
+    public static LanReceiveCommitResult Succeeded(int itemCount)
+    {
+        return new LanReceiveCommitResult
+        {
+            Success = true,
+            Status = "成功",
+            SessionStatusText = "接收完成",
+            Message = itemCount > 0 ? "接收成功" : "接收成功（无顶层项）",
+        };
+    }
+
+    public static LanReceiveCommitResult Failed(string status, string message, string tempDirectory, IEnumerable<LanReceiveCommitFailure> failures = null)
+    {
+        return new LanReceiveCommitResult
+        {
+            Success = false,
+            Status = string.IsNullOrWhiteSpace(status) ? "失败" : status,
+            SessionStatusText = string.Equals(status, "部分失败", StringComparison.OrdinalIgnoreCase) ? "接收部分失败" : "接收失败",
+            Message = message,
+            TempDirectory = tempDirectory,
+            Failures = failures?.ToList() ?? new List<LanReceiveCommitFailure>(),
+        };
+    }
+}
+
+/// <summary>
+/// 接收文件提交失败项。
+/// </summary>
+internal sealed class LanReceiveCommitFailure
+{
+    /// <summary>顶层项名称。</summary>
+    public string Name { get; set; }
+
+    /// <summary>临时源路径。</summary>
+    public string SourcePath { get; set; }
+
+    /// <summary>目标路径。</summary>
+    public string DestinationPath { get; set; }
+
+    /// <summary>失败消息。</summary>
+    public string Message { get; set; }
+}
+
+/// <summary>
+/// 接收完成后回传给发送方的落盘结果帧。
+/// </summary>
+internal sealed class LanTransferCompleteAckFrame
+{
+    /// <summary>帧类型标识。</summary>
+    public string Type { get; set; }
+
+    /// <summary>接收端是否完整提交成功。</summary>
+    public bool Success { get; set; }
+
+    /// <summary>传输状态，如成功、部分失败或失败。</summary>
+    public string Status { get; set; }
+
+    /// <summary>接收端保存目录。</summary>
+    public string SaveDirectory { get; set; }
+
+    /// <summary>附加消息。</summary>
+    public string Message { get; set; }
 }
 
 /// <summary>

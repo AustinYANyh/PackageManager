@@ -44,6 +44,7 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
     private string _statusText;
     private string _appVersion;
     private bool _silentOverwrite;
+    private bool _autoAccept;
 
     /// <summary>
     /// 初始化 <see cref="LanTransferService"/> 的新实例，加载设置并启动服务。
@@ -106,6 +107,13 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         private set => SetProperty(ref _silentOverwrite, value);
     }
 
+    /// <summary>接收文件时是否自动接受传入请求。</summary>
+    public bool AutoAccept
+    {
+        get => _autoAccept;
+        private set => SetProperty(ref _autoAccept, value);
+    }
+
     /// <summary>服务状态显示文本。</summary>
     public string StatusText
     {
@@ -160,6 +168,7 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         DeviceId = EnsureDeviceId(settings.LanTransferDeviceId);
         InboxPath = EnsureInboxPath(settings.LanTransferInboxPath);
         SilentOverwrite = settings.LanTransferSilentOverwrite;
+        AutoAccept = settings.LanTransferAutoAccept;
 
         EnsureRunningState();
         OnPropertyChanged(nameof(ListenPort));
@@ -373,6 +382,12 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
                         Type = "complete",
                     }, cancellationToken);
 
+                    var completeAck = await TryReadTransferCompleteAckAsync(activeStream, helloAck, cancellationToken, TimeSpan.FromSeconds(30));
+                    if ((completeAck != null) && !completeAck.Success)
+                    {
+                        throw new InvalidOperationException(completeAck.Message ?? "对方接收落盘失败。");
+                    }
+
                     session.StatusText = "发送完成";
                     session.CanCancel = false;
                     AddHistoryRecord(new LanTransferRecord
@@ -453,6 +468,49 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         {
             session.CanCancel = false;
             await InvokeOnUiAsync(() => _activeTransfers.Remove(session));
+        }
+    }
+
+    private static async Task<LanTransferCompleteAckFrame> TryReadTransferCompleteAckAsync(NetworkStream stream, LanHelloAckFrame helloAck, CancellationToken cancellationToken, TimeSpan timeout)
+    {
+        if (!LanTransferProtocol.SupportsTransferCompleteAck(helloAck?.Capabilities))
+        {
+            return null;
+        }
+
+        var oldReadTimeout = stream.ReadTimeout;
+        using (var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+        {
+            timeoutCts.CancelAfter(timeout);
+        try
+        {
+            stream.ReadTimeout = (int)Math.Min(int.MaxValue, Math.Max(1000, timeout.TotalMilliseconds));
+            var frame = await LanTransferWireProtocol.ReadFrameAsync(stream, timeoutCts.Token);
+            if (!string.Equals(frame?.Value<string>("Type"), "transferCompleteAck", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            return frame.ToObject<LanTransferCompleteAckFrame>();
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return null;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        finally
+        {
+            try
+            {
+                stream.ReadTimeout = oldReadTimeout;
+            }
+            catch
+            {
+            }
+        }
         }
     }
 
@@ -709,6 +767,7 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         DeviceId = settings.LanTransferDeviceId;
         InboxPath = settings.LanTransferInboxPath;
         SilentOverwrite = settings.LanTransferSilentOverwrite;
+        AutoAccept = settings.LanTransferAutoAccept;
         AppVersion = GetCurrentVersionText();
         StatusText = "文件传输服务未启动";
 
@@ -854,6 +913,13 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
     private async Task<LanIncomingTransferDecision> ApproveIncomingRequestAsync(LanTransferRequest request)
     {
         request.SaveDirectory = InboxPath;
+        if (AutoAccept)
+        {
+            ToastService.ShowToast("自动接收文件", $"{request.SenderLabel} 发送 {request.ItemCount} 项，已自动接收。", "Info");
+            request.StatusText = "已自动接收";
+            return LanIncomingTransferDecision.Accept(InboxPath, SilentOverwrite);
+        }
+
         await InvokeOnUiAsync(() => _pendingRequests.Add(request));
         ToastService.ShowToast("收到文件传输", $"{request.SenderLabel} 请求发送 {request.ItemCount} 项，请确认是否接收。", "Info");
 

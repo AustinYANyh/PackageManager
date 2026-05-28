@@ -1107,6 +1107,11 @@ namespace PackageManager.Services
         /// 获取或设置文件传输接收时是否静默覆盖同名文件或目录。
         /// </summary>
         public bool LanTransferSilentOverwrite { get; set; } = false;
+
+        /// <summary>
+        /// 获取或设置文件传输是否自动接受传入请求。
+        /// </summary>
+        public bool LanTransferAutoAccept { get; set; } = false;
     }
 
     /// <summary>
