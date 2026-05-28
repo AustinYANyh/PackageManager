@@ -15,7 +15,6 @@ if (-not $FromWrapper.IsPresent) {
   throw "请不要直接调用 run-commit-push-choice.ps1；模型必须调用 invoke-commit-push-interactive.ps1，由 wrapper 打开并等待提交推送交互窗口。"
 }
 try {
-  [Console]::InputEncoding = [System.Text.Encoding]::UTF8
   [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
   $OutputEncoding = [System.Text.Encoding]::UTF8
 } catch {
@@ -125,28 +124,10 @@ function Read-BlockingReviewFeedback {
   Write-Host "请输入对提交日志的修改意见，输入后直接回车结束。" -ForegroundColor Yellow
   Write-Host "此步骤不设超时，模型会逐字读取你的意见并重新生成日志。" -ForegroundColor Yellow
 
-  Write-Host -NoNewline "> "
-  $chars = New-Object System.Collections.Generic.List[char]
-  while ($true) {
-    $key = [Console]::ReadKey($true)
-    if ($key.Key -eq [ConsoleKey]::Enter) {
-      Write-Host ""
-      break
-    }
-    if ($key.Key -eq [ConsoleKey]::Backspace) {
-      if ($chars.Count -gt 0) {
-        $chars.RemoveAt($chars.Count - 1)
-        Write-Host -NoNewline "`b `b"
-      }
-      continue
-    }
-    if (-not [char]::IsControl($key.KeyChar)) {
-      $chars.Add($key.KeyChar)
-      Write-Host -NoNewline $key.KeyChar
-    }
-  }
+  $line = Read-Host -Prompt ">"
+  if ($null -eq $line) { return "" }
 
-  return (-join $chars).Trim()
+  return $line.Trim()
 }
 
 function Expand-IdTokens([string]$raw) {
