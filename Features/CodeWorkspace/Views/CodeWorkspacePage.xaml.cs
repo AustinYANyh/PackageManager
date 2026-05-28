@@ -7,8 +7,13 @@ using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
+using System.Windows.Media;
+using System.Windows.Input;
 using PackageManager.Features.CodeWorkspace.Models;
 using PackageManager.Features.CodeWorkspace.Services;
 using PackageManager.Models;
@@ -21,13 +26,24 @@ namespace PackageManager.Features.CodeWorkspace.Views
     {
         private readonly DataPersistenceService _dataPersistenceService;
         private readonly AiCommitSkillService _aiCommitSkillService = new AiCommitSkillService();
+        private readonly VcsStatusService _vcsStatusService;
+        private readonly CodeWorkspaceVcsCacheService _vcsCacheService;
         private CodeRepository _selectedRepository;
         private string _statusText;
+        private string _refreshButtonText = "刷新状态";
+        private string _subRepositoryFilter;
+        private CancellationTokenSource _autoRefreshCts;
+        private bool _hasLoaded;
+        private bool _isRefreshingStatus;
+        private bool _isCacheEventSubscribed;
 
         public CodeWorkspacePage()
         {
             InitializeComponent();
             _dataPersistenceService = ServiceLocator.Resolve<DataPersistenceService>() ?? new DataPersistenceService();
+            _vcsStatusService = ServiceLocator.Resolve<VcsStatusService>() ?? new VcsStatusService();
+            _vcsCacheService = ServiceLocator.Resolve<CodeWorkspaceVcsCacheService>() ?? new CodeWorkspaceVcsCacheService(_dataPersistenceService, _vcsStatusService);
+            SubscribeCacheUpdates();
             DataContext = this;
             LoadRepositories();
         }
@@ -41,13 +57,47 @@ namespace PackageManager.Features.CodeWorkspace.Views
         public CodeRepository SelectedRepository
         {
             get => _selectedRepository;
-            set => SetProperty(ref _selectedRepository, value);
+            set
+            {
+                if (SetProperty(ref _selectedRepository, value))
+                {
+                    SubRepositoryFilter = string.Empty;
+                    RefreshSubRepositoryView();
+                    RaisePropertyChanged(nameof(HasSelectedRepository));
+                }
+            }
         }
 
         public string StatusText
         {
             get => _statusText;
             set => SetProperty(ref _statusText, value);
+        }
+
+        public string RefreshButtonText
+        {
+            get => _refreshButtonText;
+            set => SetProperty(ref _refreshButtonText, value);
+        }
+
+        public bool CanRefreshStatus => !_isRefreshingStatus;
+
+        public bool HasSelectedRepository => SelectedRepository != null;
+
+        public string RepositoryCountText => $"{Repositories.Count} 个仓库";
+
+        public ICollectionView SubRepositoryView { get; private set; }
+
+        public string SubRepositoryFilter
+        {
+            get => _subRepositoryFilter;
+            set
+            {
+                if (SetProperty(ref _subRepositoryFilter, value))
+                {
+                    RefreshSubRepositoryView();
+                }
+            }
         }
 
         private void LoadRepositories()
@@ -60,6 +110,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
                          .ThenBy(repo => repo.Name))
             {
                 var cloned = repo.Clone();
+                _vcsCacheService.ApplyCachedStatus(cloned);
                 SetupRepositoryCommands(cloned);
                 Repositories.Add(cloned);
             }
@@ -67,18 +118,108 @@ namespace PackageManager.Features.CodeWorkspace.Views
             StatusText = Repositories.Count == 0
                 ? "未配置代码仓库，请点击管理仓库添加。"
                 : $"已加载 {Repositories.Count} 个仓库。";
+            SelectedRepository = Repositories.FirstOrDefault();
+            RaisePropertyChanged(nameof(RepositoryCountText));
+        }
+
+        private async void Page_Loaded(object sender, RoutedEventArgs e)
+        {
+            SubscribeCacheUpdates();
+            _vcsCacheService.ApplyCachedStatuses(Repositories);
+            RefreshSubRepositoryView();
+            if (!_hasLoaded)
+            {
+                _hasLoaded = true;
+                if (Repositories.Any(repo => repo.LastStatusRefresh != DateTime.MinValue))
+                {
+                    StatusText = $"已加载 {Repositories.Count} 个仓库，显示内存缓存状态。";
+                }
+                else if (_vcsCacheService.IsRefreshRunning)
+                {
+                    StatusText = $"已加载 {Repositories.Count} 个仓库，后台正在扫描 VCS 状态。";
+                }
+                else
+                {
+                    await RefreshAllVcsStatusAsync(forceRefresh: false);
+                }
+            }
+
+            StartAutoRefresh();
+        }
+
+        private void Page_Unloaded(object sender, RoutedEventArgs e)
+        {
+            StopAutoRefresh();
+            UnsubscribeCacheUpdates();
         }
 
         private void SetupRepositoryCommands(CodeRepository repo)
         {
             repo.ClaudeCommitCommand = new RelayCommand(() => RunRepositoryAction(repo, DoClaudeCommit));
             repo.CodexCommitCommand = new RelayCommand(() => RunRepositoryAction(repo, DoCodexCommit));
+            repo.PullCommand = new RelayCommand(() => RunRepositoryAction(repo, DoPullRepository));
             repo.OpenVSCommand = new RelayCommand(() => RunRepositoryAction(repo, DoOpenVisualStudio));
             repo.OpenRiderCommand = new RelayCommand(() => RunRepositoryAction(repo, r => DoOpenIde(r, new[] { "Rider", "JetBrains Rider" }, "Rider")));
             repo.OpenCursorCommand = new RelayCommand(() => RunRepositoryAction(repo, DoOpenCursor));
             repo.OpenClaudeCommand = new RelayCommand(() => RunRepositoryAction(repo, DoOpenClaudeCode));
             repo.OpenCodexCommand = new RelayCommand(() => RunRepositoryAction(repo, DoOpenCodex));
             repo.OpenFolderCommand = new RelayCommand(() => RunRepositoryAction(repo, DoOpenFolder));
+        }
+
+        private void VcsCacheService_CacheUpdated(object sender, EventArgs e)
+        {
+            Dispatcher.Invoke(() =>
+            {
+                _vcsCacheService.ApplyCachedStatuses(Repositories);
+                RefreshSubRepositoryView();
+            });
+        }
+
+        private void SubscribeCacheUpdates()
+        {
+            if (_isCacheEventSubscribed)
+            {
+                return;
+            }
+
+            _vcsCacheService.CacheUpdated += VcsCacheService_CacheUpdated;
+            _isCacheEventSubscribed = true;
+        }
+
+        private void UnsubscribeCacheUpdates()
+        {
+            if (!_isCacheEventSubscribed)
+            {
+                return;
+            }
+
+            _vcsCacheService.CacheUpdated -= VcsCacheService_CacheUpdated;
+            _isCacheEventSubscribed = false;
+        }
+
+        private void RepositoryRow_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+        {
+            if (FindAncestor<Button>(e.OriginalSource as DependencyObject) != null)
+            {
+                return;
+            }
+
+            if ((sender as FrameworkElement)?.DataContext is CodeRepository repo)
+            {
+                SelectedRepository = repo;
+                RunRepositoryAction(repo, DoOpenFolder);
+                e.Handled = true;
+            }
+        }
+
+        private void ActionMenuButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is Button button && button.ContextMenu != null)
+            {
+                button.ContextMenu.PlacementTarget = button;
+                button.ContextMenu.IsOpen = true;
+                e.Handled = true;
+            }
         }
 
         private void RunRepositoryAction(CodeRepository repo, Action<CodeRepository> action)
@@ -114,7 +255,42 @@ namespace PackageManager.Features.CodeWorkspace.Views
             };
             page.RequestExit += window.Close;
             window.ShowDialog();
-            LoadRepositories();
+            SyncRepositories();
+        }
+
+        private async void RefreshStatusButton_Click(object sender, RoutedEventArgs e)
+        {
+            await RefreshAllVcsStatusAsync(forceRefresh: true);
+        }
+
+        private async void RefreshSelectedRepositoryButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (SelectedRepository == null)
+            {
+                return;
+            }
+
+            StatusText = $"正在刷新仓库状态: {SelectedRepository.Name}";
+            try
+            {
+                SelectedRepository.IsRefreshing = true;
+                await _vcsStatusService.RefreshRepositoryStatusAsync(SelectedRepository, forceRefresh: true);
+                _vcsCacheService.UpdateCache(SelectedRepository);
+                RefreshSubRepositoryView();
+                StatusText = $"状态刷新完成 - {SelectedRepository.Name} - {DateTime.Now:HH:mm:ss}";
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, $"刷新代码仓库状态失败: {SelectedRepository.Path}");
+                StatusText = $"状态刷新失败: {ex.Message}";
+            }
+            finally
+            {
+                SelectedRepository.IsRefreshing = false;
+            }
         }
 
         private void RefreshProjectFilesButton_Click(object sender, RoutedEventArgs e)
@@ -131,11 +307,157 @@ namespace PackageManager.Features.CodeWorkspace.Views
         private void ReloadButton_Click(object sender, RoutedEventArgs e)
         {
             LoadRepositories();
+            _ = RefreshAllVcsStatusAsync(forceRefresh: false);
         }
 
         private void BackButton_Click(object sender, RoutedEventArgs e)
         {
+            StopAutoRefresh();
             RequestExit?.Invoke();
+        }
+
+        private async Task RefreshAllVcsStatusAsync(bool forceRefresh = false)
+        {
+            if (Repositories.Count == 0)
+            {
+                return;
+            }
+
+            StatusText = "正在刷新仓库状态...";
+            SetRefreshingStatus(true);
+            try
+            {
+                await _vcsCacheService.RefreshRepositoriesAsync(Repositories, forceRefresh);
+                RefreshSubRepositoryView();
+                StatusText = $"状态刷新完成 - {DateTime.Now:HH:mm:ss}";
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, "刷新代码仓库状态失败");
+                StatusText = $"状态刷新失败: {ex.Message}";
+            }
+            finally
+            {
+                SetRefreshingStatus(false);
+            }
+        }
+
+        private async void StartAutoRefresh()
+        {
+            _autoRefreshCts?.Cancel();
+            _autoRefreshCts = new CancellationTokenSource();
+            var token = _autoRefreshCts.Token;
+
+            try
+            {
+                while (!token.IsCancellationRequested)
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(60), token);
+                    if (token.IsCancellationRequested)
+                    {
+                        break;
+                    }
+
+                    await _vcsCacheService.RefreshRepositoriesAsync(Repositories, false, token);
+                    Dispatcher.Invoke(RefreshSubRepositoryView);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, "自动刷新代码仓库状态失败");
+            }
+        }
+
+        private void StopAutoRefresh()
+        {
+            _autoRefreshCts?.Cancel();
+        }
+
+        private void SyncRepositories()
+        {
+            var previousSelectionPath = NormalizePath(SelectedRepository?.Path);
+            var existingByPath = Repositories
+                .Where(repo => !string.IsNullOrWhiteSpace(repo.Path))
+                .GroupBy(repo => NormalizePath(repo.Path), StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+
+            Repositories.Clear();
+            var settings = _dataPersistenceService.LoadSettings();
+            foreach (var repo in (settings.CodeRepositories ?? new List<CodeRepository>())
+                         .Where(repo => repo != null && !string.IsNullOrWhiteSpace(repo.Path))
+                         .OrderByDescending(repo => repo.LastUsed)
+                         .ThenBy(repo => repo.Name))
+            {
+                var cloned = repo.Clone();
+                var key = NormalizePath(cloned.Path);
+                if (!string.IsNullOrWhiteSpace(key) && existingByPath.TryGetValue(key, out var existing))
+                {
+                    cloned.ApplyVcsStatusFrom(existing);
+                }
+                else
+                {
+                    _vcsCacheService.ApplyCachedStatus(cloned);
+                }
+
+                SetupRepositoryCommands(cloned);
+                Repositories.Add(cloned);
+            }
+
+            SelectedRepository = Repositories.FirstOrDefault(repo =>
+                string.Equals(NormalizePath(repo.Path), previousSelectionPath, StringComparison.OrdinalIgnoreCase))
+                ?? Repositories.FirstOrDefault();
+            StatusText = Repositories.Count == 0
+                ? "未配置代码仓库，请点击管理仓库添加。"
+                : $"已同步 {Repositories.Count} 个仓库，保留内存 VCS 状态。";
+            RaisePropertyChanged(nameof(RepositoryCountText));
+            RefreshSubRepositoryView();
+        }
+
+        private void SetRefreshingStatus(bool isRefreshing)
+        {
+            if (_isRefreshingStatus == isRefreshing)
+            {
+                return;
+            }
+
+            _isRefreshingStatus = isRefreshing;
+            RefreshButtonText = isRefreshing ? "刷新中..." : "刷新状态";
+            RaisePropertyChanged(nameof(CanRefreshStatus));
+        }
+
+        private void RefreshSubRepositoryView()
+        {
+            var source = SelectedRepository?.SubRepositories;
+            SubRepositoryView = source == null ? null : CollectionViewSource.GetDefaultView(source);
+            if (SubRepositoryView != null)
+            {
+                SubRepositoryView.Filter = FilterSubRepository;
+                SubRepositoryView.Refresh();
+            }
+
+            RaisePropertyChanged(nameof(SubRepositoryView));
+        }
+
+        private bool FilterSubRepository(object value)
+        {
+            if (string.IsNullOrWhiteSpace(SubRepositoryFilter))
+            {
+                return true;
+            }
+
+            if (value is SubRepository subRepository)
+            {
+                return (subRepository.RelativePath ?? string.Empty)
+                    .IndexOf(SubRepositoryFilter, StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+
+            return false;
         }
 
         private void DoClaudeCommit(CodeRepository repo)
@@ -146,6 +468,53 @@ namespace PackageManager.Features.CodeWorkspace.Views
         private void DoCodexCommit(CodeRepository repo)
         {
             DoAiCommit(repo, "Codex", "codex", "codex --sandbox danger-full-access --ask-for-approval never");
+        }
+
+        private async void DoPullRepository(CodeRepository repo)
+        {
+            StatusText = $"正在拉取代码: {repo.Name}";
+            try
+            {
+                repo.IsRefreshing = true;
+                var result = await PullRepositoryAsync(repo);
+                if (result.HasConflicts)
+                {
+                    var conflictMessage = BuildConflictMessage(result);
+                    var dialogResult = MessageBox.Show(
+                        conflictMessage + "\n\n是否打开仓库文件夹？",
+                        "拉取代码 - 检测到冲突",
+                        MessageBoxButton.YesNo,
+                        MessageBoxImage.Warning);
+                    if (dialogResult == MessageBoxResult.Yes)
+                    {
+                        DoOpenFolder(repo);
+                    }
+
+                    StatusText = $"拉取完成但有冲突: {repo.Name}";
+                }
+                else if (result.Success)
+                {
+                    await _vcsStatusService.RefreshRepositoryStatusAsync(repo, forceRefresh: true);
+                    _vcsCacheService.UpdateCache(repo);
+                    RefreshSubRepositoryView();
+                    StatusText = $"拉取成功: {repo.Name}";
+                }
+                else
+                {
+                    StatusText = $"拉取失败: {result.ErrorMessage}";
+                    MessageBox.Show($"拉取失败: {result.ErrorMessage}", "拉取代码", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, $"拉取代码失败: {repo.Path}");
+                StatusText = $"拉取失败: {ex.Message}";
+                MessageBox.Show($"拉取失败: {ex.Message}", "拉取代码", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                repo.IsRefreshing = false;
+            }
         }
 
         private void DoAiCommit(CodeRepository repo, string engineName, string commandName, string commandPrefix)
@@ -476,6 +845,179 @@ codex --sandbox danger-full-access --ask-for-approval never
             throw new FileNotFoundException($"未找到 {commandName} 命令，请确认已安装并加入 PATH。");
         }
 
+        private async Task<PullResult> PullRepositoryAsync(CodeRepository repo)
+        {
+            var result = new PullResult { Success = true };
+            var hasGit = Directory.Exists(Path.Combine(repo.Path, ".git")) || File.Exists(Path.Combine(repo.Path, ".git"));
+            var hasRootSvn = Directory.Exists(Path.Combine(repo.Path, ".svn"));
+
+            if (hasGit)
+            {
+                var gitResult = await RunCommandAsync("git", "pull", repo.Path, TimeSpan.FromSeconds(60));
+                if (gitResult.ExitCode != 0)
+                {
+                    result.Success = false;
+                    result.ErrorMessage = AppendError(result.ErrorMessage, gitResult.Error, gitResult.Output);
+                }
+
+                var gitText = (gitResult.Output ?? string.Empty) + Environment.NewLine + (gitResult.Error ?? string.Empty);
+                if (gitText.IndexOf("CONFLICT", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    result.HasConflicts = true;
+                    result.GitConflicts.AddRange(ParseGitConflicts(gitText));
+                }
+            }
+
+            var svnPaths = new List<string>();
+            if (hasRootSvn && !hasGit)
+            {
+                svnPaths.Add(repo.Path);
+            }
+
+            if (repo.SubRepositories != null)
+            {
+                svnPaths.AddRange(repo.SubRepositories
+                    .Where(sub => !string.IsNullOrWhiteSpace(sub.RelativePath))
+                    .Select(sub => Path.Combine(repo.Path, sub.RelativePath))
+                    .Where(Directory.Exists));
+            }
+
+            if (svnPaths.Count > 0)
+            {
+                var svnTasks = svnPaths.Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Select(async path => new
+                    {
+                        Path = path,
+                        Result = await RunCommandAsync("svn", "update", path, TimeSpan.FromSeconds(60)),
+                    });
+                var svnResults = await Task.WhenAll(svnTasks);
+                foreach (var svnResult in svnResults)
+                {
+                    if (svnResult.Result.ExitCode != 0)
+                    {
+                        result.Success = false;
+                        result.ErrorMessage = AppendError(
+                            result.ErrorMessage,
+                            $"SVN更新失败 ({Path.GetFileName(svnResult.Path)}): {svnResult.Result.Error}",
+                            svnResult.Result.Output);
+                    }
+
+                    var svnText = (svnResult.Result.Output ?? string.Empty) + Environment.NewLine + (svnResult.Result.Error ?? string.Empty);
+                    if (HasSvnConflict(svnText))
+                    {
+                        result.HasConflicts = true;
+                        result.SvnConflicts.Add(Path.GetFileName(svnResult.Path));
+                    }
+                }
+            }
+
+            if (!hasGit && !hasRootSvn && svnPaths.Count == 0)
+            {
+                result.Success = false;
+                result.ErrorMessage = "未检测到 Git 或 SVN 仓库。";
+            }
+
+            return result;
+        }
+
+        private static async Task<CommandResult> RunCommandAsync(string fileName, string arguments, string workingDirectory, TimeSpan timeout)
+        {
+            try
+            {
+                var startInfo = new ProcessStartInfo
+                {
+                    FileName = fileName,
+                    Arguments = arguments,
+                    WorkingDirectory = workingDirectory,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                };
+
+                using (var process = new Process { StartInfo = startInfo })
+                {
+                    process.Start();
+                    var outputTask = process.StandardOutput.ReadToEndAsync();
+                    var errorTask = process.StandardError.ReadToEndAsync();
+                    var exited = await Task.Run(() => process.WaitForExit((int)timeout.TotalMilliseconds));
+                    if (!exited)
+                    {
+                        try { process.Kill(); } catch { }
+                        return new CommandResult { ExitCode = -1, Output = string.Empty, Error = "Timeout" };
+                    }
+
+                    return new CommandResult
+                    {
+                        ExitCode = process.ExitCode,
+                        Output = await outputTask,
+                        Error = await errorTask,
+                    };
+                }
+            }
+            catch (Exception ex)
+            {
+                return new CommandResult { ExitCode = -1, Output = string.Empty, Error = ex.Message };
+            }
+        }
+
+        private static string AppendError(string current, string error, string output)
+        {
+            var text = string.IsNullOrWhiteSpace(error) ? output : error;
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return current;
+            }
+
+            return string.IsNullOrWhiteSpace(current) ? text.Trim() : current + Environment.NewLine + text.Trim();
+        }
+
+        private static List<string> ParseGitConflicts(string output)
+        {
+            var conflicts = new List<string>();
+            foreach (var line in (output ?? string.Empty).Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                var marker = " in ";
+                var index = line.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+                if (line.IndexOf("CONFLICT", StringComparison.OrdinalIgnoreCase) >= 0 && index >= 0)
+                {
+                    conflicts.Add(line.Substring(index + marker.Length).Trim());
+                }
+            }
+
+            return conflicts.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
+        private static bool HasSvnConflict(string output)
+        {
+            return (output ?? string.Empty)
+                .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Any(line => line.IndexOf("conflict", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                             line.StartsWith("C ", StringComparison.Ordinal) ||
+                             line.StartsWith("C\t", StringComparison.Ordinal));
+        }
+
+        private static string BuildConflictMessage(PullResult result)
+        {
+            var parts = new List<string> { "检测到冲突，请在 IDE 中手动解决。" };
+            if (result.GitConflicts.Count > 0)
+            {
+                parts.Add("Git冲突文件: " + string.Join(", ", result.GitConflicts.Take(8)));
+            }
+
+            if (result.SvnConflicts.Count > 0)
+            {
+                parts.Add("SVN冲突仓库: " + string.Join(", ", result.SvnConflicts.Take(8)));
+            }
+
+            if (!string.IsNullOrWhiteSpace(result.ErrorMessage))
+            {
+                parts.Add(result.ErrorMessage);
+            }
+
+            return string.Join(Environment.NewLine, parts);
+        }
+
         private static string BuildCommitPrompt(string workingChangesScriptPath, string lastChangesJsonPath, string lastChangesModelJsonPath)
         {
             var skillMarkdownPath = Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(workingChangesScriptPath)), "SKILL.md");
@@ -613,6 +1155,22 @@ codex --sandbox danger-full-access --ask-for-approval never
             }
         }
 
+        private static T FindAncestor<T>(DependencyObject current)
+            where T : DependencyObject
+        {
+            while (current != null)
+            {
+                if (current is T target)
+                {
+                    return target;
+                }
+
+                current = VisualTreeHelper.GetParent(current);
+            }
+
+            return null;
+        }
+
         private bool SetProperty<T>(ref T field, T value, [CallerMemberName] string propertyName = null)
         {
             if (Equals(field, value))
@@ -623,6 +1181,33 @@ codex --sandbox danger-full-access --ask-for-approval never
             field = value;
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
             return true;
+        }
+
+        private void RaisePropertyChanged(string propertyName)
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+        }
+
+        private class PullResult
+        {
+            public bool Success { get; set; }
+
+            public bool HasConflicts { get; set; }
+
+            public string ErrorMessage { get; set; }
+
+            public List<string> GitConflicts { get; } = new List<string>();
+
+            public List<string> SvnConflicts { get; } = new List<string>();
+        }
+
+        private class CommandResult
+        {
+            public int ExitCode { get; set; }
+
+            public string Output { get; set; }
+
+            public string Error { get; set; }
         }
     }
 }

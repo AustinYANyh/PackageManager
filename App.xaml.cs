@@ -6,6 +6,7 @@ using System.Windows;
 using System.Threading.Tasks;
 using PackageManager.Services;
 using PackageManager.Features.Notifications.Services;
+using PackageManager.Features.CodeWorkspace.Services;
 using System.Runtime.InteropServices;
 using System.IO;
 
@@ -42,6 +43,10 @@ namespace PackageManager
             ServiceLocator.Register(new ApplicationFinderService());
             ServiceLocator.Register(new LanTransferService(dataPersistence));
             ServiceLocator.Register(new NotificationService());
+            var vcsStatusService = new VcsStatusService();
+            var codeWorkspaceVcsCache = new CodeWorkspaceVcsCacheService(dataPersistence, vcsStatusService);
+            ServiceLocator.Register(vcsStatusService);
+            ServiceLocator.Register(codeWorkspaceVcsCache);
 
             var ftpService = ServiceLocator.Resolve<FtpService>();
             var monitor = new PackageVersionMonitorService(ftpService);
@@ -57,6 +62,7 @@ namespace PackageManager
             }
 
             InitializeCommonStartupHotkey();
+            codeWorkspaceVcsCache.StartWarmup();
         }
 
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
@@ -233,6 +239,7 @@ namespace PackageManager
             try
             {
                 _systemHotkeyService?.Dispose();
+                ServiceLocator.Resolve<CodeWorkspaceVcsCacheService>()?.Cancel();
                 _commonStartupWindowManager?.Shutdown();
                 _fileSearchWindowManager?.Shutdown();
             }

@@ -305,8 +305,13 @@
 
         <!-- Features/DevTools -->
         <Compile Include="Features\CodeWorkspace\Models\CodeRepository.cs" />
+        <Compile Include="Features\CodeWorkspace\Models\SubRepository.cs" />
+        <Compile Include="Features\CodeWorkspace\Models\VcsStatus.cs" />
+        <Compile Include="Features\CodeWorkspace\Models\VcsType.cs" />
         <Compile Include="Features\CodeWorkspace\Services\AiCommitSkillService.cs" />
+        <Compile Include="Features\CodeWorkspace\Services\CodeWorkspaceVcsCacheService.cs" />
         <Compile Include="Features\CodeWorkspace\Services\TerminalHelper.cs" />
+        <Compile Include="Features\CodeWorkspace\Services\VcsStatusService.cs" />
         <Page Include="Features\CodeWorkspace\Views\CodeRepositoryManagementPage.xaml">
           <Generator>MSBuild:Compile</Generator>
           <SubType>Designer</SubType>
