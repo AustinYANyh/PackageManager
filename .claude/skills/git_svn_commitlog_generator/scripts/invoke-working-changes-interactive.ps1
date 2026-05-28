@@ -38,8 +38,55 @@ if (-not [System.IO.Path]::IsPathRooted($StateDir)) {
 }
 New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
 $lastChangesFile = Join-Path $StateDir "last_changes.json"
+$lastChangesModelFile = Join-Path $StateDir "last_changes_model.json"
 $out = Join-Path $env:TEMP ("git_svn_changes_{0}.json" -f ([guid]::NewGuid()))
 $err = Join-Path $env:TEMP ("git_svn_changes_{0}.err.txt" -f ([guid]::NewGuid()))
+
+function ConvertTo-ModelProject {
+  param([object]$Project)
+
+  [pscustomobject]@{
+    Name = $Project.Name
+    Scope = $Project.Scope
+    Files = @($Project.Files)
+    GitFiles = @($Project.GitFiles)
+    SvnFiles = @($Project.SvnFiles)
+  }
+}
+
+function ConvertTo-ModelChangesJson {
+  param([object]$Changes)
+
+  $diffs = [ordered]@{}
+  if ($Changes.Diffs) {
+    foreach ($item in @($Changes.ItemsIncludedDefaultLog)) {
+      $key = [string]$item.Id
+      if ($Changes.Diffs.PSObject.Properties.Match($key).Count -gt 0) {
+        $diffs[$key] = $Changes.Diffs.$key
+      }
+    }
+  }
+
+  $model = [pscustomobject]@{
+    Root = $Changes.Root
+    GeneratedAt = $Changes.GeneratedAt
+    Defaults = $Changes.Defaults
+    Counts = [pscustomobject]@{
+      ItemsAll = @($Changes.ItemsAll).Count
+      ItemsIncluded = @($Changes.ItemsIncluded).Count
+      ItemsIncludedDefaultLog = @($Changes.ItemsIncludedDefaultLog).Count
+      ItemsExcluded = @($Changes.ItemsExcluded).Count
+      NeedsAdd = @($Changes.NeedsAdd).Count
+      DiffEntries = $diffs.Count
+    }
+    ItemsIncludedDefaultLog = @($Changes.ItemsIncludedDefaultLog)
+    ItemsExcluded = @($Changes.ItemsExcluded)
+    ProjectsDefault = @($Changes.ProjectsDefault | ForEach-Object { ConvertTo-ModelProject $_ })
+    Diffs = $diffs
+  }
+
+  return ($model | ConvertTo-Json -Depth 10)
+}
 
 $scanText = To-BoolText -value $ScanUntrackedForNeedsAdd -defaultValue "true"
 $includeDiffText = To-BoolText -value $IncludeDiff -defaultValue "true"
@@ -71,7 +118,10 @@ try {
   }
 
   Copy-Item -LiteralPath $out -Destination $lastChangesFile -Force
-  Get-Content -LiteralPath $out -Raw
+  $changes = Get-Content -LiteralPath $out -Raw | ConvertFrom-Json
+  $modelJson = ConvertTo-ModelChangesJson -Changes $changes
+  [System.IO.File]::WriteAllText($lastChangesModelFile, $modelJson, [System.Text.UTF8Encoding]::new($false))
+  $modelJson
 } finally {
   Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $err -Force -ErrorAction SilentlyContinue
