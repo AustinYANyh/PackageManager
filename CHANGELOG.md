@@ -2,6 +2,47 @@
 
 本文件基于仓库 `gitlog.md` 的提交历史按版本号归档,概述每个版本的主要改动与新增功能。
 
+## 4.1.0.0 — 2026-05-27
+
+- 通知中心与仪表盘概览：
+  - 新增通知服务、通知模型和通知面板，支持未读计数、全部已读、清空与点击导航。
+  - 主窗口顶部接入通知铃铛和弹出面板，未读数变化时同步更新徽章。
+  - ToastService 将现有 Toast 同步写入通知中心，应用启动时注册 NotificationService。
+  - 仪表盘新增包状态、今日通知、LAN 节点概览，并支持刷新和跳转。
+
+- 包版本监测与更新控制：
+  - 新增定时轮询 FTP 最新版本，记录新版本数量并推送通知。
+  - 包信息结合服务器版本展示可升级状态与上传时间。
+  - 应用启动注册并启动版本监测，进入产品分类页时刷新 FTP 可见版本。
+  - 可见包版本默认保留当前选择，刷新按钮改为 forceLatest 模式，手动刷新时切换到最新版本。
+  - 新包检测支持同版本按时间提示新包，并保留上传包选择。
+
+- 代码工作区与 AI 提交入口：
+  - 新增代码工作区与功能模块，包含 工作区和管理仓库 及三个视图页面。
+  - 仪表盘增加代码工作区卡片入口，注册代码工作区导航页。
+  - 仓库操作列由单一提交按钮拆分为 Claude提交 和 Codex提交，并扩大操作列宽。
+  - 提交流程按引擎校验命令并复用内嵌 skill 同步与提示构建。
+
+- 工具二进制与启动稳定性：
+  - 修复启动台首次日志写入失败，LoggingService 写入入口先初始化日志目录。
+  - 修复常用启动项 Enter 启动前 LogInfo 抛出 path1 为空的问题。
+  - 多次同步更新 MftScanner.Core.dll 与 MftScanner.exe 二进制资产。
+
+- 提交参考：
+- 10d61bcfeedd5370d176a1eebef6bc913f8847dc — feat(PackageManager): AiCommitSkillInfo 新增 LastChangesJsonPath 属性，SKILL.md 改用 内嵌绝对路径
+- 5116222f3b8e867defd587dac884a586a1497a39 — feat(PackageManager): 拆分代码工作区 Claude/Codex 提交入口
+- 19365ef2379477cfea8aea8505bd721a5085dc21 — refactor(PackageManager): 重构 AI 提交 skill 为内嵌直接执行模式，新增快捷方式解析
+- 97a7e59cee412cb26e02dbf3ae35c5b421f73e18 — feat(PackageManager): 新增代码工作区模块，集成仓库管理与 AI 提交技能
+- 91bac969d5f64637c6c763493d3f480739cfbb9f — docs(git_svn_commitlog_generator): 增加输出前自检与 Python chr() Base64 兜底
+- 9d0b7325735a9b0ccdbfa64a184cbec2a1d20fd7 — docs(git_svn_commitlog_generator): 提交日志默认紧凑输出，收紧换行触发条件
+- 13455ed377e2c7ede7084f9833b1d7c3abb49852 — docs(PackageManager): 补充 Base64 失败重试规则
+- 94af9338b98b43140285c3fde7767f2c762ba4a6 — docs(PackageManager): 补充提交日志的范围收敛与分组约束
+- ed433eccf771e095187208891b0f2d065a162f2d — fix(PackageManager): 修复新包检测
+- cd5f9df5bccda7deb3b34d43e39bd69a02cdff2f — feat(PackageManager): 增加服务器最新时间显示与版本刷新控制
+- 6ba4e75ac0601be46107bf9e6c0b53792acf7cd5 — feat(PackageManager): 增加包版本监测与更新概览
+- c52efd60716de6bf5bdf03760dafae7d71533055 — feat(PackageManager): 增加通知中心与仪表盘概览
+- b14eb5f4469993b9231ec7546ecfca47b01ac927 — fix(PackageManager): 修复启动台首次日志写入失败
+
 ## 4.0.0.0 — 2026-05-25
 
 - DevKit 仪表盘与导航体验：
