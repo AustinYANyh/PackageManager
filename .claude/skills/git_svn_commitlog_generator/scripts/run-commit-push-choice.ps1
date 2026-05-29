@@ -825,10 +825,11 @@ Write-Host "步骤 3/3：是否现在帮你提交并推送？" -ForegroundColor 
 Write-Host "操作说明：直接按 1 = 提交全部提交组（默认）；按 2 = 选择提交组；按 3 = 暂不提交；按 4 = 提出意见重新生成日志。" -ForegroundColor Yellow
 Write-Host "超时规则：${PromptTimeoutSeconds} 秒内不按键，自动选择 1，执行全部提交组。" -ForegroundColor Yellow
 Write-Host ""
-Write-Host ("本次包含 {0} 个提交组：Git 仓库 {1} 个，SVN 组 {2} 个，总文件 {3} 个。" -f @($commitGroups).Count, $gitGroupCount, $svnGroupCount, $totalFileCount) -ForegroundColor Cyan
+Write-Host ("本次包含 {0} 个提交组：Git 仓库 {1} 个，SVN 提交组 {2} 个，总文件 {3} 个。" -f @($commitGroups).Count, $gitGroupCount, $svnGroupCount, $totalFileCount) -ForegroundColor Cyan
 foreach ($group in @($commitGroups | Sort-Object GroupId)) {
   Write-Host ""
-  Write-Host ("[{0}] {1}  {2}  {3} 个文件" -f $group.GroupId, $group.Source.ToUpperInvariant(), $group.DisplayName, @($group.Items).Count) -ForegroundColor Cyan
+  $kindLabel = if ($group.Source -eq "svn") { "SVN 提交组" } elseif ($group.Source -eq "git") { "GIT 仓库" } else { $group.Source.ToUpperInvariant() }
+  Write-Host ("[{0}] {1}  {2}  {3} 个文件" -f $group.GroupId, $kindLabel, $group.DisplayName, @($group.Items).Count) -ForegroundColor Cyan
   if ($group.Source -eq "git") {
     Write-Host ("    Repo: {0}" -f $group.GitRepoRoot) -ForegroundColor DarkGray
   } else {
@@ -884,7 +885,8 @@ if ($choice -eq 1 -or $choice -eq 2) {
     }
 
     Write-Host ""
-    Write-Host ("正在执行提交组 [{0}] {1} {2}" -f $group.GroupId, $group.Source.ToUpperInvariant(), $group.DisplayName) -ForegroundColor Cyan
+    $kindLabel = if ($group.Source -eq "svn") { "SVN 提交组" } elseif ($group.Source -eq "git") { "GIT 仓库" } else { $group.Source.ToUpperInvariant() }
+    Write-Host ("正在执行提交组 [{0}] {1} {2}" -f $group.GroupId, $kindLabel, $group.DisplayName) -ForegroundColor Cyan
     $group.Status = "running"
     $groupMessageFile = Join-Path $env:TEMP ("git_svn_commit_group_{0}_{1}.txt" -f $group.GroupId, ([guid]::NewGuid()))
     [System.IO.File]::WriteAllText($groupMessageFile, $group.CommitMessage.TrimEnd("`r", "`n"), [System.Text.UTF8Encoding]::new($false))
@@ -949,7 +951,8 @@ if ($choice -eq 1 -or $choice -eq 2) {
 
   if ($status -eq "failed") {
     foreach ($group in @($commitGroups | Where-Object { $_.Status -eq "not_started" })) {
-      Write-Host ("未执行提交组 [{0}] {1} {2}" -f $group.GroupId, $group.Source.ToUpperInvariant(), $group.DisplayName) -ForegroundColor Yellow
+      $kindLabel = if ($group.Source -eq "svn") { "SVN 提交组" } elseif ($group.Source -eq "git") { "GIT 仓库" } else { $group.Source.ToUpperInvariant() }
+      Write-Host ("未执行提交组 [{0}] {1} {2}" -f $group.GroupId, $kindLabel, $group.DisplayName) -ForegroundColor Yellow
     }
     Write-Host "提交/推送失败，请查看输出。" -ForegroundColor Red
   } else {

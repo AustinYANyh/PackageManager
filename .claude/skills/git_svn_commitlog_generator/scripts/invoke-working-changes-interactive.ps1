@@ -54,6 +54,26 @@ function ConvertTo-ModelProject {
   }
 }
 
+function ConvertTo-ModelCommitGroup {
+  param([object]$Group)
+
+  [pscustomobject]@{
+    Source = $Group.Source
+    Key = $Group.Key
+    DisplayName = $Group.DisplayName
+    GitRepoRoot = $Group.GitRepoRoot
+    GitRepoRelRoot = $Group.GitRepoRelRoot
+    SvnWcRoot = $Group.SvnWcRoot
+    SvnRepoRootUrl = $Group.SvnRepoRootUrl
+    SvnRepoUuid = $Group.SvnRepoUuid
+    Projects = @($Group.Projects)
+    Files = @($Group.Files)
+    GitFiles = @($Group.GitFiles)
+    SvnFiles = @($Group.SvnFiles)
+    Items = @($Group.Items)
+  }
+}
+
 function ConvertTo-ModelChangesJson {
   param([object]$Changes)
 
@@ -80,6 +100,7 @@ function ConvertTo-ModelChangesJson {
       DiffEntries = $diffs.Count
     }
     ItemsIncludedDefaultLog = @($Changes.ItemsIncludedDefaultLog)
+    CommitGroupsDefault = @($Changes.CommitGroupsDefault | ForEach-Object { ConvertTo-ModelCommitGroup $_ })
     ItemsExcluded = @($Changes.ItemsExcluded)
     ProjectsDefault = @($Changes.ProjectsDefault | ForEach-Object { ConvertTo-ModelProject $_ })
     Diffs = $diffs

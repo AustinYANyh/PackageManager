@@ -1081,6 +1081,114 @@ function Get-SvnDiffForPath([string]$wcRoot, [string]$relPathFromRoot, [string]$
   } catch { return "" } finally { Pop-Location -ErrorAction SilentlyContinue }
 }
 
+function Get-NormalizedPath([string]$Path) {
+  if (-not $Path) { return "" }
+  try {
+    return ([System.IO.Path]::GetFullPath($Path)).TrimEnd('\','/')
+  } catch {
+    return $Path.TrimEnd('\','/')
+  }
+}
+
+function Get-ItemTextProperty([object]$Item, [string]$Name) {
+  if ($null -eq $Item) { return "" }
+  if ($Item.PSObject.Properties.Match($Name).Count -eq 0) { return "" }
+  return [string]$Item.$Name
+}
+
+function Get-CommitGroupsForLog([object[]]$Items, [string]$RootFull) {
+  $buckets = @{}
+  foreach ($item in @($Items)) {
+    if (-not $item -or -not $item.Source) { continue }
+
+    $key = ""
+    $source = [string]$item.Source
+    if ($source -eq "git") {
+      $repoRoot = Get-ItemTextProperty -Item $item -Name "GitRepoRoot"
+      if (-not $repoRoot) { $repoRoot = $RootFull }
+      $repoRoot = Get-NormalizedPath $repoRoot
+      $key = "git|$($repoRoot.ToLowerInvariant())"
+      if (-not $buckets.ContainsKey($key)) {
+        $repoRelRoot = Get-ItemTextProperty -Item $item -Name "GitRepoRelRoot"
+        $display = if ($repoRelRoot) { $repoRelRoot } else { Split-Path -Leaf $repoRoot }
+        $buckets[$key] = [pscustomobject]@{
+          Source = "git"
+          Key = $key
+          DisplayName = $display
+          GitRepoRoot = $repoRoot
+          GitRepoRelRoot = $repoRelRoot
+          SvnWcRoot = ""
+          SvnRepoRootUrl = ""
+          SvnRepoUuid = ""
+          Items = @()
+        }
+      }
+    } elseif ($source -eq "svn") {
+      $wcRoot = Get-ItemTextProperty -Item $item -Name "SvnWcRoot"
+      $repoUuid = Get-ItemTextProperty -Item $item -Name "SvnRepoUuid"
+      $repoRootUrl = Get-ItemTextProperty -Item $item -Name "SvnRepoRootUrl"
+      if ($repoUuid) {
+        $key = "svn|$repoUuid"
+      } elseif ($repoRootUrl) {
+        $key = "svn|$repoRootUrl"
+      } elseif ($wcRoot) {
+        $key = "svn|$((Get-NormalizedPath $wcRoot).ToLowerInvariant())"
+      } else {
+        continue
+      }
+
+      if (-not $buckets.ContainsKey($key)) {
+        $buckets[$key] = [pscustomobject]@{
+          Source = "svn"
+          Key = $key
+          DisplayName = if ($wcRoot) { Split-Path -Leaf $wcRoot } elseif ($repoRootUrl) { $repoRootUrl } else { "svn" }
+          GitRepoRoot = ""
+          GitRepoRelRoot = ""
+          SvnWcRoot = $wcRoot
+          SvnRepoRootUrl = $repoRootUrl
+          SvnRepoUuid = $repoUuid
+          Items = @()
+        }
+      } else {
+        $currentRoot = [string]$buckets[$key].SvnWcRoot
+        if ($wcRoot -and ((-not $currentRoot) -or ($currentRoot.Length -gt $wcRoot.Length -and $currentRoot.StartsWith($wcRoot, [System.StringComparison]::OrdinalIgnoreCase)))) {
+          $buckets[$key].SvnWcRoot = $wcRoot
+          $buckets[$key].DisplayName = Split-Path -Leaf $wcRoot
+        }
+        if (-not $buckets[$key].SvnRepoRootUrl -and $repoRootUrl) { $buckets[$key].SvnRepoRootUrl = $repoRootUrl }
+        if (-not $buckets[$key].SvnRepoUuid -and $repoUuid) { $buckets[$key].SvnRepoUuid = $repoUuid }
+      }
+    } else {
+      continue
+    }
+
+    $buckets[$key].Items = @($buckets[$key].Items) + $item
+  }
+
+  $groups = New-Object System.Collections.Generic.List[object]
+  foreach ($bucket in @($buckets.Values | Sort-Object Source, DisplayName, Key)) {
+    $itemsForGroup = @($bucket.Items | Sort-Object Id)
+    $projects = @($itemsForGroup | Where-Object { $_.Project } | Select-Object -ExpandProperty Project | Sort-Object -Unique)
+    [void]$groups.Add([pscustomobject]@{
+      Source = $bucket.Source
+      Key = $bucket.Key
+      DisplayName = $bucket.DisplayName
+      GitRepoRoot = $bucket.GitRepoRoot
+      GitRepoRelRoot = $bucket.GitRepoRelRoot
+      SvnWcRoot = $bucket.SvnWcRoot
+      SvnRepoRootUrl = $bucket.SvnRepoRootUrl
+      SvnRepoUuid = $bucket.SvnRepoUuid
+      Projects = @($projects)
+      Items = @($itemsForGroup)
+      Files = @($itemsForGroup | Select-Object -ExpandProperty Path | Sort-Object -Unique)
+      GitFiles = @($itemsForGroup | Where-Object { $_.Source -eq "git" } | Select-Object -ExpandProperty Path | Sort-Object -Unique)
+      SvnFiles = @($itemsForGroup | Where-Object { $_.Source -eq "svn" } | Select-Object -ExpandProperty Path | Sort-Object -Unique)
+    })
+  }
+
+  return $groups.ToArray()
+}
+
 function Find-NearestCsproj([string]$fileAbsPath) {
   $dir = Split-Path -Parent $fileAbsPath
   while ($dir -and (Test-Path -LiteralPath $dir)) {
@@ -1604,6 +1712,8 @@ foreach ($g in $projGroupsDefault) {
   }
 }
 
+$commitGroupsDefault = @(Get-CommitGroupsForLog -Items $includedDefaultLog -RootFull $rootFull)
+
 $out = [pscustomobject]@{
   Root = $rootFull
   GeneratedAt = (Get-Date).ToString("o")
@@ -1645,6 +1755,7 @@ $out = [pscustomobject]@{
   ItemsAll = @($items)
   # 已纳入版本库且有改动的项（提交日志主线只用这些 + 对应 Diffs）
   ItemsIncludedDefaultLog = @($includedDefaultLog)
+  CommitGroupsDefault = @($commitGroupsDefault)
   ProjectsDefault = @($projectsDefault)
   ItemsIncluded = @($included)
   ItemsExcluded = @($excluded)
