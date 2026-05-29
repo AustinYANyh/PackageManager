@@ -32,7 +32,13 @@ namespace PackageManager.Features.CodeWorkspace.Models
         public string RelativePath
         {
             get => _relativePath;
-            set => SetProperty(ref _relativePath, value);
+            set
+            {
+                if (SetProperty(ref _relativePath, value))
+                {
+                    OnDisplayTextChanged();
+                }
+            }
         }
 
         public VcsType VcsType
@@ -44,7 +50,7 @@ namespace PackageManager.Features.CodeWorkspace.Models
                 {
                     PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(VcsTypeText)));
                     PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(VcsTypeBrush)));
-                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DetailLine)));
+                    OnDisplayTextChanged();
                 }
             }
         }
@@ -56,7 +62,7 @@ namespace PackageManager.Features.CodeWorkspace.Models
             {
                 if (SetProperty(ref _branch, value))
                 {
-                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DetailLine)));
+                    OnDisplayTextChanged();
                 }
             }
         }
@@ -68,7 +74,7 @@ namespace PackageManager.Features.CodeWorkspace.Models
             {
                 if (SetProperty(ref _revision, value))
                 {
-                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DetailLine)));
+                    OnDisplayTextChanged();
                 }
             }
         }
@@ -81,6 +87,7 @@ namespace PackageManager.Features.CodeWorkspace.Models
                 if (SetProperty(ref _status, value))
                 {
                     PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(StatusBrush)));
+                    OnDisplayTextChanged();
                 }
             }
         }
@@ -140,7 +147,7 @@ namespace PackageManager.Features.CodeWorkspace.Models
             {
                 if (SetProperty(ref _statusSummary, value))
                 {
-                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DetailLine)));
+                    OnDisplayTextChanged();
                 }
             }
         }
@@ -185,6 +192,51 @@ namespace PackageManager.Features.CodeWorkspace.Models
         public string VcsTypeText => VcsType == VcsType.Git ? "Git" : VcsType == VcsType.Svn ? "SVN" : "-";
 
         public Brush VcsTypeBrush => VcsType == VcsType.Git ? GitBrush : VcsType == VcsType.Svn ? SvnBrush : UnknownBrush;
+
+        public string DisplayName => string.IsNullOrWhiteSpace(RelativePath) ? "-" : RelativePath;
+
+        public string SecondaryLine
+        {
+            get
+            {
+                if (VcsType == VcsType.Git)
+                {
+                    return string.IsNullOrWhiteSpace(Branch) ? "-" : Branch;
+                }
+
+                return Revision > 0 ? $"r{Revision}" : "-";
+            }
+        }
+
+        public string RemoteSummary => $"↑{GitAheadCount} ↓{GitBehindCount}";
+
+        public string MetaLine
+        {
+            get
+            {
+                var statusText = string.IsNullOrWhiteSpace(StatusSummary) ? FormatStatus(Status) : StatusSummary;
+                if (VcsType != VcsType.Git)
+                {
+                    return statusText;
+                }
+
+                var stagedText = StagedCount > 0 ? $" · staged {StagedCount}" : string.Empty;
+                var changeText = ChangedFileCount > 0 ? $" · 变更 {ChangedFileCount}" : string.Empty;
+                return $"{statusText}{stagedText}{changeText} · {RemoteSummary}";
+            }
+        }
+
+        public string CompactLine
+        {
+            get
+            {
+                var secondary = string.IsNullOrWhiteSpace(SecondaryLine) ? "-" : SecondaryLine;
+                var meta = string.IsNullOrWhiteSpace(MetaLine) ? "-" : MetaLine;
+                return $"{secondary} · {meta}";
+            }
+        }
+
+        public string FullTooltip => $"{VcsTypeText} 子仓库: {DisplayName}\n{SecondaryLine}\n{MetaLine}";
 
         public string DetailLine
         {
@@ -237,7 +289,35 @@ namespace PackageManager.Features.CodeWorkspace.Models
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasChanges)));
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DiffHint)));
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DetailCursor)));
+            OnDisplayTextChanged();
+        }
+
+        private void OnDisplayTextChanged()
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DisplayName)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(SecondaryLine)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(RemoteSummary)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(MetaLine)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(CompactLine)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(FullTooltip)));
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DetailLine)));
+        }
+
+        private static string FormatStatus(VcsStatus status)
+        {
+            switch (status)
+            {
+                case VcsStatus.Clean:
+                    return "干净";
+                case VcsStatus.Modified:
+                    return "有变更";
+                case VcsStatus.Conflict:
+                    return "有冲突";
+                case VcsStatus.Error:
+                    return "检测失败";
+                default:
+                    return "未检测";
+            }
         }
 
         private static SolidColorBrush CreateBrush(byte r, byte g, byte b)
