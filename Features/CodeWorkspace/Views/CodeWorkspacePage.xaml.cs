@@ -224,7 +224,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
                 return;
             }
 
-            OpenDiffWindowForRepository("Git 根仓库", SelectedRepository?.GitChangedFiles);
+            OpenDiffWindowForRepository("Git 变更", BuildGitChangedFiles(SelectedRepository));
             e.Handled = true;
         }
 
@@ -248,7 +248,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
 
             if ((sender as FrameworkElement)?.DataContext is SubRepository subRepository)
             {
-                OpenDiffWindowForRepository($"SVN 子仓库/{subRepository.RelativePath}", subRepository.ChangedFiles);
+                OpenDiffWindowForRepository($"{subRepository.VcsTypeText} 子仓库/{subRepository.RelativePath}", subRepository.ChangedFiles);
                 e.Handled = true;
             }
         }
@@ -293,7 +293,17 @@ namespace PackageManager.Features.CodeWorkspace.Views
 
         private static IEnumerable<VcsChangedFile> BuildGitChangedFiles(CodeRepository repository)
         {
-            return repository?.GitChangedFiles ?? Enumerable.Empty<VcsChangedFile>();
+            if (repository == null)
+            {
+                return Enumerable.Empty<VcsChangedFile>();
+            }
+
+            var rootFiles = repository.GitChangedFiles ?? Enumerable.Empty<VcsChangedFile>();
+            var subFiles = repository.SubRepositories?
+                .Where(sub => sub.VcsType == VcsType.Git)
+                .SelectMany(sub => sub.ChangedFiles ?? Enumerable.Empty<VcsChangedFile>())
+                ?? Enumerable.Empty<VcsChangedFile>();
+            return rootFiles.Concat(subFiles);
         }
 
         private static IEnumerable<VcsChangedFile> BuildSvnChangedFiles(CodeRepository repository)
@@ -305,6 +315,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
 
             var rootFiles = repository.RootSvnChangedFiles ?? Enumerable.Empty<VcsChangedFile>();
             var subFiles = repository.SubRepositories?
+                .Where(sub => sub.VcsType == VcsType.Svn)
                 .SelectMany(sub => sub.ChangedFiles ?? Enumerable.Empty<VcsChangedFile>())
                 ?? Enumerable.Empty<VcsChangedFile>();
             return rootFiles.Concat(subFiles);
@@ -945,14 +956,43 @@ codex --sandbox danger-full-access --ask-for-approval never
                 if (gitResult.ExitCode != 0)
                 {
                     result.Success = false;
-                    result.ErrorMessage = AppendError(result.ErrorMessage, gitResult.Error, gitResult.Output);
+                    result.ErrorMessage = AppendError(result.ErrorMessage, BuildCommandFailure("Git拉取失败 (根仓库)", gitResult), null);
                 }
 
                 var gitText = (gitResult.Output ?? string.Empty) + Environment.NewLine + (gitResult.Error ?? string.Empty);
                 if (gitText.IndexOf("CONFLICT", StringComparison.OrdinalIgnoreCase) >= 0)
                 {
                     result.HasConflicts = true;
-                    result.GitConflicts.AddRange(ParseGitConflicts(gitText));
+                    result.GitConflicts.AddRange(ParseGitConflicts(gitText).Select(conflict => $"根仓库: {conflict}"));
+                }
+            }
+
+            var gitSubRepositories = new List<Tuple<string, string>>();
+            if (repo.SubRepositories != null)
+            {
+                gitSubRepositories.AddRange(repo.SubRepositories
+                    .Where(sub => sub.VcsType == VcsType.Git && !string.IsNullOrWhiteSpace(sub.RelativePath))
+                    .Select(sub => Tuple.Create(sub.RelativePath, Path.Combine(repo.Path, sub.RelativePath)))
+                    .Where(sub => Directory.Exists(sub.Item2)));
+            }
+
+            foreach (var gitSubRepository in gitSubRepositories)
+            {
+                var gitResult = await RunCommandAsync("git", "pull", gitSubRepository.Item2, TimeSpan.FromSeconds(60));
+                if (gitResult.ExitCode != 0)
+                {
+                    result.Success = false;
+                    result.ErrorMessage = AppendError(
+                        result.ErrorMessage,
+                        BuildCommandFailure($"Git拉取失败 ({gitSubRepository.Item1})", gitResult),
+                        null);
+                }
+
+                var gitText = (gitResult.Output ?? string.Empty) + Environment.NewLine + (gitResult.Error ?? string.Empty);
+                if (gitText.IndexOf("CONFLICT", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    result.HasConflicts = true;
+                    result.GitConflicts.AddRange(ParseGitConflicts(gitText).Select(conflict => $"{gitSubRepository.Item1}: {conflict}"));
                 }
             }
 
@@ -965,6 +1005,7 @@ codex --sandbox danger-full-access --ask-for-approval never
             if (repo.SubRepositories != null)
             {
                 svnPaths.AddRange(repo.SubRepositories
+                    .Where(sub => sub.VcsType == VcsType.Svn)
                     .Where(sub => !string.IsNullOrWhiteSpace(sub.RelativePath))
                     .Select(sub => Path.Combine(repo.Path, sub.RelativePath))
                     .Where(Directory.Exists));
@@ -984,22 +1025,23 @@ codex --sandbox danger-full-access --ask-for-approval never
                     if (svnResult.Result.ExitCode != 0)
                     {
                         result.Success = false;
+                        var relativePath = GetRepositoryRelativePath(repo.Path, svnResult.Path);
                         result.ErrorMessage = AppendError(
                             result.ErrorMessage,
-                            $"SVN更新失败 ({Path.GetFileName(svnResult.Path)}): {svnResult.Result.Error}",
-                            svnResult.Result.Output);
+                            BuildCommandFailure($"SVN更新失败 ({relativePath})", svnResult.Result),
+                            null);
                     }
 
                     var svnText = (svnResult.Result.Output ?? string.Empty) + Environment.NewLine + (svnResult.Result.Error ?? string.Empty);
                     if (HasSvnConflict(svnText))
                     {
                         result.HasConflicts = true;
-                        result.SvnConflicts.Add(Path.GetFileName(svnResult.Path));
+                        result.SvnConflicts.Add(GetRepositoryRelativePath(repo.Path, svnResult.Path));
                     }
                 }
             }
 
-            if (!hasGit && !hasRootSvn && svnPaths.Count == 0)
+            if (!hasGit && gitSubRepositories.Count == 0 && !hasRootSvn && svnPaths.Count == 0)
             {
                 result.Success = false;
                 result.ErrorMessage = "未检测到 Git 或 SVN 仓库。";
@@ -1058,6 +1100,12 @@ codex --sandbox danger-full-access --ask-for-approval never
             }
 
             return string.IsNullOrWhiteSpace(current) ? text.Trim() : current + Environment.NewLine + text.Trim();
+        }
+
+        private static string BuildCommandFailure(string prefix, CommandResult result)
+        {
+            var details = string.IsNullOrWhiteSpace(result?.Error) ? result?.Output : result.Error;
+            return string.IsNullOrWhiteSpace(details) ? prefix : $"{prefix}: {details.Trim()}";
         }
 
         private static List<string> ParseGitConflicts(string output)
@@ -1224,6 +1272,27 @@ codex --sandbox danger-full-access --ask-for-approval never
         private static string QuoteArgument(string value)
         {
             return "\"" + (value ?? "").Replace("\"", "\\\"") + "\"";
+        }
+
+        private static string GetRepositoryRelativePath(string repositoryPath, string childPath)
+        {
+            if (string.IsNullOrWhiteSpace(repositoryPath) || string.IsNullOrWhiteSpace(childPath))
+            {
+                return childPath;
+            }
+
+            try
+            {
+                var basePath = repositoryPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                var baseUri = new Uri(basePath);
+                var childUri = new Uri(childPath);
+                var relativePath = Uri.UnescapeDataString(baseUri.MakeRelativeUri(childUri).ToString().Replace('/', Path.DirectorySeparatorChar));
+                return string.IsNullOrWhiteSpace(relativePath) ? "根仓库" : relativePath;
+            }
+            catch
+            {
+                return Path.GetFileName(childPath);
+            }
         }
 
         private static string NormalizePath(string path)

@@ -45,7 +45,7 @@
 
         <Grid Grid.Row="1">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="2.05*" MinWidth="760"/>
+                <ColumnDefinition Width="2*" MinWidth="760"/>
                 <ColumnDefinition Width="12"/>
                 <ColumnDefinition Width="1*" MinWidth="360"/>
             </Grid.ColumnDefinitions>
@@ -94,7 +94,7 @@
                         </dataGrid:CDataGrid.RowStyle>
 
                         <dataGrid:CDataGrid.Columns>
-                            <DataGridTemplateColumn Header="仓库" Width="220">
+                            <DataGridTemplateColumn Header="仓库" Width="170">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
                                         <TextBlock Text="{Binding Name}"
@@ -186,7 +186,7 @@
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
 
-                            <DataGridTemplateColumn Header="操作" Width="94">
+                            <DataGridTemplateColumn Header="操作" Width="84">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
                                         <button:CButton Width="36"
@@ -331,7 +331,7 @@
                                        Margin="12,10,12,8"
                                        LastChildFill="False">
                                 <TextBlock DockPanel.Dock="Left"
-                                           Text="{Binding SubRepositoryPanelTitle, TargetNullValue=SVN 子仓库}"
+                                           Text="{Binding SubRepositoryPanelTitle, TargetNullValue=子仓库}"
                                            FontWeight="SemiBold"
                                            Foreground="#111827"/>
                                 <TextBlock DockPanel.Dock="Right"
@@ -363,21 +363,43 @@
                                                      Height="8"
                                                      Margin="0,7,8,0"
                                                      Fill="{Binding StatusBrush}"/>
-                                            <StackPanel>
-                                                <TextBlock Text="{Binding RelativePath}"
+                                            <Grid>
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto"/>
+                                                    <RowDefinition Height="Auto"/>
+                                                </Grid.RowDefinitions>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+                                                <Border Grid.Row="0"
+                                                        Grid.Column="0"
+                                                        Margin="0,0,6,0"
+                                                        Padding="4,1"
+                                                        BorderBrush="{Binding VcsTypeBrush}"
+                                                        BorderThickness="1"
+                                                        VerticalAlignment="Center">
+                                                    <TextBlock Text="{Binding VcsTypeText}"
+                                                               Foreground="{Binding VcsTypeBrush}"
+                                                               FontSize="10"
+                                                               FontWeight="SemiBold"/>
+                                                </Border>
+                                                <TextBlock Grid.Row="0"
+                                                           Grid.Column="1"
+                                                           Text="{Binding RelativePath}"
                                                            Foreground="#374151"
                                                            FontWeight="SemiBold"
                                                            TextTrimming="CharacterEllipsis"
                                                            ToolTip="{Binding RelativePath}"/>
-                                                <TextBlock Margin="0,2,0,0"
+                                                <TextBlock Grid.Row="1"
+                                                           Grid.Column="1"
+                                                           Margin="0,2,0,0"
+                                                           Text="{Binding DetailLine}"
                                                            Foreground="#6B7280"
-                                                           FontSize="12">
-                                                    <Run Text="r"/>
-                                                    <Run Text="{Binding Revision}"/>
-                                                    <Run Text="  "/>
-                                                    <Run Text="{Binding StatusSummary}"/>
-                                                </TextBlock>
-                                            </StackPanel>
+                                                           FontSize="12"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           ToolTip="{Binding DetailLine}"/>
+                                            </Grid>
                                         </DockPanel>
                                     </DataTemplate>
                                 </controls:CListView.ItemTemplate>

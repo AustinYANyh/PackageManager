@@ -106,12 +106,29 @@ namespace PackageManager.Features.CodeWorkspace.Models
                 switch (VcsType)
                 {
                     case VcsType.Git:
-                        return string.IsNullOrWhiteSpace(GitBranch) ? "-" : GitBranch;
+                        if (HasRootGit)
+                        {
+                            return string.IsNullOrWhiteSpace(GitBranch) ? "-" : GitBranch;
+                        }
+
+                        return GitSubRepositories.Any() ? BuildSubRepositoryTypeSummary() : "-";
                     case VcsType.Svn:
-                        return SvnRevision > 0 ? $"r{SvnRevision}" : "-";
+                        if (HasRootSvn && SvnRevision > 0)
+                        {
+                            return $"r{SvnRevision}";
+                        }
+
+                        return SvnSubRepositories.Any() ? BuildSubRepositoryTypeSummary() : "-";
                     case VcsType.Mixed:
-                        var svnCount = SubRepositories?.Count(s => s.VcsType == VcsType.Svn) ?? 0;
-                        return $"{(string.IsNullOrWhiteSpace(GitBranch) ? "-" : GitBranch)} | {svnCount} SVN";
+                        var subSummary = BuildSubRepositoryTypeSummary();
+                        if (HasRootGit)
+                        {
+                            return string.IsNullOrWhiteSpace(subSummary)
+                                ? (string.IsNullOrWhiteSpace(GitBranch) ? "-" : GitBranch)
+                                : $"{(string.IsNullOrWhiteSpace(GitBranch) ? "-" : GitBranch)} | {subSummary}";
+                        }
+
+                        return subSummary;
                     default:
                         return "-";
                 }
@@ -147,8 +164,26 @@ namespace PackageManager.Features.CodeWorkspace.Models
 
                 if (VcsType == VcsType.Mixed)
                 {
-                    var gitChanges = AddedCount + ModifiedCount + DeletedCount;
-                    var svnChanges = SubRepositories?.Sum(s => s.ChangedFileCount) ?? 0;
+                    var gitChanges = RootGitChangeCount + GitSubRepositoryChangeCount;
+                    var svnChanges = RootSvnChangeCount + SvnSubRepositoryChangeCount;
+                    var parts = new List<string>();
+                    if (gitChanges > 0)
+                    {
+                        parts.Add($"G:{gitChanges}");
+                    }
+
+                    if (svnChanges > 0)
+                    {
+                        parts.Add($"S:{svnChanges}");
+                    }
+
+                    return parts.Count == 0 ? "干净" : string.Join(" ", parts);
+                }
+
+                if (SubRepositories?.Count > 0)
+                {
+                    var gitChanges = RootGitChangeCount + GitSubRepositoryChangeCount;
+                    var svnChanges = RootSvnChangeCount + SvnSubRepositoryChangeCount;
                     var parts = new List<string>();
                     if (gitChanges > 0)
                     {
@@ -460,8 +495,8 @@ namespace PackageManager.Features.CodeWorkspace.Models
 
                 if (SubRepositories?.Count > 0)
                 {
-                    lines.Add($"SVN子仓库: {SubRepositories.Count}");
-                    lines.AddRange(SubRepositories.Take(5).Select(s => $"{s.RelativePath} r{s.Revision} {s.StatusSummary}"));
+                    lines.Add($"子仓库: {SubRepositories.Count}");
+                    lines.AddRange(SubRepositories.Take(5).Select(s => $"{s.VcsTypeText} {s.RelativePath} {s.DetailLine}"));
                 }
 
                 if (LastStatusRefresh != DateTime.MinValue)
@@ -574,11 +609,21 @@ namespace PackageManager.Features.CodeWorkspace.Models
                 switch (VcsType)
                 {
                     case VcsType.Git:
-                        return "Git 根目录";
+                        if (HasRootGit && GitSubRepositories.Any())
+                        {
+                            return "Git 根目录 + Git 子仓库";
+                        }
+
+                        return HasRootGit ? "Git 根目录" : "Git 子仓库";
                     case VcsType.Svn:
-                        return "SVN 根目录";
+                        if (HasRootSvn && SvnSubRepositories.Any())
+                        {
+                            return "SVN 根目录 + SVN 子仓库";
+                        }
+
+                        return HasRootSvn ? "SVN 根目录" : "SVN 子仓库";
                     case VcsType.Mixed:
-                        return "Git 根目录 + SVN 子仓库";
+                        return BuildVcsDetailTitle();
                     default:
                         return "未检测到版本控制";
                 }
@@ -591,12 +636,17 @@ namespace PackageManager.Features.CodeWorkspace.Models
         {
             get
             {
-                if (VcsType != VcsType.Git && VcsType != VcsType.Mixed)
+                if (!HasRootGit)
                 {
-                    return "Git: 未检测到根仓库";
+                    return GitSubRepositories.Any()
+                        ? $"Git 子仓库: {GitSubRepositories.Count()} 个  |  变更 {GitSubRepositoryChangeCount} 项"
+                        : "Git: 未检测到根仓库";
                 }
 
-                return $"Git: {(string.IsNullOrWhiteSpace(GitBranch) ? "-" : GitBranch)}  |  {BuildRootChangeSummary()}  |  staged {StagedCount}  |  ahead {GitAheadCount} / behind {GitBehindCount}";
+                var subText = GitSubRepositories.Any()
+                    ? $"  |  子仓库 {GitSubRepositories.Count()} 个, 变更 {GitSubRepositoryChangeCount} 项"
+                    : string.Empty;
+                return $"Git: {(string.IsNullOrWhiteSpace(GitBranch) ? "-" : GitBranch)}  |  {BuildRootChangeSummary()}  |  staged {StagedCount}  |  ahead {GitAheadCount} / behind {GitBehindCount}{subText}";
             }
             set { }
         }
@@ -611,15 +661,16 @@ namespace PackageManager.Features.CodeWorkspace.Models
                     return $"SVN: r{SvnRevision}  |  {BuildRootChangeSummary()}";
                 }
 
-                if (SubRepositories == null || SubRepositories.Count == 0)
+                if (!SvnSubRepositories.Any())
                 {
                     return "SVN 子仓库: 无";
                 }
 
-                var changed = SubRepositories.Sum(s => s.ChangedFileCount);
-                var changedRepos = SubRepositories.Count(s => s.ChangedFileCount > 0);
-                var clean = SubRepositories.Count(s => s.Status == VcsStatus.Clean);
-                return $"SVN 子仓库: {SubRepositories.Count} 个  |  变更仓库 {changedRepos} 个  |  变更 {changed} 项  |  干净 {clean} 个";
+                var svnSubRepositories = SvnSubRepositories.ToList();
+                var changed = svnSubRepositories.Sum(s => s.ChangedFileCount);
+                var changedRepos = svnSubRepositories.Count(s => s.ChangedFileCount > 0);
+                var clean = svnSubRepositories.Count(s => s.Status == VcsStatus.Clean);
+                return $"SVN 子仓库: {svnSubRepositories.Count} 个  |  变更仓库 {changedRepos} 个  |  变更 {changed} 项  |  干净 {clean} 个";
             }
             set { }
         }
@@ -664,10 +715,10 @@ namespace PackageManager.Features.CodeWorkspace.Models
             {
                 if (SubRepositories == null || SubRepositories.Count == 0)
                 {
-                    return "无 SVN 子仓库";
+                    return "无子仓库";
                 }
 
-                return $"SVN 子仓库: {SubRepositories.Count} 个";
+                return BuildSubRepositoryTypeSummary();
             }
             set { }
         }
@@ -678,7 +729,7 @@ namespace PackageManager.Features.CodeWorkspace.Models
             get
             {
                 var count = SubRepositories?.Count ?? 0;
-                return count == 0 ? "SVN 子仓库" : $"SVN 子仓库 {count} 个";
+                return count == 0 ? "子仓库" : $"子仓库 {count} 个";
             }
             set { }
         }
@@ -765,14 +816,44 @@ namespace PackageManager.Features.CodeWorkspace.Models
             HasConflict = source.HasConflict;
         }
 
+        private bool HasRootGit =>
+            !string.IsNullOrWhiteSpace(GitBranch) ||
+            GitChangedFiles?.Count > 0 ||
+            GitAheadCount > 0 ||
+            GitBehindCount > 0 ||
+            StagedCount > 0;
+
+        private int RootGitChangeCount => HasRootGit
+            ? Math.Max(GitChangedFiles?.Count ?? 0, AddedCount + ModifiedCount + DeletedCount)
+            : 0;
+
+        private bool HasRootSvn =>
+            SvnRevision > 0 ||
+            RootSvnChangedFiles?.Count > 0 ||
+            (VcsType == VcsType.Svn && !GitSubRepositories.Any());
+
+        private int RootSvnChangeCount => HasRootSvn
+            ? Math.Max(RootSvnChangedFiles?.Count ?? 0, HasRootGit ? 0 : AddedCount + ModifiedCount + DeletedCount)
+            : 0;
+
+        private IEnumerable<SubRepository> GitSubRepositories =>
+            SubRepositories?.Where(s => s.VcsType == VcsType.Git) ?? Enumerable.Empty<SubRepository>();
+
+        private IEnumerable<SubRepository> SvnSubRepositories =>
+            SubRepositories?.Where(s => s.VcsType == VcsType.Svn) ?? Enumerable.Empty<SubRepository>();
+
+        private int GitSubRepositoryChangeCount => GitSubRepositories.Sum(s => s.ChangedFileCount);
+
+        private int SvnSubRepositoryChangeCount => SvnSubRepositories.Sum(s => s.ChangedFileCount);
+
         private bool HasSubRepoChanges =>
             SubRepositories?.Any(s => s.ChangedFileCount > 0) == true;
 
         [JsonIgnore]
-        public bool HasGitChanges => GitChangedFiles?.Count > 0 || AddedCount + ModifiedCount + DeletedCount > 0;
+        public bool HasGitChanges => GitChangedFiles?.Count > 0 || RootGitChangeCount > 0 || GitSubRepositoryChangeCount > 0;
 
         [JsonIgnore]
-        public bool HasSvnChanges => RootSvnChangedFiles?.Count > 0 || SubRepositories?.Any(s => s.ChangedFileCount > 0) == true;
+        public bool HasSvnChanges => RootSvnChangedFiles?.Count > 0 || RootSvnChangeCount > 0 || SvnSubRepositoryChangeCount > 0;
 
         [JsonIgnore]
         public bool HasAnyChanges => HasGitChanges || HasSvnChanges;
@@ -829,13 +910,21 @@ namespace PackageManager.Features.CodeWorkspace.Models
             OnPropertyChanged(nameof(VcsTooltip));
             OnPropertyChanged(nameof(RootStatusDetail));
             OnPropertyChanged(nameof(HasGitChanges));
+            OnPropertyChanged(nameof(HasSvnChanges));
             OnPropertyChanged(nameof(HasAnyChanges));
             OnPropertyChanged(nameof(DiffHint));
             OnPropertyChanged(nameof(GitDiffHint));
+            OnPropertyChanged(nameof(SvnDiffHint));
             OnPropertyChanged(nameof(DetailCursor));
             OnPropertyChanged(nameof(GitCursor));
+            OnPropertyChanged(nameof(SvnCursor));
             OnPropertyChanged(nameof(GitAccentThickness));
+            OnPropertyChanged(nameof(SvnAccentThickness));
             OnPropertyChanged(nameof(GitAccentBrush));
+            OnPropertyChanged(nameof(SvnAccentBrush));
+            OnPropertyChanged(nameof(GitDetailLine));
+            OnPropertyChanged(nameof(SvnDetailLine));
+            OnPropertyChanged(nameof(VcsDetailTitle));
         }
 
         private void OnVcsSummaryChanged()
@@ -892,6 +981,55 @@ namespace PackageManager.Features.CodeWorkspace.Models
         {
             var total = AddedCount + ModifiedCount + DeletedCount;
             return total == 0 ? "干净" : $"+{AddedCount} ~{ModifiedCount} -{DeletedCount}";
+        }
+
+        private string BuildSubRepositoryTypeSummary()
+        {
+            var parts = new List<string>();
+            var gitCount = GitSubRepositories.Count();
+            var svnCount = SvnSubRepositories.Count();
+            if (gitCount > 0)
+            {
+                parts.Add($"{gitCount} Git");
+            }
+
+            if (svnCount > 0)
+            {
+                parts.Add($"{svnCount} SVN");
+            }
+
+            return parts.Count == 0 ? "无子仓库" : string.Join(" / ", parts);
+        }
+
+        private string BuildVcsDetailTitle()
+        {
+            var parts = new List<string>();
+            if (HasRootGit)
+            {
+                parts.Add("Git 根目录");
+            }
+
+            if (HasRootSvn)
+            {
+                parts.Add("SVN 根目录");
+            }
+
+            var hasGitSub = GitSubRepositories.Any();
+            var hasSvnSub = SvnSubRepositories.Any();
+            if (hasGitSub && hasSvnSub)
+            {
+                parts.Add("Git/SVN 子仓库");
+            }
+            else if (hasGitSub)
+            {
+                parts.Add("Git 子仓库");
+            }
+            else if (hasSvnSub)
+            {
+                parts.Add("SVN 子仓库");
+            }
+
+            return parts.Count == 0 ? "混合仓库" : string.Join(" + ", parts);
         }
 
         private static Brush GetBrushForStatus(VcsStatus status)

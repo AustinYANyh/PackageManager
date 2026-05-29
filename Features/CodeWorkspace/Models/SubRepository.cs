@@ -15,12 +15,17 @@ namespace PackageManager.Features.CodeWorkspace.Models
         private int _revision;
         private VcsStatus _status;
         private int _changedFileCount;
+        private int _gitAheadCount;
+        private int _gitBehindCount;
+        private int _stagedCount;
         private string _statusSummary;
         private ObservableCollection<VcsChangedFile> _changedFiles = new ObservableCollection<VcsChangedFile>();
         private static readonly Brush CleanBrush = CreateBrush(0x2E, 0xA0, 0x43);
         private static readonly Brush ModifiedBrush = CreateBrush(0xD9, 0x7A, 0x00);
         private static readonly Brush ErrorBrush = CreateBrush(0xD1, 0x24, 0x2F);
         private static readonly Brush UnknownBrush = CreateBrush(0x8A, 0x94, 0xA3);
+        private static readonly Brush GitBrush = CreateBrush(0x34, 0x6D, 0xDB);
+        private static readonly Brush SvnBrush = CreateBrush(0x7A, 0x52, 0xC7);
 
         public event PropertyChangedEventHandler PropertyChanged;
 
@@ -33,19 +38,39 @@ namespace PackageManager.Features.CodeWorkspace.Models
         public VcsType VcsType
         {
             get => _vcsType;
-            set => SetProperty(ref _vcsType, value);
+            set
+            {
+                if (SetProperty(ref _vcsType, value))
+                {
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(VcsTypeText)));
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(VcsTypeBrush)));
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DetailLine)));
+                }
+            }
         }
 
         public string Branch
         {
             get => _branch;
-            set => SetProperty(ref _branch, value);
+            set
+            {
+                if (SetProperty(ref _branch, value))
+                {
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DetailLine)));
+                }
+            }
         }
 
         public int Revision
         {
             get => _revision;
-            set => SetProperty(ref _revision, value);
+            set
+            {
+                if (SetProperty(ref _revision, value))
+                {
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DetailLine)));
+                }
+            }
         }
 
         public VcsStatus Status
@@ -72,10 +97,52 @@ namespace PackageManager.Features.CodeWorkspace.Models
             }
         }
 
+        public int GitAheadCount
+        {
+            get => _gitAheadCount;
+            set
+            {
+                if (SetProperty(ref _gitAheadCount, value))
+                {
+                    OnChangeStateChanged();
+                }
+            }
+        }
+
+        public int GitBehindCount
+        {
+            get => _gitBehindCount;
+            set
+            {
+                if (SetProperty(ref _gitBehindCount, value))
+                {
+                    OnChangeStateChanged();
+                }
+            }
+        }
+
+        public int StagedCount
+        {
+            get => _stagedCount;
+            set
+            {
+                if (SetProperty(ref _stagedCount, value))
+                {
+                    OnChangeStateChanged();
+                }
+            }
+        }
+
         public string StatusSummary
         {
             get => _statusSummary;
-            set => SetProperty(ref _statusSummary, value);
+            set
+            {
+                if (SetProperty(ref _statusSummary, value))
+                {
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DetailLine)));
+                }
+            }
         }
 
         public ObservableCollection<VcsChangedFile> ChangedFiles
@@ -115,6 +182,24 @@ namespace PackageManager.Features.CodeWorkspace.Models
 
         public Cursor DetailCursor => HasChanges ? Cursors.Hand : Cursors.Arrow;
 
+        public string VcsTypeText => VcsType == VcsType.Git ? "Git" : VcsType == VcsType.Svn ? "SVN" : "-";
+
+        public Brush VcsTypeBrush => VcsType == VcsType.Git ? GitBrush : VcsType == VcsType.Svn ? SvnBrush : UnknownBrush;
+
+        public string DetailLine
+        {
+            get
+            {
+                if (VcsType == VcsType.Git)
+                {
+                    var branch = string.IsNullOrWhiteSpace(Branch) ? "-" : Branch;
+                    return $"{branch}  {StatusSummary}  staged {StagedCount}  ahead {GitAheadCount} / behind {GitBehindCount}";
+                }
+
+                return $"r{Revision}  {StatusSummary}";
+            }
+        }
+
         public SubRepository Clone()
         {
             return new SubRepository
@@ -125,6 +210,9 @@ namespace PackageManager.Features.CodeWorkspace.Models
                 Revision = Revision,
                 Status = Status,
                 ChangedFileCount = ChangedFileCount,
+                GitAheadCount = GitAheadCount,
+                GitBehindCount = GitBehindCount,
+                StagedCount = StagedCount,
                 StatusSummary = StatusSummary,
                 ChangedFiles = ChangedFiles == null
                     ? new ObservableCollection<VcsChangedFile>()
@@ -149,6 +237,7 @@ namespace PackageManager.Features.CodeWorkspace.Models
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasChanges)));
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DiffHint)));
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DetailCursor)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DetailLine)));
         }
 
         private static SolidColorBrush CreateBrush(byte r, byte g, byte b)
