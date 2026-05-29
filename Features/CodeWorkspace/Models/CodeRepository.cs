@@ -33,6 +33,7 @@ namespace PackageManager.Features.CodeWorkspace.Models
         private int _deletedCount;
         private int _stagedCount;
         private int _svnRevision;
+        private int _svnRemoteUpdateCount;
         private ObservableCollection<SubRepository> _subRepositories = new ObservableCollection<SubRepository>();
         private ObservableCollection<VcsChangedFile> _gitChangedFiles = new ObservableCollection<VcsChangedFile>();
         private ObservableCollection<VcsChangedFile> _rootSvnChangedFiles = new ObservableCollection<VcsChangedFile>();
@@ -295,7 +296,8 @@ namespace PackageManager.Features.CodeWorkspace.Models
             {
                 if (SetProperty(ref _gitBranch, value))
                 {
-                    OnVcsSummaryChanged();
+                    OnPropertyChanged(nameof(BranchDisplay));
+                    OnPropertyChanged(nameof(VcsTooltip));
                 }
             }
         }
@@ -308,7 +310,8 @@ namespace PackageManager.Features.CodeWorkspace.Models
             {
                 if (SetProperty(ref _gitAheadCount, value))
                 {
-                    OnVcsSummaryChanged();
+                    OnPropertyChanged(nameof(VcsTooltip));
+                    OnPropertyChanged(nameof(RootStatusDetail));
                 }
             }
         }
@@ -321,7 +324,8 @@ namespace PackageManager.Features.CodeWorkspace.Models
             {
                 if (SetProperty(ref _gitBehindCount, value))
                 {
-                    OnVcsSummaryChanged();
+                    OnPropertyChanged(nameof(VcsTooltip));
+                    OnPropertyChanged(nameof(RootStatusDetail));
                 }
             }
         }
@@ -373,7 +377,8 @@ namespace PackageManager.Features.CodeWorkspace.Models
             {
                 if (SetProperty(ref _stagedCount, value))
                 {
-                    OnVcsSummaryChanged();
+                    OnPropertyChanged(nameof(VcsTooltip));
+                    OnPropertyChanged(nameof(RootStatusDetail));
                 }
             }
         }
@@ -385,6 +390,20 @@ namespace PackageManager.Features.CodeWorkspace.Models
             set
             {
                 if (SetProperty(ref _svnRevision, value))
+                {
+                    OnPropertyChanged(nameof(BranchDisplay));
+                    OnPropertyChanged(nameof(VcsTooltip));
+                }
+            }
+        }
+
+        [JsonIgnore]
+        public int SvnRemoteUpdateCount
+        {
+            get => _svnRemoteUpdateCount;
+            set
+            {
+                if (SetProperty(ref _svnRemoteUpdateCount, value))
                 {
                     OnVcsSummaryChanged();
                 }
@@ -485,7 +504,7 @@ namespace PackageManager.Features.CodeWorkspace.Models
 
                 if (SvnRevision > 0)
                 {
-                    lines.Add($"SVN: r{SvnRevision}");
+                    lines.Add($"SVN: r{SvnRevision}, 待更新 {TotalSvnRemoteUpdateCount}");
                 }
 
                 if (SubRepositories?.Count > 0)
@@ -577,41 +596,6 @@ namespace PackageManager.Features.CodeWorkspace.Models
         }
 
         [JsonIgnore]
-        public string RepositoryMetaLine
-        {
-            get
-            {
-                var typeText = VcsTypeDisplay == "-" ? "未检测" : VcsTypeDisplay;
-                return $"{typeText} · {BranchDisplay}";
-            }
-            set { }
-        }
-
-        [JsonIgnore]
-        public string RepositoryListTooltip => $"{RepositoryPrimaryLine}\n{RepositorySecondaryLine}\n{RepositoryTertiaryLine}\n{RepositoryRightSummary}";
-
-        [JsonIgnore]
-        public string RepositoryPrimaryLine => string.IsNullOrWhiteSpace(Name) ? "-" : Name;
-
-        [JsonIgnore]
-        public string RepositorySecondaryLine => BranchDisplay;
-
-        [JsonIgnore]
-        public string RepositoryTertiaryLine
-        {
-            get
-            {
-                var subSummary = BuildSubRepositoryTypeSummary();
-                var path = string.IsNullOrWhiteSpace(Path) ? "-" : Path;
-                return subSummary == "无子仓库" ? path : $"{subSummary} · {path}";
-            }
-            set { }
-        }
-
-        [JsonIgnore]
-        public string RepositoryRightSummary => ChangesSummary;
-
-        [JsonIgnore]
         public string VcsTypeDisplay
         {
             get
@@ -674,50 +658,10 @@ namespace PackageManager.Features.CodeWorkspace.Models
                 }
 
                 var subText = GitSubRepositories.Any()
-                    ? $"  |  子仓库 {GitSubRepositories.Count()} 个, 变更 {GitSubRepositoryChangeCount} 项"
+                    ? $" | 子仓库{GitSubRepositories.Count()} 变更{GitSubRepositoryChangeCount}"
                     : string.Empty;
-                return $"Git: {(string.IsNullOrWhiteSpace(GitBranch) ? "-" : GitBranch)}  |  {BuildRootChangeSummary()}  |  staged {StagedCount}  |  ahead {GitAheadCount} / behind {GitBehindCount}{subText}";
-            }
-            set { }
-        }
-
-        [JsonIgnore]
-        public string GitBranchDisplay => HasRootGit
-            ? (string.IsNullOrWhiteSpace(GitBranch) ? "-" : GitBranch)
-            : GitSubRepositories.Any() ? "仅 Git 子仓库" : "未检测到根仓库";
-
-        [JsonIgnore]
-        public string GitStatusDisplay => HasRootGit ? BuildRootChangeSummary() : GitSubRepositories.Any() ? $"{GitSubRepositories.Count()} 个子仓库" : "-";
-
-        [JsonIgnore]
-        public string GitStagedDisplay => HasRootGit ? StagedCount.ToString() : "-";
-
-        [JsonIgnore]
-        public string GitRemoteDisplay => HasRootGit ? $"↑{GitAheadCount} ↓{GitBehindCount}" : "-";
-
-        [JsonIgnore]
-        public string GitSubRepositorySummary => GitSubRepositories.Any()
-            ? $"{GitSubRepositories.Count()} 个 · {GitSubRepositoryChangeCount} 项变更"
-            : "无";
-
-        [JsonIgnore]
-        public string GitCompactLine
-        {
-            get
-            {
-                if (!HasRootGit)
-                {
-                    return GitSubRepositories.Any()
-                        ? $"仅子仓库  子仓库{GitSubRepositories.Count()}  变更{GitSubRepositoryChangeCount}"
-                        : "未检测到 Git";
-                }
-
-                var branch = HasRootGit ? (string.IsNullOrWhiteSpace(GitBranch) ? "-" : GitBranch) : "仅子仓库";
-                var staged = StagedCount > 0 ? $"  暂存{StagedCount}" : string.Empty;
-                var subText = GitSubRepositories.Any()
-                    ? $"  子仓库{GitSubRepositories.Count()}  变更{GitSubRepositoryChangeCount}"
-                    : string.Empty;
-                return $"{branch}  {BuildRootChangeSummary()}{staged}  {GitRemoteDisplay}{subText}";
+                var stagedText = StagedCount > 0 ? $" | 暂存{StagedCount}" : string.Empty;
+                return $"{(string.IsNullOrWhiteSpace(GitBranch) ? "-" : GitBranch)} | {BuildRootChangeSummary()}{stagedText} | ↑{GitAheadCount} ↓{GitBehindCount}{subText}";
             }
             set { }
         }
@@ -729,7 +673,8 @@ namespace PackageManager.Features.CodeWorkspace.Models
             {
                 if (VcsType == VcsType.Svn)
                 {
-                    return $"SVN: r{SvnRevision}  |  {BuildRootChangeSummary()}";
+                    var rootUpdateText = TotalSvnRemoteUpdateCount > 0 ? $" | ↓{TotalSvnRemoteUpdateCount}" : string.Empty;
+                    return $"r{SvnRevision} | {BuildRootChangeSummary()}{rootUpdateText}";
                 }
 
                 if (!SvnSubRepositories.Any())
@@ -741,54 +686,8 @@ namespace PackageManager.Features.CodeWorkspace.Models
                 var changed = svnSubRepositories.Sum(s => s.ChangedFileCount);
                 var changedRepos = svnSubRepositories.Count(s => s.ChangedFileCount > 0);
                 var clean = svnSubRepositories.Count(s => s.Status == VcsStatus.Clean);
-                return $"SVN 子仓库: {svnSubRepositories.Count} 个  |  变更仓库 {changedRepos} 个  |  变更 {changed} 项  |  干净 {clean} 个";
-            }
-            set { }
-        }
-
-        [JsonIgnore]
-        public string SvnRevisionDisplay => HasRootSvn && SvnRevision > 0 ? $"r{SvnRevision}" : "-";
-
-        [JsonIgnore]
-        public string SvnSubRepositorySummary => SvnSubRepositories.Any() ? $"{SvnSubRepositories.Count()} 个" : "无";
-
-        [JsonIgnore]
-        public string SvnChangedRepositorySummary
-        {
-            get
-            {
-                var changedRepos = SvnSubRepositories.Count(s => s.ChangedFileCount > 0);
-                return $"{changedRepos} 个";
-            }
-            set { }
-        }
-
-        [JsonIgnore]
-        public string SvnChangeSummary => $"{RootSvnChangeCount + SvnSubRepositoryChangeCount} 项";
-
-        [JsonIgnore]
-        public string SvnCleanRepositorySummary
-        {
-            get
-            {
-                var cleanRepos = SvnSubRepositories.Count(s => s.Status == VcsStatus.Clean);
-                return $"{cleanRepos} 个";
-            }
-            set { }
-        }
-
-        [JsonIgnore]
-        public string SvnCompactLine
-        {
-            get
-            {
-                if (!HasRootSvn && !SvnSubRepositories.Any())
-                {
-                    return "未检测到 SVN";
-                }
-
-                var version = HasRootSvn && SvnRevision > 0 ? $"r{SvnRevision}" : "-";
-                return $"{version}  子仓库{SvnSubRepositories.Count()}  变更{RootSvnChangeCount + SvnSubRepositoryChangeCount}";
+                var subRepositoryUpdateText = TotalSvnRemoteUpdateCount > 0 ? $" | ↓{TotalSvnRemoteUpdateCount}" : string.Empty;
+                return $"子仓库{svnSubRepositories.Count} | 变更仓库{changedRepos} | 变更{changed} | 干净{clean}{subRepositoryUpdateText}";
             }
             set { }
         }
@@ -819,6 +718,7 @@ namespace PackageManager.Features.CodeWorkspace.Models
                 if (SvnRevision > 0)
                 {
                     parts.Add($"版本: r{SvnRevision}");
+                    parts.Add($"待更新: {TotalSvnRemoteUpdateCount}");
                 }
 
                 return string.Join("  |  ", parts);
@@ -920,6 +820,7 @@ namespace PackageManager.Features.CodeWorkspace.Models
             DeletedCount = source.DeletedCount;
             StagedCount = source.StagedCount;
             SvnRevision = source.SvnRevision;
+            SvnRemoteUpdateCount = source.SvnRemoteUpdateCount;
             SubRepositories = source.SubRepositories == null
                 ? new ObservableCollection<SubRepository>()
                 : new ObservableCollection<SubRepository>(source.SubRepositories.Select(s => s.Clone()));
@@ -947,6 +848,7 @@ namespace PackageManager.Features.CodeWorkspace.Models
 
         private bool HasRootSvn =>
             SvnRevision > 0 ||
+            SvnRemoteUpdateCount > 0 ||
             RootSvnChangedFiles?.Count > 0 ||
             (VcsType == VcsType.Svn && !GitSubRepositories.Any());
 
@@ -963,6 +865,10 @@ namespace PackageManager.Features.CodeWorkspace.Models
         private int GitSubRepositoryChangeCount => GitSubRepositories.Sum(s => s.ChangedFileCount);
 
         private int SvnSubRepositoryChangeCount => SvnSubRepositories.Sum(s => s.ChangedFileCount);
+
+        private int SvnSubRepositoryRemoteUpdateCount => SvnSubRepositories.Sum(s => s.SvnRemoteUpdateCount);
+
+        private int TotalSvnRemoteUpdateCount => SvnRemoteUpdateCount + SvnSubRepositoryRemoteUpdateCount;
 
         private bool HasSubRepoChanges =>
             SubRepositories?.Any(s => s.ChangedFileCount > 0) == true;
@@ -1043,24 +949,7 @@ namespace PackageManager.Features.CodeWorkspace.Models
             OnPropertyChanged(nameof(GitDetailLine));
             OnPropertyChanged(nameof(SvnDetailLine));
             OnPropertyChanged(nameof(VcsDetailTitle));
-            OnPropertyChanged(nameof(RepositoryMetaLine));
-            OnPropertyChanged(nameof(RepositoryListTooltip));
-            OnPropertyChanged(nameof(RepositoryPrimaryLine));
-            OnPropertyChanged(nameof(RepositorySecondaryLine));
-            OnPropertyChanged(nameof(RepositoryTertiaryLine));
-            OnPropertyChanged(nameof(RepositoryRightSummary));
-            OnPropertyChanged(nameof(GitBranchDisplay));
-            OnPropertyChanged(nameof(GitStatusDisplay));
-            OnPropertyChanged(nameof(GitStagedDisplay));
-            OnPropertyChanged(nameof(GitRemoteDisplay));
-            OnPropertyChanged(nameof(GitSubRepositorySummary));
-            OnPropertyChanged(nameof(GitCompactLine));
-            OnPropertyChanged(nameof(SvnRevisionDisplay));
-            OnPropertyChanged(nameof(SvnSubRepositorySummary));
-            OnPropertyChanged(nameof(SvnChangedRepositorySummary));
-            OnPropertyChanged(nameof(SvnChangeSummary));
-            OnPropertyChanged(nameof(SvnCleanRepositorySummary));
-            OnPropertyChanged(nameof(SvnCompactLine));
+            OnPropertyChanged(nameof(SubRepositoryDetail));
         }
 
         private void OnVcsSummaryChanged()
@@ -1073,12 +962,6 @@ namespace PackageManager.Features.CodeWorkspace.Models
             OnPropertyChanged(nameof(VcsTypeBrush));
             OnPropertyChanged(nameof(SubRepositoryStatusBrush));
             OnPropertyChanged(nameof(ChangesBrush));
-            OnPropertyChanged(nameof(RepositoryMetaLine));
-            OnPropertyChanged(nameof(RepositoryListTooltip));
-            OnPropertyChanged(nameof(RepositoryPrimaryLine));
-            OnPropertyChanged(nameof(RepositorySecondaryLine));
-            OnPropertyChanged(nameof(RepositoryTertiaryLine));
-            OnPropertyChanged(nameof(RepositoryRightSummary));
             OnPropertyChanged(nameof(VcsTypeDisplay));
             OnPropertyChanged(nameof(VcsDetailTitle));
             OnPropertyChanged(nameof(RootStatusDetail));
@@ -1086,19 +969,7 @@ namespace PackageManager.Features.CodeWorkspace.Models
             OnPropertyChanged(nameof(SubRepositoryPanelTitle));
             OnPropertyChanged(nameof(LastStatusRefreshText));
             OnPropertyChanged(nameof(GitDetailLine));
-            OnPropertyChanged(nameof(GitBranchDisplay));
-            OnPropertyChanged(nameof(GitStatusDisplay));
-            OnPropertyChanged(nameof(GitStagedDisplay));
-            OnPropertyChanged(nameof(GitRemoteDisplay));
-            OnPropertyChanged(nameof(GitSubRepositorySummary));
-            OnPropertyChanged(nameof(GitCompactLine));
             OnPropertyChanged(nameof(SvnDetailLine));
-            OnPropertyChanged(nameof(SvnRevisionDisplay));
-            OnPropertyChanged(nameof(SvnSubRepositorySummary));
-            OnPropertyChanged(nameof(SvnChangedRepositorySummary));
-            OnPropertyChanged(nameof(SvnChangeSummary));
-            OnPropertyChanged(nameof(SvnCleanRepositorySummary));
-            OnPropertyChanged(nameof(SvnCompactLine));
             OnPropertyChanged(nameof(HasGitChanges));
             OnPropertyChanged(nameof(HasSvnChanges));
             OnPropertyChanged(nameof(HasAnyChanges));

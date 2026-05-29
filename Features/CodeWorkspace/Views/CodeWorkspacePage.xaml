@@ -89,105 +89,104 @@
                               VerticalScrollBarVisibility="Auto">
                         <dataGrid:CDataGrid.RowStyle>
                             <Style TargetType="{x:Type DataGridRow}">
-                                <Setter Property="MinHeight" Value="68"/>
-                                <Setter Property="VerticalContentAlignment" Value="Stretch"/>
                                 <EventSetter Event="MouseDoubleClick" Handler="RepositoryRow_MouseDoubleClick"/>
                             </Style>
                         </dataGrid:CDataGrid.RowStyle>
 
                         <dataGrid:CDataGrid.Columns>
-                            <DataGridTemplateColumn Header="仓库" Width="*">
+                            <DataGridTemplateColumn Header="仓库" Width="170">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
-                                        <Grid Margin="8,6" ToolTip="{Binding RepositoryListTooltip}">
-                                            <Grid.RowDefinitions>
-                                                <RowDefinition Height="Auto"/>
-                                                <RowDefinition Height="Auto"/>
-                                                <RowDefinition Height="Auto"/>
-                                            </Grid.RowDefinitions>
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="Auto"/>
-                                                <ColumnDefinition Width="*"/>
-                                                <ColumnDefinition Width="Auto"/>
-                                            </Grid.ColumnDefinitions>
-                                            <Grid Grid.Row="0"
-                                                  Grid.Column="0"
-                                                  Grid.RowSpan="3"
-                                                  Width="28"
-                                                  Height="22"
-                                                  Margin="0,0,7,0"
-                                                  VerticalAlignment="Top"
-                                                  ToolTip="{Binding VcsTooltip}">
-                                                <Ellipse Width="15"
-                                                         Height="15"
-                                                         HorizontalAlignment="Center"
-                                                         VerticalAlignment="Center"
-                                                         Fill="{Binding VcsStatusBrush}"
-                                                         Stroke="#FFFFFF"
-                                                         StrokeThickness="2"/>
-                                                <Rectangle Width="15"
-                                                           Height="7"
-                                                           HorizontalAlignment="Center"
-                                                           VerticalAlignment="Center"
-                                                           Margin="0,8,0,0"
-                                                           Fill="{Binding SubRepositoryStatusBrush}">
-                                                    <Rectangle.OpacityMask>
-                                                        <VisualBrush>
-                                                            <VisualBrush.Visual>
-                                                                <Ellipse Width="15" Height="15" Fill="Black"/>
-                                                            </VisualBrush.Visual>
-                                                        </VisualBrush>
-                                                    </Rectangle.OpacityMask>
-                                                </Rectangle>
-                                                <Border HorizontalAlignment="Left"
-                                                        VerticalAlignment="Bottom"
-                                                        Background="#FFFFFF"
-                                                        BorderBrush="#D8DEE8"
-                                                        BorderThickness="1"
-                                                        Padding="2,0">
-                                                    <TextBlock Text="{Binding VcsTypeDisplay}"
-                                                               Foreground="{Binding VcsTypeBrush}"
-                                                               FontSize="8"
-                                                               FontWeight="Bold"/>
-                                                </Border>
-                                            </Grid>
-                                            <TextBlock Grid.Row="0"
-                                                       Grid.Column="1"
-                                                       Text="{Binding RepositoryPrimaryLine}"
+                                        <TextBlock Text="{Binding Name}"
+                                                   Margin="8,0"
+                                                   VerticalAlignment="Center"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   ToolTip="{Binding Name}"/>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+
+                            <DataGridTemplateColumn Header="状态" Width="56">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Grid Width="48" Height="28" ToolTip="{Binding VcsTooltip}">
+                                            <Ellipse Width="18"
+                                                     Height="18"
+                                                     HorizontalAlignment="Center"
+                                                     VerticalAlignment="Center"
+                                                     Fill="{Binding VcsStatusBrush}"
+                                                     Stroke="#FFFFFF"
+                                                     StrokeThickness="2"/>
+                                            <Rectangle Width="18"
+                                                       Height="9"
+                                                       HorizontalAlignment="Center"
                                                        VerticalAlignment="Center"
-                                                       Foreground="#111827"
-                                                       FontWeight="SemiBold"
-                                                       TextTrimming="CharacterEllipsis"/>
-                                            <TextBlock Grid.Row="0"
-                                                       Grid.Column="2"
-                                                       Text="{Binding RepositoryRightSummary}"
-                                                       Margin="12,0,0,0"
-                                                       Foreground="{Binding ChangesBrush}"
-                                                       FontWeight="SemiBold"
-                                                       TextTrimming="CharacterEllipsis"
-                                                       ToolTip="{Binding ChangesSummary}"/>
-                                            <TextBlock Grid.Row="1"
-                                                       Grid.Column="1"
-                                                       Grid.ColumnSpan="2"
-                                                       Text="{Binding RepositorySecondaryLine}"
-                                                       Margin="0,2,0,0"
-                                                       Foreground="#4B5563"
-                                                       FontSize="12"
-                                                       TextTrimming="CharacterEllipsis"/>
-                                            <TextBlock Grid.Row="2"
-                                                       Grid.Column="1"
-                                                       Grid.ColumnSpan="2"
-                                                       Text="{Binding RepositoryTertiaryLine}"
-                                                       Margin="0,2,0,0"
-                                                       Foreground="#6B7280"
-                                                       FontSize="12"
-                                                       TextTrimming="CharacterEllipsis"/>
+                                                       Margin="0,9,0,0"
+                                                       Fill="{Binding SubRepositoryStatusBrush}">
+                                                <Rectangle.OpacityMask>
+                                                    <VisualBrush>
+                                                        <VisualBrush.Visual>
+                                                            <Ellipse Width="18" Height="18" Fill="Black"/>
+                                                        </VisualBrush.Visual>
+                                                    </VisualBrush>
+                                                </Rectangle.OpacityMask>
+                                            </Rectangle>
+                                            <Border HorizontalAlignment="Left"
+                                                    VerticalAlignment="Bottom"
+                                                    Background="#FFFFFF"
+                                                    BorderBrush="#D8DEE8"
+                                                    BorderThickness="1"
+                                                    Padding="2,0"
+                                                    CornerRadius="2">
+                                                <TextBlock Text="{Binding VcsTypeDisplay}"
+                                                           Foreground="{Binding VcsTypeBrush}"
+                                                           FontSize="9"
+                                                           FontWeight="Bold"/>
+                                            </Border>
                                         </Grid>
                                     </DataTemplate>
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
 
-                            <DataGridTemplateColumn Header="操作" Width="84">
+                            <DataGridTemplateColumn Header="分支/版本" Width="130">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding BranchDisplay}"
+                                                   Margin="6,0"
+                                                   VerticalAlignment="Center"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   ToolTip="{Binding BranchDisplay}"/>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+
+                            <DataGridTemplateColumn Header="变更" Width="80">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding ChangesSummary}"
+                                                   Margin="6,0"
+                                                   Foreground="{Binding ChangesBrush}"
+                                                   FontWeight="SemiBold"
+                                                   VerticalAlignment="Center"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   ToolTip="{Binding ChangesSummary}"/>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+
+                            <DataGridTemplateColumn Header="路径" Width="*">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding Path}"
+                                                   Margin="6,0"
+                                                   VerticalAlignment="Center"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   ToolTip="{Binding Path}"/>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+
+                            <DataGridTemplateColumn Header="操作" Width="90">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
                                         <button:CButton Width="36"
@@ -273,57 +272,47 @@
                             Height="1"
                             Background="#E3E8F0"/>
 
-                    <Grid Grid.Row="2" Margin="14,12,14,10">
+                    <Grid Grid.Row="2" Margin="14,12,14,12">
                         <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="10"/>
                             <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
 
                         <Border Grid.Row="0"
-                                BorderBrush="#D8DEE8"
-                                BorderThickness="1"
-                                Padding="12">
-                            <Grid>
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="Auto"/>
-                                </Grid.RowDefinitions>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="42"/>
-                                    <ColumnDefinition Width="*"/>
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="版本控制概览"
-                                           Grid.Row="0"
-                                           Grid.ColumnSpan="2"
-                                           FontWeight="SemiBold"
-                                           Foreground="#111827"/>
-                                <TextBlock Grid.Row="1"
-                                           Grid.Column="0"
-                                           Text="Git"
-                                           Margin="0,8,0,0"
+                                BorderBrush="{Binding GitAccentBrush}"
+                                BorderThickness="{Binding GitAccentThickness}"
+                                Padding="12"
+                                Cursor="{Binding GitCursor}"
+                                ToolTip="{Binding GitDiffHint}"
+                                MouseLeftButtonDown="GitDetailCard_MouseLeftButtonDown">
+                            <StackPanel>
+                                <TextBlock Text="Git"
                                            FontWeight="SemiBold"
                                            Foreground="#346DDB"/>
-                                <TextBlock Grid.Row="1"
-                                           Grid.Column="1"
-                                           Text="{Binding GitCompactLine}"
-                                           Margin="0,8,0,0"
-                                           Foreground="#374151"
-                                           TextTrimming="CharacterEllipsis"
-                                           ToolTip="{Binding GitCompactLine}"/>
-                                <TextBlock Grid.Row="2"
-                                           Grid.Column="0"
-                                           Text="SVN"
-                                           Margin="0,5,0,0"
+                                <TextBlock Text="{Binding GitDetailLine, TargetNullValue=未选择仓库}"
+                                           Margin="0,6,0,0"
+                                           TextWrapping="Wrap"
+                                           Foreground="#374151"/>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Grid.Row="2"
+                                BorderBrush="{Binding SvnAccentBrush}"
+                                BorderThickness="{Binding SvnAccentThickness}"
+                                Padding="12"
+                                Cursor="{Binding SvnCursor}"
+                                ToolTip="{Binding SvnDiffHint}"
+                                MouseLeftButtonDown="SvnDetailCard_MouseLeftButtonDown">
+                            <StackPanel>
+                                <TextBlock Text="SVN"
                                            FontWeight="SemiBold"
                                            Foreground="#7A52C7"/>
-                                <TextBlock Grid.Row="2"
-                                           Grid.Column="1"
-                                           Text="{Binding SvnCompactLine}"
-                                           Margin="0,5,0,0"
-                                           Foreground="#374151"
-                                           TextTrimming="CharacterEllipsis"
-                                           ToolTip="{Binding SvnCompactLine}"/>
-                            </Grid>
+                                <TextBlock Text="{Binding SvnDetailLine, TargetNullValue=未选择仓库}"
+                                           Margin="0,6,0,0"
+                                           TextWrapping="Wrap"
+                                           Foreground="#374151"/>
+                            </StackPanel>
                         </Border>
                     </Grid>
 
@@ -363,28 +352,18 @@
                                                 BorderThickness="0"
                                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                                 ScrollViewer.VerticalScrollBarVisibility="Auto">
-                                <controls:CListView.ItemContainerStyle>
-                                    <Style TargetType="{x:Type ListViewItem}">
-                                        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
-                                    </Style>
-                                </controls:CListView.ItemContainerStyle>
                                 <controls:CListView.ItemTemplate>
                                     <DataTemplate>
-                                        <Grid Margin="4,5,8,6"
-                                              Cursor="{Binding DetailCursor}"
-                                              ToolTip="{Binding FullTooltip}"
-                                              MouseLeftButtonDown="SubRepositoryItem_MouseLeftButtonDown">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="18"/>
-                                                <ColumnDefinition Width="*"/>
-                                            </Grid.ColumnDefinitions>
-                                            <Ellipse Grid.Column="0"
+                                        <DockPanel Margin="4,4,8,6"
+                                                   Cursor="{Binding DetailCursor}"
+                                                   ToolTip="{Binding DiffHint}"
+                                                   MouseLeftButtonDown="SubRepositoryItem_MouseLeftButtonDown">
+                                            <Ellipse DockPanel.Dock="Left"
                                                      Width="8"
                                                      Height="8"
-                                                     Margin="0,6,8,0"
-                                                     VerticalAlignment="Top"
+                                                     Margin="0,7,8,0"
                                                      Fill="{Binding StatusBrush}"/>
-                                            <Grid Grid.Column="1">
+                                            <Grid>
                                                 <Grid.RowDefinitions>
                                                     <RowDefinition Height="Auto"/>
                                                     <RowDefinition Height="Auto"/>
@@ -407,23 +386,21 @@
                                                 </Border>
                                                 <TextBlock Grid.Row="0"
                                                            Grid.Column="1"
-                                                           Text="{Binding DisplayName}"
+                                                           Text="{Binding RelativePath}"
                                                            Foreground="#374151"
                                                            FontWeight="SemiBold"
                                                            TextTrimming="CharacterEllipsis"
-                                                           ToolTip="{Binding DisplayName}"/>
+                                                           ToolTip="{Binding RelativePath}"/>
                                                 <TextBlock Grid.Row="1"
-                                                           Grid.Column="0"
-                                                           Grid.ColumnSpan="2"
-                                                           Margin="0,3,0,0"
-                                                           Text="{Binding CompactLine}"
+                                                           Grid.Column="1"
+                                                           Margin="0,2,0,0"
+                                                           Text="{Binding DetailLine}"
                                                            Foreground="#6B7280"
                                                            FontSize="12"
-                                                           TextWrapping="Wrap"
-                                                           MaxHeight="34"
-                                                           ToolTip="{Binding CompactLine}"/>
+                                                           TextTrimming="CharacterEllipsis"
+                                                           ToolTip="{Binding DetailLine}"/>
                                             </Grid>
-                                        </Grid>
+                                        </DockPanel>
                                     </DataTemplate>
                                 </controls:CListView.ItemTemplate>
                             </controls:CListView>

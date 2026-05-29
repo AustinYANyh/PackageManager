@@ -132,6 +132,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
             repo.DeletedCount = snapshot.DeletedCount;
             repo.StagedCount = snapshot.StagedCount;
             repo.SvnRevision = snapshot.SvnRevision;
+            repo.SvnRemoteUpdateCount = snapshot.SvnRemoteUpdateCount;
             repo.GitChangedFiles = new ObservableCollection<VcsChangedFile>(snapshot.GitChangedFiles.Select(file => file.Clone()));
             repo.RootSvnChangedFiles = new ObservableCollection<VcsChangedFile>(snapshot.RootSvnChangedFiles.Select(file => file.Clone()));
             repo.SubRepositories = new ObservableCollection<SubRepository>(snapshot.SubRepositories);
@@ -239,6 +240,8 @@ namespace PackageManager.Features.CodeWorkspace.Services
                 }
             }
 
+            await RefreshGitRemoteTrackingAsync(repoPath, ct);
+
             var abResult = await RunCommandAsync("git", "rev-list --left-right --count HEAD...@{upstream}", repoPath, ct);
             if (abResult.ExitCode == 0)
             {
@@ -312,6 +315,17 @@ namespace PackageManager.Features.CodeWorkspace.Services
             return info;
         }
 
+        private static async Task RefreshGitRemoteTrackingAsync(string repoPath, CancellationToken ct)
+        {
+            var upstreamResult = await RunCommandAsync("git", "rev-parse --abbrev-ref --symbolic-full-name @{upstream}", repoPath, ct);
+            if (upstreamResult.ExitCode != 0)
+            {
+                return;
+            }
+
+            await RunCommandAsync("git", "fetch --prune --quiet", repoPath, ct);
+        }
+
         private static async Task RefreshSvnStatusAsync(RepositoryVcsSnapshot snapshot, string svnPath, CancellationToken ct)
         {
             var infoResult = await RunCommandAsync("svn", "info --show-item revision", svnPath, ct);
@@ -319,6 +333,8 @@ namespace PackageManager.Features.CodeWorkspace.Services
             {
                 snapshot.SvnRevision = rev;
             }
+
+            snapshot.SvnRemoteUpdateCount = await ReadSvnRemoteUpdateCountAsync(svnPath, ct);
 
             var statusResult = await RunCommandAsync("svn", "status", svnPath, ct);
             if (statusResult.ExitCode != 0)
@@ -523,6 +539,8 @@ namespace PackageManager.Features.CodeWorkspace.Services
                     subRepo.Revision = rev;
                 }
 
+                subRepo.SvnRemoteUpdateCount = await ReadSvnRemoteUpdateCountAsync(svnDir, ct);
+
                 var statusResult = await RunCommandAsync("svn", "status", svnDir, ct);
                 if (statusResult.ExitCode == 0)
                 {
@@ -551,6 +569,25 @@ namespace PackageManager.Features.CodeWorkspace.Services
 
                 snapshot.SubRepositories.Add(subRepo);
             }
+        }
+
+        private static async Task<int> ReadSvnRemoteUpdateCountAsync(string svnPath, CancellationToken ct)
+        {
+            var statusResult = await RunCommandAsync("svn", "status -u", svnPath, ct);
+            if (statusResult.ExitCode != 0)
+            {
+                return 0;
+            }
+
+            return SplitLines(statusResult.Output)
+                .Count(HasSvnRemoteUpdateMarker);
+        }
+
+        private static bool HasSvnRemoteUpdateMarker(string statusLine)
+        {
+            return !string.IsNullOrEmpty(statusLine) &&
+                   statusLine.Length > 8 &&
+                   statusLine[8] == '*';
         }
 
         private static VcsStatus CalculateOverallStatus(RepositoryVcsSnapshot snapshot)
@@ -905,6 +942,8 @@ namespace PackageManager.Features.CodeWorkspace.Services
 
             public int SvnRevision { get; set; }
 
+            public int SvnRemoteUpdateCount { get; set; }
+
             public bool HasConflict { get; set; }
 
             public DateTime LastStatusRefresh { get; set; }
@@ -929,6 +968,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
                     DeletedCount = repo?.DeletedCount ?? 0,
                     StagedCount = repo?.StagedCount ?? 0,
                     SvnRevision = repo?.SvnRevision ?? 0,
+                    SvnRemoteUpdateCount = repo?.SvnRemoteUpdateCount ?? 0,
                     HasConflict = repo?.HasConflict ?? false,
                     LastStatusRefresh = DateTime.Now,
                 };
