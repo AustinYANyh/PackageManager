@@ -19,6 +19,7 @@ using PackageManager.Services;
 using PackageManager.Views;
 using PackageManager.Shell;
 using PackageManager.Features.Notifications.Services;
+using PackageManager.Features.CodeWorkspace.Services;
 
 namespace PackageManager;
 
@@ -64,6 +65,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
         // 设置导航服务
         ServiceLocator.Register(this);
+        ServiceLocator.Register(new CodePackageLinkService(_dataPersistenceService));
+        ServiceLocator.Register(new CodeWorkspaceNavigationRequestService());
         var registry = new ToolRegistry();
         ToolRegistration.RegisterAll(registry);
         var navService = new NavigationService(CentralFrame, registry);
@@ -399,6 +402,43 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         if (_homePage == null)
             _homePage = new PackagesHomePage { DataContext = this };
         return _homePage;
+    }
+
+    public bool SelectPackageByLinkKey(string packageKey)
+    {
+        if (string.IsNullOrWhiteSpace(packageKey) || Packages == null)
+        {
+            return false;
+        }
+
+        var package = Packages.FirstOrDefault(pkg =>
+            string.Equals(CodePackageLinkService.BuildPackageKey(pkg), packageKey, StringComparison.OrdinalIgnoreCase));
+        if (package == null)
+        {
+            return false;
+        }
+
+        _selectedCategory = "全部";
+        OnPropertyChanged(nameof(SelectedCategory));
+        var view = CollectionViewSource.GetDefaultView(Packages);
+        if (view != null)
+        {
+            view.Filter = obj =>
+            {
+                var p = obj as PackageInfo;
+                return (p != null) && IsProductVisible(p.ProductName);
+            };
+        }
+
+        LatestActivePackage = package;
+        var dataGrid = GetPackageDataGrid();
+        if (dataGrid != null)
+        {
+            dataGrid.SelectedItem = package;
+            dataGrid.ScrollIntoView(package);
+        }
+
+        return true;
     }
 
     private CustomControlLibrary.CustomControl.Controls.DataGrid.CDataGrid GetPackageDataGrid()

@@ -4,16 +4,11 @@
       xmlns:button="clr-namespace:CustomControlLibrary.CustomControl.Controls.Button;assembly=CustomControlLibrary"
       xmlns:controls="clr-namespace:CustomControlLibrary.CustomControl.Controls;assembly=CustomControlLibrary"
       xmlns:dataGrid="clr-namespace:CustomControlLibrary.CustomControl.Controls.DataGrid;assembly=CustomControlLibrary"
+      xmlns:navigation="clr-namespace:CustomControlLibrary.CustomControl.Controls.Navigation;assembly=CustomControlLibrary"
       Title="代码工作区"
       Background="#F7F8FA"
       Loaded="Page_Loaded"
       Unloaded="Page_Unloaded">
-    <Page.Resources>
-        <Style x:Key="ActionMenuItemStyle" TargetType="MenuItem">
-            <Setter Property="Padding" Value="12,6"/>
-        </Style>
-    </Page.Resources>
-
     <Grid Margin="16">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -75,10 +70,12 @@
                     </DockPanel>
 
                     <dataGrid:CDataGrid Grid.Row="1"
+                              x:Name="RepositoryGrid"
                               ItemsSource="{Binding Repositories}"
                               SelectedItem="{Binding SelectedRepository, Mode=TwoWay}"
                               AutoGenerateColumns="False"
                               CanUserAddRows="False"
+                              CanUserSortColumns="False"
                               IsReadOnly="True"
                               HeadersVisibility="Column"
                               GridLinesVisibility="Horizontal"
@@ -199,19 +196,21 @@
                                                         ToolTip="操作"
                                                         Click="ActionMenuButton_Click">
                                             <button:CButton.ContextMenu>
-                                                <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
-                                                    <MenuItem Header="Claude提交" Command="{Binding ClaudeCommitCommand}" Style="{StaticResource ActionMenuItemStyle}"/>
-                                                    <MenuItem Header="Codex提交" Command="{Binding CodexCommitCommand}" Style="{StaticResource ActionMenuItemStyle}"/>
-                                                    <MenuItem Header="拉取代码" Command="{Binding PullCommand}" Style="{StaticResource ActionMenuItemStyle}"/>
+                                                <navigation:CContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
+                                                    <navigation:CMenuItem Header="Claude提交" Command="{Binding ClaudeCommitCommand}"/>
+                                                    <navigation:CMenuItem Header="Codex提交" Command="{Binding CodexCommitCommand}"/>
+                                                    <navigation:CMenuItem Header="拉取代码" Command="{Binding PullCommand}"/>
                                                     <Separator/>
-                                                    <MenuItem Header="VS" Command="{Binding OpenVSCommand}" Style="{StaticResource ActionMenuItemStyle}"/>
-                                                    <MenuItem Header="Rider" Command="{Binding OpenRiderCommand}" Style="{StaticResource ActionMenuItemStyle}"/>
-                                                    <MenuItem Header="Cursor" Command="{Binding OpenCursorCommand}" Style="{StaticResource ActionMenuItemStyle}"/>
+                                                    <navigation:CMenuItem Header="VS" Command="{Binding OpenVSCommand}"/>
+                                                    <navigation:CMenuItem Header="Rider" Command="{Binding OpenRiderCommand}"/>
+                                                    <navigation:CMenuItem Header="Cursor" Command="{Binding OpenCursorCommand}"/>
                                                     <Separator/>
-                                                    <MenuItem Header="Claude" Command="{Binding OpenClaudeCommand}" Style="{StaticResource ActionMenuItemStyle}"/>
-                                                    <MenuItem Header="Codex" Command="{Binding OpenCodexCommand}" Style="{StaticResource ActionMenuItemStyle}"/>
-                                                    <MenuItem Header="文件夹" Command="{Binding OpenFolderCommand}" Style="{StaticResource ActionMenuItemStyle}"/>
-                                                </ContextMenu>
+                                                    <navigation:CMenuItem Header="Claude" Command="{Binding OpenClaudeCommand}"/>
+                                                    <navigation:CMenuItem Header="Codex" Command="{Binding OpenCodexCommand}"/>
+                                                    <navigation:CMenuItem Header="文件夹" Command="{Binding OpenFolderCommand}"/>
+                                                    <Separator/>
+                                                    <navigation:CMenuItem Header="解除关联" Command="{Binding UnlinkPackageCommand}"/>
+                                                </navigation:CContextMenu>
                                             </button:CButton.ContextMenu>
                                         </button:CButton>
                                     </DataTemplate>
@@ -237,10 +236,7 @@
 
                     <DockPanel Grid.Row="0"
                                Margin="14,12,14,10"
-                               LastChildFill="True"
-                               Cursor="{Binding DetailCursor}"
-                               ToolTip="{Binding DiffHint}"
-                               MouseLeftButtonDown="RepositoryDetailHeader_MouseLeftButtonDown">
+                               LastChildFill="True">
                         <button:CButton DockPanel.Dock="Right"
                                         Width="58"
                                         Height="26"
@@ -264,6 +260,26 @@
                             <TextBlock Text="{Binding LastStatusRefreshText, TargetNullValue=尚未刷新}"
                                        Margin="0,3,0,0"
                                        Foreground="#6B7280"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                <TextBlock Text="关联包:"
+                                           Foreground="#6B7280"
+                                           VerticalAlignment="Center"/>
+                                <Border Margin="6,0,0,0"
+                                        Padding="6,2"
+                                        Background="#EEF5FF"
+                                        BorderBrush="#B8D4FF"
+                                        BorderThickness="1"
+                                        Cursor="Hand"
+                                        ToolTip="{Binding LinkedPackageDisplay}"
+                                        MouseLeftButtonDown="LinkedPackageBadge_MouseLeftButtonDown">
+                                    <TextBlock Text="{Binding LinkedPackageDisplay, TargetNullValue=未关联产品包}"
+                                               Foreground="#2563EB"
+                                               FontWeight="SemiBold"
+                                               VerticalAlignment="Center"
+                                               TextTrimming="CharacterEllipsis"
+                                               TextDecorations="Underline"/>
+                                </Border>
+                            </StackPanel>
                         </StackPanel>
                     </DockPanel>
 

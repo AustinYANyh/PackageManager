@@ -306,11 +306,15 @@
 
         <!-- Features/DevTools -->
         <Compile Include="Features\CodeWorkspace\Models\CodeRepository.cs" />
+        <Compile Include="Features\CodeWorkspace\Models\PackageLinkOption.cs" />
+        <Compile Include="Features\CodeWorkspace\Models\RepositoryLinkOption.cs" />
         <Compile Include="Features\CodeWorkspace\Models\SubRepository.cs" />
         <Compile Include="Features\CodeWorkspace\Models\VcsChangedFile.cs" />
         <Compile Include="Features\CodeWorkspace\Models\VcsStatus.cs" />
         <Compile Include="Features\CodeWorkspace\Models\VcsType.cs" />
         <Compile Include="Features\CodeWorkspace\Services\AiCommitSkillService.cs" />
+        <Compile Include="Features\CodeWorkspace\Services\CodePackageLinkService.cs" />
+        <Compile Include="Features\CodeWorkspace\Services\CodeWorkspaceNavigationRequestService.cs" />
         <Compile Include="Features\CodeWorkspace\Services\CodeWorkspaceVcsCacheService.cs" />
         <Compile Include="Features\CodeWorkspace\Services\VcsExternalDiffToolService.cs" />
         <Compile Include="Features\CodeWorkspace\Services\VcsDiffService.cs" />
@@ -346,6 +350,14 @@
         </Page>
         <Compile Include="Features\CodeWorkspace\Views\ProjectFileSelectionDialog.xaml.cs">
           <DependentUpon>ProjectFileSelectionDialog.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Page Include="Features\CodeWorkspace\Views\PackageLinkSelectionWindow.xaml">
+          <Generator>MSBuild:Compile</Generator>
+          <SubType>Designer</SubType>
+        </Page>
+        <Compile Include="Features\CodeWorkspace\Views\PackageLinkSelectionWindow.xaml.cs">
+          <DependentUpon>PackageLinkSelectionWindow.xaml</DependentUpon>
           <SubType>Code</SubType>
         </Compile>
 

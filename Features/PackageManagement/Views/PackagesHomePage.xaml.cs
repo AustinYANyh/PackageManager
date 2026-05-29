@@ -8,6 +8,9 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using CustomControlLibrary.CustomControl.Controls.Navigation;
+using PackageManager.Features.CodeWorkspace.Models;
+using PackageManager.Features.CodeWorkspace.Services;
+using PackageManager.Features.CodeWorkspace.Views;
 using PackageManager.Features.DevTools;
 using PackageManager.Function.DnsTool;
 using PackageManager.Models;
@@ -23,6 +26,8 @@ public partial class PackagesHomePage : Page
 {
     private readonly RevitProcessService _revitProcessService = new RevitProcessService();
     private readonly PackageUpdateService _packageUpdateService = new PackageUpdateService();
+    private readonly DataPersistenceService _dataPersistenceService;
+    private readonly CodeWorkspaceNavigationRequestService _workspaceNavigationRequestService;
     private ApplicationVersion _pendingRevitVersion;
     private IReadOnlyList<RevitProcessInfo> _pendingRevitProcesses = Array.Empty<RevitProcessInfo>();
 
@@ -32,12 +37,22 @@ public partial class PackagesHomePage : Page
     public PackagesHomePage()
     {
         InitializeComponent();
+        _dataPersistenceService = ServiceLocator.Resolve<DataPersistenceService>() ?? new DataPersistenceService();
+        _workspaceNavigationRequestService = ServiceLocator.Resolve<CodeWorkspaceNavigationRequestService>() ?? new CodeWorkspaceNavigationRequestService();
+        Loaded += PackagesHomePage_Loaded;
     }
 
     /// <summary>
     /// 获取内部包数据网格控件，供主窗口进行筛选交互。
     /// </summary>
     public CustomControlLibrary.CustomControl.Controls.DataGrid.CDataGrid PackageGrid => PackageDataGrid;
+
+    public bool SourceRepositoryButtonEnabled => HasConfiguredRepositories();
+
+    private void PackagesHomePage_Loaded(object sender, RoutedEventArgs e)
+    {
+        OpenSourceRepositoryButton?.GetBindingExpression(IsEnabledProperty)?.UpdateTarget();
+    }
 
     private MainWindow GetMainWindow()
     {
@@ -541,6 +556,172 @@ public partial class PackagesHomePage : Page
     private void OpenVcsMappingButton_Click(object sender, RoutedEventArgs e)
     {
         DevToolLauncher.OpenVcsMapping();
+    }
+
+    private void OpenSourceRepositoryButton_ToolTipOpening(object sender, ToolTipEventArgs e)
+    {
+        if (!(sender is FrameworkElement element))
+        {
+            return;
+        }
+
+        if (!HasConfiguredRepositories())
+        {
+            element.ToolTip = "还没有配置代码仓库，请先到代码工作区添加仓库";
+            return;
+        }
+
+        var package = GetSelectedPackage();
+        if (package == null)
+        {
+            element.ToolTip = "请先选择产品包";
+            return;
+        }
+
+        element.ToolTip = FindLinkedRepository(package) == null
+            ? "当前产品包未绑定源码仓库，点击后进入绑定流程"
+            : "打开当前产品包关联的源码仓库";
+    }
+
+    private void OpenSourceRepositoryButton_Click(object sender, RoutedEventArgs e)
+    {
+        var package = GetSelectedPackage();
+        if (package == null)
+        {
+            MessageBox.Show("请先选择一个产品包。", "源码仓库", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (!HasConfiguredRepositories())
+        {
+            MessageBox.Show("还没有配置代码仓库，请先到代码工作区添加仓库。", "源码仓库", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (FindLinkedRepository(package) == null)
+        {
+            LinkRepositoryForPackage(package);
+            return;
+        }
+
+        _workspaceNavigationRequestService.RequestSelectRepositoryForPackage(package);
+        ServiceLocator.Resolve<PackageManager.Shell.NavigationService>()?.NavigateTo("code-workspace");
+    }
+
+    private bool HasConfiguredRepositories()
+    {
+        var settings = _dataPersistenceService.LoadSettings();
+        return settings?.CodeRepositories?.Any(repo =>
+            repo != null && !string.IsNullOrWhiteSpace(repo.Path) && Directory.Exists(repo.Path)) == true;
+    }
+
+    private CodeRepository FindLinkedRepository(PackageInfo package)
+    {
+        var key = CodePackageLinkService.BuildPackageKey(package);
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            return null;
+        }
+
+        var settings = _dataPersistenceService.LoadSettings();
+        return settings?.CodeRepositories?
+            .Where(repo => repo != null && !string.IsNullOrWhiteSpace(repo.Path))
+            .Where(repo => string.Equals(repo.LinkedPackageKey, key, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(repo => repo.LastUsed)
+            .FirstOrDefault();
+    }
+
+    private void LinkRepositoryForPackage(PackageInfo package)
+    {
+        var packageKey = CodePackageLinkService.BuildPackageKey(package);
+        if (string.IsNullOrWhiteSpace(packageKey))
+        {
+            MessageBox.Show("当前产品包缺少可关联的包标识。", "源码仓库", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var settings = _dataPersistenceService.LoadSettings();
+        var repositories = settings?.CodeRepositories?
+            .Where(repo => repo != null && !string.IsNullOrWhiteSpace(repo.Path) && Directory.Exists(repo.Path))
+            .ToList() ?? new List<CodeRepository>();
+        var availableRepositories = repositories
+            .Where(repo => string.IsNullOrWhiteSpace(repo.LinkedPackageKey))
+            .ToList();
+        if (availableRepositories.Count == 0)
+        {
+            MessageBox.Show("没有可绑定的源码仓库。已有关联的仓库需要先在代码工作区解除关联。", "源码仓库", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var options = availableRepositories
+            .Select(repo => new RepositoryLinkOption
+            {
+                Key = NormalizeRepositoryPath(repo.Path),
+                Name = repo.Name,
+                Path = repo.Path,
+                Repository = repo,
+            })
+            .Where(option => !string.IsNullOrWhiteSpace(option.Key))
+            .OrderByDescending(option => CalculateRepositoryPackageScore(option.Repository, package.ProductName))
+            .ThenBy(option => option.Name)
+            .ToList();
+        var suggested = options.FirstOrDefault(option => CalculateRepositoryPackageScore(option.Repository, package.ProductName) > 0);
+        var window = new PackageLinkSelectionWindow(package, options, suggested)
+        {
+            Owner = Window.GetWindow(this),
+        };
+        if (window.ShowDialog() != true || window.SelectedRepository?.Repository == null)
+        {
+            return;
+        }
+
+        var repository = window.SelectedRepository.Repository;
+        repository.LinkedPackageKey = packageKey;
+        repository.LinkedPackageName = package.ProductName;
+        _dataPersistenceService.SaveSettings(settings);
+        package.StatusText = $"已关联源码仓库: {repository.Name}";
+    }
+
+    private static int CalculateRepositoryPackageScore(CodeRepository repository, string packageName)
+    {
+        var repoText = NormalizeMatchText($"{repository?.Name} {repository?.Path} {repository?.Note}");
+        var packageText = NormalizeMatchText(packageName);
+        if (string.IsNullOrWhiteSpace(repoText) || string.IsNullOrWhiteSpace(packageText))
+        {
+            return 0;
+        }
+
+        return repoText.Contains(packageText) ? 5 : 0;
+    }
+
+    private static string NormalizeMatchText(string value)
+    {
+        return (value ?? string.Empty)
+            .Replace("（", string.Empty)
+            .Replace("）", string.Empty)
+            .Replace("(", string.Empty)
+            .Replace(")", string.Empty)
+            .Replace("-", string.Empty)
+            .Replace("_", string.Empty)
+            .Replace(" ", string.Empty)
+            .ToLowerInvariant();
+    }
+
+    private static string NormalizeRepositoryPath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return null;
+        }
+
+        try
+        {
+            return Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+        catch
+        {
+            return path.Trim();
+        }
     }
 
     private async void ToggleGitProxyButton_Click(object sender, RoutedEventArgs e)

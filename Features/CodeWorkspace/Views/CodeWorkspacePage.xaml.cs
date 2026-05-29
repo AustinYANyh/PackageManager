@@ -28,6 +28,8 @@ namespace PackageManager.Features.CodeWorkspace.Views
         private readonly AiCommitSkillService _aiCommitSkillService = new AiCommitSkillService();
         private readonly VcsStatusService _vcsStatusService;
         private readonly CodeWorkspaceVcsCacheService _vcsCacheService;
+        private readonly CodePackageLinkService _packageLinkService;
+        private readonly CodeWorkspaceNavigationRequestService _navigationRequestService;
         private CodeRepository _selectedRepository;
         private string _statusText;
         private string _refreshButtonText = "刷新状态";
@@ -43,6 +45,8 @@ namespace PackageManager.Features.CodeWorkspace.Views
             _dataPersistenceService = ServiceLocator.Resolve<DataPersistenceService>() ?? new DataPersistenceService();
             _vcsStatusService = ServiceLocator.Resolve<VcsStatusService>() ?? new VcsStatusService();
             _vcsCacheService = ServiceLocator.Resolve<CodeWorkspaceVcsCacheService>() ?? new CodeWorkspaceVcsCacheService(_dataPersistenceService, _vcsStatusService);
+            _packageLinkService = ServiceLocator.Resolve<CodePackageLinkService>() ?? new CodePackageLinkService(_dataPersistenceService);
+            _navigationRequestService = ServiceLocator.Resolve<CodeWorkspaceNavigationRequestService>() ?? new CodeWorkspaceNavigationRequestService();
             SubscribeCacheUpdates();
             DataContext = this;
             LoadRepositories();
@@ -105,9 +109,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
             Repositories.Clear();
             var settings = _dataPersistenceService.LoadSettings();
             foreach (var repo in (settings.CodeRepositories ?? new List<CodeRepository>())
-                         .Where(repo => repo != null && !string.IsNullOrWhiteSpace(repo.Path))
-                         .OrderByDescending(repo => repo.LastUsed)
-                         .ThenBy(repo => repo.Name))
+                         .Where(repo => repo != null && !string.IsNullOrWhiteSpace(repo.Path)))
             {
                 var cloned = repo.Clone();
                 _vcsCacheService.ApplyCachedStatus(cloned);
@@ -127,6 +129,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
             SubscribeCacheUpdates();
             _vcsCacheService.ApplyCachedStatuses(Repositories);
             RefreshSubRepositoryView();
+            HandlePendingNavigationRequest();
             if (!_hasLoaded)
             {
                 _hasLoaded = true;
@@ -151,6 +154,35 @@ namespace PackageManager.Features.CodeWorkspace.Views
             StartAutoRefresh();
         }
 
+        private void HandlePendingNavigationRequest()
+        {
+            var request = _navigationRequestService.Consume();
+            if (request == null)
+            {
+                return;
+            }
+
+            if (request.Kind == CodeWorkspaceNavigationRequestKind.SelectLinkedRepository)
+            {
+                var repository = FindRepositoryByPackageKey(request.PackageKey);
+                if (repository == null)
+                {
+                    StatusText = $"未找到关联 {request.PackageName} 的源码仓库。";
+                    MessageBox.Show("当前产品包还没有关联源码仓库，请先关联。", "代码工作区", MessageBoxButton.OK, MessageBoxImage.Information);
+                    return;
+                }
+
+                SelectRepository(repository);
+                StatusText = $"已定位源码仓库: {repository.Name}";
+                return;
+            }
+
+            if (request.Kind == CodeWorkspaceNavigationRequestKind.BindPackageToRepository)
+            {
+                BindPackageFromRequest(request);
+            }
+        }
+
         private void Page_Unloaded(object sender, RoutedEventArgs e)
         {
             StopAutoRefresh();
@@ -168,6 +200,9 @@ namespace PackageManager.Features.CodeWorkspace.Views
             repo.OpenClaudeCommand = new RelayCommand(() => RunRepositoryAction(repo, DoOpenClaudeCode));
             repo.OpenCodexCommand = new RelayCommand(() => RunRepositoryAction(repo, DoOpenCodex));
             repo.OpenFolderCommand = new RelayCommand(() => RunRepositoryAction(repo, DoOpenFolder));
+            repo.LinkPackageCommand = new RelayCommand(() => LinkPackage(repo));
+            repo.OpenLinkedPackageCommand = new RelayCommand(() => OpenLinkedPackage(repo), () => repo.HasLinkedPackage);
+            repo.UnlinkPackageCommand = new RelayCommand(() => UnlinkPackage(repo), () => repo.HasLinkedPackage);
         }
 
         private void VcsCacheService_CacheUpdated(object sender, EventArgs e)
@@ -208,17 +243,6 @@ namespace PackageManager.Features.CodeWorkspace.Views
                 SelectedRepository = repo;
                 e.Handled = true;
             }
-        }
-
-        private void RepositoryDetailHeader_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
-        {
-            if (e.ClickCount < 2)
-            {
-                return;
-            }
-
-            OpenDiffWindowForRepository("全部变更", BuildAllChangedFiles(SelectedRepository));
-            e.Handled = true;
         }
 
         private void GitDetailCard_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -265,6 +289,20 @@ namespace PackageManager.Features.CodeWorkspace.Views
                 button.ContextMenu.IsOpen = true;
                 e.Handled = true;
             }
+        }
+
+        private void LinkedPackageBadge_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (SelectedRepository?.HasLinkedPackage == true)
+            {
+                OpenLinkedPackage(SelectedRepository);
+            }
+            else
+            {
+                LinkPackage(SelectedRepository);
+            }
+
+            e.Handled = true;
         }
 
         private void OpenDiffWindowForRepository(string scopeTitle, IEnumerable<VcsChangedFile> files)
@@ -526,9 +564,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
             Repositories.Clear();
             var settings = _dataPersistenceService.LoadSettings();
             foreach (var repo in (settings.CodeRepositories ?? new List<CodeRepository>())
-                         .Where(repo => repo != null && !string.IsNullOrWhiteSpace(repo.Path))
-                         .OrderByDescending(repo => repo.LastUsed)
-                         .ThenBy(repo => repo.Name))
+                         .Where(repo => repo != null && !string.IsNullOrWhiteSpace(repo.Path)))
             {
                 var cloned = repo.Clone();
                 var key = NormalizePath(cloned.Path);
@@ -1227,12 +1263,12 @@ codex --sandbox danger-full-access --ask-for-approval never
                 stored.ProjectFiles = repo.ProjectFiles == null ? new List<string>() : new List<string>(repo.ProjectFiles);
                 stored.LastUsed = repo.LastUsed;
                 stored.UsageCount = repo.UsageCount;
+                stored.LinkedPackageKey = repo.LinkedPackageKey;
+                stored.LinkedPackageName = repo.LinkedPackageName;
             }
 
             settings.CodeRepositories = repositories
                 .Where(r => r != null && !string.IsNullOrWhiteSpace(r.Path))
-                .OrderByDescending(r => r.LastUsed)
-                .ThenBy(r => r.Name)
                 .ToList();
             _dataPersistenceService.SaveSettings(settings);
         }
@@ -1242,6 +1278,192 @@ codex --sandbox danger-full-access --ask-for-approval never
             var settings = _dataPersistenceService.LoadSettings();
             settings.CodeRepositories = Repositories.Select(repo => repo.Clone()).ToList();
             _dataPersistenceService.SaveSettings(settings);
+        }
+
+        private void LinkPackage(CodeRepository repo, PackageLinkOption preferredPackage = null)
+        {
+            if (repo == null)
+            {
+                MessageBox.Show("请先选择一个代码仓库。", "关联产品包", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var options = _packageLinkService.GetPackageOptions()
+                .Where(option => IsPackageAvailableForRepository(option, repo))
+                .ToList();
+            if (options.Count == 0)
+            {
+                MessageBox.Show("当前没有可关联的产品包配置。已有关联的包需要先解除关联。", "关联产品包", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var currentPackage = preferredPackage ?? _packageLinkService.FindPackageByKey(repo.LinkedPackageKey);
+            var suggestedPackage = preferredPackage ?? currentPackage ?? _packageLinkService.SuggestPackage(repo);
+            var window = new PackageLinkSelectionWindow(repo, options, suggestedPackage, currentPackage)
+            {
+                Owner = Window.GetWindow(this),
+            };
+
+            if (window.ShowDialog() != true || window.SelectedPackage == null)
+            {
+                return;
+            }
+
+            ApplyPackageLink(repo, window.SelectedPackage);
+            StatusText = $"已关联 {repo.Name} -> {window.SelectedPackage.ProductName}";
+        }
+
+        private void OpenLinkedPackage(CodeRepository repo)
+        {
+            if (repo == null || !repo.HasLinkedPackage)
+            {
+                MessageBox.Show("当前仓库还没有关联产品包。", "代码工作区", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var mainWindow = ServiceLocator.Resolve<global::PackageManager.MainWindow>() ?? Window.GetWindow(this) as global::PackageManager.MainWindow;
+            if (mainWindow?.SelectPackageByLinkKey(repo.LinkedPackageKey) != true)
+            {
+                MessageBox.Show("未找到关联的产品包，可能包配置已被删除或 FTP 路径已变化。", "代码工作区", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            ServiceLocator.Resolve<PackageManager.Shell.NavigationService>()?.NavigateTo("packages-home");
+        }
+
+        private void UnlinkPackage(CodeRepository repo)
+        {
+            if (repo == null || !repo.HasLinkedPackage)
+            {
+                return;
+            }
+
+            repo.LinkedPackageKey = null;
+            repo.LinkedPackageName = null;
+            SaveRepositories();
+            CommandManager.InvalidateRequerySuggested();
+            StatusText = $"已解除 {repo.Name} 的产品包关联。";
+        }
+
+        private void BindPackageFromRequest(CodeWorkspaceNavigationRequest request)
+        {
+            if (Repositories.Count == 0)
+            {
+                MessageBox.Show("还没有配置代码仓库，请先添加仓库。", "代码工作区", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var preferredPackage = _packageLinkService.FindPackageByKey(request.PackageKey);
+            var repository = FindBestRepositoryForPackage(request);
+            if (repository != null)
+            {
+                SelectRepository(repository);
+            }
+
+            LinkPackage(SelectedRepository ?? Repositories.FirstOrDefault(), preferredPackage);
+        }
+
+        private CodeRepository FindBestRepositoryForPackage(CodeWorkspaceNavigationRequest request)
+        {
+            var linked = FindRepositoryByPackageKey(request.PackageKey);
+            if (linked != null)
+            {
+                return linked;
+            }
+
+            var packageName = NormalizeMatchText(request.PackageName);
+            if (string.IsNullOrWhiteSpace(packageName))
+            {
+                return Repositories.OrderByDescending(repo => repo.LastUsed).FirstOrDefault();
+            }
+
+            return Repositories
+                .OrderByDescending(repo => CalculateRepositoryPackageScore(repo, packageName))
+                .ThenByDescending(repo => repo.LastUsed)
+                .FirstOrDefault();
+        }
+
+        private CodeRepository FindRepositoryByPackageKey(string packageKey)
+        {
+            if (string.IsNullOrWhiteSpace(packageKey))
+            {
+                return null;
+            }
+
+            return Repositories
+                .Where(repo => string.Equals(repo.LinkedPackageKey, packageKey, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(repo => repo.LastUsed)
+                .FirstOrDefault();
+        }
+
+        private void ApplyPackageLink(CodeRepository repo, PackageLinkOption package)
+        {
+            repo.LinkedPackageKey = package.Key;
+            repo.LinkedPackageName = package.ProductName;
+            SaveRepositories();
+            CommandManager.InvalidateRequerySuggested();
+        }
+
+        private bool IsPackageAvailableForRepository(PackageLinkOption option, CodeRepository repository)
+        {
+            if (option == null)
+            {
+                return false;
+            }
+
+            if (string.Equals(repository?.LinkedPackageKey, option.Key, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return !Repositories.Any(repo =>
+                !ReferenceEquals(repo, repository) &&
+                string.Equals(repo.LinkedPackageKey, option.Key, StringComparison.OrdinalIgnoreCase));
+        }
+
+        private void SelectRepository(CodeRepository repo)
+        {
+            if (repo == null)
+            {
+                return;
+            }
+
+            SelectedRepository = repo;
+            RepositoryGrid.SelectedItem = repo;
+            RepositoryGrid.ScrollIntoView(repo);
+        }
+
+        private static int CalculateRepositoryPackageScore(CodeRepository repo, string normalizedPackageName)
+        {
+            var text = NormalizeMatchText($"{repo?.Name} {repo?.Path} {repo?.Note}");
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                return 0;
+            }
+
+            var score = text.Contains(normalizedPackageName) ? 5 : 0;
+            foreach (var token in normalizedPackageName.Split(new[] { "develop" }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (token.Length >= 3 && text.Contains(token))
+                {
+                    score++;
+                }
+            }
+
+            return score;
+        }
+
+        private static string NormalizeMatchText(string value)
+        {
+            return (value ?? string.Empty)
+                .Replace("（", string.Empty)
+                .Replace("）", string.Empty)
+                .Replace("(", string.Empty)
+                .Replace(")", string.Empty)
+                .Replace("-", string.Empty)
+                .Replace("_", string.Empty)
+                .Replace(" ", string.Empty)
+                .ToLowerInvariant();
         }
 
         private bool EnsureRepositoryExists(CodeRepository repo)

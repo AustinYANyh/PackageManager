@@ -33,21 +33,14 @@
                      x:Name="RepositoryGrid"
                      ItemsSource="{Binding Repositories}"
                      SelectedItem="{Binding SelectedRepository, Mode=TwoWay}"
-                     AutoGenerateColumns="False"
+                     TextAlignment="Left"
+                     EnableAutoTemplateSelection="True"
                      CanUserAddRows="False"
+                     CanUserSortColumns="False"
                      IsReadOnly="False"
                      SelectionMode="Single"
                      GridLinesVisibility="Horizontal"
-                     RowHeaderWidth="0">
-            <C:CDataGrid.Columns>
-                <DataGridTextColumn Header="名称" Binding="{Binding Name, UpdateSourceTrigger=PropertyChanged}" Width="180"/>
-                <DataGridTextColumn Header="路径" Binding="{Binding Path, UpdateSourceTrigger=PropertyChanged}" Width="*"/>
-                <DataGridTextColumn Header="备注" Binding="{Binding Note, UpdateSourceTrigger=PropertyChanged}" Width="180"/>
-                <DataGridTextColumn Header="项目文件" Binding="{Binding ProjectFileCount}" IsReadOnly="True" Width="80"/>
-                <DataGridTextColumn Header="最后使用" Binding="{Binding LastUsedText}" IsReadOnly="True" Width="130"/>
-                <DataGridTextColumn Header="次数" Binding="{Binding UsageCount}" IsReadOnly="True" Width="60"/>
-            </C:CDataGrid.Columns>
-        </C:CDataGrid>
+                     RowHeaderWidth="0"/>
 
         <TextBlock Grid.Row="2"
                    Text="{Binding StatusText}"

@@ -6,6 +6,7 @@ using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
+using CustomControlLibrary.CustomControl.Attribute.DataGrid;
 using PackageManager.Features.CodeWorkspace.Models;
 using PackageManager.Services;
 using PackageManager.Views;
@@ -15,7 +16,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
     public partial class CodeRepositoryManagementPage : Page, INotifyPropertyChanged, ICentralPage
     {
         private readonly DataPersistenceService _dataPersistenceService;
-        private CodeRepository _selectedRepository;
+        private RepositoryManagementRow _selectedRepository;
         private string _statusText;
 
         public CodeRepositoryManagementPage()
@@ -30,9 +31,9 @@ namespace PackageManager.Features.CodeWorkspace.Views
 
         public event PropertyChangedEventHandler PropertyChanged;
 
-        public ObservableCollection<CodeRepository> Repositories { get; } = new ObservableCollection<CodeRepository>();
+        public ObservableCollection<RepositoryManagementRow> Repositories { get; } = new ObservableCollection<RepositoryManagementRow>();
 
-        public CodeRepository SelectedRepository
+        public RepositoryManagementRow SelectedRepository
         {
             get => _selectedRepository;
             set => SetProperty(ref _selectedRepository, value);
@@ -49,11 +50,9 @@ namespace PackageManager.Features.CodeWorkspace.Views
             Repositories.Clear();
             var settings = _dataPersistenceService.LoadSettings();
             foreach (var repo in (settings.CodeRepositories ?? new System.Collections.Generic.List<CodeRepository>())
-                         .Where(IsValidRepository)
-                         .OrderByDescending(r => r.LastUsed)
-                         .ThenBy(r => r.Name))
+                         .Where(IsValidRepository))
             {
-                Repositories.Add(repo.Clone());
+                Repositories.Add(RepositoryManagementRow.FromRepository(repo));
             }
 
             StatusText = $"已加载 {Repositories.Count} 个仓库。可拖放文件夹到页面中添加。";
@@ -144,7 +143,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
                 return false;
             }
 
-            var repo = new CodeRepository
+            var repo = new RepositoryManagementRow
             {
                 Name = new DirectoryInfo(path).Name,
                 Path = path,
@@ -167,7 +166,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
             return true;
         }
 
-        private void RefreshProjectFiles(CodeRepository repo)
+        private void RefreshProjectFiles(RepositoryManagementRow repo)
         {
             if (repo == null || string.IsNullOrWhiteSpace(repo.Path) || !Directory.Exists(repo.Path))
             {
@@ -197,13 +196,16 @@ namespace PackageManager.Features.CodeWorkspace.Views
             settings.CodeRepositories = Repositories
                 .Where(IsValidRepository)
                 .GroupBy(repo => NormalizePath(repo.Path), StringComparer.OrdinalIgnoreCase)
-                .Select(group => group.First().Clone())
-                .OrderByDescending(repo => repo.LastUsed)
-                .ThenBy(repo => repo.Name)
+                .Select(group => group.First().ToRepository())
                 .ToList();
 
             var ok = _dataPersistenceService.SaveSettings(settings);
             StatusText = ok ? $"已保存 {settings.CodeRepositories.Count} 个仓库。" : "保存失败，请查看日志。";
+        }
+
+        private static bool IsValidRepository(RepositoryManagementRow repo)
+        {
+            return repo != null && !string.IsNullOrWhiteSpace(repo.Path);
         }
 
         private static bool IsValidRepository(CodeRepository repo)
@@ -245,6 +247,149 @@ namespace PackageManager.Features.CodeWorkspace.Views
             field = value;
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
             return true;
+        }
+
+        public class RepositoryManagementRow : INotifyPropertyChanged
+        {
+            private string _name;
+            private string _path;
+            private string _note = "";
+            private System.Collections.Generic.List<string> _projectFiles = new System.Collections.Generic.List<string>();
+            private DateTime _lastUsed;
+            private int _usageCount;
+            private string _linkedPackageKey;
+            private string _linkedPackageName;
+
+            public event PropertyChangedEventHandler PropertyChanged;
+
+            [DataGridColumn(1, DisplayName = "名称", Width = "180")]
+            public string Name
+            {
+                get => _name;
+                set => SetProperty(ref _name, value);
+            }
+
+            [DataGridColumn(2, DisplayName = "路径", Width = "*")]
+            public string Path
+            {
+                get => _path;
+                set => SetProperty(ref _path, value);
+            }
+
+            [DataGridColumn(3, DisplayName = "备注", Width = "130")]
+            public string Note
+            {
+                get => _note;
+                set => SetProperty(ref _note, value);
+            }
+
+            public System.Collections.Generic.List<string> ProjectFiles
+            {
+                get => _projectFiles;
+                set
+                {
+                    if (SetProperty(ref _projectFiles, value ?? new System.Collections.Generic.List<string>()))
+                    {
+                        OnPropertyChanged(nameof(ProjectFileCount));
+                    }
+                }
+            }
+
+            [DataGridColumn(4, DisplayName = "项目文件", Width = "80", IsReadOnly = true)]
+            public int ProjectFileCount
+            {
+                get => ProjectFiles?.Count ?? 0;
+                set { }
+            }
+
+            public DateTime LastUsed
+            {
+                get => _lastUsed;
+                set
+                {
+                    if (SetProperty(ref _lastUsed, value))
+                    {
+                        OnPropertyChanged(nameof(LastUsedText));
+                    }
+                }
+            }
+
+            [DataGridColumn(5, DisplayName = "最后使用", Width = "130", IsReadOnly = true)]
+            public string LastUsedText
+            {
+                get => LastUsed == DateTime.MinValue ? "从未使用" : LastUsed.ToString("yyyy-MM-dd HH:mm");
+                set { }
+            }
+
+            [DataGridColumn(6, DisplayName = "次数", Width = "60", IsReadOnly = true)]
+            public int UsageCount
+            {
+                get => _usageCount;
+                set => SetProperty(ref _usageCount, value);
+            }
+
+            public string LinkedPackageKey
+            {
+                get => _linkedPackageKey;
+                set => SetProperty(ref _linkedPackageKey, value);
+            }
+
+            public string LinkedPackageName
+            {
+                get => _linkedPackageName;
+                set => SetProperty(ref _linkedPackageName, value);
+            }
+
+            public static RepositoryManagementRow FromRepository(CodeRepository repo)
+            {
+                return new RepositoryManagementRow
+                {
+                    Name = repo.Name,
+                    Path = repo.Path,
+                    Note = repo.Note ?? "",
+                    ProjectFiles = repo.ProjectFiles == null
+                        ? new System.Collections.Generic.List<string>()
+                        : new System.Collections.Generic.List<string>(repo.ProjectFiles),
+                    LastUsed = repo.LastUsed,
+                    UsageCount = repo.UsageCount,
+                    LinkedPackageKey = repo.LinkedPackageKey,
+                    LinkedPackageName = repo.LinkedPackageName,
+                };
+            }
+
+            public CodeRepository ToRepository()
+            {
+                return new CodeRepository
+                {
+                    Name = Name,
+                    Path = Path,
+                    Note = Note ?? "",
+                    ProjectFiles = ProjectFiles == null
+                        ? new System.Collections.Generic.List<string>()
+                        : new System.Collections.Generic.List<string>(ProjectFiles),
+                    LastUsed = LastUsed,
+                    UsageCount = UsageCount,
+                    LinkedPackageKey = LinkedPackageKey,
+                    LinkedPackageName = LinkedPackageName,
+                };
+            }
+
+            private void OnPropertyChanged([CallerMemberName] string propertyName = null)
+            {
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+            }
+
+            private bool SetProperty<T>(ref T field, T value, [CallerMemberName] string propertyName = null)
+            {
+                if (Equals(field, value))
+                {
+                    return false;
+                }
+
+                field = value;
+                OnPropertyChanged(propertyName);
+                return true;
+            }
         }
     }
 }

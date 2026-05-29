@@ -40,6 +40,8 @@ namespace PackageManager.Features.CodeWorkspace.Models
         private DateTime _lastStatusRefresh;
         private bool _isRefreshing;
         private bool _hasConflict;
+        private string _linkedPackageKey;
+        private string _linkedPackageName;
 
         private static readonly Brush CleanBrush = CreateBrush(0x2E, 0xA0, 0x43);
         private static readonly Brush ModifiedBrush = CreateBrush(0xD9, 0x7A, 0x00);
@@ -65,6 +67,40 @@ namespace PackageManager.Features.CodeWorkspace.Models
             get => _path;
             set => SetProperty(ref _path, value);
         }
+
+        public string LinkedPackageKey
+        {
+            get => _linkedPackageKey;
+            set
+            {
+                if (SetProperty(ref _linkedPackageKey, value))
+                {
+                    OnPropertyChanged(nameof(HasLinkedPackage));
+                    OnPropertyChanged(nameof(LinkedPackageDisplay));
+                }
+            }
+        }
+
+        public string LinkedPackageName
+        {
+            get => _linkedPackageName;
+            set
+            {
+                if (SetProperty(ref _linkedPackageName, value))
+                {
+                    OnPropertyChanged(nameof(HasLinkedPackage));
+                    OnPropertyChanged(nameof(LinkedPackageDisplay));
+                }
+            }
+        }
+
+        [JsonIgnore]
+        public bool HasLinkedPackage => !string.IsNullOrWhiteSpace(LinkedPackageKey);
+
+        [JsonIgnore]
+        public string LinkedPackageDisplay => HasLinkedPackage
+            ? (string.IsNullOrWhiteSpace(LinkedPackageName) ? "已关联产品包" : LinkedPackageName)
+            : "未关联产品包";
 
         public DateTime LastUsed
         {
@@ -777,6 +813,12 @@ namespace PackageManager.Features.CodeWorkspace.Models
 
         public ICommand OpenFolderCommand { get; set; }
 
+        public ICommand LinkPackageCommand { get; set; }
+
+        public ICommand OpenLinkedPackageCommand { get; set; }
+
+        public ICommand UnlinkPackageCommand { get; set; }
+
         public List<ButtonConfig> ActionButtons => new List<ButtonConfig>
         {
             new ButtonConfig { Text = "Claude提交", Width = 90, Height = 26, CommandProperty = nameof(ClaudeCommitCommand) },
@@ -800,6 +842,8 @@ namespace PackageManager.Features.CodeWorkspace.Models
                 UsageCount = UsageCount,
                 Note = Note ?? "",
                 ProjectFiles = ProjectFiles == null ? new List<string>() : new List<string>(ProjectFiles),
+                LinkedPackageKey = LinkedPackageKey,
+                LinkedPackageName = LinkedPackageName,
             };
         }
 
