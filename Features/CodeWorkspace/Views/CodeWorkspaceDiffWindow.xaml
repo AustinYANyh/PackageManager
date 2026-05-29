@@ -2,7 +2,6 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:button="clr-namespace:CustomControlLibrary.CustomControl.Controls.Button;assembly=CustomControlLibrary"
-        xmlns:diff="clr-namespace:DiffPlex.Wpf.Controls;assembly=DiffPlex.Wpf"
         Title="变更差异"
         Width="1180"
         Height="760"
@@ -11,6 +10,41 @@
         WindowStartupLocation="CenterOwner"
         Background="#F7F8FA">
     <Grid Margin="16">
+        <Grid.Resources>
+            <Style x:Key="DiffTextBlockStyle" TargetType="TextBlock">
+                <Setter Property="FontFamily" Value="Consolas, Microsoft YaHei UI"/>
+                <Setter Property="FontSize" Value="13"/>
+                <Setter Property="Foreground" Value="#111827"/>
+                <Setter Property="TextTrimming" Value="None"/>
+                <Setter Property="TextWrapping" Value="NoWrap"/>
+                <Setter Property="VerticalAlignment" Value="Center"/>
+            </Style>
+            <Style x:Key="DiffLineNumberStyle" TargetType="TextBlock">
+                <Setter Property="FontFamily" Value="Consolas, Microsoft YaHei UI"/>
+                <Setter Property="FontSize" Value="13"/>
+                <Setter Property="Foreground" Value="#6B7280"/>
+                <Setter Property="HorizontalAlignment" Value="Right"/>
+                <Setter Property="VerticalAlignment" Value="Center"/>
+            </Style>
+            <Style TargetType="ListViewItem" x:Key="DiffRowItemStyle">
+                <Setter Property="Padding" Value="0"/>
+                <Setter Property="Margin" Value="0"/>
+                <Setter Property="BorderThickness" Value="0"/>
+                <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                <Setter Property="VerticalContentAlignment" Value="Stretch"/>
+                <Setter Property="Focusable" Value="False"/>
+                <Setter Property="Template">
+                    <Setter.Value>
+                        <ControlTemplate TargetType="ListViewItem">
+                            <Border Background="{TemplateBinding Background}">
+                                <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                  VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+                            </Border>
+                        </ControlTemplate>
+                    </Setter.Value>
+                </Setter>
+            </Style>
+        </Grid.Resources>
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="12"/>
@@ -52,7 +86,7 @@
                                 Margin="8,0,0,0"
                                 Click="CopyPathButton_Click"/>
                 <button:CButton Content="打开文件夹"
-                                Width="88"
+                                Width="98"
                                 Height="30"
                                 Margin="8,0,0,0"
                                 Click="OpenFolderButton_Click"/>
@@ -158,21 +192,191 @@
                     BorderBrush="#D8DEE8"
                     BorderThickness="1">
                 <Grid>
-                    <diff:DiffViewer x:Name="DiffViewer"
-                                     OldText="{Binding OldText}"
-                                     NewText="{Binding NewText}"
-                                     OldTextHeader="BASE"
-                                     NewTextHeader="工作区"
-                                     IsSideBySide="True"
-                                     IgnoreUnchanged="{Binding IgnoreUnchanged}"
-                                     Visibility="{Binding DiffViewerVisibility}"
-                                     IsCommandBarVisible="False"
-                                     HeaderBackground="#F3F5F8"
-                                     HeaderForeground="#111827"
-                                     InsertedBackground="#E7F6EA"
-                                     DeletedBackground="#FCE8E6"
-                                     UnchangedBackground="#FFFFFF"
-                                     LineNumberForeground="#6B7280"/>
+                    <Grid Visibility="{Binding DiffViewerVisibility}">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="30"/>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="4"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="18"/>
+                        </Grid.ColumnDefinitions>
+                        <Border Grid.Row="0"
+                                Grid.ColumnSpan="4"
+                                Background="#F3F5F8"/>
+                        <TextBlock Grid.Row="0"
+                                   Grid.Column="0"
+                                   Text="BASE"
+                                   FontSize="14"
+                                   Foreground="#111827"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"/>
+                        <Border Grid.Row="0"
+                                Grid.Column="1"
+                                Background="#DADDE3"/>
+                        <TextBlock Grid.Row="0"
+                                   Grid.Column="2"
+                                   Text="工作区"
+                                   FontSize="14"
+                                   Foreground="#111827"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"/>
+
+                        <ListView x:Name="DiffRowsList"
+                                  Grid.Row="1"
+                                  Grid.ColumnSpan="4"
+                                  ItemsSource="{Binding DiffRows}"
+                                  BorderThickness="0"
+                                  Background="#FFFFFF"
+                                  ItemContainerStyle="{StaticResource DiffRowItemStyle}"
+                                  ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                  ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                  ScrollViewer.CanContentScroll="True"
+                                  VirtualizingPanel.IsVirtualizing="True"
+                                  VirtualizingPanel.VirtualizationMode="Recycling"
+                                  VirtualizingPanel.ScrollUnit="Item"
+                                  SizeChanged="DiffRowsList_SizeChanged">
+                            <ListView.ItemsPanel>
+                                <ItemsPanelTemplate>
+                                    <VirtualizingStackPanel/>
+                                </ItemsPanelTemplate>
+                            </ListView.ItemsPanel>
+                            <ListView.ItemTemplate>
+                                <DataTemplate>
+                                    <Grid MinHeight="22"
+                                          HorizontalAlignment="Stretch"
+                                          ClipToBounds="True"
+                                          SnapsToDevicePixels="True">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="4"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+
+                                            <Grid Grid.Column="0"
+                                                  ClipToBounds="True"
+                                                  Background="{Binding OldBackground}">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="54"/>
+                                                    <ColumnDefinition Width="24"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Grid.Column="0"
+                                                           Text="{Binding OldLineNumberText}"
+                                                           Style="{StaticResource DiffLineNumberStyle}"
+                                                           Margin="4,0,8,0"/>
+                                                <TextBlock Grid.Column="1"
+                                                           Text="{Binding OldChangeMarker}"
+                                                           Style="{StaticResource DiffLineNumberStyle}"
+                                                           HorizontalAlignment="Center"/>
+                                                <TextBlock Grid.Column="2"
+                                                           Text="{Binding SeparatorText}"
+                                                           Visibility="{Binding SeparatorVisibility}"
+                                                           Style="{StaticResource DiffTextBlockStyle}"
+                                                           Foreground="#94A3B8"
+                                                           Margin="4,0,8,0"/>
+                                                <Border Grid.Column="2"
+                                                        Margin="4,0,8,0"
+                                                        ClipToBounds="True"
+                                                        VerticalAlignment="Stretch">
+                                                    <Canvas Width="{Binding DataContext.HorizontalTextExtent, RelativeSource={RelativeSource AncestorType=ListView}}"
+                                                            ClipToBounds="False">
+                                                        <ItemsControl Canvas.Top="2"
+                                                                      ItemsSource="{Binding OldTextRuns}"
+                                                                      Width="{Binding DataContext.HorizontalTextExtent, RelativeSource={RelativeSource AncestorType=ListView}}">
+                                                            <ItemsControl.RenderTransform>
+                                                                <TranslateTransform X="{Binding DataContext.NegativeHorizontalScrollOffset, RelativeSource={RelativeSource AncestorType=ListView}}"/>
+                                                            </ItemsControl.RenderTransform>
+                                                            <ItemsControl.ItemsPanel>
+                                                                <ItemsPanelTemplate>
+                                                                    <StackPanel Orientation="Horizontal"/>
+                                                                </ItemsPanelTemplate>
+                                                            </ItemsControl.ItemsPanel>
+                                                            <ItemsControl.ItemTemplate>
+                                                                <DataTemplate>
+                                                                    <Border Background="{Binding Background}">
+                                                                        <TextBlock Text="{Binding Text}"
+                                                                                   Style="{StaticResource DiffTextBlockStyle}"/>
+                                                                    </Border>
+                                                                </DataTemplate>
+                                                            </ItemsControl.ItemTemplate>
+                                                        </ItemsControl>
+                                                    </Canvas>
+                                                </Border>
+                                            </Grid>
+
+                                            <Border Grid.Column="1" Background="#E0E3E8"/>
+
+                                            <Grid Grid.Column="2"
+                                                  ClipToBounds="True"
+                                                  Background="{Binding NewBackground}">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="54"/>
+                                                    <ColumnDefinition Width="24"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Grid.Column="0"
+                                                           Text="{Binding NewLineNumberText}"
+                                                           Style="{StaticResource DiffLineNumberStyle}"
+                                                           Margin="4,0,8,0"/>
+                                                <TextBlock Grid.Column="1"
+                                                           Text="{Binding NewChangeMarker}"
+                                                           Style="{StaticResource DiffLineNumberStyle}"
+                                                           HorizontalAlignment="Center"/>
+                                                <TextBlock Grid.Column="2"
+                                                           Text="{Binding SeparatorText}"
+                                                           Visibility="{Binding SeparatorVisibility}"
+                                                           Style="{StaticResource DiffTextBlockStyle}"
+                                                           Foreground="#94A3B8"
+                                                           Margin="4,0,8,0"/>
+                                                <Border Grid.Column="2"
+                                                        Margin="4,0,8,0"
+                                                        ClipToBounds="True"
+                                                        VerticalAlignment="Stretch">
+                                                    <Canvas Width="{Binding DataContext.HorizontalTextExtent, RelativeSource={RelativeSource AncestorType=ListView}}"
+                                                            ClipToBounds="False">
+                                                        <ItemsControl Canvas.Top="2"
+                                                                      ItemsSource="{Binding NewTextRuns}"
+                                                                      Width="{Binding DataContext.HorizontalTextExtent, RelativeSource={RelativeSource AncestorType=ListView}}">
+                                                            <ItemsControl.RenderTransform>
+                                                                <TranslateTransform X="{Binding DataContext.NegativeHorizontalScrollOffset, RelativeSource={RelativeSource AncestorType=ListView}}"/>
+                                                            </ItemsControl.RenderTransform>
+                                                            <ItemsControl.ItemsPanel>
+                                                                <ItemsPanelTemplate>
+                                                                    <StackPanel Orientation="Horizontal"/>
+                                                                </ItemsPanelTemplate>
+                                                            </ItemsControl.ItemsPanel>
+                                                            <ItemsControl.ItemTemplate>
+                                                                <DataTemplate>
+                                                                    <Border Background="{Binding Background}">
+                                                                        <TextBlock Text="{Binding Text}"
+                                                                                   Style="{StaticResource DiffTextBlockStyle}"/>
+                                                                    </Border>
+                                                                </DataTemplate>
+                                                            </ItemsControl.ItemTemplate>
+                                                        </ItemsControl>
+                                                    </Canvas>
+                                                </Border>
+                                            </Grid>
+                                    </Grid>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+                        <ScrollBar Grid.Row="2"
+                                   Grid.ColumnSpan="3"
+                                   Height="18"
+                                   Orientation="Horizontal"
+                                   Minimum="0"
+                                   Maximum="{Binding HorizontalScrollMaximum}"
+                                   ViewportSize="{Binding HorizontalScrollViewport}"
+                                   LargeChange="120"
+                                   SmallChange="16"
+                                   Value="{Binding HorizontalScrollOffset, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                   Visibility="{Binding HorizontalScrollVisibility}"/>
+                    </Grid>
                     <Border Background="#FAFBFC"
                             Visibility="{Binding MessageVisibility}">
                         <TextBlock Text="{Binding MessageText}"

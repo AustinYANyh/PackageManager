@@ -160,7 +160,7 @@
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
 
-                            <DataGridTemplateColumn Header="变更" Width="120">
+                            <DataGridTemplateColumn Header="变更" Width="80">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
                                         <TextBlock Text="{Binding ChangesSummary}"
@@ -186,7 +186,7 @@
                                 </DataGridTemplateColumn.CellTemplate>
                             </DataGridTemplateColumn>
 
-                            <DataGridTemplateColumn Header="操作" Width="64">
+                            <DataGridTemplateColumn Header="操作" Width="94">
                                 <DataGridTemplateColumn.CellTemplate>
                                     <DataTemplate>
                                         <button:CButton Width="36"

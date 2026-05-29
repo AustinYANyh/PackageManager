@@ -5,6 +5,8 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Media;
 using DiffPlex.DiffBuilder;
 using DiffPlex.DiffBuilder.Model;
 using PackageManager.Features.CodeWorkspace.Models;
@@ -13,7 +15,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
 {
     public class VcsDiffService
     {
-        private const long MaxTextFileBytes = 128 * 1024;
+        private const long MaxTextFileBytes = 1024 * 1024;
         private const int DiffOnlyContextLines = 3;
         private static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(8);
         private readonly VcsExternalDiffToolService _externalDiffToolService = new VcsExternalDiffToolService();
@@ -39,10 +41,10 @@ namespace PackageManager.Features.CodeWorkspace.Services
                     newText = LoadWorkingText(file, isOldSide: false);
                     workingReadStopwatch.Stop();
                     var diffStopwatch = Stopwatch.StartNew();
-                    var diffOnlyText = BuildDiffOnlyText(oldText, newText);
+                    var diffRows = BuildDiffRows(oldText, newText);
                     diffStopwatch.Stop();
                     totalStopwatch.Stop();
-                    return DiffContentResult.Ok(oldText ?? string.Empty, newText ?? string.Empty, diffOnlyText, new DiffTiming
+                    return DiffContentResult.Ok(oldText ?? string.Empty, newText ?? string.Empty, diffRows, new DiffTiming
                     {
                         OldReadMs = oldReadStopwatch.ElapsedMilliseconds,
                         WorkingReadMs = workingReadStopwatch.ElapsedMilliseconds,
@@ -58,10 +60,10 @@ namespace PackageManager.Features.CodeWorkspace.Services
                     newText = LoadWorkingText(file, isOldSide: false);
                     workingReadStopwatch.Stop();
                     var diffStopwatch = Stopwatch.StartNew();
-                    var diffOnlyText = BuildDiffOnlyText(oldText, newText);
+                    var diffRows = BuildDiffRows(oldText, newText);
                     diffStopwatch.Stop();
                     totalStopwatch.Stop();
-                    return DiffContentResult.Ok(oldText ?? string.Empty, newText ?? string.Empty, diffOnlyText, new DiffTiming
+                    return DiffContentResult.Ok(oldText ?? string.Empty, newText ?? string.Empty, diffRows, new DiffTiming
                     {
                         OldReadMs = oldReadStopwatch.ElapsedMilliseconds,
                         WorkingReadMs = workingReadStopwatch.ElapsedMilliseconds,
@@ -159,33 +161,78 @@ namespace PackageManager.Features.CodeWorkspace.Services
             if (file.VcsType == VcsType.Svn)
             {
                 var tortoiseProc = await _externalDiffToolService.ResolveToolPathAsync(VcsType.Svn).ConfigureAwait(false);
-                if (!string.IsNullOrWhiteSpace(tortoiseProc))
-                {
-                    Process.Start(new ProcessStartInfo
-                    {
-                        FileName = tortoiseProc,
-                        Arguments = $"/command:diff /path:{QuoteArgument(file.AbsolutePath)}",
-                        UseShellExecute = true,
-                    });
-                    return;
-                }
+                StartExternalDiffTool(tortoiseProc, file);
+                return;
             }
             else if (file.VcsType == VcsType.Git)
             {
                 var tortoiseGitProc = await _externalDiffToolService.ResolveToolPathAsync(VcsType.Git).ConfigureAwait(false);
-                if (!string.IsNullOrWhiteSpace(tortoiseGitProc))
-                {
-                    Process.Start(new ProcessStartInfo
-                    {
-                        FileName = tortoiseGitProc,
-                        Arguments = $"/command:diff /path:{QuoteArgument(file.AbsolutePath)}",
-                        UseShellExecute = true,
-                    });
-                    return;
-                }
+                StartExternalDiffTool(tortoiseGitProc, file);
+                return;
             }
 
-            throw new InvalidOperationException("未找到已安装的 TortoiseGit/TortoiseSVN 图形差异工具。");
+            throw new InvalidOperationException("不支持的版本控制类型，无法打开外部差异工具。");
+        }
+
+        private static void StartExternalDiffTool(string toolPath, VcsChangedFile file)
+        {
+            if (string.IsNullOrWhiteSpace(toolPath) || !File.Exists(toolPath))
+            {
+                throw new InvalidOperationException("未找到已安装的 TortoiseGit/TortoiseSVN 图形差异工具。");
+            }
+
+            var arguments = BuildExternalDiffArguments(file);
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = toolPath,
+                Arguments = arguments,
+                UseShellExecute = true,
+            });
+        }
+
+        private static string BuildExternalDiffArguments(VcsChangedFile file)
+        {
+            var target = GetWorkingPath(file);
+            if (string.IsNullOrWhiteSpace(target))
+            {
+                throw new InvalidOperationException("变更文件路径为空，无法打开外部差异工具。");
+            }
+
+            if (file.IsAdded)
+            {
+                if (!File.Exists(target))
+                {
+                    throw new FileNotFoundException("新增文件在工作区中不存在，无法打开外部差异工具。", target);
+                }
+
+                var emptyBaseFile = CreateEmptyComparisonFile(target);
+                return $"/command:diff /path:{QuoteArgument(emptyBaseFile)} /path2:{QuoteArgument(target)}";
+            }
+
+            return $"/command:diff /path:{QuoteArgument(target)}";
+        }
+
+        private static string GetWorkingPath(VcsChangedFile file)
+        {
+            return !string.IsNullOrWhiteSpace(file?.AbsolutePath)
+                ? file.AbsolutePath
+                : Path.Combine(file?.WorkingDirectory ?? string.Empty, file?.RelativePath ?? string.Empty);
+        }
+
+        private static string CreateEmptyComparisonFile(string targetPath)
+        {
+            var extension = Path.GetExtension(targetPath);
+            if (string.IsNullOrWhiteSpace(extension) || extension.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            {
+                extension = ".tmp";
+            }
+
+            var tempPath = Path.Combine(Path.GetTempPath(), "PackageManagerDiffEmpty_" + Guid.NewGuid().ToString("N") + extension);
+            using (File.Create(tempPath))
+            {
+            }
+
+            return tempPath;
         }
 
         private static async Task<CommandResult> RunCommandAsync(string fileName, string arguments, string workingDirectory)
@@ -268,7 +315,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
             return text;
         }
 
-        private static DiffOnlyText BuildDiffOnlyText(string oldText, string newText)
+        private static DiffRowSet BuildDiffRows(string oldText, string newText)
         {
             oldText = oldText ?? string.Empty;
             newText = newText ?? string.Empty;
@@ -276,61 +323,171 @@ namespace PackageManager.Features.CodeWorkspace.Services
             var model = SideBySideDiffBuilder.Diff(oldText, newText, false, false);
             if (model?.OldText?.Lines == null || model.NewText?.Lines == null)
             {
-                return new DiffOnlyText { OldText = oldText, NewText = newText };
+                return DiffRowSet.FromRows(BuildFallbackRows(oldText, newText));
             }
 
-            if (!model.OldText.Lines.Any(line => line.Type != ChangeType.Unchanged) &&
-                !model.NewText.Lines.Any(line => line.Type != ChangeType.Unchanged))
-            {
-                return new DiffOnlyText { OldText = string.Empty, NewText = string.Empty };
-            }
-
-            return new DiffOnlyText
-            {
-                OldText = BuildCondensedPane(model.OldText.Lines),
-                NewText = BuildCondensedPane(model.NewText.Lines),
-            };
+            var rows = BuildRowsFromModel(model.OldText.Lines, model.NewText.Lines);
+            AddFinalNewlineNote(rows, oldText, newText);
+            return DiffRowSet.FromRows(rows);
         }
 
-        private static string BuildCondensedPane(IReadOnlyList<DiffPiece> lines)
+        private static List<DiffLineRow> BuildFallbackRows(string oldText, string newText)
         {
-            if (lines == null || lines.Count == 0)
+            var oldLines = SplitTextLines(oldText);
+            var newLines = SplitTextLines(newText);
+            var max = Math.Max(oldLines.Count, newLines.Count);
+            var rows = new List<DiffLineRow>(max);
+            for (var i = 0; i < max; i++)
+            {
+                var oldExists = i < oldLines.Count;
+                var newExists = i < newLines.Count;
+                rows.Add(CreateDiffLineRow(
+                    oldExists ? oldLines[i] : null,
+                    newExists ? newLines[i] : null,
+                    oldExists ? i + 1 : (int?)null,
+                    newExists ? i + 1 : (int?)null,
+                    oldExists ? ChangeType.Unchanged : ChangeType.Imaginary,
+                    newExists ? ChangeType.Unchanged : ChangeType.Imaginary));
+            }
+
+            return rows;
+        }
+
+        private static List<DiffLineRow> BuildRowsFromModel(IReadOnlyList<DiffPiece> oldLines, IReadOnlyList<DiffPiece> newLines)
+        {
+            var count = Math.Max(oldLines?.Count ?? 0, newLines?.Count ?? 0);
+            var rows = new List<DiffLineRow>(count);
+            for (var i = 0; i < count; i++)
+            {
+                var oldPiece = oldLines != null && i < oldLines.Count ? oldLines[i] : null;
+                var newPiece = newLines != null && i < newLines.Count ? newLines[i] : null;
+                rows.Add(CreateDiffLineRow(
+                    oldPiece?.Text,
+                    newPiece?.Text,
+                    oldPiece?.Position,
+                    newPiece?.Position,
+                    oldPiece?.Type ?? ChangeType.Imaginary,
+                    newPiece?.Type ?? ChangeType.Imaginary,
+                    oldPiece?.SubPieces,
+                    newPiece?.SubPieces));
+            }
+
+            return rows;
+        }
+
+        private static DiffLineRow CreateDiffLineRow(
+            string oldText,
+            string newText,
+            int? oldLineNumber,
+            int? newLineNumber,
+            ChangeType oldChangeType,
+            ChangeType newChangeType,
+            IReadOnlyList<DiffPiece> oldSubPieces = null,
+            IReadOnlyList<DiffPiece> newSubPieces = null)
+        {
+            var row = new DiffLineRow
+            {
+                OldLineNumber = oldLineNumber,
+                NewLineNumber = newLineNumber,
+                OldText = oldText ?? string.Empty,
+                NewText = newText ?? string.Empty,
+                OldChangeType = oldChangeType,
+                NewChangeType = newChangeType,
+            };
+
+            row.HasWhitespaceOnlyChange = row.IsChanged &&
+                                          string.Equals(RemoveWhitespace(row.OldText), RemoveWhitespace(row.NewText), StringComparison.Ordinal) &&
+                                          !string.Equals(row.OldText, row.NewText, StringComparison.Ordinal);
+            row.OldTextRuns = BuildTextRuns(row.OldText, oldSubPieces, row.IsOldChanged, isNewSide: false);
+            row.NewTextRuns = BuildTextRuns(row.NewText, newSubPieces, row.IsNewChanged, isNewSide: true);
+            return row;
+        }
+
+        private static string BuildDisplayText(string text, bool visualizeWhitespace)
+        {
+            if (text == null)
             {
                 return string.Empty;
             }
 
-            var include = new bool[lines.Count];
-            for (var i = 0; i < lines.Count; i++)
+            if (!visualizeWhitespace || text.Length == 0)
             {
-                if (lines[i].Type == ChangeType.Unchanged)
-                {
-                    continue;
-                }
+                return text;
+            }
 
-                var start = Math.Max(0, i - DiffOnlyContextLines);
-                var end = Math.Min(lines.Count - 1, i + DiffOnlyContextLines);
-                for (var j = start; j <= end; j++)
+            return text.Replace(" ", "·").Replace("\t", "→   ");
+        }
+
+        private static List<DiffTextRun> BuildTextRuns(string text, IReadOnlyList<DiffPiece> subPieces, bool fallbackChanged, bool isNewSide)
+        {
+            text = text ?? string.Empty;
+            if (subPieces == null || subPieces.Count == 0)
+            {
+                return new List<DiffTextRun>
                 {
-                    include[j] = true;
-                }
+                    new DiffTextRun(BuildDisplayText(text, fallbackChanged), fallbackChanged ? DiffTextRunKind.Changed : DiffTextRunKind.Normal, isNewSide)
+                };
+            }
+
+            var subPieceText = string.Concat(subPieces.Select(piece => piece?.Text ?? string.Empty));
+            if (!string.Equals(subPieceText, text, StringComparison.Ordinal))
+            {
+                return new List<DiffTextRun>
+                {
+                    new DiffTextRun(BuildDisplayText(text, fallbackChanged), fallbackChanged ? DiffTextRunKind.Changed : DiffTextRunKind.Normal, isNewSide)
+                };
+            }
+
+            return subPieces
+                .Select(piece => new DiffTextRun(
+                    BuildDisplayText(piece?.Text ?? string.Empty, piece != null && piece.Type != ChangeType.Unchanged),
+                    piece != null && piece.Type != ChangeType.Unchanged ? DiffTextRunKind.Changed : DiffTextRunKind.Normal,
+                    isNewSide))
+                .ToList();
+        }
+
+        private static void AddFinalNewlineNote(ICollection<DiffLineRow> rows, string oldText, string newText)
+        {
+            var oldHasFinalNewline = HasFinalNewline(oldText);
+            var newHasFinalNewline = HasFinalNewline(newText);
+            if (oldHasFinalNewline == newHasFinalNewline)
+            {
+                return;
+            }
+
+            rows.Add(DiffLineRow.CreateNote(
+                oldHasFinalNewline ? string.Empty : "\\ No newline at end of BASE",
+                newHasFinalNewline ? string.Empty : "\\ No newline at end of working copy"));
+        }
+
+        private static bool HasFinalNewline(string text)
+        {
+            return !string.IsNullOrEmpty(text) && (text.EndsWith("\n", StringComparison.Ordinal) || text.EndsWith("\r", StringComparison.Ordinal));
+        }
+
+        private static List<string> SplitTextLines(string text)
+        {
+            return (text ?? string.Empty)
+                .Replace("\r\n", "\n")
+                .Replace('\r', '\n')
+                .Split(new[] { '\n' }, StringSplitOptions.None)
+                .ToList();
+        }
+
+        private static string RemoveWhitespace(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                return string.Empty;
             }
 
             var builder = new StringBuilder();
-            var lastIncluded = -1;
-            for (var i = 0; i < lines.Count; i++)
+            foreach (var ch in value)
             {
-                if (!include[i])
+                if (!char.IsWhiteSpace(ch))
                 {
-                    continue;
+                    builder.Append(ch);
                 }
-
-                if (lastIncluded >= 0 && i > lastIncluded + 1)
-                {
-                    builder.AppendLine("...");
-                }
-
-                builder.AppendLine(lines[i].Text ?? string.Empty);
-                lastIncluded = i;
             }
 
             return builder.ToString();
@@ -371,19 +528,28 @@ namespace PackageManager.Features.CodeWorkspace.Services
 
         public string DiffOnlyNewText { get; set; }
 
+        public IReadOnlyList<DiffLineRow> FullRows { get; set; }
+
+        public IReadOnlyList<DiffLineRow> DiffOnlyRows { get; set; }
+
+        public int FirstChangedRowIndex { get; set; } = -1;
+
         public string ErrorMessage { get; set; }
 
         public DiffTiming Timing { get; set; }
 
-        public static DiffContentResult Ok(string oldText, string newText, DiffOnlyText diffOnlyText, DiffTiming timing)
+        public static DiffContentResult Ok(string oldText, string newText, DiffRowSet diffRows, DiffTiming timing)
         {
             return new DiffContentResult
             {
                 Success = true,
                 OldText = oldText,
                 NewText = newText,
-                DiffOnlyOldText = diffOnlyText?.OldText ?? string.Empty,
-                DiffOnlyNewText = diffOnlyText?.NewText ?? string.Empty,
+                DiffOnlyOldText = string.Empty,
+                DiffOnlyNewText = string.Empty,
+                FullRows = diffRows?.FullRows ?? new List<DiffLineRow>(),
+                DiffOnlyRows = diffRows?.DiffOnlyRows ?? new List<DiffLineRow>(),
+                FirstChangedRowIndex = diffRows?.FirstChangedRowIndex ?? -1,
                 Timing = timing ?? new DiffTiming(),
             };
         }
@@ -394,11 +560,241 @@ namespace PackageManager.Features.CodeWorkspace.Services
         }
     }
 
-    public class DiffOnlyText
+    public class DiffRowSet
     {
+        public IReadOnlyList<DiffLineRow> FullRows { get; private set; }
+
+        public IReadOnlyList<DiffLineRow> DiffOnlyRows { get; private set; }
+
+        public int FirstChangedRowIndex { get; private set; }
+
+        public static DiffRowSet FromRows(IReadOnlyList<DiffLineRow> rows)
+        {
+            rows = rows ?? new List<DiffLineRow>();
+            return new DiffRowSet
+            {
+                FullRows = rows,
+                DiffOnlyRows = BuildDiffOnlyRows(rows),
+                FirstChangedRowIndex = FindFirstChangedRowIndex(rows),
+            };
+        }
+
+        private static IReadOnlyList<DiffLineRow> BuildDiffOnlyRows(IReadOnlyList<DiffLineRow> rows)
+        {
+            if (rows.Count == 0 || rows.All(row => !row.IsChanged))
+            {
+                return new List<DiffLineRow>();
+            }
+
+            var include = new bool[rows.Count];
+            for (var i = 0; i < rows.Count; i++)
+            {
+                if (!rows[i].IsChanged)
+                {
+                    continue;
+                }
+
+                var start = Math.Max(0, i - 3);
+                var end = Math.Min(rows.Count - 1, i + 3);
+                for (var j = start; j <= end; j++)
+                {
+                    include[j] = true;
+                }
+            }
+
+            var result = new List<DiffLineRow>();
+            var lastIncluded = -1;
+            for (var i = 0; i < rows.Count; i++)
+            {
+                if (!include[i])
+                {
+                    continue;
+                }
+
+                if (lastIncluded >= 0 && i > lastIncluded + 1)
+                {
+                    result.Add(DiffLineRow.CreateSeparator());
+                }
+
+                result.Add(rows[i]);
+                lastIncluded = i;
+            }
+
+            return result;
+        }
+
+        private static int FindFirstChangedRowIndex(IReadOnlyList<DiffLineRow> rows)
+        {
+            for (var i = 0; i < rows.Count; i++)
+            {
+                if (rows[i].IsChanged)
+                {
+                    return i;
+                }
+            }
+
+            return -1;
+        }
+    }
+
+    public class DiffLineRow
+    {
+        private static readonly Brush UnchangedBrush = CreateBrush(0xFF, 0xFF, 0xFF);
+        private static readonly Brush InsertedBrush = CreateBrush(0xE7, 0xF6, 0xEA);
+        private static readonly Brush DeletedBrush = CreateBrush(0xFC, 0xE8, 0xE6);
+        private static readonly Brush ModifiedBrush = CreateBrush(0xFF, 0xF4, 0xD8);
+        private static readonly Brush ImaginaryBrush = CreateBrush(0xF3, 0xF5, 0xF8);
+        private static readonly Brush SeparatorBrush = CreateBrush(0xFA, 0xFB, 0xFC);
+        private static readonly Brush LineNumberBrushValue = CreateBrush(0x6B, 0x72, 0x80);
+        private static readonly Brush MutedTextBrushValue = CreateBrush(0x94, 0xA3, 0xB8);
+
+        public int? OldLineNumber { get; set; }
+
+        public int? NewLineNumber { get; set; }
+
         public string OldText { get; set; }
 
         public string NewText { get; set; }
+
+        public ChangeType OldChangeType { get; set; }
+
+        public ChangeType NewChangeType { get; set; }
+
+        public bool IsSeparator { get; set; }
+
+        public bool IsNote { get; set; }
+
+        public bool HasWhitespaceOnlyChange { get; set; }
+
+        public IReadOnlyList<DiffTextRun> OldTextRuns { get; set; }
+
+        public IReadOnlyList<DiffTextRun> NewTextRuns { get; set; }
+
+        public bool IsChanged => IsSeparator || IsNote || OldChangeType != ChangeType.Unchanged || NewChangeType != ChangeType.Unchanged;
+
+        public bool IsOldChanged => OldChangeType != ChangeType.Unchanged && OldChangeType != ChangeType.Imaginary;
+
+        public bool IsNewChanged => NewChangeType != ChangeType.Unchanged && NewChangeType != ChangeType.Imaginary;
+
+        public string OldLineNumberText => OldLineNumber.HasValue ? OldLineNumber.Value.ToString() : string.Empty;
+
+        public string NewLineNumberText => NewLineNumber.HasValue ? NewLineNumber.Value.ToString() : string.Empty;
+
+        public string OldChangeMarker => IsSeparator ? string.Empty : GetMarker(OldChangeType);
+
+        public string NewChangeMarker => IsSeparator ? string.Empty : GetMarker(NewChangeType);
+
+        public Brush OldBackground => IsSeparator || IsNote ? SeparatorBrush : GetBackground(OldChangeType);
+
+        public Brush NewBackground => IsSeparator || IsNote ? SeparatorBrush : GetBackground(NewChangeType);
+
+        public Brush OldLineNumberForeground => LineNumberBrushValue;
+
+        public Brush NewLineNumberForeground => LineNumberBrushValue;
+
+        public string SeparatorText => IsSeparator ? "..." : string.Empty;
+
+        public Visibility SeparatorVisibility => IsSeparator ? Visibility.Visible : Visibility.Collapsed;
+
+        public static DiffLineRow CreateSeparator()
+        {
+            return new DiffLineRow
+            {
+                IsSeparator = true,
+                OldChangeType = ChangeType.Imaginary,
+                NewChangeType = ChangeType.Imaginary,
+                OldTextRuns = new List<DiffTextRun>(),
+                NewTextRuns = new List<DiffTextRun>(),
+            };
+        }
+
+        public static DiffLineRow CreateNote(string oldNote, string newNote)
+        {
+            return new DiffLineRow
+            {
+                IsNote = true,
+                OldChangeType = ChangeType.Imaginary,
+                NewChangeType = ChangeType.Imaginary,
+                OldTextRuns = new List<DiffTextRun> { new DiffTextRun(oldNote ?? string.Empty, DiffTextRunKind.Normal, isNewSide: false) },
+                NewTextRuns = new List<DiffTextRun> { new DiffTextRun(newNote ?? string.Empty, DiffTextRunKind.Normal, isNewSide: true) },
+            };
+        }
+
+        private static string GetMarker(ChangeType type)
+        {
+            switch (type)
+            {
+                case ChangeType.Inserted:
+                    return "+";
+                case ChangeType.Deleted:
+                    return "-";
+                case ChangeType.Modified:
+                    return "~";
+                default:
+                    return string.Empty;
+            }
+        }
+
+        private static Brush GetBackground(ChangeType type)
+        {
+            switch (type)
+            {
+                case ChangeType.Inserted:
+                    return InsertedBrush;
+                case ChangeType.Deleted:
+                    return DeletedBrush;
+                case ChangeType.Modified:
+                    return ModifiedBrush;
+                case ChangeType.Imaginary:
+                    return ImaginaryBrush;
+                default:
+                    return UnchangedBrush;
+            }
+        }
+
+        private static SolidColorBrush CreateBrush(byte r, byte g, byte b)
+        {
+            var brush = new SolidColorBrush(Color.FromRgb(r, g, b));
+            brush.Freeze();
+            return brush;
+        }
+    }
+
+    public class DiffTextRun
+    {
+        private static readonly Brush TransparentBrush = CreateBrush(0x00, 0x00, 0x00, 0x00);
+        private static readonly Brush OldChangedBrush = CreateBrush(0xFF, 0xF8, 0xC7, 0xC2);
+        private static readonly Brush NewChangedBrush = CreateBrush(0xFF, 0xC8, 0xEA, 0xD0);
+
+        public DiffTextRun(string text, DiffTextRunKind kind, bool isNewSide)
+        {
+            Text = text ?? string.Empty;
+            Kind = kind;
+            Background = kind == DiffTextRunKind.Changed
+                ? isNewSide ? NewChangedBrush : OldChangedBrush
+                : TransparentBrush;
+        }
+
+        public string Text { get; }
+
+        public DiffTextRunKind Kind { get; }
+
+        public Brush Background { get; }
+
+        public bool IsChanged => Kind == DiffTextRunKind.Changed;
+
+        private static SolidColorBrush CreateBrush(byte a, byte r, byte g, byte b)
+        {
+            var brush = new SolidColorBrush(Color.FromArgb(a, r, g, b));
+            brush.Freeze();
+            return brush;
+        }
+    }
+
+    public enum DiffTextRunKind
+    {
+        Normal,
+        Changed,
     }
 
     public class DiffTiming

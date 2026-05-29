@@ -119,7 +119,7 @@ namespace PackageManager.Features.CodeWorkspace.Models
             set { }
         }
 
-        [DataGridColumn(4, DisplayName = "变更", Width = "120", IsReadOnly = true)]
+        [DataGridColumn(4, DisplayName = "变更", Width = "80", IsReadOnly = true)]
         [JsonIgnore]
         public string ChangesSummary
         {
@@ -223,7 +223,7 @@ namespace PackageManager.Features.CodeWorkspace.Models
             set { }
         }
 
-        [DataGridMultiButton(nameof(ActionButtons), 9, DisplayName = "操作", Width = "64", ButtonSpacing = 8)]
+        [DataGridMultiButton(nameof(ActionButtons), 9, DisplayName = "操作", Width = "94", ButtonSpacing = 8)]
         public string Actions { get; set; }
 
         [JsonIgnore]
