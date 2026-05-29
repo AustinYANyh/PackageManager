@@ -42,7 +42,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
                 _warmupCts = new CancellationTokenSource();
             }
 
-            Task.Run(() => RefreshConfiguredRepositoriesAsync(true, _warmupCts.Token));
+            Task.Run(() => WarmupConfiguredRepositoriesAsync(_warmupCts.Token));
         }
 
         public void Cancel()
@@ -135,7 +135,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
             RaiseCacheUpdated();
         }
 
-        public async Task RefreshRepositoriesAsync(IEnumerable<CodeRepository> repositories, bool forceRefresh, CancellationToken cancellationToken = default)
+        public async Task RefreshRepositoriesAsync(IEnumerable<CodeRepository> repositories, bool forceRefresh, CancellationToken cancellationToken = default, bool includeRemoteStatus = false)
         {
             var repositoryList = repositories?
                 .Where(repo => repo != null && !string.IsNullOrWhiteSpace(repo.Path) && Directory.Exists(repo.Path))
@@ -150,7 +150,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
             IsRefreshRunning = true;
             try
             {
-                await _vcsStatusService.RefreshAllAsync(repositoryList, cancellationToken, forceRefresh);
+                await _vcsStatusService.RefreshAllAsync(repositoryList, cancellationToken, forceRefresh, includeRemoteStatus);
                 UpdateCache(repositoryList);
             }
             finally
@@ -160,7 +160,13 @@ namespace PackageManager.Features.CodeWorkspace.Services
             }
         }
 
-        private async Task RefreshConfiguredRepositoriesAsync(bool forceRefresh, CancellationToken cancellationToken)
+        private async Task WarmupConfiguredRepositoriesAsync(CancellationToken cancellationToken)
+        {
+            await RefreshConfiguredRepositoriesAsync(forceRefresh: true, cancellationToken: cancellationToken, includeRemoteStatus: false);
+            await RefreshConfiguredRepositoriesAsync(forceRefresh: true, cancellationToken: cancellationToken, includeRemoteStatus: true);
+        }
+
+        private async Task RefreshConfiguredRepositoriesAsync(bool forceRefresh, CancellationToken cancellationToken, bool includeRemoteStatus)
         {
             try
             {
@@ -171,7 +177,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
                     .ToList();
 
                 ApplyCachedStatuses(repositories);
-                await RefreshRepositoriesAsync(repositories, forceRefresh, cancellationToken);
+                await RefreshRepositoriesAsync(repositories, forceRefresh, cancellationToken, includeRemoteStatus);
             }
             catch (OperationCanceledException)
             {

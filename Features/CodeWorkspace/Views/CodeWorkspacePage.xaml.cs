@@ -133,6 +133,10 @@ namespace PackageManager.Features.CodeWorkspace.Views
                 if (Repositories.Any(repo => repo.LastStatusRefresh != DateTime.MinValue))
                 {
                     StatusText = $"已加载 {Repositories.Count} 个仓库，显示内存缓存状态。";
+                    if (!_vcsCacheService.IsRefreshRunning)
+                    {
+                        _ = RefreshAllVcsStatusAsync(forceRefresh: false, includeRemoteStatus: false, startRemoteRefreshAfterLocal: true);
+                    }
                 }
                 else if (_vcsCacheService.IsRefreshRunning)
                 {
@@ -140,7 +144,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
                 }
                 else
                 {
-                    await RefreshAllVcsStatusAsync(forceRefresh: false);
+                    await RefreshAllVcsStatusAsync(forceRefresh: false, includeRemoteStatus: false, startRemoteRefreshAfterLocal: true);
                 }
             }
 
@@ -359,7 +363,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
 
         private async void RefreshStatusButton_Click(object sender, RoutedEventArgs e)
         {
-            await RefreshAllVcsStatusAsync(forceRefresh: true);
+            await RefreshAllVcsStatusAsync(forceRefresh: true, includeRemoteStatus: true);
         }
 
         private async void RefreshSelectedRepositoryButton_Click(object sender, RoutedEventArgs e)
@@ -373,7 +377,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
             try
             {
                 SelectedRepository.IsRefreshing = true;
-                await _vcsStatusService.RefreshRepositoryStatusAsync(SelectedRepository, forceRefresh: true);
+                await _vcsStatusService.RefreshRepositoryStatusAsync(SelectedRepository, forceRefresh: true, includeRemoteStatus: true);
                 _vcsCacheService.UpdateCache(SelectedRepository);
                 RefreshSubRepositoryView();
                 StatusText = $"状态刷新完成 - {SelectedRepository.Name} - {DateTime.Now:HH:mm:ss}";
@@ -406,7 +410,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
         private void ReloadButton_Click(object sender, RoutedEventArgs e)
         {
             LoadRepositories();
-            _ = RefreshAllVcsStatusAsync(forceRefresh: false);
+            _ = RefreshAllVcsStatusAsync(forceRefresh: false, includeRemoteStatus: false, startRemoteRefreshAfterLocal: true);
         }
 
         private void BackButton_Click(object sender, RoutedEventArgs e)
@@ -415,7 +419,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
             RequestExit?.Invoke();
         }
 
-        private async Task RefreshAllVcsStatusAsync(bool forceRefresh = false)
+        private async Task RefreshAllVcsStatusAsync(bool forceRefresh = false, bool includeRemoteStatus = false, bool startRemoteRefreshAfterLocal = false)
         {
             if (Repositories.Count == 0)
             {
@@ -426,9 +430,15 @@ namespace PackageManager.Features.CodeWorkspace.Views
             SetRefreshingStatus(true);
             try
             {
-                await _vcsCacheService.RefreshRepositoriesAsync(Repositories, forceRefresh);
+                await _vcsCacheService.RefreshRepositoriesAsync(Repositories, forceRefresh, includeRemoteStatus: includeRemoteStatus);
                 RefreshSubRepositoryView();
-                StatusText = $"状态刷新完成 - {DateTime.Now:HH:mm:ss}";
+                StatusText = includeRemoteStatus
+                    ? $"状态刷新完成 - {DateTime.Now:HH:mm:ss}"
+                    : $"本地状态刷新完成 - {DateTime.Now:HH:mm:ss}";
+                if (startRemoteRefreshAfterLocal)
+                {
+                    StartBackgroundRemoteStatusRefresh();
+                }
             }
             catch (OperationCanceledException)
             {
@@ -441,6 +451,33 @@ namespace PackageManager.Features.CodeWorkspace.Views
             finally
             {
                 SetRefreshingStatus(false);
+            }
+        }
+
+        private void StartBackgroundRemoteStatusRefresh()
+        {
+            StatusText = "本地状态已显示，正在后台检查远端更新...";
+            _ = RefreshRemoteStatusInBackgroundAsync();
+        }
+
+        private async Task RefreshRemoteStatusInBackgroundAsync()
+        {
+            try
+            {
+                await _vcsCacheService.RefreshRepositoriesAsync(Repositories, forceRefresh: true, includeRemoteStatus: true);
+                Dispatcher.Invoke(() =>
+                {
+                    RefreshSubRepositoryView();
+                    StatusText = $"远端更新检查完成 - {DateTime.Now:HH:mm:ss}";
+                });
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, "后台检查远端更新失败");
+                Dispatcher.Invoke(() => StatusText = $"后台检查远端更新失败: {ex.Message}");
             }
         }
 
@@ -460,7 +497,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
                         break;
                     }
 
-                    await _vcsCacheService.RefreshRepositoriesAsync(Repositories, false, token);
+                    await _vcsCacheService.RefreshRepositoriesAsync(Repositories, false, token, includeRemoteStatus: false);
                     Dispatcher.Invoke(RefreshSubRepositoryView);
                 }
             }
@@ -593,7 +630,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
                 }
                 else if (result.Success)
                 {
-                    await _vcsStatusService.RefreshRepositoryStatusAsync(repo, forceRefresh: true);
+                    await _vcsStatusService.RefreshRepositoryStatusAsync(repo, forceRefresh: true, includeRemoteStatus: true);
                     _vcsCacheService.UpdateCache(repo);
                     RefreshSubRepositoryView();
                     StatusText = $"拉取成功: {repo.Name}";

@@ -19,7 +19,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
         private readonly ConcurrentDictionary<string, DateTime> _lastRefreshTimes = new ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
         private CancellationTokenSource _refreshCts;
 
-        public async Task RefreshRepositoryStatusAsync(CodeRepository repo, CancellationToken cancellationToken = default, bool forceRefresh = false)
+        public async Task RefreshRepositoryStatusAsync(CodeRepository repo, CancellationToken cancellationToken = default, bool forceRefresh = false, bool includeRemoteStatus = false)
         {
             if (repo == null || string.IsNullOrWhiteSpace(repo.Path) || !Directory.Exists(repo.Path))
             {
@@ -35,7 +35,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
 
             try
             {
-                var snapshot = await BuildSnapshotAsync(repo, cancellationToken);
+                var snapshot = await BuildSnapshotAsync(repo, cancellationToken, includeRemoteStatus);
                 ApplySnapshot(repo, snapshot);
                 _lastRefreshTimes[repo.Path] = DateTime.Now;
             }
@@ -52,9 +52,8 @@ namespace PackageManager.Features.CodeWorkspace.Services
             }
         }
 
-        public async Task RefreshAllAsync(IEnumerable<CodeRepository> repositories, CancellationToken cancellationToken = default, bool forceRefresh = false)
+        public async Task RefreshAllAsync(IEnumerable<CodeRepository> repositories, CancellationToken cancellationToken = default, bool forceRefresh = false, bool includeRemoteStatus = false)
         {
-            _refreshCts?.Cancel();
             _refreshCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             var token = _refreshCts.Token;
             var repositoryList = repositories?
@@ -81,7 +80,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
                         await semaphore.WaitAsync(token);
                         try
                         {
-                            var snapshot = await BuildSnapshotAsync(repo, token);
+                            var snapshot = await BuildSnapshotAsync(repo, token, includeRemoteStatus);
                             return new RepositoryRefreshResult(repo, snapshot);
                         }
                         catch (OperationCanceledException)
@@ -150,9 +149,14 @@ namespace PackageManager.Features.CodeWorkspace.Services
                    DateTime.Now - lastTime < MinRefreshInterval;
         }
 
-        private static async Task<RepositoryVcsSnapshot> BuildSnapshotAsync(CodeRepository repo, CancellationToken cancellationToken)
+        private static async Task<RepositoryVcsSnapshot> BuildSnapshotAsync(CodeRepository repo, CancellationToken cancellationToken, bool includeRemoteStatus)
         {
-            var snapshot = new RepositoryVcsSnapshot();
+            var snapshot = new RepositoryVcsSnapshot
+            {
+                GitAheadCount = repo?.GitAheadCount ?? 0,
+                GitBehindCount = repo?.GitBehindCount ?? 0,
+                SvnRemoteUpdateCount = repo?.SvnRemoteUpdateCount ?? 0,
+            };
             var hasGit = Directory.Exists(Path.Combine(repo.Path, ".git")) || File.Exists(Path.Combine(repo.Path, ".git"));
             var hasSvn = Directory.Exists(Path.Combine(repo.Path, ".svn"));
             var gitSubDirs = await Task.Run(() => FindGitSubDirectories(repo.Path), cancellationToken);
@@ -179,17 +183,17 @@ namespace PackageManager.Features.CodeWorkspace.Services
 
             if (hasGit)
             {
-                await RefreshGitStatusAsync(snapshot, repo.Path, cancellationToken);
+                await RefreshGitStatusAsync(snapshot, repo.Path, cancellationToken, includeRemoteStatus);
             }
 
             if (hasSvn && !hasGit)
             {
-                await RefreshSvnStatusAsync(snapshot, repo.Path, cancellationToken);
+                await RefreshSvnStatusAsync(snapshot, repo.Path, cancellationToken, includeRemoteStatus);
             }
 
             if (gitSubDirs.Count > 0 || svnSubDirs.Count > 0)
             {
-                await RefreshSubRepositoriesAsync(snapshot, repo.Path, gitSubDirs, svnSubDirs, cancellationToken);
+                await RefreshSubRepositoriesAsync(snapshot, repo.Path, gitSubDirs, svnSubDirs, repo.SubRepositories, cancellationToken, includeRemoteStatus);
             }
 
             snapshot.VcsStatus = CalculateOverallStatus(snapshot);
@@ -197,9 +201,9 @@ namespace PackageManager.Features.CodeWorkspace.Services
             return snapshot;
         }
 
-        private static async Task RefreshGitStatusAsync(RepositoryVcsSnapshot snapshot, string repoPath, CancellationToken ct)
+        private static async Task RefreshGitStatusAsync(RepositoryVcsSnapshot snapshot, string repoPath, CancellationToken ct, bool includeRemoteStatus)
         {
-            var gitStatus = await ReadGitStatusAsync(repoPath, "Git 根仓库", ct);
+            var gitStatus = await ReadGitStatusAsync(repoPath, "Git 根仓库", ct, includeRemoteStatus);
             snapshot.GitBranch = gitStatus.Branch;
             snapshot.GitAheadCount = gitStatus.AheadCount;
             snapshot.GitBehindCount = gitStatus.BehindCount;
@@ -215,7 +219,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
             }
         }
 
-        private static async Task<GitStatusInfo> ReadGitStatusAsync(string repoPath, string groupName, CancellationToken ct)
+        private static async Task<GitStatusInfo> ReadGitStatusAsync(string repoPath, string groupName, CancellationToken ct, bool includeRemoteStatus)
         {
             var info = new GitStatusInfo();
             var branchResult = await RunCommandAsync("git", "branch --show-current", repoPath, ct);
@@ -240,7 +244,10 @@ namespace PackageManager.Features.CodeWorkspace.Services
                 }
             }
 
-            await RefreshGitRemoteTrackingAsync(repoPath, ct);
+            if (includeRemoteStatus)
+            {
+                await RefreshGitRemoteTrackingAsync(repoPath, ct);
+            }
 
             var abResult = await RunCommandAsync("git", "rev-list --left-right --count HEAD...@{upstream}", repoPath, ct);
             if (abResult.ExitCode == 0)
@@ -326,7 +333,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
             await RunCommandAsync("git", "fetch --prune --quiet", repoPath, ct);
         }
 
-        private static async Task RefreshSvnStatusAsync(RepositoryVcsSnapshot snapshot, string svnPath, CancellationToken ct)
+        private static async Task RefreshSvnStatusAsync(RepositoryVcsSnapshot snapshot, string svnPath, CancellationToken ct, bool includeRemoteStatus)
         {
             var infoResult = await RunCommandAsync("svn", "info --show-item revision", svnPath, ct);
             if (infoResult.ExitCode == 0 && int.TryParse(infoResult.Output.Trim(), out var rev))
@@ -334,7 +341,10 @@ namespace PackageManager.Features.CodeWorkspace.Services
                 snapshot.SvnRevision = rev;
             }
 
-            snapshot.SvnRemoteUpdateCount = await ReadSvnRemoteUpdateCountAsync(svnPath, ct);
+            if (includeRemoteStatus)
+            {
+                snapshot.SvnRemoteUpdateCount = await ReadSvnRemoteUpdateCountAsync(svnPath, ct);
+            }
 
             var statusResult = await RunCommandAsync("svn", "status", svnPath, ct);
             if (statusResult.ExitCode != 0)
@@ -490,21 +500,36 @@ namespace PackageManager.Features.CodeWorkspace.Services
             return Directory.Exists(Path.Combine(path, ".git")) || File.Exists(Path.Combine(path, ".git"));
         }
 
-        private static async Task RefreshSubRepositoriesAsync(RepositoryVcsSnapshot snapshot, string repoPath, IEnumerable<string> gitDirs, IEnumerable<string> svnDirs, CancellationToken ct)
+        private static async Task RefreshSubRepositoriesAsync(
+            RepositoryVcsSnapshot snapshot,
+            string repoPath,
+            IEnumerable<string> gitDirs,
+            IEnumerable<string> svnDirs,
+            IEnumerable<SubRepository> cachedSubRepositories,
+            CancellationToken ct,
+            bool includeRemoteStatus)
         {
+            var cachedSubRepositoryMap = (cachedSubRepositories ?? Enumerable.Empty<SubRepository>())
+                .Where(sub => sub != null && !string.IsNullOrWhiteSpace(sub.RelativePath))
+                .GroupBy(sub => $"{sub.VcsType}:{sub.RelativePath}", StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+
             foreach (var gitDir in (gitDirs ?? Enumerable.Empty<string>()).OrderBy(path => GetRelativePath(repoPath, path), StringComparer.OrdinalIgnoreCase))
             {
                 ct.ThrowIfCancellationRequested();
 
                 var relativePath = GetRelativePath(repoPath, gitDir);
+                var cachedSubRepository = FindCachedSubRepository(cachedSubRepositoryMap, VcsType.Git, relativePath);
                 var subRepo = new SubRepository
                 {
                     RelativePath = relativePath,
                     VcsType = VcsType.Git,
                     Status = VcsStatus.Unknown,
+                    GitAheadCount = cachedSubRepository?.GitAheadCount ?? 0,
+                    GitBehindCount = cachedSubRepository?.GitBehindCount ?? 0,
                 };
 
-                var gitStatus = await ReadGitStatusAsync(gitDir, $"Git 子仓库/{relativePath}", ct);
+                var gitStatus = await ReadGitStatusAsync(gitDir, $"Git 子仓库/{relativePath}", ct, includeRemoteStatus);
                 subRepo.Branch = gitStatus.Branch;
                 subRepo.GitAheadCount = gitStatus.AheadCount;
                 subRepo.GitBehindCount = gitStatus.BehindCount;
@@ -532,6 +557,8 @@ namespace PackageManager.Features.CodeWorkspace.Services
                     VcsType = VcsType.Svn,
                     Status = VcsStatus.Unknown,
                 };
+                var cachedSubRepository = FindCachedSubRepository(cachedSubRepositoryMap, VcsType.Svn, subRepo.RelativePath);
+                subRepo.SvnRemoteUpdateCount = cachedSubRepository?.SvnRemoteUpdateCount ?? 0;
 
                 var infoResult = await RunCommandAsync("svn", "info --show-item revision", svnDir, ct);
                 if (infoResult.ExitCode == 0 && int.TryParse(infoResult.Output.Trim(), out var rev))
@@ -539,7 +566,10 @@ namespace PackageManager.Features.CodeWorkspace.Services
                     subRepo.Revision = rev;
                 }
 
-                subRepo.SvnRemoteUpdateCount = await ReadSvnRemoteUpdateCountAsync(svnDir, ct);
+                if (includeRemoteStatus)
+                {
+                    subRepo.SvnRemoteUpdateCount = await ReadSvnRemoteUpdateCountAsync(svnDir, ct);
+                }
 
                 var statusResult = await RunCommandAsync("svn", "status", svnDir, ct);
                 if (statusResult.ExitCode == 0)
@@ -569,6 +599,17 @@ namespace PackageManager.Features.CodeWorkspace.Services
 
                 snapshot.SubRepositories.Add(subRepo);
             }
+        }
+
+        private static SubRepository FindCachedSubRepository(IDictionary<string, SubRepository> cachedSubRepositories, VcsType vcsType, string relativePath)
+        {
+            if (cachedSubRepositories == null || string.IsNullOrWhiteSpace(relativePath))
+            {
+                return null;
+            }
+
+            cachedSubRepositories.TryGetValue($"{vcsType}:{relativePath}", out var subRepository);
+            return subRepository;
         }
 
         private static async Task<int> ReadSvnRemoteUpdateCountAsync(string svnPath, CancellationToken ct)
