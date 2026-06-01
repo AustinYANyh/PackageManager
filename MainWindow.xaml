@@ -96,7 +96,7 @@
             <!-- 通知面板 Popup -->
             <Popup x:Name="NotificationPopup"
                    PlacementTarget="{Binding ElementName=NotificationBell}"
-                   Placement="Bottom" StaysOpen="False"
+                   Placement="Bottom" StaysOpen="True"
                    HorizontalOffset="-330" VerticalOffset="8"
                    AllowsTransparency="True">
                 <notif:NotificationPanel x:Name="NotificationPanelControl"/>

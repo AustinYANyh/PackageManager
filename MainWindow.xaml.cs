@@ -1224,16 +1224,22 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             if (args.PropertyName == nameof(NotificationService.UnreadCount))
             {
-                var count = service.UnreadCount;
-                UnreadBadge.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
-                UnreadCountText.Text = count > 99 ? "99+" : count.ToString();
+                UpdateNotificationBadge(service.UnreadCount);
             }
         };
+        UpdateNotificationBadge(service.UnreadCount);
+    }
+
+    private void UpdateNotificationBadge(int count)
+    {
+        UnreadBadge.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        UnreadCountText.Text = count > 99 ? "99+" : count.ToString();
     }
 
     private void NotificationBell_Click(object sender, MouseButtonEventArgs e)
     {
         NotificationPopup.IsOpen = !NotificationPopup.IsOpen;
+        e.Handled = true;
     }
 
     /// <summary>

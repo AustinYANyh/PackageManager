@@ -1,24 +1,32 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using PackageManager.Features.Notifications.Models;
+using PackageManager.Services;
+using Newtonsoft.Json;
 
 namespace PackageManager.Features.Notifications.Services
 {
     /// <summary>
-    /// 通知服务，维护内存中最近 50 条通知的列表，为通知面板和仪表盘提供数据源。
+    /// 通知服务，维护最近通知列表，为通知面板和仪表盘提供数据源。
     /// </summary>
     public sealed class NotificationService : INotifyPropertyChanged
     {
-        private const int MaxNotifications = 50;
+        private const int MaxNotifications = 200;
+        private readonly string _storagePath;
         private int _unreadCount;
 
-        public NotificationService()
+        public NotificationService(DataPersistenceService dataPersistenceService = null)
         {
             Notifications = new ObservableCollection<NotificationItem>();
+            var dataService = dataPersistenceService ?? ServiceLocator.Resolve<DataPersistenceService>() ?? new DataPersistenceService();
+            _storagePath = Path.Combine(dataService.GetDataFolderPath(), "notifications.json");
+            LoadNotifications();
         }
 
         /// <summary>
@@ -77,6 +85,7 @@ namespace PackageManager.Features.Notifications.Services
             {
                 item.IsRead = true;
                 RefreshUnreadCount();
+                SaveNotifications();
             }
         }
 
@@ -91,6 +100,7 @@ namespace PackageManager.Features.Notifications.Services
             }
 
             RefreshUnreadCount();
+            SaveNotifications();
         }
 
         /// <summary>
@@ -100,6 +110,7 @@ namespace PackageManager.Features.Notifications.Services
         {
             Notifications.Clear();
             RefreshUnreadCount();
+            SaveNotifications();
         }
 
         /// <summary>
@@ -114,19 +125,87 @@ namespace PackageManager.Features.Notifications.Services
         private void InsertNotification(NotificationItem item)
         {
             Notifications.Insert(0, item);
-
-            while (Notifications.Count > MaxNotifications)
-            {
-                var removed = Notifications[Notifications.Count - 1];
-                Notifications.RemoveAt(Notifications.Count - 1);
-            }
-
+            TrimNotifications();
             RefreshUnreadCount();
+            SaveNotifications();
         }
 
         private void RefreshUnreadCount()
         {
             UnreadCount = Notifications.Count(n => !n.IsRead);
+        }
+
+        private void LoadNotifications()
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(_storagePath) || !File.Exists(_storagePath))
+                {
+                    RefreshUnreadCount();
+                    return;
+                }
+
+                var json = File.ReadAllText(_storagePath);
+                var items = JsonConvert.DeserializeObject<List<NotificationItem>>(json) ?? new List<NotificationItem>();
+                foreach (var item in items
+                             .Where(IsValidNotification)
+                             .OrderByDescending(item => item.Timestamp)
+                             .Take(MaxNotifications))
+                {
+                    Notifications.Add(item);
+                }
+
+                RefreshUnreadCount();
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, "加载通知中心历史失败");
+                Notifications.Clear();
+                RefreshUnreadCount();
+            }
+        }
+
+        private void SaveNotifications()
+        {
+            try
+            {
+                if (string.IsNullOrWhiteSpace(_storagePath))
+                {
+                    return;
+                }
+
+                var directory = Path.GetDirectoryName(_storagePath);
+                if (!string.IsNullOrWhiteSpace(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                }
+
+                var items = Notifications
+                    .OrderByDescending(item => item.Timestamp)
+                    .Take(MaxNotifications)
+                    .ToList();
+                var json = JsonConvert.SerializeObject(items, Formatting.Indented);
+                File.WriteAllText(_storagePath, json);
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, "保存通知中心历史失败");
+            }
+        }
+
+        private void TrimNotifications()
+        {
+            while (Notifications.Count > MaxNotifications)
+            {
+                Notifications.RemoveAt(Notifications.Count - 1);
+            }
+        }
+
+        private static bool IsValidNotification(NotificationItem item)
+        {
+            return item != null &&
+                   !string.IsNullOrWhiteSpace(item.Id) &&
+                   !string.IsNullOrWhiteSpace(item.Title);
         }
 
         public event PropertyChangedEventHandler PropertyChanged;

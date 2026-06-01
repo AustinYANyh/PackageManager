@@ -42,7 +42,7 @@ namespace PackageManager
             ServiceLocator.Register(new PackageUpdateService());
             ServiceLocator.Register(new ApplicationFinderService());
             ServiceLocator.Register(new LanTransferService(dataPersistence));
-            ServiceLocator.Register(new NotificationService());
+            ServiceLocator.Register(new NotificationService(dataPersistence));
             var vcsStatusService = new VcsStatusService();
             var codeWorkspaceVcsCache = new CodeWorkspaceVcsCacheService(dataPersistence, vcsStatusService);
             ServiceLocator.Register(vcsStatusService);
