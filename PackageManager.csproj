@@ -213,6 +213,9 @@
         <Compile Include="Features\PingCode\Model\WorkItemComment.cs" />
         <Compile Include="Features\PingCode\Model\WorkItemDetails.cs" />
         <Compile Include="Features\PingCode\Models\MemberStatsItem.cs" />
+        <Compile Include="Features\PingCode\Models\PingCodeAiPromptRequest.cs" />
+        <Compile Include="Features\PingCode\Services\PingCodeWorkItemPromptService.cs" />
+        <Compile Include="Features\PingCode\Services\PingCodeImageDownloadService.cs" />
         <Compile Include="Features\PingCode\Services\PingCodeApiService.cs" />
         <Compile Include="Features\PingCode\Services\PingCodeApiService.Attachments.cs" />
         <Compile Include="Features\PingCode\Services\PingCodeApiService.Authentication.cs" />
@@ -222,6 +225,14 @@
         <Compile Include="Features\PingCode\Views\KanbanColumn.cs" />
         <Page Include="Features\PingCode\Views\KanbanStatsPage.xaml" />
         <Compile Include="Features\PingCode\Views\KanbanStatsPage.xaml.cs" />
+        <Page Include="Features\PingCode\Views\PingCodeAiExecutionWindow.xaml">
+          <Generator>MSBuild:Compile</Generator>
+          <SubType>Designer</SubType>
+        </Page>
+        <Compile Include="Features\PingCode\Views\PingCodeAiExecutionWindow.xaml.cs">
+          <DependentUpon>PingCodeAiExecutionWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
         <Page Include="Features\PingCode\Views\WorkItemDetailsWindow.xaml" />
         <Compile Include="Features\PingCode\Views\WorkItemDetailsWindow.xaml.cs">
           <DependentUpon>WorkItemDetailsWindow.xaml</DependentUpon>
@@ -315,6 +326,7 @@
         <Compile Include="Features\CodeWorkspace\Models\VcsChangedFile.cs" />
         <Compile Include="Features\CodeWorkspace\Models\VcsStatus.cs" />
         <Compile Include="Features\CodeWorkspace\Models\VcsType.cs" />
+        <Compile Include="Features\CodeWorkspace\Services\AiCliLaunchService.cs" />
         <Compile Include="Features\CodeWorkspace\Services\AiCommitSkillService.cs" />
         <Compile Include="Features\CodeWorkspace\Services\CodePackageLinkService.cs" />
         <Compile Include="Features\CodeWorkspace\Services\CodeWorkspaceNavigationRequestService.cs" />
@@ -481,17 +493,23 @@
         <EmbeddedResource Include="Assets\kiro-rs\kiro-rs.exe" />
         <EmbeddedResource Include="Assets\kiro-rs\kiro_stats.json" />
         <Content Include="Assets\Tools\UnlockProcessAdmin.exe" />
+        <Content Include="docs\1-svn-2-cdatagrid-cbutton-clistview-ui-cached-bengio.md" />
         <Content Include="docs\analysis\mftscanner-bucket-build-performance-after-optimization-2026-04-24.md" />
         <Content Include="docs\analysis\mftscanner-index-performance-analysis-2026-04-24.md" />
+        <Content Include="docs\breezy-noodling-forest.md" />
         <Content Include="docs\design\common-startup-workbench-ui-design.md" />
         <Content Include="docs\design\prototypes\common-startup-workbench-mockup-v2.html" />
         <Content Include="docs\design\prototypes\common-startup-workbench-mockup.html" />
         <Content Include="docs\design\prototypes\mftscanner-file-search-mockup.html" />
         <Content Include="docs\design\window-interaction-and-shortcuts-design.md" />
+        <Content Include="docs\devkit-optimization-proposal.md" />
+        <Content Include="docs\git-svn-status-display-design.md" />
         <Content Include="docs\image-1-image-2-eager-lynx.md" />
         <Content Include="docs\packagemanager-image-1-image-2-adaptive-cupcake.md" />
         <Content Include="docs\requirements\file-search-and-common-startup-prd.md" />
+        <Content Include="docs\shimmering-frolicking-parasol.md" />
         <Content Include="docs\skill-ok-ok-ai-cli-skill-cryptic-duckling.md" />
+        <Content Include="docs\skill-ok-ok-ai-cli-skill-cryptic-duckling_pre.md" />
         <Content Include="Models\json.txt" />
         <Content Include="scripts\Test-MftScannerSearchCorrectness.ps1" />
         <Content Include="Features\PingCode\Views\WorkItemKanban.html">

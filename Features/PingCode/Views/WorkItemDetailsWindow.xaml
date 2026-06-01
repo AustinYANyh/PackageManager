@@ -11,8 +11,29 @@
         <conv:SeverityTextConverter x:Key="SeverityTextConverter" />
     </Window.Resources>
     <Grid Background="#FFFFFF">
-        <wv2:WebView2 x:Name="DetailsWeb" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" />
-        <Grid x:Name="LoadingOverlay" Background="#80FFFFFF" Visibility="Collapsed">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+        <Border Grid.Row="0" Background="#F8FAFC" BorderBrush="#E5E7EB" BorderThickness="0,0,0,1" Padding="12,8">
+            <DockPanel LastChildFill="False">
+                <TextBlock DockPanel.Dock="Left"
+                           Text="工作项详情"
+                           VerticalAlignment="Center"
+                           FontWeight="SemiBold"
+                           Foreground="#374151" />
+                <Button DockPanel.Dock="Right"
+                        Content="{Binding AiActionButtonText}"
+                        Padding="14,7"
+                        Background="#2563EB"
+                        Foreground="White"
+                        BorderBrush="#1D4ED8"
+                        FontWeight="SemiBold"
+                        Click="AiActionButton_Click" />
+            </DockPanel>
+        </Border>
+        <wv2:WebView2 Grid.Row="1" x:Name="DetailsWeb" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" />
+        <Grid Grid.Row="1" x:Name="LoadingOverlay" Background="#80FFFFFF" Visibility="Collapsed">
             <Grid>
                 <Border CornerRadius="8" Background="#FFFFFFFF" BorderBrush="#E5E7EB" BorderThickness="1" Padding="16"
                         HorizontalAlignment="Center" VerticalAlignment="Center">

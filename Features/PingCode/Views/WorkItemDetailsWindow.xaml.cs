@@ -9,6 +9,7 @@ using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows;
 using Microsoft.Web.WebView2.Core;
+using PackageManager.Features.PingCode.Services;
 using PackageManager.Services;
 using PackageManager.Services.PingCode;
 using PackageManager.Services.PingCode.Dto;
@@ -82,6 +83,8 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
     /// </summary>
     public WorkItemDetails Details { get; }
 
+    public string AiActionButtonText => new PingCodeWorkItemPromptService().IsFixWorkItem(Details) ? "AI 修复" : "AI 实现";
+
     /// <summary>
     /// 触发 <see cref="PropertyChanged"/> 事件。
     /// </summary>
@@ -130,6 +133,34 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         catch
         {
             return null;
+        }
+    }
+
+    private async void AiActionButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            ShowLoading(true);
+            var latestDetails = Details;
+            if (!string.IsNullOrWhiteSpace(Details?.Id))
+            {
+                latestDetails = await api.GetWorkItemDetailsAsync(Details.Id) ?? Details;
+            }
+
+            var token = await api.GetAccessTokenAsync();
+            var promptService = new PingCodeWorkItemPromptService();
+            var request = promptService.BuildRequest(latestDetails);
+            var window = new PingCodeAiExecutionWindow(request, latestDetails, token)
+            {
+                Owner = this,
+            };
+            ShowLoading(false);
+            window.ShowDialog();
+        }
+        catch (Exception ex)
+        {
+            ShowLoading(false);
+            MessageBox.Show("生成 AI 执行 Prompt 失败：" + ex.Message, "PingCode AI 执行", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
