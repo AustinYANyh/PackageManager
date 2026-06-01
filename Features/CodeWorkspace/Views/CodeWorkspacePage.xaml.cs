@@ -636,14 +636,14 @@ namespace PackageManager.Features.CodeWorkspace.Views
             return false;
         }
 
-        private void DoClaudeCommit(CodeRepository repo)
+        private async void DoClaudeCommit(CodeRepository repo)
         {
-            DoAiCommit(repo, "Claude", "claude", "claude --dangerously-skip-permissions");
+            await DoAiCommitAsync(repo, "Claude", "claude", "claude --dangerously-skip-permissions");
         }
 
-        private void DoCodexCommit(CodeRepository repo)
+        private async void DoCodexCommit(CodeRepository repo)
         {
-            DoAiCommit(repo, "Codex", "codex", "codex --sandbox danger-full-access --ask-for-approval never");
+            await DoAiCommitAsync(repo, "Codex", "codex", "codex --sandbox danger-full-access --ask-for-approval never");
         }
 
         private async void DoPullRepository(CodeRepository repo)
@@ -693,10 +693,37 @@ namespace PackageManager.Features.CodeWorkspace.Views
             }
         }
 
-        private void DoAiCommit(CodeRepository repo, string engineName, string commandName, string commandPrefix)
+        private async Task DoAiCommitAsync(CodeRepository repo, string engineName, string commandName, string commandPrefix)
         {
-            EnsureCommandExists(commandName);
-            var skillInfo = _aiCommitSkillService.EnsureSkillAvailable(repo.Path);
+            if (repo.IsRefreshing)
+            {
+                StatusText = $"{repo.Name} 正在执行操作，请稍后。";
+                return;
+            }
+
+            AiCommitSkillInfo skillInfo;
+            try
+            {
+                repo.IsRefreshing = true;
+                StatusText = $"正在准备 {engineName} 提交环境...";
+                skillInfo = await Task.Run(() =>
+                {
+                    EnsureCommandExists(commandName);
+                    return _aiCommitSkillService.EnsureSkillAvailable(repo.Path);
+                });
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, $"准备 {engineName} 提交环境失败: {repo.Path}");
+                StatusText = $"{engineName} 提交环境准备失败: {ex.Message}";
+                MessageBox.Show($"{engineName} 提交环境准备失败: {ex.Message}", $"{engineName} 提交", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+            finally
+            {
+                repo.IsRefreshing = false;
+            }
+
             var syncedUserSkills = skillInfo.SyncedUserSkillPaths.Count == 0
                 ? "Write-Host '  - 未找到用户 skill 目录。'"
                 : string.Join(Environment.NewLine, skillInfo.SyncedUserSkillPaths.Select(path => $"Write-Host '  - {TerminalHelper.EscapePowerShellSingleQuoted(path)}'"));
@@ -724,49 +751,67 @@ Write-Host '仓库内 skill：' -ForegroundColor DarkCyan
             StatusText = $"已启动 {engineName} 代码提交：{repo.Name}；使用脚本 {skillInfo.WorkingChangesScriptPath}";
         }
 
-        private void DoOpenIde(CodeRepository repo, string[] possibleNames, string displayName)
+        private async void DoOpenIde(CodeRepository repo, string[] possibleNames, string displayName)
         {
-            var toolPath = GetToolPathFromCommonStartup(possibleNames);
+            var target = await SelectProjectFileAsync(repo);
+            if (target == null)
+            {
+                StatusText = "已取消选择项目文件。";
+                return;
+            }
+
+            StatusText = $"正在准备打开 {displayName}...";
+            var toolPath = await Task.Run(() => GetToolPathFromCommonStartup(possibleNames));
             if (string.IsNullOrWhiteSpace(toolPath))
             {
                 MessageBox.Show($"未在常用启动项中找到 {displayName}，请先配置工具路径。", "代码工作区", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
 
-            var target = SelectProjectFile(repo);
+            try
+            {
+                await Task.Run(() => StartToolWithTarget(toolPath, target, repo.Path));
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, $"打开 {displayName} 失败: {repo.Path}");
+                StatusText = $"打开 {displayName} 失败: {ex.Message}";
+                MessageBox.Show($"打开 {displayName} 失败: {ex.Message}", "代码工作区", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            StatusText = $"已在 {displayName} 中打开 {Path.GetFileName(target)}。";
+        }
+
+        private async void DoOpenVisualStudio(CodeRepository repo)
+        {
+            var target = await SelectProjectFileAsync(repo);
             if (target == null)
             {
                 StatusText = "已取消选择项目文件。";
                 return;
             }
 
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = toolPath,
-                Arguments = QuoteArgument(target),
-                WorkingDirectory = repo.Path,
-                UseShellExecute = true,
-            });
-            StatusText = $"已在 {displayName} 中打开 {Path.GetFileName(target)}。";
-        }
-
-        private void DoOpenVisualStudio(CodeRepository repo)
-        {
-            var toolPath = ResolveVisualStudioPath() ?? GetToolPathFromCommonStartup("Visual Studio", "devenv", "VS");
+            StatusText = "正在准备打开 Visual Studio...";
+            var toolPath = await Task.Run(() => ResolveVisualStudioPath() ?? GetToolPathFromCommonStartup("Visual Studio", "devenv", "VS"));
             if (string.IsNullOrWhiteSpace(toolPath))
             {
                 MessageBox.Show("未找到 Visual Studio，请确认已安装或在常用启动项中配置 VS。", "代码工作区", MessageBoxButton.OK, MessageBoxImage.Information);
                 return;
             }
 
-            var target = SelectProjectFile(repo);
-            if (target == null)
+            try
             {
-                StatusText = "已取消选择项目文件。";
+                await Task.Run(() => StartToolWithTarget(toolPath, target, repo.Path));
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, $"打开 Visual Studio 失败: {repo.Path}");
+                StatusText = $"打开 Visual Studio 失败: {ex.Message}";
+                MessageBox.Show($"打开 Visual Studio 失败: {ex.Message}", "代码工作区", MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
             }
 
-            StartToolWithTarget(toolPath, target, repo.Path);
             StatusText = $"已在 Visual Studio 中打开 {Path.GetFileName(target)}。";
         }
 
@@ -822,14 +867,35 @@ codex --sandbox danger-full-access --ask-for-approval never
             StatusText = $"已打开文件夹：{repo.Name}";
         }
 
-        private string SelectProjectFile(CodeRepository repo)
+        private async Task<string> SelectProjectFileAsync(CodeRepository repo)
         {
             if (repo.ProjectFiles == null || repo.ProjectFiles.Count == 0 || repo.ProjectFiles.All(file => !File.Exists(file)))
             {
-                if (!RefreshProjectFiles(repo))
+                if (repo.IsRefreshing)
                 {
+                    StatusText = $"{repo.Name} 正在执行操作，请稍后。";
                     return null;
                 }
+
+                StatusText = $"正在扫描项目文件: {repo.Name}";
+                try
+                {
+                    repo.IsRefreshing = true;
+                    if (!await RefreshProjectFilesAsync(repo))
+                    {
+                        return null;
+                    }
+                }
+                finally
+                {
+                    repo.IsRefreshing = false;
+                }
+            }
+
+            if (repo.ProjectFiles == null || repo.ProjectFiles.Count == 0 || repo.ProjectFiles.All(file => !File.Exists(file)))
+            {
+                MessageBox.Show("未找到可用的项目文件。", "选择项目文件", MessageBoxButton.OK, MessageBoxImage.Information);
+                return null;
             }
 
             var projectFiles = (repo.ProjectFiles ?? new List<string>())
@@ -838,7 +904,8 @@ codex --sandbox danger-full-access --ask-for-approval never
                 .ToList();
             if (projectFiles.Count == 0)
             {
-                return repo.Path;
+                MessageBox.Show("未找到可用的项目文件。", "选择项目文件", MessageBoxButton.OK, MessageBoxImage.Information);
+                return null;
             }
 
             if (projectFiles.Count == 1)
@@ -851,27 +918,6 @@ codex --sandbox danger-full-access --ask-for-approval never
                 Owner = Window.GetWindow(this),
             };
             return dialog.ShowDialog() == true ? dialog.SelectedProjectFile : null;
-        }
-
-        private bool RefreshProjectFiles(CodeRepository repo)
-        {
-            if (repo == null || string.IsNullOrWhiteSpace(repo.Path) || !Directory.Exists(repo.Path))
-            {
-                return false;
-            }
-
-            try
-            {
-                repo.ProjectFiles = ScanProjectFiles(repo.Path);
-                return true;
-            }
-            catch (Exception ex)
-            {
-                LoggingService.LogError(ex, $"刷新仓库项目文件失败：{repo.Path}");
-                MessageBox.Show($"扫描项目文件失败：{ex.Message}", "刷新项目文件", MessageBoxButton.OK, MessageBoxImage.Warning);
-                StatusText = $"扫描项目文件失败: {ex.Message}";
-                return false;
-            }
         }
 
         private async Task<bool> RefreshProjectFilesAsync(CodeRepository repo)
