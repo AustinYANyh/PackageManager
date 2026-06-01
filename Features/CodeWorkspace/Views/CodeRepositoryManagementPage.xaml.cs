@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using CustomControlLibrary.CustomControl.Attribute.DataGrid;
@@ -58,7 +59,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
             StatusText = $"已加载 {Repositories.Count} 个仓库。可拖放文件夹到页面中添加。";
         }
 
-        private void AddButton_Click(object sender, RoutedEventArgs e)
+        private async void AddButton_Click(object sender, RoutedEventArgs e)
         {
             var path = FolderPickerService.PickFolder("选择代码仓库根目录");
             if (string.IsNullOrWhiteSpace(path))
@@ -66,7 +67,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
                 return;
             }
 
-            AddRepository(path);
+            await AddRepositoryAsync(path);
         }
 
         private void DeleteButton_Click(object sender, RoutedEventArgs e)
@@ -82,14 +83,18 @@ namespace PackageManager.Features.CodeWorkspace.Views
             StatusText = "已删除仓库，点击保存后生效。";
         }
 
-        private void RefreshProjectFilesButton_Click(object sender, RoutedEventArgs e)
+        private async void RefreshProjectFilesButton_Click(object sender, RoutedEventArgs e)
         {
+            var hasFailure = false;
             foreach (var repo in Repositories)
             {
-                RefreshProjectFiles(repo);
+                if (!await RefreshProjectFilesAsync(repo))
+                {
+                    hasFailure = true;
+                }
             }
 
-            StatusText = "项目文件已刷新，点击保存后生效。";
+            StatusText = hasFailure ? "部分项目文件刷新失败，点击保存后生效。" : "项目文件已刷新，点击保存后生效。";
         }
 
         private void SaveButton_Click(object sender, RoutedEventArgs e)
@@ -108,7 +113,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
             e.Handled = true;
         }
 
-        private void Page_Drop(object sender, DragEventArgs e)
+        private async void Page_Drop(object sender, DragEventArgs e)
         {
             if (!e.Data.GetDataPresent(DataFormats.FileDrop))
             {
@@ -119,7 +124,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
             var added = 0;
             foreach (var path in paths.Where(Directory.Exists))
             {
-                if (AddRepository(path, saveImmediately: false))
+                if (await AddRepositoryAsync(path, saveImmediately: false))
                 {
                     added++;
                 }
@@ -128,7 +133,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
             StatusText = added > 0 ? $"已添加 {added} 个仓库，点击保存后生效。" : "未添加新仓库。";
         }
 
-        private bool AddRepository(string path, bool saveImmediately = false)
+        private async Task<bool> AddRepositoryAsync(string path, bool saveImmediately = false)
         {
             path = NormalizePath(path);
             if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
@@ -150,9 +155,10 @@ namespace PackageManager.Features.CodeWorkspace.Views
                 LastUsed = DateTime.MinValue,
                 UsageCount = 0,
             };
-            RefreshProjectFiles(repo);
             Repositories.Add(repo);
             SelectedRepository = repo;
+            StatusText = $"正在扫描项目文件: {repo.Name}";
+            var scanOk = await RefreshProjectFilesAsync(repo);
 
             if (saveImmediately)
             {
@@ -160,34 +166,47 @@ namespace PackageManager.Features.CodeWorkspace.Views
             }
             else
             {
-                StatusText = "已添加仓库，点击保存后生效。";
+                StatusText = scanOk ? "已添加仓库，点击保存后生效。" : "已添加仓库，但项目文件扫描失败，点击保存后生效。";
             }
 
             return true;
         }
 
-        private void RefreshProjectFiles(RepositoryManagementRow repo)
+        private async Task<bool> RefreshProjectFilesAsync(RepositoryManagementRow repo)
         {
             if (repo == null || string.IsNullOrWhiteSpace(repo.Path) || !Directory.Exists(repo.Path))
             {
-                return;
+                return false;
             }
 
             try
             {
-                var slnFiles = EnumerateProjectFiles(repo.Path, "*.sln")
-                    .Where(path => path.IndexOf("\\.vs\\", StringComparison.OrdinalIgnoreCase) < 0)
-                    .Take(100)
-                    .ToList();
-
-                repo.ProjectFiles = slnFiles.Count > 0
-                    ? slnFiles
-                    : EnumerateProjectFiles(repo.Path, "*.csproj").Take(100).ToList();
+                repo.ProjectFiles = await Task.Run(() => ScanProjectFiles(repo.Path));
+                return true;
             }
             catch (Exception ex)
             {
                 LoggingService.LogError(ex, $"刷新仓库项目文件失败：{repo.Path}");
+                MessageBox.Show($"扫描项目文件失败：{ex.Message}", "刷新项目文件", MessageBoxButton.OK, MessageBoxImage.Warning);
+                StatusText = $"扫描项目文件失败: {ex.Message}";
+                return false;
             }
+        }
+
+        private static System.Collections.Generic.List<string> ScanProjectFiles(string rootPath)
+        {
+            var slnFiles = EnumerateProjectFiles(rootPath, "*.sln")
+                .Where(path => path.IndexOf("\\.vs\\", StringComparison.OrdinalIgnoreCase) < 0)
+                .Take(100)
+                .ToList();
+            var csprojFiles = EnumerateProjectFiles(rootPath, "*.csproj")
+                    .Take(100)
+                    .ToList();
+
+            return slnFiles
+                .Concat(csprojFiles)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
         }
 
         private void SaveRepositories()

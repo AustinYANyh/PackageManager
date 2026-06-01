@@ -434,15 +434,19 @@ namespace PackageManager.Features.CodeWorkspace.Views
             }
         }
 
-        private void RefreshProjectFilesButton_Click(object sender, RoutedEventArgs e)
+        private async void RefreshProjectFilesButton_Click(object sender, RoutedEventArgs e)
         {
+            var hasFailure = false;
             foreach (var repo in Repositories)
             {
-                RefreshProjectFiles(repo);
+                if (!await RefreshProjectFilesAsync(repo))
+                {
+                    hasFailure = true;
+                }
             }
 
             SaveRepositories();
-            StatusText = "项目文件已刷新。";
+            StatusText = hasFailure ? "部分项目文件刷新失败。" : "项目文件已刷新。";
         }
 
         private void ReloadButton_Click(object sender, RoutedEventArgs e)
@@ -822,10 +826,16 @@ codex --sandbox danger-full-access --ask-for-approval never
         {
             if (repo.ProjectFiles == null || repo.ProjectFiles.Count == 0 || repo.ProjectFiles.All(file => !File.Exists(file)))
             {
-                RefreshProjectFiles(repo);
+                if (!RefreshProjectFiles(repo))
+                {
+                    return null;
+                }
             }
 
-            var projectFiles = (repo.ProjectFiles ?? new List<string>()).Where(File.Exists).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            var projectFiles = (repo.ProjectFiles ?? new List<string>())
+                .Where(File.Exists)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
             if (projectFiles.Count == 0)
             {
                 return repo.Path;
@@ -843,28 +853,62 @@ codex --sandbox danger-full-access --ask-for-approval never
             return dialog.ShowDialog() == true ? dialog.SelectedProjectFile : null;
         }
 
-        private void RefreshProjectFiles(CodeRepository repo)
+        private bool RefreshProjectFiles(CodeRepository repo)
         {
             if (repo == null || string.IsNullOrWhiteSpace(repo.Path) || !Directory.Exists(repo.Path))
             {
-                return;
+                return false;
             }
 
             try
             {
-                var slnFiles = EnumerateProjectFiles(repo.Path, "*.sln")
-                    .Where(path => path.IndexOf("\\.vs\\", StringComparison.OrdinalIgnoreCase) < 0)
-                    .Take(100)
-                    .ToList();
-
-                repo.ProjectFiles = slnFiles.Count > 0
-                    ? slnFiles
-                    : EnumerateProjectFiles(repo.Path, "*.csproj").Take(100).ToList();
+                repo.ProjectFiles = ScanProjectFiles(repo.Path);
+                return true;
             }
             catch (Exception ex)
             {
                 LoggingService.LogError(ex, $"刷新仓库项目文件失败：{repo.Path}");
+                MessageBox.Show($"扫描项目文件失败：{ex.Message}", "刷新项目文件", MessageBoxButton.OK, MessageBoxImage.Warning);
+                StatusText = $"扫描项目文件失败: {ex.Message}";
+                return false;
             }
+        }
+
+        private async Task<bool> RefreshProjectFilesAsync(CodeRepository repo)
+        {
+            if (repo == null || string.IsNullOrWhiteSpace(repo.Path) || !Directory.Exists(repo.Path))
+            {
+                return false;
+            }
+
+            try
+            {
+                repo.ProjectFiles = await Task.Run(() => ScanProjectFiles(repo.Path));
+                return true;
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, $"刷新仓库项目文件失败：{repo.Path}");
+                MessageBox.Show($"扫描项目文件失败：{ex.Message}", "刷新项目文件", MessageBoxButton.OK, MessageBoxImage.Warning);
+                StatusText = $"扫描项目文件失败: {ex.Message}";
+                return false;
+            }
+        }
+
+        private static List<string> ScanProjectFiles(string rootPath)
+        {
+            var slnFiles = EnumerateProjectFiles(rootPath, "*.sln")
+                .Where(path => path.IndexOf("\\.vs\\", StringComparison.OrdinalIgnoreCase) < 0)
+                .Take(100)
+                .ToList();
+            var csprojFiles = EnumerateProjectFiles(rootPath, "*.csproj")
+                    .Take(100)
+                    .ToList();
+
+            return slnFiles
+                .Concat(csprojFiles)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
         }
 
         private string GetToolPathFromCommonStartup(params string[] possibleNames)

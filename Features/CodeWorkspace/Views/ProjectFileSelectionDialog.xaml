@@ -10,6 +10,17 @@
         WindowStartupLocation="CenterOwner"
         ResizeMode="CanResize">
     <DockPanel Margin="14">
+        <DockPanel DockPanel.Dock="Top" Margin="0,0,0,10" LastChildFill="False">
+            <controls:CTextBlock DockPanel.Dock="Left"
+                                 Text="{Binding StatusText}"
+                                 VerticalAlignment="Center"/>
+            <CheckBox DockPanel.Dock="Right"
+                      Content="显示 .csproj"
+                      IsChecked="{Binding ShowCsproj, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                      VerticalAlignment="Center"
+                      VerticalContentAlignment="Center"/>
+        </DockPanel>
+
         <StackPanel DockPanel.Dock="Bottom"
                     Orientation="Horizontal"
                     HorizontalAlignment="Right"
@@ -17,6 +28,7 @@
             <button:CButton Content="确定"
                             Width="86"
                             Height="30"
+                            IsEnabled="{Binding CanConfirm}"
                             IsDefault="True"
                             Click="OK_Click"/>
             <button:CButton Content="取消"
@@ -32,6 +44,7 @@
                             EnableAutoTemplateSelection="True"
                             ItemsSource="{Binding ProjectFiles}"
                             SelectedItem="{Binding SelectedProjectFileItem, Mode=TwoWay}"
+                            AutoGeneratingColumn="ProjectFilesGrid_AutoGeneratingColumn"
                             MouseDoubleClick="Grid_DoubleClick"/>
     </DockPanel>
 </Window>
