@@ -12,7 +12,8 @@
         mc:Ignorable="d"
         Title="DevKit" Height="890" Width="1480" MinWidth="960"
         Icon="/Assets/Icons/App.ico"
-        ResizeMode="CanResize" WindowStartupLocation="CenterScreen" AllowDrop="True">
+        ResizeMode="CanResize" WindowStartupLocation="CenterScreen" AllowDrop="True"
+        PreviewMouseDown="MainWindow_PreviewMouseDown">
     <Window.Resources>
     </Window.Resources>
 

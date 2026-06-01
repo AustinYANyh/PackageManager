@@ -200,6 +200,7 @@
                                                     <navigation:CMenuItem Header="Claude提交" Command="{Binding ClaudeCommitCommand}"/>
                                                     <navigation:CMenuItem Header="Codex提交" Command="{Binding CodexCommitCommand}"/>
                                                     <navigation:CMenuItem Header="拉取代码" Command="{Binding PullCommand}"/>
+                                                    <navigation:CMenuItem Header="合并回主干..." Command="{Binding MergeToMainCommand}"/>
                                                     <Separator/>
                                                     <navigation:CMenuItem Header="VS" Command="{Binding OpenVSCommand}"/>
                                                     <navigation:CMenuItem Header="Rider" Command="{Binding OpenRiderCommand}"/>

@@ -194,6 +194,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
             repo.ClaudeCommitCommand = new RelayCommand(() => RunRepositoryAction(repo, DoClaudeCommit));
             repo.CodexCommitCommand = new RelayCommand(() => RunRepositoryAction(repo, DoCodexCommit));
             repo.PullCommand = new RelayCommand(() => RunRepositoryAction(repo, DoPullRepository));
+            repo.MergeToMainCommand = new RelayCommand(() => RunRepositoryAction(repo, DoMergeToMain));
             repo.OpenVSCommand = new RelayCommand(() => RunRepositoryAction(repo, DoOpenVisualStudio));
             repo.OpenRiderCommand = new RelayCommand(() => RunRepositoryAction(repo, r => DoOpenIde(r, new[] { "Rider", "JetBrains Rider" }, "Rider")));
             repo.OpenCursorCommand = new RelayCommand(() => RunRepositoryAction(repo, DoOpenCursor));
@@ -691,6 +692,16 @@ namespace PackageManager.Features.CodeWorkspace.Views
             {
                 repo.IsRefreshing = false;
             }
+        }
+
+        private void DoMergeToMain(CodeRepository repo)
+        {
+            var window = new MergeToMainWindow(repo)
+            {
+                Owner = Window.GetWindow(this),
+            };
+            window.ShowDialog();
+            StatusText = $"已关闭合并回主干窗口: {repo.Name}";
         }
 
         private async Task DoAiCommitAsync(CodeRepository repo, string engineName, string commandName, string commandPrefix)

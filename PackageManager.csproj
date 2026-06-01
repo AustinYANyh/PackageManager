@@ -308,6 +308,9 @@
         <Compile Include="Features\CodeWorkspace\Models\CodeRepository.cs" />
         <Compile Include="Features\CodeWorkspace\Models\PackageLinkOption.cs" />
         <Compile Include="Features\CodeWorkspace\Models\RepositoryLinkOption.cs" />
+        <Compile Include="Features\CodeWorkspace\Models\MergeConflictFile.cs" />
+        <Compile Include="Features\CodeWorkspace\Models\MergeOperationResults.cs" />
+        <Compile Include="Features\CodeWorkspace\Models\MergeRepositoryItem.cs" />
         <Compile Include="Features\CodeWorkspace\Models\SubRepository.cs" />
         <Compile Include="Features\CodeWorkspace\Models\VcsChangedFile.cs" />
         <Compile Include="Features\CodeWorkspace\Models\VcsStatus.cs" />
@@ -316,6 +319,7 @@
         <Compile Include="Features\CodeWorkspace\Services\CodePackageLinkService.cs" />
         <Compile Include="Features\CodeWorkspace\Services\CodeWorkspaceNavigationRequestService.cs" />
         <Compile Include="Features\CodeWorkspace\Services\CodeWorkspaceVcsCacheService.cs" />
+        <Compile Include="Features\CodeWorkspace\Services\GitMergeService.cs" />
         <Compile Include="Features\CodeWorkspace\Services\VcsExternalDiffToolService.cs" />
         <Compile Include="Features\CodeWorkspace\Services\VcsDiffService.cs" />
         <Compile Include="Features\CodeWorkspace\Services\TerminalHelper.cs" />
@@ -342,6 +346,14 @@
         </Page>
         <Compile Include="Features\CodeWorkspace\Views\CodeWorkspaceDiffWindow.xaml.cs">
           <DependentUpon>CodeWorkspaceDiffWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Page Include="Features\CodeWorkspace\Views\MergeToMainWindow.xaml">
+          <Generator>MSBuild:Compile</Generator>
+          <SubType>Designer</SubType>
+        </Page>
+        <Compile Include="Features\CodeWorkspace\Views\MergeToMainWindow.xaml.cs">
+          <DependentUpon>MergeToMainWindow.xaml</DependentUpon>
           <SubType>Code</SubType>
         </Compile>
         <Page Include="Features\CodeWorkspace\Views\ProjectFileSelectionDialog.xaml">

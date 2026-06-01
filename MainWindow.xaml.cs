@@ -13,6 +13,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Input;
+using System.Windows.Media;
 using CustomControlLibrary.CustomControl.Controls.DataGrid;
 using PackageManager.Models;
 using PackageManager.Services;
@@ -1240,6 +1241,38 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         NotificationPopup.IsOpen = !NotificationPopup.IsOpen;
         e.Handled = true;
+    }
+
+    private void MainWindow_PreviewMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (!NotificationPopup.IsOpen)
+        {
+            return;
+        }
+
+        var source = e.OriginalSource as DependencyObject;
+        if (IsElementOrDescendant(source, NotificationBell) ||
+            IsElementOrDescendant(source, NotificationPanelControl))
+        {
+            return;
+        }
+
+        NotificationPopup.IsOpen = false;
+    }
+
+    private static bool IsElementOrDescendant(DependencyObject source, DependencyObject target)
+    {
+        while (source != null)
+        {
+            if (ReferenceEquals(source, target))
+            {
+                return true;
+            }
+
+            source = VisualTreeHelper.GetParent(source);
+        }
+
+        return false;
     }
 
     /// <summary>

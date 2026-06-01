@@ -801,6 +801,8 @@ namespace PackageManager.Features.CodeWorkspace.Models
 
         public ICommand PullCommand { get; set; }
 
+        public ICommand MergeToMainCommand { get; set; }
+
         public ICommand OpenVSCommand { get; set; }
 
         public ICommand OpenRiderCommand { get; set; }
@@ -824,6 +826,7 @@ namespace PackageManager.Features.CodeWorkspace.Models
             new ButtonConfig { Text = "Claude提交", Width = 90, Height = 26, CommandProperty = nameof(ClaudeCommitCommand) },
             new ButtonConfig { Text = "Codex提交", Width = 86, Height = 26, CommandProperty = nameof(CodexCommitCommand) },
             new ButtonConfig { Text = "拉取", Width = 54, Height = 26, CommandProperty = nameof(PullCommand) },
+            new ButtonConfig { Text = "合并主干", Width = 78, Height = 26, CommandProperty = nameof(MergeToMainCommand) },
             new ButtonConfig { Text = "VS", Width = 42, Height = 26, CommandProperty = nameof(OpenVSCommand) },
             new ButtonConfig { Text = "Rider", Width = 50, Height = 26, CommandProperty = nameof(OpenRiderCommand) },
             new ButtonConfig { Text = "Cursor", Width = 54, Height = 26, CommandProperty = nameof(OpenCursorCommand) },
