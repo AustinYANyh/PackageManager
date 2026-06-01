@@ -5,6 +5,8 @@ using System.Security.Principal;
 using System.Windows;
 using System.Threading.Tasks;
 using PackageManager.Services;
+using PackageManager.Features.Notifications.Services;
+using PackageManager.Features.CodeWorkspace.Services;
 using System.Runtime.InteropServices;
 using System.IO;
 
@@ -33,6 +35,23 @@ namespace PackageManager
             TryEnsureWebView2Loader();
             LoggingService.Initialize();
 
+            var dataPersistence = new DataPersistenceService();
+            ServiceLocator.Register(dataPersistence);
+            ServiceLocator.Register(new CredentialStore(dataPersistence));
+            ServiceLocator.Register(new FtpService(dataPersistence));
+            ServiceLocator.Register(new PackageUpdateService());
+            ServiceLocator.Register(new ApplicationFinderService());
+            ServiceLocator.Register(new LanTransferService(dataPersistence));
+            ServiceLocator.Register(new NotificationService(dataPersistence));
+            var vcsStatusService = new VcsStatusService();
+            var codeWorkspaceVcsCache = new CodeWorkspaceVcsCacheService(dataPersistence, vcsStatusService);
+            ServiceLocator.Register(vcsStatusService);
+            ServiceLocator.Register(codeWorkspaceVcsCache);
+
+            var ftpService = ServiceLocator.Resolve<FtpService>();
+            var monitor = new PackageVersionMonitorService(ftpService);
+            ServiceLocator.Register(monitor);
+
             AppDomain.CurrentDomain.UnhandledException += CurrentDomain_UnhandledException;
             DispatcherUnhandledException += App_DispatcherUnhandledException;
             TaskScheduler.UnobservedTaskException += TaskScheduler_UnobservedTaskException;
@@ -43,6 +62,7 @@ namespace PackageManager
             }
 
             InitializeCommonStartupHotkey();
+            codeWorkspaceVcsCache.StartWarmup();
         }
 
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
@@ -165,26 +185,26 @@ namespace PackageManager
                     return true;
                 }
 
-                if (args != null && args.Length >= 1 && string.Equals(args[0], "--install-index-service", StringComparison.OrdinalIgnoreCase))
-                {
-                    var exitCode = MftIndexServiceManager.RunAdminInstallOrUpdate();
-                    Environment.Exit(exitCode);
-                    return true;
-                }
-
-                if (args != null && args.Length >= 1 && string.Equals(args[0], "--uninstall-index-service", StringComparison.OrdinalIgnoreCase))
-                {
-                    var exitCode = MftIndexServiceManager.RunAdminUninstall();
-                    Environment.Exit(exitCode);
-                    return true;
-                }
-
-                if (args != null && args.Length >= 1 && string.Equals(args[0], "--service-status", StringComparison.OrdinalIgnoreCase))
-                {
-                    Console.WriteLine(MftIndexServiceManager.GetStatusJson());
-                    Environment.Exit(0);
-                    return true;
-                }
+                // if (args != null && args.Length >= 1 && string.Equals(args[0], "--install-index-service", StringComparison.OrdinalIgnoreCase))
+                // {
+                //     var exitCode = MftIndexServiceManager.RunAdminInstallOrUpdate();
+                //     Environment.Exit(exitCode);
+                //     return true;
+                // }
+                //
+                // if (args != null && args.Length >= 1 && string.Equals(args[0], "--uninstall-index-service", StringComparison.OrdinalIgnoreCase))
+                // {
+                //     var exitCode = MftIndexServiceManager.RunAdminUninstall();
+                //     Environment.Exit(exitCode);
+                //     return true;
+                // }
+                //
+                // if (args != null && args.Length >= 1 && string.Equals(args[0], "--service-status", StringComparison.OrdinalIgnoreCase))
+                // {
+                //     Console.WriteLine(MftIndexServiceManager.GetStatusJson());
+                //     Environment.Exit(0);
+                //     return true;
+                // }
             }
             catch (Exception ex)
             {
@@ -219,6 +239,7 @@ namespace PackageManager
             try
             {
                 _systemHotkeyService?.Dispose();
+                ServiceLocator.Resolve<CodeWorkspaceVcsCacheService>()?.Cancel();
                 _commonStartupWindowManager?.Shutdown();
                 _fileSearchWindowManager?.Shutdown();
             }

@@ -3,39 +3,31 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using PackageManager.Models;
+using PackageManager.Services;
+using PackageManager.Shell;
 
 namespace PackageManager.Views;
 
-/// <summary>
-/// 左侧导航面板，承载系统功能入口列表。
-/// </summary>
 public partial class NavigationPanel : UserControl
 {
     private NavigationActionItem lastSelectedItem;
 
     private bool revertingSelection;
 
-    /// <summary>
-    /// 初始化 <see cref="NavigationPanel"/> 的新实例。
-    /// </summary>
+    private NavigationService _navigationService;
+
     public NavigationPanel()
     {
         InitializeComponent();
         Loaded += NavigationPanel_Loaded;
     }
 
-    /// <summary>
-    /// 获取统一的系统入口列表数据源。
-    /// </summary>
     public ObservableCollection<NavigationActionItem> ActionItems { get; } = new();
 
-    /// <summary>
-    /// 按名称选中对应的导航项。
-    /// </summary>
-    /// <param name="name">要选中的导航项名称。</param>
     public void SelectActionByName(string name)
     {
-        var item = ActionItems.FirstOrDefault(i => i.Name == name);
+        var item = ActionItems.FirstOrDefault(i => i.Name == name && !i.IsGroupHeader);
         if (item == null)
         {
             return;
@@ -49,49 +41,62 @@ public partial class NavigationPanel : UserControl
 
     private void NavigationPanel_Loaded(object sender, RoutedEventArgs e)
     {
-        var mw = Window.GetWindow(this) as MainWindow;
-        if (mw == null)
+        _navigationService = ServiceLocator.Resolve<NavigationService>();
+        if (_navigationService == null)
         {
             return;
         }
 
-        // 构建统一的导航动作列表
+        var registry = _navigationService.Registry;
+
         ActionItems.Clear();
 
-        ActionItems.Add(new NavigationActionItem { Name = "产品分类", Glyph = "\uE8D2", Command = mw.NavigateHomeCommand });
-        ActionItems.Add(new NavigationActionItem { Name = "产品日志", Glyph = "\uE7BA", Command = mw.OpenProductLogsCommand });
-        ActionItems.Add(new NavigationActionItem { Name = "看板统计", Glyph = "\uE9D9", Command = mw.OpenKanbanStatsPageCommand });
-        ActionItems.Add(new NavigationActionItem { Name = "插件管理", Glyph = "\uE943", Command = mw.OpenPluginManagerPageCommand });
-        ActionItems.Add(new NavigationActionItem { Name = "文件传输", Glyph = "\uE701", Command = mw.OpenLanTransferPageCommand });
-        ActionItems.Add(new NavigationActionItem { Name = "路径设置", Glyph = "\uE8B7", Command = mw.LocalPathSettingsCommand });
-        ActionItems.Add(new NavigationActionItem { Name = "产品管理", Glyph = "\uE8F1", Command = mw.OpenPackageConfigCommand });
-        ActionItems.Add(new NavigationActionItem { Name = "软件日志", Glyph = "\uE7BA", Command = mw.OpenLogViewerCommand });
-        ActionItems.Add(new NavigationActionItem { Name = "更新日志", Glyph = "\uE8A5", Command = mw.OpenChangelogPageCommand });
-        ActionItems.Add(new NavigationActionItem { Name = "软件设置", Glyph = "\uE713", Command = mw.SettingsCommand });
+        // 仪表盘入口（Home）
+        ActionItems.Add(new NavigationActionItem
+        {
+            Name = "仪表盘",
+            Glyph = "",
+            Command = new RelayCommand(() => _navigationService.NavigateHome())
+        });
 
-        // 启动时默认选中“产品分类”，确保左侧有选中高亮
-        lastSelectedItem = ActionItems.FirstOrDefault(i => i.Name == "产品分类") ?? ActionItems.FirstOrDefault();
+        // 按 Group 分组构建导航项
+        string lastGroup = null;
+        foreach (var tool in registry.Tools)
+        {
+            if (!string.IsNullOrEmpty(tool.Group) && tool.Group != lastGroup)
+            {
+                ActionItems.Add(new NavigationActionItem
+                {
+                    Name = tool.Group,
+                    IsGroupHeader = true
+                });
+                lastGroup = tool.Group;
+            }
+
+            var key = tool.Key;
+            ActionItems.Add(new NavigationActionItem
+            {
+                Name = tool.DisplayName,
+                Glyph = tool.Glyph,
+                Command = new RelayCommand(() => _navigationService.NavigateTo(key))
+            });
+        }
+
+        // 启动时默认选中"仪表盘"
+        lastSelectedItem = ActionItems.FirstOrDefault(i => i.Name == "仪表盘");
         if (lastSelectedItem != null)
         {
-            revertingSelection = true; // 防止触发 SelectionChanged 导航
+            revertingSelection = true;
             ActionListBox.SelectedItem = lastSelectedItem;
             revertingSelection = false;
         }
 
-        // 监听主窗口是否切回主页，以同步左侧导航选中项
-        mw.PropertyChanged += (s, args) =>
+        _navigationService.Navigated += name =>
         {
-            if ((args.PropertyName == nameof(MainWindow.IsHomeActive)) && mw.IsHomeActive)
+            Dispatcher.BeginInvoke(new System.Action(() =>
             {
-                var homeItem = ActionItems.FirstOrDefault(i => i.Name == "产品分类") ?? ActionItems.FirstOrDefault();
-                if ((homeItem != null) && !ReferenceEquals(ActionListBox.SelectedItem, homeItem))
-                {
-                    revertingSelection = true;
-                    ActionListBox.SelectedItem = homeItem;
-                    lastSelectedItem = homeItem;
-                    revertingSelection = false;
-                }
-            }
+                SelectActionByName(name);
+            }));
         };
     }
 
@@ -104,27 +109,33 @@ public partial class NavigationPanel : UserControl
 
         var listBox = sender as ListBox;
         var item = listBox?.SelectedItem as NavigationActionItem;
+
+        if (item?.IsGroupHeader == true)
+        {
+            revertingSelection = true;
+            listBox.SelectedItem = lastSelectedItem;
+            revertingSelection = false;
+            return;
+        }
+
         var cmd = item?.Command;
 
-        var mw = Window.GetWindow(this) as MainWindow;
-        var before = mw?.NavigationVersion ?? 0;
+        var before = _navigationService?.NavigationVersion ?? 0;
 
         if (cmd?.CanExecute(null) == true)
         {
             cmd.Execute(null);
         }
 
-        var after = mw?.NavigationVersion ?? before;
+        var after = _navigationService?.NavigationVersion ?? before;
         if (after == before)
         {
-            // 导航未发生，回退到先前选中项
             revertingSelection = true;
             listBox.SelectedItem = lastSelectedItem;
             revertingSelection = false;
         }
         else
         {
-            // 导航成功，记录为最近选中项
             lastSelectedItem = item;
         }
     }
@@ -138,17 +149,25 @@ public partial class NavigationPanel : UserControl
 
         var listBox = sender as ListBox;
         var item = listBox?.SelectedItem as NavigationActionItem;
+
+        if (item?.IsGroupHeader == true)
+        {
+            revertingSelection = true;
+            listBox.SelectedItem = lastSelectedItem;
+            revertingSelection = false;
+            return;
+        }
+
         var cmd = item?.Command;
 
-        var mw = Window.GetWindow(this) as MainWindow;
-        var before = mw?.NavigationVersion ?? 0;
+        var before = _navigationService?.NavigationVersion ?? 0;
 
         if (cmd?.CanExecute(null) == true)
         {
             cmd.Execute(null);
         }
 
-        var after = mw?.NavigationVersion ?? before;
+        var after = _navigationService?.NavigationVersion ?? before;
         if (after == before)
         {
             revertingSelection = true;
@@ -161,29 +180,16 @@ public partial class NavigationPanel : UserControl
         }
     }
 
-    /// <summary>
-    /// 导航动作项，表示左侧面板中的单个功能入口。
-    /// </summary>
     public class NavigationActionItem
     {
-        /// <summary>
-        /// 获取或设置导航项的显示名称。
-        /// </summary>
         public string Name { get; set; }
 
-        /// <summary>
-        /// 获取或设置导航项的图标字形。
-        /// </summary>
         public string Glyph { get; set; }
 
-        /// <summary>
-        /// 获取或设置点击该导航项时执行的命令。
-        /// </summary>
         public ICommand Command { get; set; }
 
-        /// <summary>
-        /// 获取子导航项集合。
-        /// </summary>
+        public bool IsGroupHeader { get; set; }
+
         public ObservableCollection<NavigationActionItem> Children { get; } = new();
     }
 }

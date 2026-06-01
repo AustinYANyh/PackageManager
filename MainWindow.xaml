@@ -8,8 +8,9 @@
         xmlns:controls="clr-namespace:CustomControlLibrary.CustomControl.Controls;assembly=CustomControlLibrary"
         xmlns:button="clr-namespace:CustomControlLibrary.CustomControl.Controls.Button;assembly=CustomControlLibrary"
         xmlns:views="clr-namespace:PackageManager.Views"
+        xmlns:notif="clr-namespace:PackageManager.Features.Notifications.Views"
         mc:Ignorable="d"
-        Title="包管理器" Height="820" Width="1500" MinWidth="960"
+        Title="DevKit" Height="890" Width="1480" MinWidth="960"
         Icon="/Assets/Icons/App.ico"
         ResizeMode="CanResize" WindowStartupLocation="CenterScreen" AllowDrop="True">
     <Window.Resources>
@@ -25,18 +26,42 @@
         <Grid Grid.Row="0" Margin="0,0,0,12">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="260" />
                 <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
-            <controls:CTextBlock Grid.Column="0" Text="产品包管理器" FontSize="20" FontWeight="Bold" VerticalAlignment="Center" />
-            <TextBox Grid.Column="1" x:Name="SearchBox" Height="28" Margin="16,0,0,0" Visibility="Hidden" />
-            <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right">
+            <controls:CTextBlock Grid.Column="0" Text="DevKit" FontSize="20" FontWeight="Bold" VerticalAlignment="Center" />
+
+            <!-- 返回仪表盘按钮：非首页时显示 -->
+            <Border x:Name="BackToDashboardButton" Grid.Column="1"
+                    Margin="16,0,0,0" Padding="10,5"
+                    Background="#08000000"
+                    BorderBrush="#15000000"
+                    BorderThickness="1"
+                    CornerRadius="6"
+                    Cursor="Hand"
+                    MouseLeftButtonUp="BackToDashboardButton_Click"
+                    Visibility="Collapsed">
+                <Border.Style>
+                    <Style TargetType="Border">
+                        <Style.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" Value="#10000000"/>
+                                <Setter Property="BorderBrush" Value="#25000000"/>
+                            </Trigger>
+                        </Style.Triggers>
+                    </Style>
+                </Border.Style>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="&#xE80F;" FontFamily="Segoe MDL2 Assets" FontSize="13" Foreground="#2B7FFF" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                    <controls:CTextBlock Text="仪表盘" FontSize="13" VerticalAlignment="Center" Foreground="#333333"/>
+                </StackPanel>
+            </Border>
+
+            <TextBox Grid.Column="2" x:Name="SearchBox" Height="28" Margin="16,0,0,0" Visibility="Hidden" />
+            <StackPanel x:Name="PackageToolbar" Grid.Column="3" Orientation="Horizontal" HorizontalAlignment="Right" Visibility="Collapsed">
                 <button:CButton Content="刷新" Margin="0,0,8,0" Padding="10,6" Click="RefreshButton_Click" />
-                <button:CButton Content="筛选" Margin="0,0,8,0" Padding="10,6" Click="FilterButton_Click" Visibility="Collapsed" />
-                <!-- <button:CButton Content="设置" Margin="0,0,8,0" Padding="10,6" Click="SettingsButton_Click" /> -->
-                <!-- <button:CButton Content="路径" Margin="0,0,8,0" Padding="10,6" Click="LocalPathSettingsButton_Click" /> -->
-                <!-- <button:CButton Content="日志" Padding="10,6" Click="OpenLogViewerButton_Click" /> -->
-                <!-- <button:CButton Content="产品日志" Margin="8,0,0,0" Padding="10,6" Click="OpenProductLogButton_Click" /> -->
 
                 <!-- 常用网址导航 -->
                 <controls:CComboBox x:Name="CommonLinksCombo"
@@ -48,31 +73,41 @@
                                     SelectedItem="{Binding SelectedCommonLink, Mode=TwoWay}" />
                 <button:CButton Content="打开" Margin="8,0,0,0" Padding="10,6" Click="OpenSelectedLinkButton_Click" />
             </StackPanel>
+
+            <!-- 通知铃铛 -->
+            <Grid x:Name="NotificationBell" Grid.Column="4" Margin="12,0,0,0"
+                  Cursor="Hand" VerticalAlignment="Center"
+                  MouseLeftButtonUp="NotificationBell_Click">
+                <TextBlock Text="&#xEA8F;" FontFamily="Segoe MDL2 Assets" FontSize="18"
+                           Foreground="#555555" VerticalAlignment="Center"/>
+                <!-- 未读徽章 -->
+                <Border x:Name="UnreadBadge"
+                        Background="#E81123" CornerRadius="8"
+                        MinWidth="16" Height="16"
+                        Padding="3,0" Margin="10,-10,-6,0"
+                        HorizontalAlignment="Right" VerticalAlignment="Top"
+                        Visibility="Collapsed">
+                    <TextBlock x:Name="UnreadCountText" Text="0"
+                               FontSize="10" Foreground="White" FontWeight="Bold"
+                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Border>
+            </Grid>
+
+            <!-- 通知面板 Popup -->
+            <Popup x:Name="NotificationPopup"
+                   PlacementTarget="{Binding ElementName=NotificationBell}"
+                   Placement="Bottom" StaysOpen="True"
+                   HorizontalOffset="-330" VerticalOffset="8"
+                   AllowsTransparency="True">
+                <notif:NotificationPanel x:Name="NotificationPanelControl"/>
+            </Popup>
         </Grid>
 
-    <Grid Grid.Row="1">
-        <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="240" />
-                <ColumnDefinition Width="6" />
-                <ColumnDefinition Width="*" />
-        </Grid.ColumnDefinitions>
-
-            <!-- 左侧导航面板 -->
-            <views:NavigationPanel x:Name="LeftNavPanel" Grid.Column="0" />
-
-            <!-- 左侧与中间的分隔条 -->
-            <GridSplitter Grid.Column="1"
-                          Width="6"
-                          HorizontalAlignment="Stretch"
-                          VerticalAlignment="Stretch"
-                          Background="#22000000" />
-
-            <!-- 中央内容区：统一使用 Page，通过 Frame 载入 -->
-            <Frame x:Name="CentralFrame"
-                   Grid.Column="2"
-                   NavigationUIVisibility="Hidden"
-                   Background="Transparent" />
-        </Grid>
+        <!-- 中央内容区：全宽使用 -->
+        <Frame x:Name="CentralFrame"
+               Grid.Row="1"
+               NavigationUIVisibility="Hidden"
+               Background="Transparent" />
 
         <StatusBar Grid.Row="2" Margin="0,12,0,0">
             <StatusBarItem>

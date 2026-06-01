@@ -119,6 +119,17 @@ function Read-TimedConsoleLine {
   return -join $chars
 }
 
+function Read-BlockingReviewFeedback {
+  Write-Host ""
+  Write-Host "请输入对提交日志的修改意见，输入后直接回车结束。" -ForegroundColor Yellow
+  Write-Host "此步骤不设超时，模型会逐字读取你的意见并重新生成日志。" -ForegroundColor Yellow
+
+  $line = Read-Host -Prompt ">"
+  if ($null -eq $line) { return "" }
+
+  return $line.Trim()
+}
+
 function Expand-IdTokens([string]$raw) {
   $ids = New-Object System.Collections.Generic.List[int]
   foreach ($tok in ($raw -split '[,\s;]+')) {
@@ -200,7 +211,7 @@ function ConvertTo-ResultJson([object]$value) {
   if ($value.Groups -and @($value.Groups).Count -gt 0) {
     $groupsJson = "[" + ((@($value.Groups) | ForEach-Object { ConvertTo-GroupJson $_ }) -join ",") + "]"
   }
-  return ('{{"Status":{0},"Choice":{1},"GitPathCount":{2},"SvnPathCount":{3},"Errors":{4},"Commands":{5},"CommitMessageSha256":{6},"CommitMessage":{7},"Groups":{8}}}' -f `
+  return ('{{"Status":{0},"Choice":{1},"GitPathCount":{2},"SvnPathCount":{3},"Errors":{4},"Commands":{5},"CommitMessageSha256":{6},"CommitMessage":{7},"ReviewFeedback":{8},"ReviewFeedbackRaw":{9},"Groups":{10}}}' -f `
     (ConvertTo-JsonString $value.Status),
     ([int]$value.Choice),
     ([int]$value.GitPathCount),
@@ -209,6 +220,8 @@ function ConvertTo-ResultJson([object]$value) {
     $commandsJson,
     (ConvertTo-JsonString $value.CommitMessageSha256),
     (ConvertTo-JsonString $value.CommitMessage),
+    (ConvertTo-JsonString $value.ReviewFeedback),
+    (ConvertTo-JsonString $value.ReviewFeedbackRaw),
     $groupsJson)
 }
 
@@ -625,6 +638,16 @@ function Get-GitCommitGroups([object[]]$Items, [string]$RootFull) {
         $repoPath = $repoPath.Substring($repoRelRoot.TrimEnd('/').Length + 1)
       }
     }
+    $repoPathsForItem = @($repoPath)
+    $renamedFromPath = Get-ItemTextProperty -Item $item -Name "GitRepoRenamedFrom"
+    if ($renamedFromPath -and ($renamedFromPath -ne $repoPath)) {
+      $repoPathsForItem += $renamedFromPath
+      $primaryFull = Join-Path -Path $repoRoot -ChildPath ($repoPath -replace '/', '\')
+      $renamedFull = Join-Path -Path $repoRoot -ChildPath ($renamedFromPath -replace '/', '\')
+      if ((-not (Test-Path -LiteralPath $primaryFull)) -and (Test-Path -LiteralPath $renamedFull)) {
+        $repoPathsForItem = @($renamedFromPath, $repoPath)
+      }
+    }
 
     if (-not $buckets.ContainsKey($repoRoot)) {
       $display = if ($repoRelRoot) { $repoRelRoot } else { Split-Path -Leaf $repoRoot }
@@ -640,7 +663,7 @@ function Get-GitCommitGroups([object[]]$Items, [string]$RootFull) {
     }
 
     $buckets[$repoRoot].Items = @($buckets[$repoRoot].Items) + $item
-    $buckets[$repoRoot].RepoPaths = @($buckets[$repoRoot].RepoPaths) + $repoPath
+    $buckets[$repoRoot].RepoPaths = @($buckets[$repoRoot].RepoPaths) + $repoPathsForItem
   }
 
   return @($buckets.Values)
@@ -799,13 +822,14 @@ if (@($commitGroups).Count -gt 1) {
 
 Write-Host ""
 Write-Host "步骤 3/3：是否现在帮你提交并推送？" -ForegroundColor Cyan
-Write-Host "操作说明：直接按 1 = 提交全部提交组（默认）；按 2 = 选择提交组；按 3 = 暂不提交。" -ForegroundColor Yellow
+Write-Host "操作说明：直接按 1 = 提交全部提交组（默认）；按 2 = 选择提交组；按 3 = 暂不提交；按 4 = 提出意见重新生成日志。" -ForegroundColor Yellow
 Write-Host "超时规则：${PromptTimeoutSeconds} 秒内不按键，自动选择 1，执行全部提交组。" -ForegroundColor Yellow
 Write-Host ""
-Write-Host ("本次包含 {0} 个提交组：Git 仓库 {1} 个，SVN 组 {2} 个，总文件 {3} 个。" -f @($commitGroups).Count, $gitGroupCount, $svnGroupCount, $totalFileCount) -ForegroundColor Cyan
+Write-Host ("本次包含 {0} 个提交组：Git 仓库 {1} 个，SVN 提交组 {2} 个，总文件 {3} 个。" -f @($commitGroups).Count, $gitGroupCount, $svnGroupCount, $totalFileCount) -ForegroundColor Cyan
 foreach ($group in @($commitGroups | Sort-Object GroupId)) {
   Write-Host ""
-  Write-Host ("[{0}] {1}  {2}  {3} 个文件" -f $group.GroupId, $group.Source.ToUpperInvariant(), $group.DisplayName, @($group.Items).Count) -ForegroundColor Cyan
+  $kindLabel = if ($group.Source -eq "svn") { "SVN 提交组" } elseif ($group.Source -eq "git") { "GIT 仓库" } else { $group.Source.ToUpperInvariant() }
+  Write-Host ("[{0}] {1}  {2}  {3} 个文件" -f $group.GroupId, $kindLabel, $group.DisplayName, @($group.Items).Count) -ForegroundColor Cyan
   if ($group.Source -eq "git") {
     Write-Host ("    Repo: {0}" -f $group.GitRepoRoot) -ForegroundColor DarkGray
   } else {
@@ -823,10 +847,11 @@ foreach ($group in @($commitGroups | Sort-Object GroupId)) {
 }
 Write-Host ""
 
-$choice = Invoke-TimedChoiceKey -Choices "123" -TimeoutSec $PromptTimeoutSeconds -DefaultKey '1' -Message "请选择：1提交全部提交组 2选择提交组 3暂不提交"
+$choice = Invoke-TimedChoiceKey -Choices "1234" -TimeoutSec $PromptTimeoutSeconds -DefaultKey '1' -Message "请选择：1提交全部提交组 2选择提交组 3暂不提交 4提出意见重新生成日志"
 $commands = @()
 $status = "skipped"
 $errors = @()
+$reviewFeedback = ""
 $selectedGroupIds = New-Object System.Collections.Generic.HashSet[int]
 
 if ($choice -eq 1) {
@@ -837,6 +862,12 @@ if ($choice -eq 1) {
   foreach ($tv in (Expand-IdTokens $line)) { [void]$selectedGroupIds.Add($tv) }
   if ($selectedGroupIds.Count -eq 0) {
     $choice = 3
+  }
+} elseif ($choice -eq 4) {
+  $status = "regenerate_requested"
+  $reviewFeedback = Read-BlockingReviewFeedback
+  if ([string]::IsNullOrWhiteSpace($reviewFeedback)) {
+    Write-Host "未输入反馈，已退回重新生成。" -ForegroundColor Yellow
   }
 }
 
@@ -854,7 +885,8 @@ if ($choice -eq 1 -or $choice -eq 2) {
     }
 
     Write-Host ""
-    Write-Host ("正在执行提交组 [{0}] {1} {2}" -f $group.GroupId, $group.Source.ToUpperInvariant(), $group.DisplayName) -ForegroundColor Cyan
+    $kindLabel = if ($group.Source -eq "svn") { "SVN 提交组" } elseif ($group.Source -eq "git") { "GIT 仓库" } else { $group.Source.ToUpperInvariant() }
+    Write-Host ("正在执行提交组 [{0}] {1} {2}" -f $group.GroupId, $kindLabel, $group.DisplayName) -ForegroundColor Cyan
     $group.Status = "running"
     $groupMessageFile = Join-Path $env:TEMP ("git_svn_commit_group_{0}_{1}.txt" -f $group.GroupId, ([guid]::NewGuid()))
     [System.IO.File]::WriteAllText($groupMessageFile, $group.CommitMessage.TrimEnd("`r", "`n"), [System.Text.UTF8Encoding]::new($false))
@@ -919,12 +951,15 @@ if ($choice -eq 1 -or $choice -eq 2) {
 
   if ($status -eq "failed") {
     foreach ($group in @($commitGroups | Where-Object { $_.Status -eq "not_started" })) {
-      Write-Host ("未执行提交组 [{0}] {1} {2}" -f $group.GroupId, $group.Source.ToUpperInvariant(), $group.DisplayName) -ForegroundColor Yellow
+      $kindLabel = if ($group.Source -eq "svn") { "SVN 提交组" } elseif ($group.Source -eq "git") { "GIT 仓库" } else { $group.Source.ToUpperInvariant() }
+      Write-Host ("未执行提交组 [{0}] {1} {2}" -f $group.GroupId, $kindLabel, $group.DisplayName) -ForegroundColor Yellow
     }
     Write-Host "提交/推送失败，请查看输出。" -ForegroundColor Red
   } else {
     Write-Host "提交/推送完成。" -ForegroundColor Green
   }
+} elseif ($choice -eq 4) {
+  Write-Host "已记录修改意见，将退回模型重新生成提交日志。" -ForegroundColor Yellow
 } else {
   Write-Host "已选择暂不提交。" -ForegroundColor Yellow
 }
@@ -938,6 +973,8 @@ $result = [pscustomobject]@{
   Commands = @($commands)
   CommitMessageSha256 = Get-Utf8Sha256 $messageText
   CommitMessage = $messageText
+  ReviewFeedback = $reviewFeedback
+  ReviewFeedbackRaw = $reviewFeedback
   Groups = @($commitGroups)
 }
 

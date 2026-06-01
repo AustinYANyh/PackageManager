@@ -2,6 +2,97 @@
 
 本文件基于仓库 `gitlog.md` 的提交历史按版本号归档,概述每个版本的主要改动与新增功能。
 
+## 4.1.0.0 — 2026-05-27
+
+- 通知中心与仪表盘概览：
+  - 新增通知服务、通知模型和通知面板，支持未读计数、全部已读、清空与点击导航。
+  - 主窗口顶部接入通知铃铛和弹出面板，未读数变化时同步更新徽章。
+  - ToastService 将现有 Toast 同步写入通知中心，应用启动时注册 NotificationService。
+  - 仪表盘新增包状态、今日通知、LAN 节点概览，并支持刷新和跳转。
+
+- 包版本监测与更新控制：
+  - 新增定时轮询 FTP 最新版本，记录新版本数量并推送通知。
+  - 包信息结合服务器版本展示可升级状态与上传时间。
+  - 应用启动注册并启动版本监测，进入产品分类页时刷新 FTP 可见版本。
+  - 可见包版本默认保留当前选择，刷新按钮改为 forceLatest 模式，手动刷新时切换到最新版本。
+  - 新包检测支持同版本按时间提示新包，并保留上传包选择。
+
+- 代码工作区与 AI 提交入口：
+  - 新增代码工作区与功能模块，包含 工作区和管理仓库 及三个视图页面。
+  - 仪表盘增加代码工作区卡片入口，注册代码工作区导航页。
+  - 仓库操作列由单一提交按钮拆分为 Claude提交 和 Codex提交，并扩大操作列宽。
+  - 提交流程按引擎校验命令并复用内嵌 skill 同步与提示构建。
+
+- 工具二进制与启动稳定性：
+  - 修复启动台首次日志写入失败，LoggingService 写入入口先初始化日志目录。
+  - 修复常用启动项 Enter 启动前 LogInfo 抛出 path1 为空的问题。
+  - 多次同步更新 MftScanner.Core.dll 与 MftScanner.exe 二进制资产。
+
+- 提交参考：
+- 10d61bcfeedd5370d176a1eebef6bc913f8847dc — feat(PackageManager): AiCommitSkillInfo 新增 LastChangesJsonPath 属性，SKILL.md 改用 内嵌绝对路径
+- 5116222f3b8e867defd587dac884a586a1497a39 — feat(PackageManager): 拆分代码工作区 Claude/Codex 提交入口
+- 19365ef2379477cfea8aea8505bd721a5085dc21 — refactor(PackageManager): 重构 AI 提交 skill 为内嵌直接执行模式，新增快捷方式解析
+- 97a7e59cee412cb26e02dbf3ae35c5b421f73e18 — feat(PackageManager): 新增代码工作区模块，集成仓库管理与 AI 提交技能
+- 91bac969d5f64637c6c763493d3f480739cfbb9f — docs(git_svn_commitlog_generator): 增加输出前自检与 Python chr() Base64 兜底
+- 9d0b7325735a9b0ccdbfa64a184cbec2a1d20fd7 — docs(git_svn_commitlog_generator): 提交日志默认紧凑输出，收紧换行触发条件
+- 13455ed377e2c7ede7084f9833b1d7c3abb49852 — docs(PackageManager): 补充 Base64 失败重试规则
+- 94af9338b98b43140285c3fde7767f2c762ba4a6 — docs(PackageManager): 补充提交日志的范围收敛与分组约束
+- ed433eccf771e095187208891b0f2d065a162f2d — fix(PackageManager): 修复新包检测
+- cd5f9df5bccda7deb3b34d43e39bd69a02cdff2f — feat(PackageManager): 增加服务器最新时间显示与版本刷新控制
+- 6ba4e75ac0601be46107bf9e6c0b53792acf7cd5 — feat(PackageManager): 增加包版本监测与更新概览
+- c52efd60716de6bf5bdf03760dafae7d71533055 — feat(PackageManager): 增加通知中心与仪表盘概览
+- b14eb5f4469993b9231ec7546ecfca47b01ac927 — fix(PackageManager): 修复启动台首次日志写入失败
+
+## 4.0.0.0 — 2026-05-25
+
+- DevKit 仪表盘与导航体验：
+  - 新增 DashboardPage 仪表盘首页，启动后默认进入 DevKit 工作台视图。
+  - 仪表盘按包管理、项目协作、开发工具、日志和设置组织入口，支持通过卡片直达各页面或弹窗工具。
+  - 主窗口移除左侧导航栏，中央内容区改为全宽显示，并在非首页显示返回仪表盘入口。
+  - 返回仪表盘入口改为图标化按钮，包管理工具栏仅在产品分类页显示，减少非包管理页面干扰。
+  - 更新日志调整到日志分组，插件管理归入包管理区域，Revit 破解入口提升到仪表盘。
+
+- 包管理与开发工具入口：
+  - 产品分类从启动首页拆分为独立包管理页面。
+  - 主窗口可按当前页面切换工具栏可见性。
+  - 统一承载 CSV 加解密、清理 RVT、解除占用、编译顺序、Git 代理、VCS 映射和 Revit 激活工具启动逻辑。
+  - 包管理页移除通用工具按钮，保留产品相关操作，避免工具入口重复。
+  - Git 代理卡片在没有状态回调时弹出结果提示，避免点击后无反馈。
+  - 修复包列表为空时打开页面抛出异常的问题。
+
+- 工程结构与领域重构：
+  - 将功能代码迁移到 Features 分层目录，按包管理、日志、PingCode、设置、局域网传输和 Revit 工具等业务域归集。
+  - 统一功能注册、导航和服务实例管理。
+  - 更新工程引用，适配新的 Features、Infrastructure、Shell 路径。
+  - 保留主页、设置、日志、产品管理、看板和文件传输等页面入口的导航同步与回退逻辑。
+
+- 提交日志工具增强：
+  - Git/SVN 提交日志工具支持嵌套 Git 仓库、多提交组日志和按组提交/推送结果回传。
+  - 提交推送脚本支持无 upstream 时自动执行 `git push --set-upstream origin <branch>`。
+  - 文件选择对话框支持 Shift+Click 范围勾选，交互操作会重置倒计时；控制台回退输入支持范围语法。
+  - 提交推送时可安全识别并恢复陈旧 `index.lock`，失败时保留锁路径、锁龄和相关进程摘要。
+  - 多提交组提交前校验每组专属日志，避免把默认日志误用于其他仓库或工作副本。
+  - 调整提交日志紧凑写法规则，短条目保持单行，长技术项按阅读负担换行。
+
+- 索引宿主兼容诊断：
+  - 索引宿主计划任务注册改用 System32 下的 `schtasks.exe` 并固定工作目录，降低 Win10 受限启动目录导致的拒绝访问风险。
+  - 捕获并记录 schtasks 和管理员提升流程的 Win32Exception、NativeErrorCode 与退出码。
+  - 启动失败提示补充系统策略或安全软件阻止创建计划任务的可能原因，便于定位环境问题。
+
+- 提交参考：
+- 4c1b6483ff6fa550da43639ef478fc8c94814561 — feat(PackageManager): 完善仪表盘工具入口与页面工具栏控制
+- 4838a20cf9e041911c973b45a59b5ad34ba0a547 — fix(PackageManager): 调整仪表盘导航布局与工具反馈
+- 36031c5598da79a00e05f9218d76b69d99e53457 — feat(PackageManager): 增加 DevKit 仪表盘首页与分组导航
+- 34b5f49c5ae6c07b14f2717fe19cec4462d9217b — refactor：删掉原先的文件，按领域划分功能重构已应用
+- c2a390b676be90617fa8bf2ee99cd43807d7688e — refactor(PackageManager): 重组功能目录与导航服务
+- be62bcb9b6f22522ceebab637357c68c7f5257a8 — feat(git_svn_commitlog_generator): 支持自动设置 Git push upstream
+- 8da0ea9aee5c1200e7075b3e7648f91e0be35558 — feat(git_svn_commitlog_generator): 文件选择对话框支持 Shift+Click 范围勾选与交互重置倒计时
+- 4cc87ec46c3cf0fd128791606635df562c7b8db4 — docs(git_svn_commitlog_generator): 调整提交日志紧凑写法规则
+- 4dba43787cd0956a618f5cec16f06320475a2acc — fix(git_svn_commitlog_generator): 提交推送时安全恢复 Git index.lock
+- 5d3efc831999a4d36d5789e209bf60e2abe2286b — fix(git_svn_commitlog_generator): 校验多提交组专属日志并更新说明
+- 1c469459f9b9ccecde410b2918872b8fbeb88311 — fix(PackageManager): 增强索引宿主计划任务注册的 Win10 兼容诊断
+- d8e7a028437b4229273ecc31763a89be1e042212 — feat(git_svn_commitlog_generator): 支持嵌套 Git 仓库与提交组日志
+
 ## 3.3.0.0 — 2026-05-20
 
 - MFT Native v2 索引与查询性能：

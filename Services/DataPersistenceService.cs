@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using Newtonsoft.Json;
+using PackageManager.Features.CodeWorkspace.Models;
 using PackageManager.Models;
 using System.Collections.ObjectModel;
 using System.Linq;
@@ -758,6 +759,7 @@ namespace PackageManager.Services
                 var startupSettings = LoadCommonStartupSettingsInternal();
                 settings.CommonStartupItems = startupSettings.CommonStartupItems ?? new List<CommonStartupItem>();
                 settings.CommonStartupGroups = startupSettings.CommonStartupGroups ?? new List<CommonStartupGroup>();
+                settings.CodeRepositories ??= new List<CodeRepository>();
                 return settings;
             }
             catch (Exception ex)
@@ -767,6 +769,7 @@ namespace PackageManager.Services
                 var startupSettings = LoadCommonStartupSettingsInternal();
                 settings.CommonStartupItems = startupSettings.CommonStartupItems ?? new List<CommonStartupItem>();
                 settings.CommonStartupGroups = startupSettings.CommonStartupGroups ?? new List<CommonStartupGroup>();
+                settings.CodeRepositories ??= new List<CodeRepository>();
                 return settings;
             }
         }
@@ -1031,6 +1034,16 @@ namespace PackageManager.Services
         public List<CommonStartupGroup> CommonStartupGroups { get; set; } = new List<CommonStartupGroup>();
 
         /// <summary>
+        /// 获取或设置代码工作区仓库列表。
+        /// </summary>
+        public List<CodeRepository> CodeRepositories { get; set; } = new List<CodeRepository>();
+
+        /// <summary>
+        /// 获取或设置最近使用的代码仓库路径。
+        /// </summary>
+        public string LastUsedRepositoryPath { get; set; }
+
+        /// <summary>
         /// 获取或设置常用启动项全局热键显示文本。
         /// </summary>
         public string CommonStartupHotkey { get; set; } = "Ctrl+Q";
@@ -1039,6 +1052,36 @@ namespace PackageManager.Services
         /// 获取或设置是否启用索引服务性能分析日志。
         /// </summary>
         public bool EnableIndexServicePerformanceAnalysis { get; set; } = false;
+
+        /// <summary>
+        /// 获取或设置 FTP 只读账号用户名（DPAPI 加密）。
+        /// </summary>
+        public string FtpReadUser { get; set; } = null;
+
+        /// <summary>
+        /// 获取或设置 FTP 只读账号密码（DPAPI 加密）。
+        /// </summary>
+        public string FtpReadPassword { get; set; } = null;
+
+        /// <summary>
+        /// 获取或设置 FTP 下载账号用户名（DPAPI 加密）。
+        /// </summary>
+        public string FtpDownloadUser { get; set; } = null;
+
+        /// <summary>
+        /// 获取或设置 FTP 下载账号密码（DPAPI 加密）。
+        /// </summary>
+        public string FtpDownloadPassword { get; set; } = null;
+
+        /// <summary>
+        /// 获取或设置 FTP 写入账号用户名（DPAPI 加密）。
+        /// </summary>
+        public string FtpWriteUser { get; set; } = null;
+
+        /// <summary>
+        /// 获取或设置 FTP 写入账号密码（DPAPI 加密）。
+        /// </summary>
+        public string FtpWritePassword { get; set; } = null;
 
         /// <summary>
         /// 获取或设置是否启用文件传输功能。
@@ -1064,6 +1107,11 @@ namespace PackageManager.Services
         /// 获取或设置文件传输接收时是否静默覆盖同名文件或目录。
         /// </summary>
         public bool LanTransferSilentOverwrite { get; set; } = false;
+
+        /// <summary>
+        /// 获取或设置文件传输是否自动接受传入请求。
+        /// </summary>
+        public bool LanTransferAutoAccept { get; set; } = false;
     }
 
     /// <summary>

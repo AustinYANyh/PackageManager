@@ -1,0 +1,266 @@
+using System.ComponentModel;
+using System.Collections.ObjectModel;
+using System.Linq;
+using System.Runtime.CompilerServices;
+using System.Windows.Input;
+using System.Windows.Media;
+
+namespace PackageManager.Features.CodeWorkspace.Models
+{
+    public class SubRepository : INotifyPropertyChanged
+    {
+        private string _relativePath;
+        private VcsType _vcsType;
+        private string _branch;
+        private int _revision;
+        private VcsStatus _status;
+        private int _changedFileCount;
+        private int _gitAheadCount;
+        private int _gitBehindCount;
+        private int _svnRemoteUpdateCount;
+        private int _stagedCount;
+        private string _statusSummary;
+        private ObservableCollection<VcsChangedFile> _changedFiles = new ObservableCollection<VcsChangedFile>();
+        private static readonly Brush CleanBrush = CreateBrush(0x2E, 0xA0, 0x43);
+        private static readonly Brush ModifiedBrush = CreateBrush(0xD9, 0x7A, 0x00);
+        private static readonly Brush ErrorBrush = CreateBrush(0xD1, 0x24, 0x2F);
+        private static readonly Brush UnknownBrush = CreateBrush(0x8A, 0x94, 0xA3);
+        private static readonly Brush GitBrush = CreateBrush(0x34, 0x6D, 0xDB);
+        private static readonly Brush SvnBrush = CreateBrush(0x7A, 0x52, 0xC7);
+
+        public event PropertyChangedEventHandler PropertyChanged;
+
+        public string RelativePath
+        {
+            get => _relativePath;
+            set => SetProperty(ref _relativePath, value);
+        }
+
+        public VcsType VcsType
+        {
+            get => _vcsType;
+            set
+            {
+                if (SetProperty(ref _vcsType, value))
+                {
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(VcsTypeText)));
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(VcsTypeBrush)));
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DetailLine)));
+                }
+            }
+        }
+
+        public string Branch
+        {
+            get => _branch;
+            set
+            {
+                if (SetProperty(ref _branch, value))
+                {
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DetailLine)));
+                }
+            }
+        }
+
+        public int Revision
+        {
+            get => _revision;
+            set
+            {
+                if (SetProperty(ref _revision, value))
+                {
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DetailLine)));
+                }
+            }
+        }
+
+        public VcsStatus Status
+        {
+            get => _status;
+            set
+            {
+                if (SetProperty(ref _status, value))
+                {
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(StatusBrush)));
+                }
+            }
+        }
+
+        public int ChangedFileCount
+        {
+            get => _changedFileCount;
+            set
+            {
+                if (SetProperty(ref _changedFileCount, value))
+                {
+                    OnChangeStateChanged();
+                }
+            }
+        }
+
+        public int GitAheadCount
+        {
+            get => _gitAheadCount;
+            set
+            {
+                if (SetProperty(ref _gitAheadCount, value))
+                {
+                    OnChangeStateChanged();
+                }
+            }
+        }
+
+        public int GitBehindCount
+        {
+            get => _gitBehindCount;
+            set
+            {
+                if (SetProperty(ref _gitBehindCount, value))
+                {
+                    OnChangeStateChanged();
+                }
+            }
+        }
+
+        public int SvnRemoteUpdateCount
+        {
+            get => _svnRemoteUpdateCount;
+            set
+            {
+                if (SetProperty(ref _svnRemoteUpdateCount, value))
+                {
+                    OnChangeStateChanged();
+                }
+            }
+        }
+
+        public int StagedCount
+        {
+            get => _stagedCount;
+            set
+            {
+                if (SetProperty(ref _stagedCount, value))
+                {
+                    OnChangeStateChanged();
+                }
+            }
+        }
+
+        public string StatusSummary
+        {
+            get => _statusSummary;
+            set
+            {
+                if (SetProperty(ref _statusSummary, value))
+                {
+                    PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DetailLine)));
+                }
+            }
+        }
+
+        public ObservableCollection<VcsChangedFile> ChangedFiles
+        {
+            get => _changedFiles;
+            set
+            {
+                if (SetProperty(ref _changedFiles, value ?? new ObservableCollection<VcsChangedFile>()))
+                {
+                    OnChangeStateChanged();
+                }
+            }
+        }
+
+        public Brush StatusBrush
+        {
+            get
+            {
+                switch (Status)
+                {
+                    case VcsStatus.Clean:
+                        return CleanBrush;
+                    case VcsStatus.Modified:
+                        return ModifiedBrush;
+                    case VcsStatus.Conflict:
+                    case VcsStatus.Error:
+                        return ErrorBrush;
+                    default:
+                        return UnknownBrush;
+                }
+            }
+        }
+
+        public bool HasChanges => ChangedFileCount > 0 || ChangedFiles?.Count > 0;
+
+        public string DiffHint => HasChanges ? "双击查看差异" : null;
+
+        public Cursor DetailCursor => HasChanges ? Cursors.Hand : Cursors.Arrow;
+
+        public string VcsTypeText => VcsType == VcsType.Git ? "Git" : VcsType == VcsType.Svn ? "SVN" : "-";
+
+        public Brush VcsTypeBrush => VcsType == VcsType.Git ? GitBrush : VcsType == VcsType.Svn ? SvnBrush : UnknownBrush;
+
+        public string DetailLine
+        {
+            get
+            {
+                if (VcsType == VcsType.Git)
+                {
+                    var branch = string.IsNullOrWhiteSpace(Branch) ? "-" : Branch;
+                    var stagedText = StagedCount > 0 ? $"  暂存{StagedCount}" : string.Empty;
+                    return $"{branch}  {StatusSummary}{stagedText}  ↑{GitAheadCount} ↓{GitBehindCount}";
+                }
+
+                var updateText = SvnRemoteUpdateCount > 0 ? $"  ↓{SvnRemoteUpdateCount}" : string.Empty;
+                return $"r{Revision}  {StatusSummary}{updateText}";
+            }
+        }
+
+        public SubRepository Clone()
+        {
+            return new SubRepository
+            {
+                RelativePath = RelativePath,
+                VcsType = VcsType,
+                Branch = Branch,
+                Revision = Revision,
+                Status = Status,
+                ChangedFileCount = ChangedFileCount,
+                GitAheadCount = GitAheadCount,
+                GitBehindCount = GitBehindCount,
+                SvnRemoteUpdateCount = SvnRemoteUpdateCount,
+                StagedCount = StagedCount,
+                StatusSummary = StatusSummary,
+                ChangedFiles = ChangedFiles == null
+                    ? new ObservableCollection<VcsChangedFile>()
+                    : new ObservableCollection<VcsChangedFile>(ChangedFiles.Select(file => file.Clone())),
+            };
+        }
+
+        private bool SetProperty<T>(ref T field, T value, [CallerMemberName] string propertyName = null)
+        {
+            if (Equals(field, value))
+            {
+                return false;
+            }
+
+            field = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+            return true;
+        }
+
+        private void OnChangeStateChanged()
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasChanges)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DiffHint)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DetailCursor)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(DetailLine)));
+        }
+
+        private static SolidColorBrush CreateBrush(byte r, byte g, byte b)
+        {
+            var brush = new SolidColorBrush(Color.FromRgb(r, g, b));
+            brush.Freeze();
+            return brush;
+        }
+    }
+}

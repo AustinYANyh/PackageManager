@@ -14,42 +14,14 @@ using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Input;
 using CustomControlLibrary.CustomControl.Controls.DataGrid;
-using CustomControlLibrary.CustomControl.Controls.DataGrid.Filter;
-using PackageManager.Function.CsvTool;
-using PackageManager.Function.DnsTool;
 using PackageManager.Models;
 using PackageManager.Services;
 using PackageManager.Views;
-using PackageManager.Views.KanBan;
+using PackageManager.Shell;
+using PackageManager.Features.Notifications.Services;
+using PackageManager.Features.CodeWorkspace.Services;
 
 namespace PackageManager;
-
-/// <summary>
-/// 常用链接项数据模型。
-/// </summary>
-public class CommonLinkItem
-{
-    /// <summary>
-    /// 初始化常用链接项。
-    /// </summary>
-    /// <param name="name">链接名称。</param>
-    /// <param name="url">链接地址。</param>
-    public CommonLinkItem(string name, string url)
-    {
-        Name = name;
-        Url = url;
-    }
-
-    /// <summary>
-    /// 获取链接名称。
-    /// </summary>
-    public string Name { get; }
-
-    /// <summary>
-    /// 获取链接地址。
-    /// </summary>
-    public string Url { get; }
-}
 
 /// <summary>
 /// Interaction logic for MainWindow.xaml
@@ -75,12 +47,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     // 当前选中的分类名称（供左侧导航使用）
     private string _selectedCategory;
 
-    // 中央区域页面承载：主页与导航方法
+    // 中央区域页面承载
     private PackagesHomePage _homePage;
-
-    private int _navigationVersion;
-
-    private bool _isHomeActive;
 
     /// <summary>
     /// 初始化主窗口实例。
@@ -89,39 +57,48 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     {
         InitializeComponent();
 
-        _updateService = new PackageUpdateService();
-        _ftpService = new FtpService();
-        _applicationFinderService = new ApplicationFinderService();
-        _dataPersistenceService = new DataPersistenceService();
-        _lanTransferService = new LanTransferService(_dataPersistenceService);
+        _updateService = ServiceLocator.Resolve<PackageUpdateService>();
+        _ftpService = ServiceLocator.Resolve<FtpService>();
+        _applicationFinderService = ServiceLocator.Resolve<ApplicationFinderService>();
+        _dataPersistenceService = ServiceLocator.Resolve<DataPersistenceService>();
+        _lanTransferService = ServiceLocator.Resolve<LanTransferService>();
 
-        // 设置PackageInfo的静态DataPersistenceService引用
-        PackageInfo.DataPersistenceService = _dataPersistenceService;
-        FtpService.DataService = _dataPersistenceService;
+        // 设置导航服务
+        ServiceLocator.Register(this);
+        ServiceLocator.Register(new CodePackageLinkService(_dataPersistenceService));
+        ServiceLocator.Register(new CodeWorkspaceNavigationRequestService());
+        var registry = new ToolRegistry();
+        ToolRegistration.RegisterAll(registry);
+        var navService = new NavigationService(CentralFrame, registry);
+        navService.SetHomePageFactory(() => new DashboardPage());
+        ServiceLocator.Register(navService);
 
         DataContext = this;
 
-        // 首次进入主界面，加载包列表主页到中央区域
-        NavigateHome();
         InitializePackages();
         BuildCategoryTree();
         InitializeCommonLinks();
+
+        // 首次进入主界面（必须在 BuildCategoryTree 之后，否则 ApplyCategorySelection 会覆盖仪表盘）
+        navService.NavigateHome();
+        navService.PropertyChanged += (s, args) =>
+        {
+            if (args.PropertyName == nameof(NavigationService.IsHomeActive))
+            {
+                BackToDashboardButton.Visibility = navService.IsHomeActive ? Visibility.Collapsed : Visibility.Visible;
+            }
+            if (args.PropertyName == nameof(NavigationService.CurrentKey))
+            {
+                PackageToolbar.Visibility = navService.CurrentKey == "packages-home" ? Visibility.Visible : Visibility.Collapsed;
+            }
+        };
         Loaded += MainWindow_Loaded;
         Closing += MainWindow_Closing;
 
-        // 初始化命令，将现有点击处理函数以命令方式暴露给 NavigationPanel
+        InitializeNotificationBell();
+
+        // 刷新命令（顶部按钮使用）
         RefreshCommand = new RelayCommand(() => { _ = LoadVersionsFromFtpAsync(); });
-        NavigateHomeCommand = new RelayCommand(() => { NavigateHome(); });
-        SettingsCommand = new RelayCommand(() => { SettingsButton_Click(this, new RoutedEventArgs()); });
-        LocalPathSettingsCommand = new RelayCommand(() => { LocalPathSettingsButton_Click(this, new RoutedEventArgs()); });
-        OpenLogViewerCommand = new RelayCommand(() => { OpenLogViewerButton_Click(this, new RoutedEventArgs()); });
-        OpenProductLogsCommand = new RelayCommand(() => { OpenProductLogButton_Click(this, new RoutedEventArgs()); });
-        OpenPackageConfigCommand = new RelayCommand(() => { OpenPackageConfigButton_Click(this, new RoutedEventArgs()); });
-        OpenCommonLinksPageCommand = new RelayCommand(OpenCommonLinksPage);
-        OpenChangelogPageCommand = new RelayCommand(() => { OpenChangelogPageButton_Click(this, new RoutedEventArgs()); });
-        OpenKanbanStatsPageCommand = new RelayCommand(() => { OpenKanbanStatsPageButton_Click(this, new RoutedEventArgs()); });
-        OpenPluginManagerPageCommand = new RelayCommand(() => { OpenPluginManagerPageButton_Click(this, new RoutedEventArgs()); });
-        OpenLanTransferPageCommand = new RelayCommand(() => { OpenLanTransferPageButton_Click(this, new RoutedEventArgs()); });
     }
 
     /// <summary>
@@ -166,64 +143,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     }
 
     /// <summary>
-    /// 获取或设置导航到主页的命令。
-    /// </summary>
-    public ICommand NavigateHomeCommand { get; set; }
-
-    /// <summary>
     /// 获取刷新版本信息的命令。
     /// </summary>
     public ICommand RefreshCommand { get; }
-
-    /// <summary>
-    /// 获取打开设置页面的命令。
-    /// </summary>
-    public ICommand SettingsCommand { get; }
-
-    /// <summary>
-    /// 获取打开本地路径设置的命令。
-    /// </summary>
-    public ICommand LocalPathSettingsCommand { get; }
-
-    /// <summary>
-    /// 获取打开日志查看器的命令。
-    /// </summary>
-    public ICommand OpenLogViewerCommand { get; }
-
-    /// <summary>
-    /// 获取打开产品日志的命令。
-    /// </summary>
-    public ICommand OpenProductLogsCommand { get; }
-
-    /// <summary>
-    /// 获取打开包管理配置的命令。
-    /// </summary>
-    public ICommand OpenPackageConfigCommand { get; }
-
-    /// <summary>
-    /// 获取打开常用网址页面的命令。
-    /// </summary>
-    public ICommand OpenCommonLinksPageCommand { get; }
-
-    /// <summary>
-    /// 获取打开更新日志页面的命令。
-    /// </summary>
-    public ICommand OpenChangelogPageCommand { get; }
-
-    /// <summary>
-    /// 获取打开看板统计页面的命令。
-    /// </summary>
-    public ICommand OpenKanbanStatsPageCommand { get; }
-
-    /// <summary>
-    /// 获取打开插件管理页面的命令。
-    /// </summary>
-    public ICommand OpenPluginManagerPageCommand { get; }
-
-    /// <summary>
-    /// 获取打开局域网传文件页面的命令。
-    /// </summary>
-    public ICommand OpenLanTransferPageCommand { get; }
 
     /// <summary>
     /// 获取或设置产品包列表。
@@ -243,26 +165,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         get => _latestActivePackage;
 
         set => SetProperty(ref _latestActivePackage, value);
-    }
-
-    /// <summary>
-    /// 获取导航版本号，每次成功导航后递增，用于左侧导航在命令执行失败时回退选中项。
-    /// </summary>
-    public int NavigationVersion
-    {
-        get => _navigationVersion;
-
-        private set => SetProperty(ref _navigationVersion, value);
-    }
-
-    /// <summary>
-    /// 获取中央区域是否处于主页状态，用于左侧导航同步选中状态。
-    /// </summary>
-    public bool IsHomeActive
-    {
-        get => _isHomeActive;
-
-        private set => SetProperty(ref _isHomeActive, value);
     }
 
     /// <summary>
@@ -322,7 +224,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             {
                 if (srcUri.Scheme.Equals("ftp", StringComparison.OrdinalIgnoreCase))
                 {
-                    downClient.Credentials = new NetworkCredential("hongwauser", "hw_ftpa206");
+                    downClient.Credentials = ServiceLocator.Resolve<CredentialStore>().GetFtpDownloadCredential();
                 }
 
                 await downClient.DownloadFileTaskAsync(srcUri, localPath);
@@ -338,7 +240,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             using (var ftpClient = new WebClient())
             {
-                ftpClient.Credentials = new NetworkCredential("hwuser", "hongwa666.");
+                ftpClient.Credentials = ServiceLocator.Resolve<CredentialStore>().GetFtpWriteCredential();
                 string destUrl = remoteFtpDir + selectedName;
                 await ftpClient.UploadFileTaskAsync(new Uri(destUrl), WebRequestMethods.Ftp.UploadFile, localPath);
             }
@@ -455,7 +357,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             current = current + seg + "/";
             var req = (FtpWebRequest)WebRequest.Create(current);
             req.Method = WebRequestMethods.Ftp.MakeDirectory;
-            req.Credentials = new NetworkCredential("hwuser", "hongwa666.");
+            req.Credentials = ServiceLocator.Resolve<CredentialStore>().GetFtpWriteCredential();
             req.UseBinary = true;
             req.UsePassive = true;
             req.KeepAlive = false;
@@ -483,53 +385,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
     private void NavigateHome()
     {
-        if (_homePage == null)
-        {
-            _homePage = new PackagesHomePage();
-
-            // 使用主窗口的 DataContext 进行数据绑定
-            _homePage.DataContext = this;
-        }
-
-        CentralFrame.Navigate(_homePage);
-        NavigationVersion++;
-        IsHomeActive = true;
-    }
-
-    private void NavigateTo(Page page)
-    {
-        if (page == null)
-        {
-            return;
-        }
-
-        // 不强制覆盖页面自己的DataContext；仅当未设置时才继承主窗口上下文
-        if (page.DataContext == null)
-        {
-            page.DataContext = this;
-        }
-
-        CentralFrame.Navigate(page);
-        NavigationVersion++;
-        IsHomeActive = false;
-
-        // 同步左侧导航选中项
-        try
-        {
-            var name = (page is ProductLogsPage) ? "产品日志"
-                       : (page is LogViewerPage) ? "软件日志"
-                       : (page is PackageConfigPage) ? "产品管理"
-                       : (page is SettingsPage) ? "软件设置"
-                       : (page is KanbanStatsPage) ? "看板统计"
-                       : (page is PluginManagementPage) ? "插件管理"
-                       : (page is LanTransferPage) ? "局域网传文件"
-                       : null;
-            if (!string.IsNullOrEmpty(name))
-            {
-                LeftNavPanel?.SelectActionByName(name);
-            }
-        }
-        catch { }
+        ServiceLocator.Resolve<NavigationService>()?.NavigateHome();
     }
 
     /// <summary>
@@ -538,7 +394,51 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     /// <param name="name">要选中的导航项名称。</param>
     public void UpdateLeftNavSelection(string name)
     {
-        try { LeftNavPanel?.SelectActionByName(name); } catch { }
+        // try { LeftNavPanel?.SelectActionByName(name); } catch { }
+    }
+
+    internal PackagesHomePage GetOrCreateHomePage()
+    {
+        if (_homePage == null)
+            _homePage = new PackagesHomePage { DataContext = this };
+        return _homePage;
+    }
+
+    public bool SelectPackageByLinkKey(string packageKey)
+    {
+        if (string.IsNullOrWhiteSpace(packageKey) || Packages == null)
+        {
+            return false;
+        }
+
+        var package = Packages.FirstOrDefault(pkg =>
+            string.Equals(CodePackageLinkService.BuildPackageKey(pkg), packageKey, StringComparison.OrdinalIgnoreCase));
+        if (package == null)
+        {
+            return false;
+        }
+
+        _selectedCategory = "全部";
+        OnPropertyChanged(nameof(SelectedCategory));
+        var view = CollectionViewSource.GetDefaultView(Packages);
+        if (view != null)
+        {
+            view.Filter = obj =>
+            {
+                var p = obj as PackageInfo;
+                return (p != null) && IsProductVisible(p.ProductName);
+            };
+        }
+
+        LatestActivePackage = package;
+        var dataGrid = GetPackageDataGrid();
+        if (dataGrid != null)
+        {
+            dataGrid.SelectedItem = package;
+            dataGrid.ScrollIntoView(package);
+        }
+
+        return true;
     }
 
     private CustomControlLibrary.CustomControl.Controls.DataGrid.CDataGrid GetPackageDataGrid()
@@ -564,6 +464,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         // 加载可执行文件版本
         await LoadExecutableVersionsAsync();
         EnsureLatestActivePackageSelected();
+
+        // 启动后台版本检测（包列表已初始化完毕）
+        ServiceLocator.Resolve<PackageVersionMonitorService>()?.Start();
     }
 
     private void InitializeCommonLinks()
@@ -711,19 +614,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         });
     }
 
-    private void OpenDnsSettingsWindowButton_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var win = new DnsSettingsWindow { Owner = this };
-            win.ShowDialog();
-        }
-        catch (Exception ex)
-        {
-            LoggingService.LogError(ex, "打开DNS设置窗口失败");
-        }
-    }
-
     /// <summary>
     /// 更新包的可执行文件版本信息
     /// </summary>
@@ -803,7 +693,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     /// <summary>
     /// 从FTP服务器加载版本信息
     /// </summary>
-    private async Task LoadVersionsWhichVisiableFromFtpAsync()
+    internal async Task LoadVersionsWhichVisiableFromFtpAsync(bool forceLatest = false)
     {
         var dataGrid = GetPackageDataGrid();
         if (dataGrid == null)
@@ -842,8 +732,11 @@ public partial class MainWindow : Window, INotifyPropertyChanged
 
             foreach (var pkg in filteredPackages)
             {
-                pkg.Version = string.Empty;
-                pkg.UploadPackageName = string.Empty;
+                if (forceLatest)
+                {
+                    pkg.Version = string.Empty;
+                    pkg.UploadPackageName = string.Empty;
+                }
             }
 
             foreach (var pkg in filteredPackages)
@@ -874,8 +767,10 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             // 如果有版本，加载第一个版本的文件列表作为上传时间
             if (versions.Count > 0)
             {
-                var selectedVersion = package.Version ?? versions.Last();
+                var latestVersion = versions.Last();
+                var selectedVersion = package.Version ?? latestVersion;
                 await LoadPackageFilesAsync(package, selectedVersion);
+
                 package.StatusText = $"已加载 {versions.Count} 个版本";
             }
             else
@@ -1024,8 +919,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             // 更新左侧分类导航
             BuildCategoryTree();
 
-            // 返回主页以显示最新列表
-            NavigateHome();
+            // 返回包列表主页以显示最新列表
+            ServiceLocator.Resolve<NavigationService>()?.NavigateTo("packages-home");
 
             // 自动加载各包的版本与文件信息（异步，不阻塞UI）
             // _ = LoadVersionsFromFtpAsync();
@@ -1231,7 +1126,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         try
         {
             // 无论当前是否在其它页面，切换分类后回到包列表主页
-            NavigateHome();
+            ServiceLocator.Resolve<NavigationService>()?.NavigateTo("packages-home");
 
             var view = CollectionViewSource.GetDefaultView(Packages);
             if (view == null)
@@ -1315,16 +1210,45 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
+    private void BackToDashboardButton_Click(object sender, MouseButtonEventArgs e)
+    {
+        ServiceLocator.Resolve<NavigationService>()?.NavigateHome();
+    }
+
+    private void InitializeNotificationBell()
+    {
+        var service = ServiceLocator.Resolve<NotificationService>();
+        if (service == null) return;
+
+        service.PropertyChanged += (s, args) =>
+        {
+            if (args.PropertyName == nameof(NotificationService.UnreadCount))
+            {
+                UpdateNotificationBadge(service.UnreadCount);
+            }
+        };
+        UpdateNotificationBadge(service.UnreadCount);
+    }
+
+    private void UpdateNotificationBadge(int count)
+    {
+        UnreadBadge.Visibility = count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        UnreadCountText.Text = count > 99 ? "99+" : count.ToString();
+    }
+
+    private void NotificationBell_Click(object sender, MouseButtonEventArgs e)
+    {
+        NotificationPopup.IsOpen = !NotificationPopup.IsOpen;
+        e.Handled = true;
+    }
+
     /// <summary>
     /// 刷新按钮点击事件
     /// </summary>
     private async void RefreshButton_Click(object sender, RoutedEventArgs e)
     {
         // 重新加载可见包的版本和文件信息
-        await LoadVersionsWhichVisiableFromFtpAsync();
-        
-        // 重新加载所有包的版本和文件信息
-        //await LoadVersionsFromFtpAsync();
+        await LoadVersionsWhichVisiableFromFtpAsync(forceLatest: true);
     }
 
     /// <summary>
@@ -1371,306 +1295,6 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             package.StatusText = $"加载版本包列表失败: {ex.Message}";
         }
-    }
-
-    /// <summary>
-    /// 设置按钮点击事件
-    /// </summary>
-    private void SettingsButton_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var page = new SettingsPage(_dataPersistenceService, _lanTransferService);
-            if (page is ICentralPage icp)
-            {
-                icp.RequestExit += () => NavigateHome();
-            }
-
-            NavigateTo(page);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"打开设置窗口失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    /// <summary>
-    /// 打开本地包路径设置窗口
-    /// </summary>
-    private void LocalPathSettingsButton_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var page = new LocalPathSettingsPage(_dataPersistenceService, Packages);
-            if (page is ICentralPage icp)
-            {
-                icp.RequestExit += () => NavigateHome();
-            }
-
-            // 保存后更新状态提示
-            page.Saved += () =>
-            {
-                _dataPersistenceService.SaveMainWindowState(Packages);
-                var pkg = LatestActivePackage ?? Packages?.FirstOrDefault();
-                if (pkg != null)
-                {
-                    pkg.StatusText = "本地路径设置已保存";
-                }
-            };
-            NavigateTo(page);
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"打开路径设置窗口失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    /// <summary>
-    /// 清除数据按钮点击事件
-    /// </summary>
-    private void ClearDataButton_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var result = MessageBox.Show("确定要清除所有保存的数据吗？\n这将删除：\n- 主界面状态数据\n- 应用程序缓存数据\n- 用户设置数据\n\n此操作不可撤销！",
-                                         "确认清除数据",
-                                         MessageBoxButton.YesNo,
-                                         MessageBoxImage.Warning);
-
-            if (result == MessageBoxResult.Yes)
-            {
-                _dataPersistenceService.ClearMainWindowState();
-                _dataPersistenceService.ClearAllCachedData();
-                _dataPersistenceService.ClearSettings();
-
-                var pkg = LatestActivePackage ?? Packages?.FirstOrDefault();
-                if (pkg != null)
-                {
-                    pkg.StatusText = "所有数据已清除";
-                }
-
-                MessageBox.Show("数据清除完成！\n建议重启应用程序以确保所有更改生效。",
-                                "清除完成",
-                                MessageBoxButton.OK,
-                                MessageBoxImage.Information);
-            }
-        }
-        catch (Exception ex)
-        {
-            MessageBox.Show($"清除数据失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    private void OpenLogsButton_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PackageManager", "logs");
-            if (!Directory.Exists(dir))
-            {
-                Directory.CreateDirectory(dir);
-            }
-
-            try
-            {
-                Process.Start(new ProcessStartInfo
-                {
-                    FileName = dir,
-                    UseShellExecute = true,
-                });
-            }
-            catch
-            {
-                Process.Start("explorer.exe", dir);
-            }
-        }
-        catch (Exception ex)
-        {
-            LoggingService.LogError(ex, "打开日志目录失败");
-            MessageBox.Show($"打开日志目录失败：{ex.Message}", "日志", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-    }
-
-    private void OpenLogViewerButton_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var page = new LogViewerPage();
-            if (page is ICentralPage icp)
-            {
-                icp.RequestExit += () => NavigateHome();
-            }
-
-            NavigateTo(page);
-        }
-        catch (Exception ex)
-        {
-            LoggingService.LogError(ex, "打开日志查看器失败");
-            MessageBox.Show($"打开日志查看器失败：{ex.Message}", "日志", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-    }
-
-    private void OpenChangelogPageButton_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var page = new ChangelogPage();
-            if (page is ICentralPage icp)
-            {
-                icp.RequestExit += () => NavigateHome();
-            }
-
-            NavigateTo(page);
-        }
-        catch (Exception ex)
-        {
-            LoggingService.LogError(ex, "打开更新日志页面失败");
-            MessageBox.Show($"打开更新日志页面失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    private void OpenPackageConfigButton_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var page = new PackageConfigPage();
-            if (page is ICentralPage icp)
-            {
-                icp.RequestExit += () => NavigateHome();
-            }
-
-            NavigateTo(page);
-        }
-        catch (Exception ex)
-        {
-            LoggingService.LogError(ex, "打开包管理配置页面失败");
-            MessageBox.Show($"打开包管理配置页面失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    /// <summary>
-    /// 打开常用网址导航页面（窗口承载）
-    /// </summary>
-    private void OpenCommonLinksPage()
-    {
-        try
-        {
-            var page = new CommonLinksPage(CommonLinks);
-            if (page is ICentralPage icp)
-            {
-                icp.RequestExit += () => NavigateHome();
-            }
-
-            NavigateTo(page);
-        }
-        catch (Exception ex)
-        {
-            LoggingService.LogError(ex, "打开常用网址导航页失败");
-            MessageBox.Show($"打开常用网址导航页失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    private void OpenProductLogButton_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var pkg = LatestActivePackage;
-            if (pkg == null)
-            {
-                MessageBox.Show("请先选择一个产品包", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
-                return;
-            }
-
-            var baseDir = Path.Combine(Path.GetTempPath(), "HongWaSoftLog");
-            var page = new ProductLogsPage(baseDir);
-            if (page is ICentralPage icp)
-            {
-                icp.RequestExit += () => NavigateHome();
-            }
-
-            NavigateTo(page);
-        }
-        catch (Exception ex)
-        {
-            LoggingService.LogError(ex, "打开产品日志目录失败");
-            MessageBox.Show($"打开产品日志目录失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-    
-    private void OpenKanbanStatsPageButton_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var page = new KanbanStatsPage();
-            if (page is ICentralPage icp)
-            {
-                icp.RequestExit += () => NavigateHome();
-            }
-            NavigateTo(page);
-        }
-        catch (Exception ex)
-        {
-            LoggingService.LogError(ex, "打开看板统计页面失败");
-            MessageBox.Show($"打开看板统计页面失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    private void OpenPluginManagerPageButton_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var page = new PluginManagementPage(_dataPersistenceService, _applicationFinderService);
-            if (page is ICentralPage icp)
-            {
-                icp.RequestExit += () => NavigateHome();
-            }
-
-            NavigateTo(page);
-        }
-        catch (Exception ex)
-        {
-            LoggingService.LogError(ex, "打开插件管理页面失败");
-            MessageBox.Show($"打开插件管理页面失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    private void OpenLanTransferPageButton_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var page = new LanTransferPage(_lanTransferService);
-            if (page is ICentralPage icp)
-            {
-                icp.RequestExit += () => NavigateHome();
-            }
-
-            NavigateTo(page);
-        }
-        catch (Exception ex)
-        {
-            LoggingService.LogError(ex, "打开局域网传文件页面失败");
-            MessageBox.Show($"打开局域网传文件页面失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    private void OpenCsvCryptoWindowButton_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var win = new CsvCryptoWindow();
-            win.Owner = this;
-            win.Show();
-        }
-        catch (Exception ex)
-        {
-            LoggingService.LogError(ex, "打开CSV加解密窗口失败");
-            MessageBox.Show($"打开CSV加解密窗口失败：{ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
-        }
-    }
-
-    private void FilterButton_Click(object sender, RoutedEventArgs e)
-    {
-        return;
     }
 
     private bool IsProductVisible(string name)

@@ -1,0 +1,50 @@
+<Page x:Class="PackageManager.Features.CodeWorkspace.Views.CodeRepositoryManagementPage"
+      xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:C="clr-namespace:CustomControlLibrary.CustomControl.Controls.DataGrid;assembly=CustomControlLibrary"
+      xmlns:button="clr-namespace:CustomControlLibrary.CustomControl.Controls.Button;assembly=CustomControlLibrary"
+      Title="代码仓库管理"
+      Background="#F7F8FA"
+      AllowDrop="True"
+      Drop="Page_Drop"
+      DragOver="Page_DragOver">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <DockPanel Grid.Row="0" Margin="0,0,0,10">
+            <TextBlock Text="代码仓库管理"
+                       FontSize="20"
+                       FontWeight="SemiBold"
+                       VerticalAlignment="Center"/>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <button:CButton Content="新增仓库" Width="86" Height="30" Margin="8,0,0,0" Click="AddButton_Click"/>
+                <button:CButton Content="删除" Width="70" Height="30" Margin="8,0,0,0" Click="DeleteButton_Click"/>
+                <button:CButton Content="刷新项目文件" Width="104" Height="30" Margin="8,0,0,0" Click="RefreshProjectFilesButton_Click"/>
+                <button:CButton Content="保存" Width="70" Height="30" Margin="8,0,0,0" Click="SaveButton_Click"/>
+                <button:CButton Content="返回" Width="70" Height="30" Margin="8,0,0,0" Click="BackButton_Click"/>
+            </StackPanel>
+        </DockPanel>
+
+        <C:CDataGrid Grid.Row="1"
+                     x:Name="RepositoryGrid"
+                     ItemsSource="{Binding Repositories}"
+                     SelectedItem="{Binding SelectedRepository, Mode=TwoWay}"
+                     TextAlignment="Left"
+                     EnableAutoTemplateSelection="True"
+                     CanUserAddRows="False"
+                     CanUserSortColumns="False"
+                     IsReadOnly="False"
+                     SelectionMode="Single"
+                     GridLinesVisibility="Horizontal"
+                     RowHeaderWidth="0"/>
+
+        <TextBlock Grid.Row="2"
+                   Text="{Binding StatusText}"
+                   Foreground="#666666"
+                   Margin="0,10,0,0"/>
+    </Grid>
+</Page>
