@@ -61,7 +61,7 @@ public class PingCodeWorkItemPromptService
         AppendPlanModeAndEvidenceRules(sb);
         sb.AppendLine("## 执行要求");
         sb.AppendLine("- 先阅读当前仓库，定位相关模块和既有实现模式。");
-        sb.AppendLine("- 优先阅读工作项中列出的方案、设计、接口等参考链接；如果链接需要登录或无法访问，请明确告知并基于已有信息继续。 ");
+        sb.AppendLine("- 主动访问工作项中列出的内网链接（方案/原型/文档），获取完整设计信息后再动手。");
         sb.AppendLine("- 复用现有架构、组件和交互模式，不做无关重构。");
         sb.AppendLine("- 按工作项描述、验收标准和补充说明逐项实现。");
         sb.AppendLine("- 注意不要覆盖用户已有未提交改动；修改前先检查工作区状态。");
@@ -84,8 +84,8 @@ public class PingCodeWorkItemPromptService
         AppendLinks(sb, links);
         AppendPlanModeAndEvidenceRules(sb);
         sb.AppendLine("## 执行要求");
-        sb.AppendLine("- 先根据问题描述、复现步骤、实际结果、期望结果和相关链接定位根因。");
-        sb.AppendLine("- 优先查看工作项中提供的日志、截图、复现页面或详细说明链接；如果链接需要登录或无法访问，请明确告知并基于已有信息继续。");
+        sb.AppendLine("- 先根据问题描述、复现步骤、实际结果、期望结果定位根因。");
+        sb.AppendLine("- 主动访问工作项中列出的内网链接（日志、截图、复现页面等），获取详细信息后再分析。");
         sb.AppendLine("- 最小化修改，不做无关需求扩展或大范围重构。");
         sb.AppendLine("- 注意不要覆盖用户已有未提交改动；修改前先检查工作区状态。");
         sb.AppendLine("- 修复后运行针对性验证；如果无法运行，请说明原因。");
@@ -104,6 +104,16 @@ public class PingCodeWorkItemPromptService
         sb.AppendLine("- 缺证据时先加最小必要调试日志，日志应输出到桌面，等待用户复现并提供日志后，再基于日志精准分析和修复。");
         sb.AppendLine("- 加日志时只记录定位所需的关键上下文，不要记录敏感信息，不要引入无关重构。");
         sb.AppendLine("- 工作项中的图片已下载到仓库 .pm-ai/images/ 目录，请直接读取这些本地图片文件来理解截图、示意图等视觉信息。");
+        sb.AppendLine();
+        sb.AppendLine("### 链接访问规则");
+        sb.AppendLine("**重要：不要用 WebFetch 或 curl 访问网页链接**——它们只能拿到 SPA 空壳 HTML，拿不到实际内容。");
+        sb.AppendLine("访问任何网页链接时，统一使用 headless Edge 渲染后获取完整 DOM：");
+        sb.AppendLine("```bash");
+        sb.AppendLine("powershell.exe -NoProfile -Command \"& (Get-Command msedge).Source --headless --disable-gpu --dump-dom '<URL>'\"");
+        sb.AppendLine("```");
+        sb.AppendLine("- **内网链接**（192.168.x.x、10.x.x.x 等内网地址）：无需认证，直接访问。务必主动访问获取方案、设计、原型等完整信息。");
+        sb.AppendLine("- **PingCode 链接**（*.pingcode.com）：需要在 URL 后追加 access_token 参数认证（见 prompt 末尾的凭证信息）。");
+        sb.AppendLine("- **内网 Axure 原型**：start.html 是空壳框架。正确做法：先访问同目录下 `data/document.js` 提取各子页面的 `url` 字段，然后逐个访问子页面 HTML。");
         sb.AppendLine();
     }
 
@@ -196,7 +206,7 @@ public class PingCodeWorkItemPromptService
             sb.AppendLine("## 必须优先阅读的参考资料");
             foreach (var link in priority)
             {
-                sb.AppendLine($"- {link.Url}（{link.Context}）");
+                sb.AppendLine($"- {FormatLinkWithAccessLabel(link)}");
             }
 
             sb.AppendLine();
@@ -207,10 +217,29 @@ public class PingCodeWorkItemPromptService
             sb.AppendLine("## 辅助排查/参考链接");
             foreach (var link in assists)
             {
-                sb.AppendLine($"- {link.Url}（{link.Context}）");
+                sb.AppendLine($"- {FormatLinkWithAccessLabel(link)}");
             }
 
             sb.AppendLine();
+        }
+    }
+
+    private static string FormatLinkWithAccessLabel(PingCodePromptLink link)
+    {
+        var label = IsPingCodeUrl(link.Url) ? "需追加 access_token" : "可直接访问";
+        return $"[{label}] {link.Url}（{link.Context}）";
+    }
+
+    private static bool IsPingCodeUrl(string url)
+    {
+        try
+        {
+            var host = new Uri(url).Host.ToLowerInvariant();
+            return host.EndsWith("pingcode.com");
+        }
+        catch
+        {
+            return false;
         }
     }
 

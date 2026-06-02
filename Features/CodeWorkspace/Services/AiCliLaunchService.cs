@@ -18,7 +18,8 @@ namespace PackageManager.Features.CodeWorkspace.Services
 
         public Task LaunchCodexAsync(CodeRepository repo, string prompt, string title)
         {
-            return LaunchAsync(repo, prompt, title, "Codex", "codex", "codex --sandbox danger-full-access --ask-for-approval never");
+            var fullPrompt = "/plan\n" + (prompt ?? string.Empty);
+            return LaunchAsync(repo, fullPrompt, title, "Codex", "codex", "codex --sandbox danger-full-access --ask-for-approval never");
         }
 
         private static Task LaunchAsync(CodeRepository repo, string prompt, string title, string engineName, string commandName, string commandPrefix)

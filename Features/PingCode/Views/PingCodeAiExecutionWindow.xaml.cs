@@ -44,7 +44,7 @@ public partial class PingCodeAiExecutionWindow : Window, INotifyPropertyChanged
         InitializeComponent();
         DataContext = this;
         LoadRepositories();
-        Loaded += async (_, __) => await DownloadImagesAsync();
+        Loaded += async (_, __) => await DownloadAssetsAsync();
     }
 
     public event PropertyChangedEventHandler PropertyChanged;
@@ -133,7 +133,7 @@ public partial class PingCodeAiExecutionWindow : Window, INotifyPropertyChanged
         Close();
     }
 
-    private async Task DownloadImagesAsync()
+    private async Task DownloadAssetsAsync()
     {
         try
         {
@@ -149,14 +149,14 @@ public partial class PingCodeAiExecutionWindow : Window, INotifyPropertyChanged
                 DownloadedImages.Add(img);
             }
 
-            var successCount = images.Count(x => x.Success);
+            var imgSuccess = images.Count(x => x.Success);
             StatusText = images.Count == 0
-                ? "未发现工作项图片。已加载 " + Repositories.Count + " 个代码仓库。"
-                : $"已提取 {successCount}/{images.Count} 张图片。";
+                ? "未发现图片。已加载 " + Repositories.Count + " 个代码仓库。"
+                : $"已提取：图片 {imgSuccess}/{images.Count}。";
         }
         catch (Exception ex)
         {
-            StatusText = $"图片提取失败：{ex.Message}";
+            StatusText = $"资源提取失败：{ex.Message}";
         }
     }
 
@@ -182,6 +182,11 @@ public partial class PingCodeAiExecutionWindow : Window, INotifyPropertyChanged
             if (!string.IsNullOrWhiteSpace(imageSection))
             {
                 finalPrompt = finalPrompt + "\n\n" + imageSection;
+            }
+
+            if (!string.IsNullOrWhiteSpace(accessToken))
+            {
+                finalPrompt = finalPrompt + "\n\n" + BuildPingCodeTokenSection();
             }
 
             if (useClaude)
@@ -235,6 +240,18 @@ public partial class PingCodeAiExecutionWindow : Window, INotifyPropertyChanged
             }
         }
 
+        return sb.ToString();
+    }
+
+    private string BuildPingCodeTokenSection()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("## PingCode 链接访问凭证");
+        sb.AppendLine("工作项中的 PingCode 链接（*.pingcode.com）需要认证才能访问。");
+        sb.AppendLine("访问时请在 URL 后追加查询参数 access_token，示例：");
+        sb.AppendLine($"  原始链接?access_token={accessToken}");
+        sb.AppendLine($"  或 原始链接&access_token={accessToken}（如果 URL 已有 ? 参数）");
+        sb.AppendLine("此 token 有时效性，请尽快使用。非 PingCode 域名的链接无需添加此参数。");
         return sb.ToString();
     }
 
