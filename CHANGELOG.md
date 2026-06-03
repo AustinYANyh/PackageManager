@@ -2,6 +2,65 @@
 
 本文件基于仓库 `gitlog.md` 的提交历史按版本号归档,概述每个版本的主要改动与新增功能。
 
+## 4.2.0.0 — 2026-06-02
+
+- 代码工作区 VCS 状态与差异查看：
+  - Git/SVN 状态展示增加仓库类型、分支版本、变更数量和 SVN 子仓库状态面板。
+  - VCS 状态支持 Git 子仓库检测与展示，根仓库和子仓库分别维护前后追踪状态与变更计数。
+  - 工作区本地状态与远端更新刷新拆分，先显示本地状态，再后台检查远端统计，减少常规等待。
+  - 差异查看从 DiffPlex.Wpf 改为自研 ListView 控件，支持行号、变更标记、字符级高亮、水平滚动和空白变更检测。
+  - 差异文件大小上限从 128KB 提升到 1MB，外部差异工具支持自动创建空基准并增强路径校验。
+
+- 产品包关联与项目文件选择：
+  - 代码工作区支持为源码仓库绑定、打开和解除产品包关联，并在仓库详情中显示关联状态。
+  - 产品包首页新增源码仓库入口，可按当前产品包绑定仓库或跳转到已关联仓库。
+  - 关联选择窗口同时支持产品包和源码仓库选择，并按名称与路径提供自动建议。
+  - 项目文件扫描同时采集 `.sln` 和 `.csproj`，选择对话框支持按类型过滤、状态栏提示和确认按钮状态绑定。
+  - 仓库管理和工作区页面的项目文件扫描改为异步执行，失败时给出明确提示。
+
+- 合并回主干与 AI 提交环境：
+  - CodeWorkspace 新增合并回主干入口，支持根仓库与 Git 子仓库选择。
+  - 合并流程增加预检、fetch/pull、merge、冲突继续和终止操作。
+  - 冲突文件列表支持生成 AI 分析提示，便于处理合并冲突。
+  - AI 提交入口改为后台检查命令与同步 skill，避免界面被环境准备阻塞。
+  - 打开 IDE/Visual Studio 前异步选择并扫描项目文件，失败时保留明确状态提示。
+
+- PingCode AI 执行入口与内网资料访问：
+  - 工作项详情页新增 AI 实现/AI 修复入口，按类型切换文案，并补拉详情后打开执行窗口。
+  - 新增 Prompt 提炼和图片下载，汇总工作项描述、评论、扩展字段与参考链接。
+  - 执行窗口支持选仓库、编辑与复制 Prompt，并启动 Claude 或 Codex。
+  - 图片随执行写入仓库 `.pm-ai/images`，CLI 启动服务支持超长 Prompt 落盘。
+  - 支持识别内网链接、下载 Axure 子页面并内联图片资源。
+
+- 通知、传输与工具产物：
+  - 通知服务支持保存历史，保留最多 200 条有效通知，重启后延续未读数量与列表。
+  - 通知弹窗支持点击外部关闭，并保持铃铛点击与未读角标同步。
+  - 局域网文件传输新增自动接收、传输完成确认、跨卷落盘回退和占用文件重试处理。
+  - 提交日志生成规则继续收紧，支持轻量状态文件、反馈重生成和按真实 Git/SVN 提交组聚合。
+
+- 提交参考：
+- 92b6904e5dc0506626aed893a8c7e904a5a55021 — feat(PackageManager): 完善 PingCode 内网资料访问与 AI 启动准备
+- 23dd9e2740b724251010b9a1711b6186db7a09ca — feat(PackageManager): 在工作项详情页接入 PingCode AI 执行入口
+- 0fe3d4047dda8f94d44f1abfc6979f2564a1e294 — feat(PackageManager): 增加代码工作区合并回主干流程
+- 8dcc65d9ff654fbfb3d0739c332c9c4f999b5e19 — Merge branch 'refactor/architecture-v2'
+- 08185c443d3aee05d3b30c95867f3dfe006249e2 — fix(PackageManager): 异步准备代码工作区外部工具与 AI 提交环境
+- 7abe8817a98f54bcb897a0c2ddd263c17844babe — feat(PackageManager): 持久化通知中心历史并同步工具产物
+- abff84ea87a627a2dbcb911ae147f9a868393a64 — feat(PackageManager): 项目文件选择支持 sln/csproj 切换，扫描改为异步
+- 12267e1a0c59e2dbb41fed0af10a02dde9617413 — feat(PackageManager): 增加产品包与源码仓库双向关联
+- 8c2e0ce8a380d0ba3476c6f113727fcbd233bc8b — chore(PackageManager): 收紧提交日志规则并同步 MftScanner 工具产物
+- d151304c103e6fd8f82aa7d0fbe8dab1499e9ab7 — feat(PackageManager): 拆分工作区本地与远端状态刷新
+- ab2c9f25dfcaf6c102951502a692df6022c7e1a7 — feat(PackageManager): 增强工作区版本状态展示
+- 3808842c7fe68214569f41ed5ad81e725aaf5661 — feat(PackageManager): 支持按真实提交组生成日志
+- a3ab28662e52966822575b5e0a22ae37c4937972 — 临时提交
+- 2523f9508e58b25b09c5bf19fb17d5a5591133c6 — feat(CodeWorkspace): VCS status 支持 Git 子仓库检测与展示
+- 8a15ebce2d32e6d259a9cd2603b0b593e5474aad — feat(PackageManager): 代码工作区差异查看改用自研控件，支持字符级高亮与水平滚动
+- 1141857449e890843bbf29a25970440f66fe6f4f — feat(PackageManager): 代码工作区新增 VCS 变更差异查看功能
+- 4fe5b6968a06e85bee416a0a982cd515a223f2ea — feat(PackageManager): 增加代码工作区 Git/SVN 状态展示
+- 6a449b78e096139ba2e70e2f59d0ea5d73d3c62d — build(PackageManager): 更新 MftScanner 工具二进制并收紧提交日志生成规则
+- 105ca9a540f3c402d8269efd0dceda7af17d788d — refactor(git_svn_commitlog_generator、MftScanner): 简化输入处理并细化日志生成规则
+- ae2605d6e1e3d93131519f6c420881ebb7b44496 — feat(PackageManager): git-svn-commitlog-generator 新增轻量状态文件与反馈重生成流程
+- bf0a0058998bdad1974ed16ddfbfa85029977087 — feat(PackageManager): 新增自动接收与传输完成确认，增强接收落盘健壮性
+
 ## 4.1.0.0 — 2026-05-27
 
 - 通知中心与仪表盘概览：
