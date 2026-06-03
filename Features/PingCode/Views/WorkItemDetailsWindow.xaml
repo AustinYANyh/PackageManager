@@ -23,6 +23,7 @@
                            FontWeight="SemiBold"
                            Foreground="#374151" />
                 <Button DockPanel.Dock="Right"
+                        x:Name="AiActionButton"
                         Content="{Binding AiActionButtonText}"
                         Padding="14,7"
                         Background="#2563EB"

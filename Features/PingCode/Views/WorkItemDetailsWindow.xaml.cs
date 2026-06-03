@@ -51,6 +51,11 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         this.api = api ?? new PingCodeApiService();
         InitializeComponent();
         DataContext = this;
+        if (!UserFeatureAccessService.CanUseAustinOnlyFeatures)
+        {
+            AiActionButton.Visibility = Visibility.Collapsed;
+        }
+
         Loaded += async (s, e) =>
         {
             try
