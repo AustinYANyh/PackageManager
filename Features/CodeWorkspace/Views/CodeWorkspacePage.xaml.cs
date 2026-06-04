@@ -5,6 +5,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -195,6 +196,8 @@ namespace PackageManager.Features.CodeWorkspace.Views
             repo.CodexCommitCommand = new RelayCommand(() => RunRepositoryAction(repo, DoCodexCommit));
             repo.PullCommand = new RelayCommand(() => RunRepositoryAction(repo, DoPullRepository));
             repo.MergeToMainCommand = new RelayCommand(() => RunRepositoryAction(repo, DoMergeToMain));
+            repo.BuildCommand = new RelayCommand(() => RunRepositoryAction(repo, r => DoBuildWithMsBuild(r, "Build")));
+            repo.ReBuildCommand = new RelayCommand(() => RunRepositoryAction(repo, r => DoBuildWithMsBuild(r, "Rebuild")));
             repo.OpenVSCommand = new RelayCommand(() => RunRepositoryAction(repo, DoOpenVisualStudio));
             repo.OpenRiderCommand = new RelayCommand(() => RunRepositoryAction(repo, r => DoOpenIde(r, new[] { "Rider", "JetBrains Rider" }, "Rider")));
             repo.OpenCursorCommand = new RelayCommand(() => RunRepositoryAction(repo, DoOpenCursor));
@@ -658,11 +661,15 @@ namespace PackageManager.Features.CodeWorkspace.Views
                 {
                     var conflictMessage = BuildConflictMessage(result);
                     var dialogResult = MessageBox.Show(
-                        conflictMessage + "\n\n是否打开仓库文件夹？",
+                        conflictMessage + "\n\n是：启动 Codex 分析冲突\n否：打开仓库文件夹\n取消：暂不处理",
                         "拉取代码 - 检测到冲突",
-                        MessageBoxButton.YesNo,
+                        MessageBoxButton.YesNoCancel,
                         MessageBoxImage.Warning);
                     if (dialogResult == MessageBoxResult.Yes)
+                    {
+                        LaunchPullConflictAi(repo, result);
+                    }
+                    else if (dialogResult == MessageBoxResult.No)
                     {
                         DoOpenFolder(repo);
                     }
@@ -876,6 +883,86 @@ codex --sandbox danger-full-access --ask-for-approval never
                 UseShellExecute = true,
             });
             StatusText = $"已打开文件夹：{repo.Name}";
+        }
+
+        private async void DoBuildWithMsBuild(CodeRepository repo, string targetName)
+        {
+            var selection = await SelectBuildTargetAsync(repo);
+            if (selection == null)
+            {
+                StatusText = "已取消构建。";
+                return;
+            }
+
+            var command = BuildMsBuildTerminalCommand(repo.Path, selection.ProjectFile, selection.Configurations, targetName, selection.RestorePolicy);
+            repo.LastBuildProjectFile = selection.ProjectFile;
+            repo.LastBuildConfigurations = new List<string>(selection.Configurations);
+            repo.LastBuildRestorePolicy = selection.RestorePolicy;
+            SaveRepositories();
+            var displayTarget = string.Equals(targetName, "Rebuild", StringComparison.OrdinalIgnoreCase) ? "ReBuild" : "Build";
+            TerminalHelper.LaunchTerminalWithCommand(repo.Path, command, $"{displayTarget} - {repo.Name}");
+            StatusText = $"已启动 {displayTarget}: {repo.Name} / {Path.GetFileName(selection.ProjectFile)} / {string.Join(", ", selection.Configurations)} / Restore {selection.RestorePolicy}";
+        }
+
+        private async Task<BuildTargetSelection> SelectBuildTargetAsync(CodeRepository repo)
+        {
+            if (repo.ProjectFiles == null || repo.ProjectFiles.Count == 0 || repo.ProjectFiles.All(file => !File.Exists(file)))
+            {
+                if (repo.IsRefreshing)
+                {
+                    StatusText = $"{repo.Name} 正在执行操作，请稍后。";
+                    return null;
+                }
+
+                StatusText = $"正在扫描项目文件: {repo.Name}";
+                try
+                {
+                    repo.IsRefreshing = true;
+                    if (!await RefreshProjectFilesAsync(repo))
+                    {
+                        return null;
+                    }
+                }
+                finally
+                {
+                    repo.IsRefreshing = false;
+                }
+            }
+
+            var projectFiles = (repo.ProjectFiles ?? new List<string>())
+                .Where(File.Exists)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (projectFiles.Count == 0)
+            {
+                MessageBox.Show("未找到可用的项目文件。", "选择项目文件", MessageBoxButton.OK, MessageBoxImage.Information);
+                return null;
+            }
+
+            var dialog = new ProjectFileSelectionDialog(
+                projectFiles,
+                repo.Path,
+                enableBuildConfigurations: true,
+                preferredProjectFile: repo.LastBuildProjectFile,
+                preferredConfigurations: repo.LastBuildConfigurations,
+                preferredRestorePolicy: repo.LastBuildRestorePolicy)
+            {
+                Owner = Window.GetWindow(this),
+            };
+
+            if (dialog.ShowDialog() != true)
+            {
+                return null;
+            }
+
+            return new BuildTargetSelection
+            {
+                ProjectFile = dialog.SelectedProjectFile,
+                Configurations = dialog.SelectedConfigurations == null || dialog.SelectedConfigurations.Count == 0
+                    ? new List<string> { "Debug2024" }
+                    : new List<string>(dialog.SelectedConfigurations),
+                RestorePolicy = dialog.SelectedRestorePolicy,
+            };
         }
 
         private async Task<string> SelectProjectFileAsync(CodeRepository repo)
@@ -1139,6 +1226,8 @@ codex --sandbox danger-full-access --ask-for-approval never
                     result.HasConflicts = true;
                     result.GitConflicts.AddRange(ParseGitConflicts(gitText).Select(conflict => $"根仓库: {conflict}"));
                 }
+
+                await AppendGitWorkingConflictsAsync(repo.Path, "根仓库", result);
             }
 
             var gitSubRepositories = new List<Tuple<string, string>>();
@@ -1168,6 +1257,8 @@ codex --sandbox danger-full-access --ask-for-approval never
                     result.HasConflicts = true;
                     result.GitConflicts.AddRange(ParseGitConflicts(gitText).Select(conflict => $"{gitSubRepository.Item1}: {conflict}"));
                 }
+
+                await AppendGitWorkingConflictsAsync(gitSubRepository.Item2, gitSubRepository.Item1, result);
             }
 
             var svnPaths = new List<string>();
@@ -1212,6 +1303,8 @@ codex --sandbox danger-full-access --ask-for-approval never
                         result.HasConflicts = true;
                         result.SvnConflicts.Add(GetRepositoryRelativePath(repo.Path, svnResult.Path));
                     }
+
+                    await AppendSvnWorkingConflictsAsync(repo.Path, svnResult.Path, result);
                 }
             }
 
@@ -1221,7 +1314,59 @@ codex --sandbox danger-full-access --ask-for-approval never
                 result.ErrorMessage = "未检测到 Git 或 SVN 仓库。";
             }
 
+            DeduplicatePullConflicts(result);
             return result;
+        }
+
+        private static async Task AppendGitWorkingConflictsAsync(string workingDirectory, string label, PullResult result)
+        {
+            if (string.IsNullOrWhiteSpace(workingDirectory) || !Directory.Exists(workingDirectory))
+            {
+                return;
+            }
+
+            var unmergedResult = await RunCommandAsync(
+                "git",
+                "-c core.quotepath=false diff --name-only --diff-filter=U",
+                workingDirectory,
+                TimeSpan.FromSeconds(30));
+            foreach (var path in SplitCommandLines(unmergedResult.Output))
+            {
+                result.HasConflicts = true;
+                result.GitConflicts.Add($"{label}: {path}");
+            }
+
+            var markerResult = await RunCommandAsync(
+                "git",
+                "-c core.quotepath=false grep -n \"^<<<<<<< \" -- .",
+                workingDirectory,
+                TimeSpan.FromSeconds(30));
+            if (markerResult.ExitCode == 0)
+            {
+                foreach (var marker in ParseGitGrepPaths(markerResult.Output))
+                {
+                    result.HasConflicts = true;
+                    result.MarkerConflicts.Add($"{label}: {marker}");
+                }
+            }
+        }
+
+        private static async Task AppendSvnWorkingConflictsAsync(string repositoryPath, string svnPath, PullResult result)
+        {
+            if (string.IsNullOrWhiteSpace(svnPath) || !Directory.Exists(svnPath))
+            {
+                return;
+            }
+
+            var statusResult = await RunCommandAsync("svn", "status", svnPath, TimeSpan.FromSeconds(30));
+            foreach (var conflict in ParseSvnStatusConflicts(statusResult.Output))
+            {
+                result.HasConflicts = true;
+                var relativeRoot = GetRepositoryRelativePath(repositoryPath, svnPath);
+                result.SvnConflicts.Add(string.Equals(relativeRoot, "根仓库", StringComparison.OrdinalIgnoreCase)
+                    ? conflict
+                    : $"{relativeRoot}: {conflict}");
+            }
         }
 
         private static async Task<CommandResult> RunCommandAsync(string fileName, string arguments, string workingDirectory, TimeSpan timeout)
@@ -1307,9 +1452,88 @@ codex --sandbox danger-full-access --ask-for-approval never
                              line.StartsWith("C\t", StringComparison.Ordinal));
         }
 
+        private static List<string> SplitCommandLines(string output)
+        {
+            return (output ?? string.Empty)
+                .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(line => line.Trim())
+                .Where(line => !string.IsNullOrWhiteSpace(line))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+
+        private static List<string> ParseGitGrepPaths(string output)
+        {
+            var paths = new List<string>();
+            foreach (var line in SplitCommandLines(output))
+            {
+                var colonIndex = line.IndexOf(':');
+                if (colonIndex > 0)
+                {
+                    paths.Add(line.Substring(0, colonIndex).Trim());
+                }
+            }
+
+            return paths.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
+        private static List<string> ParseSvnStatusConflicts(string output)
+        {
+            var conflicts = new List<string>();
+            foreach (var rawLine in (output ?? string.Empty).Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (rawLine.Length < 8)
+                {
+                    continue;
+                }
+
+                var statusColumns = rawLine.Substring(0, Math.Min(7, rawLine.Length));
+                if (statusColumns.IndexOf('C') < 0)
+                {
+                    continue;
+                }
+
+                var path = rawLine.Substring(Math.Min(8, rawLine.Length)).Trim();
+                if (!string.IsNullOrWhiteSpace(path))
+                {
+                    conflicts.Add(path);
+                }
+            }
+
+            return conflicts.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        }
+
+        private static void DeduplicatePullConflicts(PullResult result)
+        {
+            if (result == null)
+            {
+                return;
+            }
+
+            ReplaceWithDistinct(result.GitConflicts);
+            ReplaceWithDistinct(result.SvnConflicts);
+            ReplaceWithDistinct(result.MarkerConflicts);
+        }
+
+        private static void ReplaceWithDistinct(List<string> values)
+        {
+            if (values == null)
+            {
+                return;
+            }
+
+            var distinct = values
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            values.Clear();
+            values.AddRange(distinct);
+        }
+
         private static string BuildConflictMessage(PullResult result)
         {
-            var parts = new List<string> { "检测到冲突，请在 IDE 中手动解决。" };
+            var parts = new List<string> { "检测到冲突或冲突标记，建议先处理后再编译。" };
             if (result.GitConflicts.Count > 0)
             {
                 parts.Add("Git冲突文件: " + string.Join(", ", result.GitConflicts.Take(8)));
@@ -1320,12 +1544,66 @@ codex --sandbox danger-full-access --ask-for-approval never
                 parts.Add("SVN冲突仓库: " + string.Join(", ", result.SvnConflicts.Take(8)));
             }
 
+            if (result.MarkerConflicts.Count > 0)
+            {
+                parts.Add("冲突标记文件: " + string.Join(", ", result.MarkerConflicts.Take(8)));
+            }
+
             if (!string.IsNullOrWhiteSpace(result.ErrorMessage))
             {
                 parts.Add(result.ErrorMessage);
             }
 
             return string.Join(Environment.NewLine, parts);
+        }
+
+        private void LaunchPullConflictAi(CodeRepository repo, PullResult result)
+        {
+            var prompt = BuildPullConflictPrompt(repo, result);
+            var command = $@"
+Set-Location -LiteralPath {PsQuote(repo.Path)}
+Write-Host 'PackageManager 拉取冲突 AI 分析入口' -ForegroundColor Cyan
+codex --sandbox danger-full-access --ask-for-approval never {PsQuote(prompt)}
+";
+            TerminalHelper.LaunchTerminalWithCommand(repo.Path, command, $"Codex 拉取冲突 - {repo.Name}");
+            StatusText = $"已启动 Codex 分析拉取冲突：{repo.Name}";
+        }
+
+        private static string BuildPullConflictPrompt(CodeRepository repo, PullResult result)
+        {
+            var gitConflicts = result.GitConflicts.Count == 0
+                ? "无"
+                : string.Join(Environment.NewLine, result.GitConflicts.Select(item => "- " + item));
+            var svnConflicts = result.SvnConflicts.Count == 0
+                ? "无"
+                : string.Join(Environment.NewLine, result.SvnConflicts.Select(item => "- " + item));
+            var markerConflicts = result.MarkerConflicts.Count == 0
+                ? "无"
+                : string.Join(Environment.NewLine, result.MarkerConflicts.Select(item => "- " + item));
+
+            return $@"拉取代码后检测到冲突或疑似混入版本。请在当前仓库中协助分析并修复，但不要自动提交、推送或回滚整仓。
+
+仓库：{repo.Path}
+
+处理要求：
+1. 先运行 git status / svn status 复核冲突状态。
+2. 优先检查以下冲突文件和带冲突标记的文件。
+3. 不要用整文件覆盖的方式粗暴解决；保留两边真实需要的代码。
+4. 修复后运行必要的编译或最小验证。
+5. 如果无法判断业务取舍，明确列出需要人工确认的位置。
+
+Git冲突文件：
+{gitConflicts}
+
+SVN冲突/树冲突：
+{svnConflicts}
+
+冲突标记文件：
+{markerConflicts}
+
+拉取错误信息：
+{(string.IsNullOrWhiteSpace(result.ErrorMessage) ? "无" : result.ErrorMessage)}
+";
         }
 
         private static string BuildCommitPrompt(string workingChangesScriptPath, string lastChangesJsonPath, string lastChangesModelJsonPath)
@@ -1362,6 +1640,9 @@ codex --sandbox danger-full-access --ask-for-approval never
                 stored.Path = repo.Path;
                 stored.Note = repo.Note;
                 stored.ProjectFiles = repo.ProjectFiles == null ? new List<string>() : new List<string>(repo.ProjectFiles);
+                stored.LastBuildProjectFile = repo.LastBuildProjectFile;
+                stored.LastBuildConfigurations = repo.LastBuildConfigurations == null ? new List<string>() : new List<string>(repo.LastBuildConfigurations);
+                stored.LastBuildRestorePolicy = repo.LastBuildRestorePolicy;
                 stored.LastUsed = repo.LastUsed;
                 stored.UsageCount = repo.UsageCount;
                 stored.LinkedPackageKey = repo.LinkedPackageKey;
@@ -1629,6 +1910,67 @@ codex --sandbox danger-full-access --ask-for-approval never
             return $"'{TerminalHelper.EscapePowerShellSingleQuoted(value)}'";
         }
 
+        private const string MsBuildBuildScriptResourceName = "PackageManager.CodeWorkspace.Scripts.Invoke-MsBuildBuild.ps1";
+
+        private static string BuildMsBuildTerminalCommand(string repositoryPath, string projectFile, IReadOnlyList<string> configurations, string targetName, string restorePolicy)
+        {
+            var safeConfigurations = configurations == null || configurations.Count == 0
+                ? new List<string> { "Debug2024" }
+                : configurations.ToList();
+            var configLiteral = string.Join(", ", safeConfigurations.Select(PsQuote));
+            var normalizedRestorePolicy = string.Equals(restorePolicy, "Always", StringComparison.OrdinalIgnoreCase)
+                ? "Always"
+                : string.Equals(restorePolicy, "Never", StringComparison.OrdinalIgnoreCase)
+                    ? "Never"
+                    : "Auto";
+            var nugetPackagesPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                ".nuget",
+                "packages");
+            var scriptPath = ExtractEmbeddedPowerShellScript(MsBuildBuildScriptResourceName, "Invoke-MsBuildBuild.ps1");
+
+            return $@"
+$ErrorActionPreference = 'Stop'
+Set-Location -LiteralPath {PsQuote(repositoryPath)}
+& {PsQuote(scriptPath)} `
+    -RepositoryPath {PsQuote(repositoryPath)} `
+    -ProjectFile {PsQuote(projectFile)} `
+    -TargetName {PsQuote(targetName)} `
+    -RestorePolicy {PsQuote(normalizedRestorePolicy)} `
+    -NuGetPackagesPath {PsQuote(nugetPackagesPath)} `
+    -Configurations @({configLiteral})
+exit $LASTEXITCODE
+";
+        }
+
+        private static string ExtractEmbeddedPowerShellScript(string resourceName, string fileName)
+        {
+            var scriptDirectory = Path.Combine(Path.GetTempPath(), "PackageManager", "CodeWorkspaceScripts");
+            Directory.CreateDirectory(scriptDirectory);
+            var scriptPath = Path.Combine(scriptDirectory, fileName);
+
+            var assembly = Assembly.GetExecutingAssembly();
+            using (var stream = assembly.GetManifestResourceStream(resourceName))
+            {
+                if (stream == null)
+                {
+                    var availableResources = string.Join(", ", assembly.GetManifestResourceNames());
+                    throw new InvalidOperationException($"Embedded script resource not found: {resourceName}. Available resources: {availableResources}");
+                }
+
+                using (var reader = new StreamReader(stream))
+                {
+                    var content = reader.ReadToEnd();
+                    if (!File.Exists(scriptPath) || !string.Equals(File.ReadAllText(scriptPath), content, StringComparison.Ordinal))
+                    {
+                        File.WriteAllText(scriptPath, content, new System.Text.UTF8Encoding(false));
+                    }
+                }
+            }
+
+            return scriptPath;
+        }
+
         private static string QuoteArgument(string value)
         {
             return "\"" + (value ?? "").Replace("\"", "\\\"") + "\"";
@@ -1700,6 +2042,8 @@ codex --sandbox danger-full-access --ask-for-approval never
             public List<string> GitConflicts { get; } = new List<string>();
 
             public List<string> SvnConflicts { get; } = new List<string>();
+
+            public List<string> MarkerConflicts { get; } = new List<string>();
         }
 
         private class CommandResult
@@ -1709,6 +2053,15 @@ codex --sandbox danger-full-access --ask-for-approval never
             public string Output { get; set; }
 
             public string Error { get; set; }
+        }
+
+        private sealed class BuildTargetSelection
+        {
+            public string ProjectFile { get; set; }
+
+            public List<string> Configurations { get; set; }
+
+            public string RestorePolicy { get; set; }
         }
     }
 }

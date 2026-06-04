@@ -3,10 +3,14 @@ param(
   [int]$PromptTimeoutSeconds = 30,
   [object]$ScanUntrackedForNeedsAdd = $true,
   [object]$IncludeDiff = $true,
+  [switch]$NonInteractive,
   [int]$MaxDiffBytesPerFile = 40960,
   [int]$MaxFilesWithDiff = 80,
   [object]$Svn = $true,
   [object]$UseDefaultExcludes = $true,
+  [string[]]$AddIds = @(),
+  [string[]]$ExcludeIds = @(),
+  [string[]]$ExcludePaths = @(),
   [string]$StateDir = "",
   [ValidateSet("Normal","Hidden","Minimized","Maximized")]
   [string]$WindowStyle = "Normal"
@@ -24,6 +28,16 @@ function To-BoolText([object]$value, [string]$defaultValue) {
   if ($s -in @("1","true","t","yes","y","on")) { return "true" }
   if ($s -in @("0","false","f","no","n","off")) { return "false" }
   return $defaultValue
+}
+
+function ConvertTo-SingleQuotedArrayArgument([string]$ParameterName, [string[]]$Values) {
+  $items = @($Values | Where-Object { $null -ne $_ -and $_ -ne "" })
+  if ($items.Count -eq 0) { return "" }
+
+  $quoted = @($items | ForEach-Object {
+    "'" + (Quote-ForSingleQuotedPowerShell ([string]$_)) + "'"
+  })
+  return (" -{0} @({1})" -f $ParameterName, ($quoted -join ","))
 }
 
 $skillRoot = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
@@ -101,7 +115,10 @@ function ConvertTo-ModelChangesJson {
     }
     ItemsIncludedDefaultLog = @($Changes.ItemsIncludedDefaultLog)
     CommitGroupsDefault = @($Changes.CommitGroupsDefault | ForEach-Object { ConvertTo-ModelCommitGroup $_ })
+    NeedsAdd = @($Changes.NeedsAdd)
     ItemsExcluded = @($Changes.ItemsExcluded)
+    Add = $Changes.Add
+    Exclude = $Changes.Exclude
     ProjectsDefault = @($Changes.ProjectsDefault | ForEach-Object { ConvertTo-ModelProject $_ })
     Diffs = $diffs
   }
@@ -113,16 +130,21 @@ $scanText = To-BoolText -value $ScanUntrackedForNeedsAdd -defaultValue "true"
 $includeDiffText = To-BoolText -value $IncludeDiff -defaultValue "true"
 $svnText = To-BoolText -value $Svn -defaultValue "true"
 $useDefaultExcludesText = To-BoolText -value $UseDefaultExcludes -defaultValue "true"
+$interactionArg = if ($NonInteractive) { "-NonInteractive" } else { "-Interactive" }
 
 $collectorQ = Quote-ForSingleQuotedPowerShell $collector
 $rootQ = Quote-ForSingleQuotedPowerShell $rootFull
 $outQ = Quote-ForSingleQuotedPowerShell $out
 $errQ = Quote-ForSingleQuotedPowerShell $err
+$selectionArgs = ""
+$selectionArgs += ConvertTo-SingleQuotedArrayArgument -ParameterName "AddIds" -Values $AddIds
+$selectionArgs += ConvertTo-SingleQuotedArrayArgument -ParameterName "ExcludeIds" -Values $ExcludeIds
+$selectionArgs += ConvertTo-SingleQuotedArrayArgument -ParameterName "ExcludePaths" -Values $ExcludePaths
 
 $innerCommand = @"
 try {
   `$ErrorActionPreference = 'Stop'
-  & '$collectorQ' -Root '$rootQ' -Interactive -PromptTimeoutSeconds $PromptTimeoutSeconds -ScanUntrackedForNeedsAdd $scanText -IncludeDiff $includeDiffText -MaxDiffBytesPerFile $MaxDiffBytesPerFile -MaxFilesWithDiff $MaxFilesWithDiff -Svn $svnText -UseDefaultExcludes $useDefaultExcludesText | Set-Content -LiteralPath '$outQ' -Encoding UTF8
+  & '$collectorQ' -Root '$rootQ' $interactionArg -PromptTimeoutSeconds $PromptTimeoutSeconds -ScanUntrackedForNeedsAdd $scanText -IncludeDiff $includeDiffText -MaxDiffBytesPerFile $MaxDiffBytesPerFile -MaxFilesWithDiff $MaxFilesWithDiff -Svn $svnText -UseDefaultExcludes $useDefaultExcludesText$selectionArgs | Set-Content -LiteralPath '$outQ' -Encoding UTF8
 } catch {
   (`$_ | Out-String) | Set-Content -LiteralPath '$errQ' -Encoding UTF8
   exit 1

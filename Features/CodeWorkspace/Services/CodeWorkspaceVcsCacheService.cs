@@ -198,6 +198,9 @@ namespace PackageManager.Features.CodeWorkspace.Services
                 UsageCount = source.UsageCount,
                 Note = source.Note,
                 ProjectFiles = source.ProjectFiles == null ? new List<string>() : new List<string>(source.ProjectFiles),
+                LastBuildProjectFile = source.LastBuildProjectFile,
+                LastBuildConfigurations = source.LastBuildConfigurations == null ? new List<string>() : new List<string>(source.LastBuildConfigurations),
+                LastBuildRestorePolicy = source.LastBuildRestorePolicy,
             };
             clone.ApplyVcsStatusFrom(source);
             return clone;

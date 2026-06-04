@@ -25,9 +25,9 @@ description: Git+SVN 改动由脚本采集；模型默认打开本机可见 Powe
 
 ## 核心约束（必须遵守）
 
-1. **脚本 JSON 输出是改动范围与用户选择的唯一数据源**：模型不得自行递归扫描目录来决定「纳入/排除哪些文件」。但生成提交日志时必须理解具体变更；若 `Diffs` 缺失、为空或不足以判断行为变化，模型必须只针对 `ItemsIncludedDefaultLog` 中未排除的路径补取只读差异或读取文件内容，不能只凭路径和项目名编造日志。
+1. **脚本 JSON 输出是改动范围与用户选择的唯一数据源**：模型不得自行递归扫描目录来决定「纳入/排除哪些文件」。但生成提交日志时必须理解具体变更；若 `Diffs` 缺失、为空或不足以判断行为变化，模型必须只针对 `ItemsIncludedDefaultLog` 中未排除的路径补取只读差异或读取文件内容，不能只凭路径和项目名编造日志。生成日志前，模型还必须用 `ItemsIncludedDefaultLog` 对照 `NeedsAdd` 与 `ItemsExcluded` 做依赖闭包核对；若发现待提交文件显式使用了未纳入文件，必须在一次询问前尽量找出同一候选集内的传递依赖，禁止自行加入、取消排除或忽略风险。
 2. **交互在脚本内完成且必须可超时**：是否将 `NeedsAdd` 纳入版本库、是否排除提交项，由 `get-working-changes.ps1` 在 **Windows 可交互控制台** 内处理。脚本优先打开勾选表格；GUI 不可用时才回退编号输入。窗口会显示剩余秒数；点击“确定”或超时都会进入下一步。若超时时当前有勾选，则按当前勾选结果继续；若当前没有任何勾选，则采用默认值（不加入未跟踪 / 全部保留不排除）。回退到编号输入时，输入行同样按 `-PromptTimeoutSeconds` 超时，超时或空输入视为不选择任何 Id。**禁止**由模型在聊天里用 `Start-Sleep`、阻塞式原生选项菜单或「伪后置步骤」替代脚本交互。
-3. **模型默认限时交互调用**：生成提交日志时，模型默认必须打开本机可见 PowerShell 运行脚本 **`-Interactive -PromptTimeoutSeconds 30`**，给用户一次加入/排除机会；无人操作则脚本自动按默认项继续。只有用户明确要求“非交互 / CI / 直接生成 / 不要弹窗”时，才使用 **`-NonInteractive`**。
+3. **模型默认限时交互调用**：生成提交日志时，模型默认必须打开本机可见 PowerShell 运行脚本 **`-Interactive -PromptTimeoutSeconds 30`**，给用户一次加入/排除机会；无人操作则脚本自动按默认项继续。只有用户明确要求“非交互 / CI / 直接生成 / 不要弹窗”时，才使用 **`-NonInteractive`**。若 Step 2 依赖关系核对后用户确认调整范围，模型只能再次调用采集 wrapper，并用 `-AddIds`、`-ExcludeIds`、`-ExcludePaths` 表达用户最终选择，随后以刷新后的 JSON 重新生成日志。
 4. **提交日志按版本库提交组生成**：默认只生成一条提交日志；但当 `ItemsIncludedDefaultLog` 横跨多个独立 Git 仓库或多个真实 SVN 提交组时，必须按 `CommitGroupsDefault[]` 分别生成日志。SVN 提交组按同一次 `svn commit` 可提交的仓库标识合并，优先使用 `SvnRepoUuid`，其次 `SvnRepoRootUrl`，最后才使用 `SvnWcRoot`；同一 SVN 提交组内的多个项目/目录只写一条日志，scope 用顿号合并。每个日志只描述该组自己的文件改动，不得把其他仓库/提交组的改动写进去。同一 Git 仓库内不得按文件夹或模块拆成多条提交。
 5. **不要粘贴大段 diff**：提交日志只输出抽象后的变更点，不直接贴 patch 内容。
 6. **提交日志默认紧凑，长文本才按语义换行**：标题与正文优先保持单行可读；只有单条内容明显过长、信息密集并影响阅读时，才按后文「长文本换行规则」处理。禁止为了排版整齐把短标题或短 bullet 拆成多行。
@@ -70,7 +70,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_c
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/get-working-changes.ps1 -NonInteractive
 ```
 
-实现要点：Git 已跟踪用 `git status --porcelain=v1 -z --untracked-files=no`；SVN 已跟踪用 `svn status --xml -q`，不会枚举 `normal` 文件；`NeedsAdd` 默认开启，通过 Git `??` 与 SVN `unversioned` 收集常见源码/配置候选，供步骤 1 勾选加入。极端大库只想看已管理改动时，可用 `-ScanUntrackedForNeedsAdd false`。
+实现要点：Git 已跟踪用 `git status --porcelain=v1 -z --untracked-files=no`；SVN 已跟踪用 `svn status --xml -q`，不会枚举 `normal` 文件；`NeedsAdd` 默认开启，通过 Git `??` 与 SVN `unversioned` 收集常见源码/配置候选，供步骤 1 勾选加入，也供 Step 2 依赖核对。极端大库只想看已管理改动时，可用 `-ScanUntrackedForNeedsAdd false`。
 
 常用参数：
 
@@ -81,6 +81,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_c
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/get-working-changes.ps1 -NonInteractive -UseDefaultExcludes false
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/get-working-changes.ps1 -NonInteractive -ScanUntrackedForNeedsAdd false
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/get-working-changes.ps1 -NonInteractive -PromptTimeoutSeconds 20
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/invoke-working-changes-interactive.ps1 -NonInteractive -WindowStyle Hidden -AddIds @(3,8) -ExcludeIds @(12,15)
 ```
 
 JSON 关键字段（与脚本一致）：
@@ -88,20 +89,36 @@ JSON 关键字段（与脚本一致）：
 - **`ItemsIncludedDefaultLog[]`**：已纳入版本库、将写入「默认/最终」叙事主线的路径（不含 `??` / svn `unversioned`）
 - **`CommitGroupsDefault[]`**：由上一字段按真实提交单元聚合；Git 按 `GitRepoRoot`，SVN 按同一次 `svn commit` 可提交的仓库标识合并
 - **`ProjectsDefault[]`**：由上一字段按项目聚合，只用于辅助推导 scope，不用于决定拆分几条日志
+- **`NeedsAdd[]`**：未纳入版本管理且符合候选规则的文件，Step 2 只允许用它做依赖核对，不得扩展到全仓扫描
+- **`ItemsExcluded[]`**：用户手动排除或按参数排除的已管理改动，Step 2 必须检查待提交文件是否显式依赖这些文件
 - Git 条目会包含 `GitRepoRoot`、`GitRepoRelRoot`、`GitRepoPath`；嵌套 Git 仓库会按自己的 repository root 采集状态和 diff。
 - `ItemsAll[]`、`ItemsIncluded[]`、`ItemsExcluded[]`、`NeedsAdd[]`、`Projects[]`、`Diffs`：含义同脚本输出；`Defaults` 中含 `IncludeDiff`、`MaxDiffBytesPerFile`、`MaxFilesWithDiff`、`NonInteractive`、`PromptTimeoutSeconds`、`ConsoleChoiceUsed`
 
 模型读取优先级：
 
 - PackageManager / wrapper 会同时保存完整采集结果 `.state/last_changes.json` 与轻量模型视图 `.state/last_changes_model.json`。
-- **模型生成提交日志时必须优先读取 `last_changes_model.json`**；wrapper 的 stdout 也返回同一份轻量 JSON。它只包含 `Root`、`Defaults`、`Counts`、`ItemsIncludedDefaultLog`、`CommitGroupsDefault`、`ItemsExcluded`、轻量 `ProjectsDefault` 与对应 `Diffs`，避免大仓库下读取完整 JSON 变慢。
+- **模型生成提交日志时必须优先读取 `last_changes_model.json`**；wrapper 的 stdout 也返回同一份轻量 JSON。它包含 `Root`、`Defaults`、`Counts`、`ItemsIncludedDefaultLog`、`CommitGroupsDefault`、`NeedsAdd`、`ItemsExcluded`、`Add`、`Exclude`、轻量 `ProjectsDefault` 与对应 `Diffs`，避免大仓库下读取完整 JSON 变慢。
 - 完整 `last_changes.json` 保留给 Step 3 提交脚本使用；模型只有在轻量视图缺失、字段不完整或需要排查脚本协议问题时才读取完整 JSON。
 
 `NeedsAdd[]` 候选类型规则（脚本侧 `Is-CommonAddCandidate` 与历史技能一致）：常见源码、前端、Markdown、脚本、工程配置、接口/schema 等文本；二进制与产物目录不进入。
 
 ### Step 2) 模型生成提交日志
 
-以 Step 1 的 JSON 确定最终范围：只处理 **`ItemsIncludedDefaultLog`** 中的文件，并尊重 **`ItemsExcluded`**。**不得**再发起聊天内「加入未跟踪 / 排除」流程（已在脚本的限时交互或显式 `-NonInteractive` 中落定）。
+以 Step 1 的 JSON 确定最终范围：只处理 **`ItemsIncludedDefaultLog`** 中的文件，并尊重 **`ItemsExcluded`**。模型不得发起泛化的二次加入/排除流程；唯一例外是下文依赖关系核对发现待提交文件显式使用了 `NeedsAdd` 或 `ItemsExcluded` 中的文件，且用户明确确认调整范围。
+
+### Step 2.1) 依赖关系核对（生成日志前必须执行）
+
+模型必须先用 `ItemsIncludedDefaultLog` 的 diff / 文件内容对照 `NeedsAdd` 与 `ItemsExcluded`，并在询问用户前构建一次依赖闭包：
+
+- 只允许检查高可信显式引用：项目文件、解决方案、props/targets、配置、脚本、源码中的相对路径、文件名、资源名、模板名、脚本名等；禁止用“目录相邻 / 命名相似 / 可能相关”这类弱信号提示用户。
+- 只允许在 `NeedsAdd[]` 和 `ItemsExcluded[]` 中寻找被引用候选；不得递归扫描仓库，也不得读取范围外目录来扩大候选集。
+- 依赖核对必须先闭包再询问：从 `ItemsIncludedDefaultLog` 出发，若命中候选 B，允许只读读取 B 的 diff / 当前文件内容，再用 B 继续匹配同一份 `NeedsAdd[]` 与 `ItemsExcluded[]` 候选；若继续命中 C、D，重复处理，直到没有新的高可信命中。
+- 闭包读取边界必须严格：只能读取已在 `ItemsIncludedDefaultLog` 中的文件，以及已经被上一层高可信引用命中的 `NeedsAdd` / `ItemsExcluded` 候选；不得为了找更多依赖去扫描目录、枚举同级文件或读取未命中的候选。
+- 如果发现待提交文件引用了 `NeedsAdd` 候选，必须提示“未版本管理但被使用”；如果引用了 `ItemsExcluded` 候选，必须提示“已手动排除但被使用”。
+- 命中时必须先向用户展示 `### 依赖关系核对`，表格一次性列出完整闭包：引用链路、直接引用来源文件、风险文件、风险类型、判断依据、推荐动作。随后询问用户是否调整范围；不得自行执行 `git add`、`svn add` 或取消排除。
+- 用户确认调整后，模型必须重新调用 `invoke-working-changes-interactive.ps1 -NonInteractive -WindowStyle Hidden`，用 `-AddIds` 指定要加入的 `NeedsAdd` 编号，并用 `-ExcludeIds` / `-ExcludePaths` 只保留用户仍要排除的项；刷新 JSON 后再执行一次 Step 2.1 校验闭包结果。若没有新命中，才能继续生成日志；若仍有新命中，必须一次性展示新增闭包并再次询问。
+- 如果用户选择维持原选择，模型继续只基于 `ItemsIncludedDefaultLog` 生成日志；不得把未加入或仍排除的文件写进提交日志的变更范围，但应在日志前说明依赖核对风险已由用户选择保留。
+- 非交互 / CI / 用户明确要求不要弹窗时，不自动调整范围；若发现依赖风险，只输出核对结果并按当前范围生成日志。
 
 生成日志前必须确认有足够信息理解具体变更：
 
@@ -160,6 +177,7 @@ JSON 关键字段（与脚本一致）：
 7. **scope 归源**：标题和正文里出现的每个项目/模块名，是否都能在 `ItemsIncludedDefaultLog` 里找到来源？
 8. **主题聚合**：同一功能链路跨多个文件时是否已合并？是否为了覆盖文件而按文件流水账？若是，必须合并压缩。
 9. **细节克制**：函数名、属性名、字段名、JSON 字段名、脚本名是否被过度展开？若实现细节不是理解变更影响所必需，必须删掉或并入主题。
+10. **依赖核对**：是否已从 `ItemsIncludedDefaultLog` 出发构建 `NeedsAdd` / `ItemsExcluded` 的高可信依赖闭包？若有命中，是否已一次性展示链路、询问用户，并按用户最终选择刷新范围或保留风险？
 
 自检展示格式必须逐项列出，每项使用 `通过` / `未通过` / `已重写后通过`，并附一句具体理由。示例：
 
@@ -174,6 +192,7 @@ JSON 关键字段（与脚本一致）：
 - scope 归源：通过，scope 均来自 ItemsIncludedDefaultLog。
 - 主题聚合：通过，同一链路的脚本、C# 与文档变更按能力聚合。
 - 细节克制：通过，未展开非必要函数名、属性名和 JSON 字段名。
+- 依赖核对：通过，已完成依赖闭包检查，未发现待提交文件显式引用 NeedsAdd 或 ItemsExcluded 中的文件。
 ```
 
 以下情况不得直接判定通过：同一 `run-commit-push-choice.ps1` 相关变更拆成多条重复条目；条目围绕文件名流水账；把“新增函数 / 新增属性 / 新增字段 / 新增 JSON 字段 / 更新文档”拆成低信息量条目；条目虽然单行但已经接近终端换行边界；条目偏长但没有合并主题或压缩表达；条目过短、像标签或口号，导致看不出变更原因与影响。条目数本身不是问题，话太多、实现细节过多、按文件流水账、短到丢上下文才是问题。

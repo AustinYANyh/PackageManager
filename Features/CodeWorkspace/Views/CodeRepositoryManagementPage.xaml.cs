@@ -274,6 +274,9 @@ namespace PackageManager.Features.CodeWorkspace.Views
             private string _path;
             private string _note = "";
             private System.Collections.Generic.List<string> _projectFiles = new System.Collections.Generic.List<string>();
+            private string _lastBuildProjectFile;
+            private System.Collections.Generic.List<string> _lastBuildConfigurations = new System.Collections.Generic.List<string>();
+            private string _lastBuildRestorePolicy = "Auto";
             private DateTime _lastUsed;
             private int _usageCount;
             private string _linkedPackageKey;
@@ -312,6 +315,24 @@ namespace PackageManager.Features.CodeWorkspace.Views
                         OnPropertyChanged(nameof(ProjectFileCount));
                     }
                 }
+            }
+
+            public string LastBuildProjectFile
+            {
+                get => _lastBuildProjectFile;
+                set => SetProperty(ref _lastBuildProjectFile, value);
+            }
+
+            public System.Collections.Generic.List<string> LastBuildConfigurations
+            {
+                get => _lastBuildConfigurations;
+                set => SetProperty(ref _lastBuildConfigurations, value ?? new System.Collections.Generic.List<string>());
+            }
+
+            public string LastBuildRestorePolicy
+            {
+                get => string.IsNullOrWhiteSpace(_lastBuildRestorePolicy) ? "Auto" : _lastBuildRestorePolicy;
+                set => SetProperty(ref _lastBuildRestorePolicy, string.IsNullOrWhiteSpace(value) ? "Auto" : value);
             }
 
             [DataGridColumn(4, DisplayName = "项目文件", Width = "80", IsReadOnly = true)]
@@ -369,6 +390,11 @@ namespace PackageManager.Features.CodeWorkspace.Views
                     ProjectFiles = repo.ProjectFiles == null
                         ? new System.Collections.Generic.List<string>()
                         : new System.Collections.Generic.List<string>(repo.ProjectFiles),
+                    LastBuildProjectFile = repo.LastBuildProjectFile,
+                    LastBuildConfigurations = repo.LastBuildConfigurations == null
+                        ? new System.Collections.Generic.List<string>()
+                        : new System.Collections.Generic.List<string>(repo.LastBuildConfigurations),
+                    LastBuildRestorePolicy = repo.LastBuildRestorePolicy,
                     LastUsed = repo.LastUsed,
                     UsageCount = repo.UsageCount,
                     LinkedPackageKey = repo.LinkedPackageKey,
@@ -386,6 +412,11 @@ namespace PackageManager.Features.CodeWorkspace.Views
                     ProjectFiles = ProjectFiles == null
                         ? new System.Collections.Generic.List<string>()
                         : new System.Collections.Generic.List<string>(ProjectFiles),
+                    LastBuildProjectFile = LastBuildProjectFile,
+                    LastBuildConfigurations = LastBuildConfigurations == null
+                        ? new System.Collections.Generic.List<string>()
+                        : new System.Collections.Generic.List<string>(LastBuildConfigurations),
+                    LastBuildRestorePolicy = LastBuildRestorePolicy,
                     LastUsed = LastUsed,
                     UsageCount = UsageCount,
                     LinkedPackageKey = LinkedPackageKey,

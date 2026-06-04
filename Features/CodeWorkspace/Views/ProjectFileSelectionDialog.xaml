@@ -21,6 +21,32 @@
                       VerticalContentAlignment="Center"/>
         </DockPanel>
 
+        <DockPanel DockPanel.Dock="Top"
+                   Margin="0,0,0,10"
+                   LastChildFill="False"
+                   Visibility="{Binding BuildConfigurationVisibility}">
+            <TextBlock DockPanel.Dock="Left"
+                       Text="Configuration"
+                       VerticalAlignment="Center"
+                       Foreground="#4B5563"
+                       Margin="0,0,12,0"/>
+            <controls:CComboBox DockPanel.Dock="Left"
+                                Width="150"
+                                Height="30"
+                                ItemsSource="{Binding BuildConfigurations}"
+                                SelectedItem="{Binding SelectedBuildConfiguration, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+            <TextBlock DockPanel.Dock="Left"
+                       Text="Restore"
+                       VerticalAlignment="Center"
+                       Foreground="#4B5563"
+                       Margin="18,0,12,0"/>
+            <controls:CComboBox DockPanel.Dock="Left"
+                                Width="150"
+                                Height="30"
+                                ItemsSource="{Binding BuildRestorePolicies}"
+                                SelectedItem="{Binding SelectedBuildRestorePolicy, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
+        </DockPanel>
+
         <StackPanel DockPanel.Dock="Bottom"
                     Orientation="Horizontal"
                     HorizontalAlignment="Right"

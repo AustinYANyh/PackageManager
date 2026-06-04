@@ -202,6 +202,9 @@
                                                     <navigation:CMenuItem Header="拉取代码" Command="{Binding PullCommand}"/>
                                                     <navigation:CMenuItem Header="合并回主干..." Command="{Binding MergeToMainCommand}"/>
                                                     <Separator/>
+                                                    <navigation:CMenuItem Header="Build" Command="{Binding BuildCommand}"/>
+                                                    <navigation:CMenuItem Header="ReBuild" Command="{Binding ReBuildCommand}"/>
+                                                    <Separator/>
                                                     <navigation:CMenuItem Header="VS" Command="{Binding OpenVSCommand}"/>
                                                     <navigation:CMenuItem Header="Rider" Command="{Binding OpenRiderCommand}"/>
                                                     <navigation:CMenuItem Header="Cursor" Command="{Binding OpenCursorCommand}"/>

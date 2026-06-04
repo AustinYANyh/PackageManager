@@ -606,6 +606,9 @@
         <EmbeddedResource Include=".claude\skills\git_svn_commitlog_generator\scripts\terminal-host.ps1">
           <LogicalName>PackageManager.AiCommitSkill.scripts.terminal-host.ps1</LogicalName>
         </EmbeddedResource>
+        <EmbeddedResource Include="Features\CodeWorkspace\Scripts\Invoke-MsBuildBuild.ps1">
+          <LogicalName>PackageManager.CodeWorkspace.Scripts.Invoke-MsBuildBuild.ps1</LogicalName>
+        </EmbeddedResource>
         <EmbeddedResource Include="Assets\Tools\runtimes\win-x64\native\WebView2Loader.dll" />
         <EmbeddedResource Include="Assets\Tools\runtimes\win-x86\native\WebView2Loader.dll" />
         <EmbeddedResource Include="Assets\Tools\runtimes\win-arm64\native\WebView2Loader.dll" />

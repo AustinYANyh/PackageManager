@@ -20,8 +20,8 @@ namespace PackageManager.Features.CodeWorkspace.Services
         {
             var psPath = ResolvePowerShell7Path();
             var wtPath = ResolveWindowsTerminalPath();
-            var encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(command ?? ""));
-            var psArgs = $"-NoLogo -NoExit -EncodedCommand {encoded}";
+            var scriptPath = WriteCommandScript(command);
+            var psArgs = "-NoLogo -NoExit -ExecutionPolicy Bypass -File \"" + EscapeArgument(scriptPath) + "\"";
             var startDirectory = Directory.Exists(workingDirectory) ? workingDirectory : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
             if (!string.IsNullOrWhiteSpace(wtPath))
@@ -77,6 +77,41 @@ namespace PackageManager.Features.CodeWorkspace.Services
             };
 
             return candidates.FirstOrDefault(File.Exists) ?? "wt.exe";
+        }
+
+        private static string WriteCommandScript(string command)
+        {
+            var scriptDirectory = Path.Combine(Path.GetTempPath(), "PackageManager", "TerminalScripts");
+            Directory.CreateDirectory(scriptDirectory);
+            CleanupOldScripts(scriptDirectory);
+
+            var scriptPath = Path.Combine(scriptDirectory, $"terminal-command-{DateTime.Now:yyyyMMdd-HHmmss}-{Guid.NewGuid():N}.ps1");
+            File.WriteAllText(scriptPath, command ?? string.Empty, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+            return scriptPath;
+        }
+
+        private static void CleanupOldScripts(string scriptDirectory)
+        {
+            try
+            {
+                var cutoff = DateTime.Now.AddDays(-7);
+                foreach (var file in Directory.EnumerateFiles(scriptDirectory, "terminal-command-*.ps1"))
+                {
+                    try
+                    {
+                        if (File.GetCreationTime(file) < cutoff)
+                        {
+                            File.Delete(file);
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+            catch
+            {
+            }
         }
 
         private static string EscapeArgument(string value)

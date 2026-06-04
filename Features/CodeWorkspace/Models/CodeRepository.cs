@@ -23,6 +23,9 @@ namespace PackageManager.Features.CodeWorkspace.Models
         private int _usageCount;
         private string _note = "";
         private List<string> _projectFiles = new List<string>();
+        private string _lastBuildProjectFile;
+        private List<string> _lastBuildConfigurations = new List<string>();
+        private string _lastBuildRestorePolicy = "Auto";
         private VcsType _vcsType = VcsType.None;
         private VcsStatus _vcsStatus = VcsStatus.Unknown;
         private string _gitBranch;
@@ -279,6 +282,24 @@ namespace PackageManager.Features.CodeWorkspace.Models
                     OnPropertyChanged(nameof(ProjectFileCount));
                 }
             }
+        }
+
+        public string LastBuildProjectFile
+        {
+            get => _lastBuildProjectFile;
+            set => SetProperty(ref _lastBuildProjectFile, value);
+        }
+
+        public List<string> LastBuildConfigurations
+        {
+            get => _lastBuildConfigurations;
+            set => SetProperty(ref _lastBuildConfigurations, value ?? new List<string>());
+        }
+
+        public string LastBuildRestorePolicy
+        {
+            get => string.IsNullOrWhiteSpace(_lastBuildRestorePolicy) ? "Auto" : _lastBuildRestorePolicy;
+            set => SetProperty(ref _lastBuildRestorePolicy, string.IsNullOrWhiteSpace(value) ? "Auto" : value);
         }
 
         [DataGridColumn(7, DisplayName = "项目文件", Width = "80", IsReadOnly = true,IsVisible = false)]
@@ -803,6 +824,10 @@ namespace PackageManager.Features.CodeWorkspace.Models
 
         public ICommand MergeToMainCommand { get; set; }
 
+        public ICommand BuildCommand { get; set; }
+
+        public ICommand ReBuildCommand { get; set; }
+
         public ICommand OpenVSCommand { get; set; }
 
         public ICommand OpenRiderCommand { get; set; }
@@ -827,6 +852,8 @@ namespace PackageManager.Features.CodeWorkspace.Models
             new ButtonConfig { Text = "Codex提交", Width = 86, Height = 26, CommandProperty = nameof(CodexCommitCommand) },
             new ButtonConfig { Text = "拉取", Width = 54, Height = 26, CommandProperty = nameof(PullCommand) },
             new ButtonConfig { Text = "合并主干", Width = 78, Height = 26, CommandProperty = nameof(MergeToMainCommand) },
+            new ButtonConfig { Text = "Build", Width = 54, Height = 26, CommandProperty = nameof(BuildCommand) },
+            new ButtonConfig { Text = "ReBuild", Width = 66, Height = 26, CommandProperty = nameof(ReBuildCommand) },
             new ButtonConfig { Text = "VS", Width = 42, Height = 26, CommandProperty = nameof(OpenVSCommand) },
             new ButtonConfig { Text = "Rider", Width = 50, Height = 26, CommandProperty = nameof(OpenRiderCommand) },
             new ButtonConfig { Text = "Cursor", Width = 54, Height = 26, CommandProperty = nameof(OpenCursorCommand) },
@@ -845,6 +872,9 @@ namespace PackageManager.Features.CodeWorkspace.Models
                 UsageCount = UsageCount,
                 Note = Note ?? "",
                 ProjectFiles = ProjectFiles == null ? new List<string>() : new List<string>(ProjectFiles),
+                LastBuildProjectFile = LastBuildProjectFile,
+                LastBuildConfigurations = LastBuildConfigurations == null ? new List<string>() : new List<string>(LastBuildConfigurations),
+                LastBuildRestorePolicy = LastBuildRestorePolicy,
                 LinkedPackageKey = LinkedPackageKey,
                 LinkedPackageName = LinkedPackageName,
             };
