@@ -7,6 +7,7 @@ using PackageManager.Models;
 using System.Collections.ObjectModel;
 using System.Linq;
 using CustomControlLibrary.CustomControl.Controls.DataGrid.Filter;
+using Newtonsoft.Json.Converters;
 
 namespace PackageManager.Services
 {
@@ -940,6 +941,42 @@ namespace PackageManager.Services
     }
 
     /// <summary>
+    /// 代码工作区终端启动模式。
+    /// </summary>
+    public enum TerminalLaunchMode
+    {
+        /// <summary>
+        /// 使用 Windows Terminal 打开系统自带 Windows PowerShell。
+        /// </summary>
+        WindowsTerminalWindowsPowerShell,
+
+        /// <summary>
+        /// 使用 Windows Terminal 打开 PowerShell 7。
+        /// </summary>
+        WindowsTerminalPowerShell7,
+
+        /// <summary>
+        /// 直接启动系统自带 Windows PowerShell。
+        /// </summary>
+        WindowsPowerShell,
+
+        /// <summary>
+        /// 直接启动 PowerShell 7。
+        /// </summary>
+        PowerShell7,
+
+        /// <summary>
+        /// 使用 Windows Terminal 打开 Visual Studio Developer Command Prompt。
+        /// </summary>
+        WindowsTerminalVisualStudioDeveloperCommandPrompt,
+
+        /// <summary>
+        /// 使用 Windows Terminal 打开 Visual Studio Developer PowerShell。
+        /// </summary>
+        WindowsTerminalVisualStudioDeveloperPowerShell
+    }
+
+    /// <summary>
     /// 应用程序设置数据模型
     /// </summary>
     public class AppSettings
@@ -982,6 +1019,12 @@ namespace PackageManager.Services
         /// 日志文本查看器
         /// </summary>
         public string LogTxtReader { get; set; } = "LogViewPro";
+
+        /// <summary>
+        /// 获取或设置代码工作区终端启动模式。
+        /// </summary>
+        [JsonConverter(typeof(StringEnumConverter))]
+        public TerminalLaunchMode TerminalLaunchMode { get; set; } = TerminalLaunchMode.WindowsTerminalWindowsPowerShell;
         
         /// <summary>
         /// 产品日志页的日志等级选择

@@ -54,6 +54,11 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         if (!UserFeatureAccessService.CanUseAustinOnlyFeatures)
         {
             AiActionButton.Visibility = Visibility.Collapsed;
+            AiDecomposeButton.Visibility = Visibility.Collapsed;
+        }
+        else if (IsTaskType(Details.Type))
+        {
+            AiDecomposeButton.Visibility = Visibility.Collapsed;
         }
 
         Loaded += async (s, e) =>
@@ -167,6 +172,40 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
             ShowLoading(false);
             MessageBox.Show("生成 AI 执行 Prompt 失败：" + ex.Message, "PingCode AI 执行", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    private async void AiDecomposeButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            ShowLoading(true);
+            var latestDetails = Details;
+            if (!string.IsNullOrWhiteSpace(Details?.Id))
+            {
+                latestDetails = await api.GetWorkItemDetailsAsync(Details.Id) ?? Details;
+            }
+
+            var token = await api.GetAccessTokenAsync();
+            var promptService = new PingCodeWorkItemPromptService();
+            var request = promptService.BuildDecomposeRequest(latestDetails);
+            var window = new PingCodeAiExecutionWindow(request, latestDetails, token)
+            {
+                Owner = this,
+            };
+            ShowLoading(false);
+            window.ShowDialog();
+        }
+        catch (Exception ex)
+        {
+            ShowLoading(false);
+            MessageBox.Show("生成 AI 拆解 Prompt 失败：" + ex.Message, "PingCode AI 拆解", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private static bool IsTaskType(string type)
+    {
+        var text = (type ?? "").Trim().ToLowerInvariant();
+        return text.Contains("task") || text.Contains("任务");
     }
 
     private static string BuildLoadingHtml()

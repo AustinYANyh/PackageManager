@@ -3,10 +3,12 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
 using Microsoft.Win32;
+using PackageManager.Features.CodeWorkspace.Services;
 using PackageManager.Function.PackageManage;
 using PackageManager.Services;
 
@@ -45,6 +47,7 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
     private string lanTransferInboxPath;
     private bool lanTransferSilentOverwrite;
     private bool lanTransferAutoAccept;
+    private TerminalLaunchModeOption selectedTerminalLaunchModeOption;
 
     /// <summary>
     /// 初始化 <see cref="SettingsPage"/> 的新实例。
@@ -242,6 +245,21 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
     public string LogTxtReader { get; set; }
 
     /// <summary>
+    /// 获取终端启动模式选项列表。
+    /// </summary>
+    public ObservableCollection<TerminalLaunchModeOption> TerminalLaunchModeOptions { get; } = new();
+
+    /// <summary>
+    /// 获取或设置当前选中的终端启动模式。
+    /// </summary>
+    public TerminalLaunchModeOption SelectedTerminalLaunchModeOption
+    {
+        get => selectedTerminalLaunchModeOption;
+
+        set => SetProperty(ref selectedTerminalLaunchModeOption, value);
+    }
+
+    /// <summary>
     /// 获取索引服务性能分析日志目录的显示文本。
     /// </summary>
     public string IndexServicePerformanceLogDirectory =>
@@ -323,6 +341,10 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
             LogTxtReaders.Add("VSCode");
             LogTxtReaders.Add("Notepad");
             LogTxtReaders.Add("NotepadPlusPlus");
+
+            InitializeTerminalLaunchModeOptions();
+            SelectedTerminalLaunchModeOption = FindTerminalLaunchModeOption(
+                settings?.TerminalLaunchMode ?? TerminalLaunchMode.WindowsTerminalWindowsPowerShell);
         }
         catch (Exception ex)
         {
@@ -330,6 +352,7 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
             AddinPath = @"C:\\ProgramData\\Autodesk\\Revit\\Addins";
             UpdateServerUrl = string.Empty;
             DataLocation = "未知";
+            SelectedTerminalLaunchModeOption = FindTerminalLaunchModeOption(TerminalLaunchMode.WindowsTerminalWindowsPowerShell);
         }
     }
 
@@ -456,6 +479,7 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
                 LanTransferInboxPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads", "PackageManager 收件箱");
                 LanTransferSilentOverwrite = false;
                 LanTransferAutoAccept = false;
+                SelectedTerminalLaunchModeOption = FindTerminalLaunchModeOption(TerminalLaunchMode.WindowsTerminalWindowsPowerShell);
                 JenkinsPasswordBox.Password = string.Empty;
             }
         }
@@ -481,6 +505,7 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
             settings.UpdateServerUrl = string.IsNullOrWhiteSpace(UpdateServerUrl) ? null : UpdateServerUrl.Trim();
             settings.FilterLogDirectories = FilterLogDirectories;
             settings.LogTxtReader = LogTxtReader;
+            settings.TerminalLaunchMode = SelectedTerminalLaunchModeOption?.Mode ?? TerminalLaunchMode.WindowsTerminalWindowsPowerShell;
             settings.ProductLogLevel = ProductLogLevel;
             settings.JenkinsBaseUrl = string.IsNullOrWhiteSpace(JenkinsBaseUrl) ? null : JenkinsBaseUrl.Trim();
             settings.JenkinsViewName = string.IsNullOrWhiteSpace(JenkinsViewName) ? null : JenkinsViewName.Trim();
@@ -573,4 +598,60 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
             MessageBox.Show($"升级到最新失败: {ex.Message}", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
+
+    private void InitializeTerminalLaunchModeOptions()
+    {
+        if (TerminalLaunchModeOptions.Count > 0)
+        {
+            return;
+        }
+
+        TerminalLaunchModeOptions.Add(new TerminalLaunchModeOption("Windows Terminal + Windows PowerShell", TerminalLaunchMode.WindowsTerminalWindowsPowerShell));
+        TerminalLaunchModeOptions.Add(new TerminalLaunchModeOption("直接启动 Windows PowerShell", TerminalLaunchMode.WindowsPowerShell));
+
+        if (TerminalHelper.HasPowerShell7())
+        {
+            TerminalLaunchModeOptions.Add(new TerminalLaunchModeOption("Windows Terminal + PowerShell 7", TerminalLaunchMode.WindowsTerminalPowerShell7));
+            TerminalLaunchModeOptions.Add(new TerminalLaunchModeOption("直接启动 PowerShell 7", TerminalLaunchMode.PowerShell7));
+        }
+
+        if (TerminalHelper.HasVisualStudioDeveloperCommandPrompt())
+        {
+            TerminalLaunchModeOptions.Add(new TerminalLaunchModeOption("Windows Terminal + VS Developer Command Prompt", TerminalLaunchMode.WindowsTerminalVisualStudioDeveloperCommandPrompt));
+        }
+
+        if (TerminalHelper.HasVisualStudioDeveloperPowerShell())
+        {
+            TerminalLaunchModeOptions.Add(new TerminalLaunchModeOption("Windows Terminal + VS Developer PowerShell", TerminalLaunchMode.WindowsTerminalVisualStudioDeveloperPowerShell));
+        }
+    }
+
+    private TerminalLaunchModeOption FindTerminalLaunchModeOption(TerminalLaunchMode mode)
+    {
+        InitializeTerminalLaunchModeOptions();
+        return TerminalLaunchModeOptions.FirstOrDefault(option => option.Mode == mode)
+               ?? TerminalLaunchModeOptions.First(option => option.Mode == TerminalLaunchMode.WindowsTerminalWindowsPowerShell);
+    }
+}
+
+/// <summary>
+/// 表示设置页上的终端启动模式选项。
+/// </summary>
+public sealed class TerminalLaunchModeOption
+{
+    public TerminalLaunchModeOption(string name, TerminalLaunchMode mode)
+    {
+        Name = name;
+        Mode = mode;
+    }
+
+    /// <summary>
+    /// 获取选项显示名称。
+    /// </summary>
+    public string Name { get; }
+
+    /// <summary>
+    /// 获取选项对应的终端启动模式。
+    /// </summary>
+    public TerminalLaunchMode Mode { get; }
 }

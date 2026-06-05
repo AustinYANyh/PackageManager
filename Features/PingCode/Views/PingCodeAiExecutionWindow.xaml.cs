@@ -189,6 +189,11 @@ public partial class PingCodeAiExecutionWindow : Window, INotifyPropertyChanged
                 finalPrompt = finalPrompt + "\n\n" + BuildPingCodeTokenSection();
             }
 
+            if (request.ActionKind == "拆解" && !string.IsNullOrWhiteSpace(accessToken))
+            {
+                finalPrompt = finalPrompt + "\n\n" + BuildPingCodeApiAuthSection();
+            }
+
             if (useClaude)
             {
                 await aiCliLaunchService.LaunchClaudeAsync(SelectedRepository, finalPrompt, $"Claude PingCode {request.ActionKind} - {SelectedRepository.Name}");
@@ -252,6 +257,18 @@ public partial class PingCodeAiExecutionWindow : Window, INotifyPropertyChanged
         sb.AppendLine($"  原始链接?access_token={accessToken}");
         sb.AppendLine($"  或 原始链接&access_token={accessToken}（如果 URL 已有 ? 参数）");
         sb.AppendLine("此 token 有时效性，请尽快使用。非 PingCode 域名的链接无需添加此参数。");
+        return sb.ToString();
+    }
+
+    private string BuildPingCodeApiAuthSection()
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine("## PingCode API 认证凭证");
+        sb.AppendLine("调用 PingCode REST API（创建工作项、添加评论等）时，使用以下 Bearer Token：");
+        sb.AppendLine($"  Authorization: Bearer {accessToken}");
+        sb.AppendLine("在 PowerShell 中使用示例：");
+        sb.AppendLine($"  $headers = @{{ 'Content-Type' = 'application/json'; 'Authorization' = 'Bearer {accessToken}' }}");
+        sb.AppendLine("此 token 有时效性，请尽快使用。如果 API 返回 401，说明 token 已过期。");
         return sb.ToString();
     }
 

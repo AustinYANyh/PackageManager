@@ -42,6 +42,28 @@ public class PingCodeWorkItemPromptService
         };
     }
 
+    public PingCodeAiPromptRequest BuildDecomposeRequest(WorkItemDetails details)
+    {
+        if (details == null)
+        {
+            throw new ArgumentNullException(nameof(details));
+        }
+
+        var links = ExtractLinks(details);
+        var prompt = BuildDecomposePrompt(details, links);
+
+        return new PingCodeAiPromptRequest
+        {
+            WorkItemId = details.Id,
+            Identifier = details.Identifier,
+            Title = details.Title,
+            WorkItemType = details.Type,
+            ActionKind = "拆解",
+            InitialPrompt = prompt,
+            Links = links,
+        };
+    }
+
     public bool IsFixWorkItem(WorkItemDetails details)
     {
         return details != null && (IsDefect(details.Type) || IsDefect(details.DefectCategory));
@@ -261,6 +283,147 @@ public class PingCodeWorkItemPromptService
         {
             sb.AppendLine($"- {label}：{value.Trim()}");
         }
+    }
+
+    private static string BuildDecomposePrompt(WorkItemDetails details, List<PingCodePromptLink> links)
+    {
+        var sb = new StringBuilder();
+        var isFix = IsDefect(details.Type) || IsDefect(details.DefectCategory);
+        sb.AppendLine(isFix
+            ? "你正在分析一个 PingCode 缺陷/Bug，需要将其拆解为多个可独立实现的小任务（子工作项），并通过 PingCode API 创建。"
+            : "你正在分析一个 PingCode 用户故事/需求，需要将其拆解为多个可独立实现的小任务（子工作项），并通过 PingCode API 创建。");
+        sb.AppendLine();
+        AppendBasicInfo(sb, details);
+        AppendSection(sb, isFix ? "问题描述" : "业务目标与描述", ToPlainText(details.DescriptionHtml));
+        AppendSection(sb, "示意图/补充说明", ToPlainText(details.SketchHtml));
+        if (isFix)
+        {
+            AppendSection(sb, "期望结果", details.ExpectedResult);
+        }
+
+        AppendProperties(sb, details.Properties);
+        AppendComments(sb, details.Comments);
+        AppendLinks(sb, links);
+        AppendPlanModeAndEvidenceRules(sb);
+        AppendDecompositionInstructions(sb);
+        AppendPingCodeCreateApiInstructions(sb, details);
+        return sb.ToString();
+    }
+
+    private static void AppendDecompositionInstructions(StringBuilder sb)
+    {
+        sb.AppendLine("## 拆解任务要求");
+        sb.AppendLine();
+        sb.AppendLine("你的任务是将上述工作项拆解为多个小任务，并在 PingCode 中创建对应的子工作项。");
+        sb.AppendLine();
+        sb.AppendLine("### 分析步骤");
+        sb.AppendLine("1. 仔细阅读工作项的业务目标、描述、验收标准和补充说明。");
+        sb.AppendLine("2. 如果有内网链接（方案/原型/文档），先主动访问获取完整设计信息。");
+        sb.AppendLine("3. 阅读当前仓库代码，理解相关模块的架构和既有模式。");
+        sb.AppendLine("4. 识别可独立实现的功能切片。");
+        sb.AppendLine();
+        sb.AppendLine("### 拆解原则");
+        sb.AppendLine("- 每个子任务应该足够小（建议 1-3 个故事点），可以单独开发和测试。");
+        sb.AppendLine("- 子任务之间尽量解耦，允许并行开发。");
+        sb.AppendLine("- 每个子任务必须有明确的标题、描述和验收标准。");
+        sb.AppendLine("- 保留父工作项的上下文信息，每个子任务的描述应该自包含，让后续 AI 实现时能理解完整背景。");
+        sb.AppendLine("- **子任务标题格式**：`AI—[模块名] 具体任务描述`（必须以 `AI—` 开头）。");
+        sb.AppendLine("- 子任务描述应包含：实现范围、建议故事点（你估算的工作量）、验收标准、相关文件或模块路径（如果已知）。");
+        sb.AppendLine("- **注意**：创建子任务时故事点统一填 0.1（占位值），你估算的建议故事点写在描述正文中「实现范围」和「验收标准」之间。");
+        sb.AppendLine();
+        sb.AppendLine("### 输出要求");
+        sb.AppendLine("在调用 API 创建之前，先输出拆解方案供用户确认：");
+        sb.AppendLine();
+        sb.AppendLine("| 序号 | 标题 | 描述摘要 | 建议故事点 | 依赖 |");
+        sb.AppendLine("|------|------|----------|------------|------|");
+        sb.AppendLine("| 1    | AI—[模块] ... | ... | 2 | 无 |");
+        sb.AppendLine();
+        sb.AppendLine("**必须等待用户确认拆解方案后，再执行 API 调用创建子工作项。**");
+        sb.AppendLine();
+    }
+
+    private static void AppendPingCodeCreateApiInstructions(StringBuilder sb, WorkItemDetails details)
+    {
+        sb.AppendLine("## PingCode 子工作项创建指南");
+        sb.AppendLine();
+        sb.AppendLine("用户确认拆解方案后，按以下步骤创建子工作项。");
+        sb.AppendLine();
+        sb.AppendLine("### 重要：必须先查询 type_id 和 assignee_id");
+        sb.AppendLine();
+        sb.AppendLine("PingCode API **不接受** `type: \"task\"` 字符串，必须使用项目中「任务」类型的 `type_id`。");
+        sb.AppendLine("同时，所有子任务需要指派给 **闫云皓**，需要查询其 `user_id`。");
+        sb.AppendLine();
+        sb.AppendLine("**步骤 1：查询「任务」类型的 type_id**");
+        sb.AppendLine("```powershell");
+        sb.AppendLine("$token = '<access_token>'");
+        sb.AppendLine("$headers = @{ 'Authorization' = \"Bearer $token\" }");
+        sb.AppendLine($"$urls = @('https://open.pingcode.com/v1/project/work_items/types?project_id={details.ProjectId}',");
+        sb.AppendLine($"          'https://open.pingcode.com/v1/project/work_item_types?project_id={details.ProjectId}')");
+        sb.AppendLine("foreach ($u in $urls) {");
+        sb.AppendLine("    $r = Invoke-WebRequest -Uri $u -Headers $headers -SkipHttpErrorCheck");
+        sb.AppendLine("    if ($r.StatusCode -eq 200) { ($r.Content | ConvertTo-Json -Depth 5); break }");
+        sb.AppendLine("}");
+        sb.AppendLine("```");
+        sb.AppendLine("从返回的数组中找到 `name` 包含「任务」或 `display_name` 为「task」的条目，取其 `id` 字段作为 `type_id`。");
+        sb.AppendLine();
+        sb.AppendLine("**步骤 2：查询闫云皓的 user_id**");
+        sb.AppendLine("```powershell");
+        sb.AppendLine($"$r = Invoke-WebRequest -Uri 'https://open.pingcode.com/v1/project/projects/{details.ProjectId}/members?page_size=100' -Headers $headers -SkipHttpErrorCheck");
+        sb.AppendLine("($r.Content | ConvertTo-Json -Depth 5)");
+        sb.AppendLine("```");
+        sb.AppendLine("从返回的成员列表中找到 `display_name` 或 `name` 为「闫云皓」的条目，取其 `user.id` 或 `id` 字段。");
+        sb.AppendLine();
+        sb.AppendLine("### 步骤 3：创建子工作项");
+        sb.AppendLine("```");
+        sb.AppendLine("POST https://open.pingcode.com/v1/project/work_items");
+        sb.AppendLine("Content-Type: application/json");
+        sb.AppendLine("Authorization: Bearer <access_token>（见 prompt 末尾的 PingCode API 认证凭证）");
+        sb.AppendLine("```");
+        sb.AppendLine();
+        sb.AppendLine("请求体（**使用查到的 type_id 和 assignee_id**）：");
+        sb.AppendLine("```json");
+        sb.AppendLine("{");
+        sb.AppendLine($"  \"project_id\": \"{details.ProjectId}\",");
+        sb.AppendLine("  \"title\": \"AI—[模块名] 具体任务描述\",");
+        sb.AppendLine("  \"type_id\": \"<步骤1查到的type_id>\",");
+        sb.AppendLine($"  \"parent_id\": \"{details.Id}\",");
+        sb.AppendLine("  \"assignee_id\": \"<步骤2查到的闫云皓user_id>\",");
+        sb.AppendLine("  \"description\": \"<p><b>实现范围：</b>...</p><p><b>建议故事点：</b>2</p><p><b>验收标准：</b>...</p>\",");
+        sb.AppendLine("  \"story_points\": 0.1");
+        sb.AppendLine("}");
+        sb.AppendLine("```");
+        sb.AppendLine();
+        sb.AppendLine("PowerShell 调用示例：");
+        sb.AppendLine("```powershell");
+        sb.AppendLine("$headers = @{");
+        sb.AppendLine("    'Content-Type' = 'application/json'");
+        sb.AppendLine("    'Authorization' = \"Bearer $token\"");
+        sb.AppendLine("}");
+        sb.AppendLine("$body = @{");
+        sb.AppendLine($"    project_id = '{details.ProjectId}'");
+        sb.AppendLine("    title = 'AI—[模块名] 具体任务描述'");
+        sb.AppendLine("    type_id = $typeId");
+        sb.AppendLine($"    parent_id = '{details.Id}'");
+        sb.AppendLine("    assignee_id = $assigneeId");
+        sb.AppendLine("    description = '<p><b>实现范围：</b>...</p><p><b>建议故事点：</b>2</p><p><b>验收标准：</b>...</p>'");
+        sb.AppendLine("    story_points = 0.1");
+        sb.AppendLine("} | ConvertTo-Json -Compress");
+        sb.AppendLine("$resp = Invoke-WebRequest -Uri 'https://open.pingcode.com/v1/project/work_items' -Method Post -Headers $headers -Body $body -SkipHttpErrorCheck");
+        sb.AppendLine("$resp.Content | ConvertTo-Json -Depth 10");
+        sb.AppendLine("```");
+        sb.AppendLine();
+        sb.AppendLine("### 执行流程总结");
+        sb.AppendLine("1. 查询 type_id（「任务」类型）和 assignee_id（闫云皓）。");
+        sb.AppendLine("2. 用户确认拆解方案后，逐个调用 POST 创建子工作项（故事点统一 0.1，标题以 `AI—` 开头）。");
+        sb.AppendLine("3. 从每个响应中提取 `id` 和 `identifier`（如 PROJ-456）。");
+        sb.AppendLine("4. 最后用中文汇报创建结果（成功/失败、各子任务编号）。");
+        sb.AppendLine();
+        sb.AppendLine("### 容错说明");
+        sb.AppendLine("- 如果 POST 返回 400，检查响应体中的错误信息，可能是字段名不正确。");
+        sb.AppendLine("- 如果某个子任务创建失败，继续创建其余子任务，最后汇总失败项。");
+        sb.AppendLine("- 如果 API 返回 401，说明 token 已过期，提示用户重新执行。");
+        sb.AppendLine("- 使用 `Invoke-WebRequest` 搭配 `-SkipHttpErrorCheck` 来获取完整响应体（包括错误时的响应），以便调试。");
+        sb.AppendLine();
     }
 
     private static List<PingCodePromptLink> ExtractLinks(WorkItemDetails details)

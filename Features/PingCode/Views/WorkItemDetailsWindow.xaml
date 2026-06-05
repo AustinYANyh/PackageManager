@@ -31,6 +31,16 @@
                         BorderBrush="#1D4ED8"
                         FontWeight="SemiBold"
                         Click="AiActionButton_Click" />
+                <Button DockPanel.Dock="Right"
+                        x:Name="AiDecomposeButton"
+                        Content="AI 拆解"
+                        Padding="14,7"
+                        Background="#7C3AED"
+                        Foreground="White"
+                        BorderBrush="#6D28D9"
+                        FontWeight="SemiBold"
+                        Margin="0,0,8,0"
+                        Click="AiDecomposeButton_Click" />
             </DockPanel>
         </Border>
         <wv2:WebView2 Grid.Row="1" x:Name="DetailsWeb" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" />
