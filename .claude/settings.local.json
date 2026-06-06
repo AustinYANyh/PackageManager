@@ -100,7 +100,8 @@
       "Bash(tasklist /FI \"IMAGENAME eq MftScanner.exe\")",
       "Bash(wmic process:*)",
       "Bash(powershell:*)",
-      "Bash(MSBuild.exe Tools/MftScanner/MftScanner.csproj /p:Configuration=Release /t:Build /v:minimal)"
+      "Bash(MSBuild.exe Tools/MftScanner/MftScanner.csproj /p:Configuration=Release /t:Build /v:minimal)",
+      "Bash(npm update *)"
     ]
   }
 }

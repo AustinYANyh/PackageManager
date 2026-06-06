@@ -429,6 +429,8 @@ namespace
     {
         std::vector<NativeV2BucketEntry> trigramEntries;
         std::vector<std::uint8_t> trigramPostings;
+        std::vector<NativeV2BucketEntry> prefix4Entries;
+        std::vector<std::uint8_t> prefix4Postings;
         std::array<std::vector<std::uint32_t>, 128> asciiCharPostings;
         std::array<std::vector<std::uint32_t>, 128 * 128> asciiBigramPostings;
         std::unordered_map<std::uint64_t, std::vector<std::uint32_t>> nonAsciiShortPostings;
@@ -457,6 +459,9 @@ namespace
             trigramEntries.clear();
             trigramPostings.clear();
             trigramPostings.shrink_to_fit();
+            prefix4Entries.clear();
+            prefix4Postings.clear();
+            prefix4Postings.shrink_to_fit();
             for (auto& posting : asciiCharPostings)
             {
                 posting.clear();
@@ -505,6 +510,7 @@ namespace
     struct NativeV2BuildLocal
     {
         std::unordered_map<std::uint64_t, std::vector<std::uint32_t>> trigrams;
+        std::unordered_map<std::uint64_t, std::vector<std::uint32_t>> prefix4;
         NativeV2ShortQueryLocal shortQuery;
     };
 
@@ -1322,7 +1328,7 @@ namespace
         static constexpr std::int32_t V2RecordsSnapshotVersion1 = 1;
         static constexpr std::int32_t V2RecordsSnapshotVersion2 = 2;
         static constexpr std::int32_t V2PostingsSnapshotVersion1 = 1;
-        static constexpr std::int32_t V2RuntimeSnapshotVersion6 = 6;
+        static constexpr std::int32_t V2RuntimeSnapshotVersion7 = 7;
         static constexpr std::int32_t V2TypeBucketsSnapshotVersion1 = 1;
         static constexpr std::int32_t V2OverlaySnapshotVersion1 = 1;
         static constexpr std::size_t ShortDrivePageSize = 1024;
@@ -2615,6 +2621,11 @@ namespace
                             local.trigrams[key].push_back(recordId);
                         }
 
+                        if (name.length() >= 4)
+                        {
+                            local.prefix4[PackPrefix4(name)].push_back(recordId);
+                        }
+
                         AddShortQueryTokensToLocal_NoLock(name, recordId, local.shortQuery);
                     }
                 }));
@@ -2630,17 +2641,27 @@ namespace
             const auto entryBuildStart = std::chrono::steady_clock::now();
             std::unordered_map<std::uint64_t, std::uint32_t> trigramCounts;
             trigramCounts.reserve(131072);
+            std::unordered_map<std::uint64_t, std::uint32_t> prefix4Counts;
+            prefix4Counts.reserve(65536);
             for (const auto& local : locals)
             {
                 for (const auto& pair : local->trigrams)
                 {
                     trigramCounts[pair.first] += static_cast<std::uint32_t>(pair.second.size());
                 }
+
+                for (const auto& pair : local->prefix4)
+                {
+                    prefix4Counts[pair.first] += static_cast<std::uint32_t>(pair.second.size());
+                }
             }
 
             v2_.trigramEntries.clear();
             v2_.trigramPostings.clear();
+            v2_.prefix4Entries.clear();
+            v2_.prefix4Postings.clear();
             v2_.trigramEntries.reserve(trigramCounts.size());
+            v2_.prefix4Entries.reserve(prefix4Counts.size());
             std::uint64_t totalPostings = 0;
             for (const auto& pair : trigramCounts)
             {
@@ -2667,6 +2688,7 @@ namespace
                 entry.byteCount = static_cast<std::uint32_t>(v2_.trigramPostings.size() - byteOffset);
             }
             v2_.trigramPostings.shrink_to_fit();
+            EncodePrefix4PostingsFromLocals_NoLock(prefix4Counts, locals, v2_);
             encodeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - encodeStart).count();
 
@@ -2685,6 +2707,8 @@ namespace
             v2_.postingsBytes =
                 (static_cast<std::uint64_t>(v2_.trigramEntries.size()) * sizeof(NativeV2BucketEntry))
                 + static_cast<std::uint64_t>(v2_.trigramPostings.size())
+                + (static_cast<std::uint64_t>(v2_.prefix4Entries.size()) * sizeof(NativeV2BucketEntry))
+                + static_cast<std::uint64_t>(v2_.prefix4Postings.size())
                 + EstimateShortPostingBytes_NoLock()
                 + (static_cast<std::uint64_t>(v2_.parentOrder.size()) * sizeof(std::uint32_t));
             v2_.ready = true;
@@ -2725,6 +2749,11 @@ namespace
                             local.trigrams[key].push_back(recordId);
                         }
 
+                        if (name.length() >= 4)
+                        {
+                            local.prefix4[PackPrefix4(name)].push_back(recordId);
+                        }
+
                         AddShortQueryTokensToLocal_NoLock(name, recordId, local.shortQuery);
                     }
                 }));
@@ -2737,15 +2766,23 @@ namespace
 
             std::unordered_map<std::uint64_t, std::uint32_t> trigramCounts;
             trigramCounts.reserve(131072);
+            std::unordered_map<std::uint64_t, std::uint32_t> prefix4Counts;
+            prefix4Counts.reserve(65536);
             for (const auto& local : locals)
             {
                 for (const auto& pair : local->trigrams)
                 {
                     trigramCounts[pair.first] += static_cast<std::uint32_t>(pair.second.size());
                 }
+
+                for (const auto& pair : local->prefix4)
+                {
+                    prefix4Counts[pair.first] += static_cast<std::uint32_t>(pair.second.size());
+                }
             }
 
             v2.trigramEntries.reserve(trigramCounts.size());
+            v2.prefix4Entries.reserve(prefix4Counts.size());
             std::uint64_t totalPostings = 0;
             for (const auto& pair : trigramCounts)
             {
@@ -2769,6 +2806,7 @@ namespace
                 entry.byteCount = static_cast<std::uint32_t>(v2.trigramPostings.size() - byteOffset);
             }
             v2.trigramPostings.shrink_to_fit();
+            EncodePrefix4PostingsFromLocals_NoLock(prefix4Counts, locals, v2);
 
             MergeShortQueryLocalsIntoV2(locals, v2);
             CompressShortPostingsForSnapshotRecords(records, v2);
@@ -2778,6 +2816,8 @@ namespace
             v2.postingsBytes =
                 (static_cast<std::uint64_t>(v2.trigramEntries.size()) * sizeof(NativeV2BucketEntry))
                 + static_cast<std::uint64_t>(v2.trigramPostings.size())
+                + (static_cast<std::uint64_t>(v2.prefix4Entries.size()) * sizeof(NativeV2BucketEntry))
+                + static_cast<std::uint64_t>(v2.prefix4Postings.size())
                 + EstimateShortPostingBytesForV2(v2)
                 + (static_cast<std::uint64_t>(v2.parentOrder.size()) * sizeof(std::uint32_t));
             v2.ready = v2.parentOrder.size() == records.size();
@@ -3212,6 +3252,8 @@ namespace
             v2_.postingsBytes =
                 (static_cast<std::uint64_t>(v2_.trigramEntries.size()) * sizeof(NativeV2BucketEntry))
                 + static_cast<std::uint64_t>(v2_.trigramPostings.size())
+                + (static_cast<std::uint64_t>(v2_.prefix4Entries.size()) * sizeof(NativeV2BucketEntry))
+                + static_cast<std::uint64_t>(v2_.prefix4Postings.size())
                 + EstimateShortPostingBytes_NoLock()
                 + (static_cast<std::uint64_t>(v2_.parentOrder.size()) * sizeof(std::uint32_t));
             v2_.ready = !v2_.trigramEntries.empty() || records_.empty();
@@ -3666,6 +3708,64 @@ namespace
                     hasPrevious = true;
                 }
             }
+        }
+
+        static void EncodeMergedLocalPrefix4Posting_NoLock(
+            std::uint64_t key,
+            const std::vector<std::unique_ptr<NativeV2BuildLocal>>& locals,
+            std::vector<std::uint8_t>& output)
+        {
+            bool hasPrevious = false;
+            std::uint32_t previous = 0;
+            for (const auto& local : locals)
+            {
+                const auto it = local->prefix4.find(key);
+                if (it == local->prefix4.end())
+                {
+                    continue;
+                }
+
+                for (const auto value : it->second)
+                {
+                    WriteVarUInt(hasPrevious ? value - previous : value, output);
+                    previous = value;
+                    hasPrevious = true;
+                }
+            }
+        }
+
+        static void EncodePrefix4PostingsFromLocals_NoLock(
+            const std::unordered_map<std::uint64_t, std::uint32_t>& prefix4Counts,
+            const std::vector<std::unique_ptr<NativeV2BuildLocal>>& locals,
+            NativeV2Accelerator& v2)
+        {
+            v2.prefix4Entries.clear();
+            v2.prefix4Postings.clear();
+            v2.prefix4Entries.reserve(prefix4Counts.size());
+            std::uint64_t totalPostings = 0;
+            for (const auto& pair : prefix4Counts)
+            {
+                totalPostings += pair.second;
+                v2.prefix4Entries.push_back(NativeV2BucketEntry{ pair.first, 0, pair.second, 0 });
+            }
+
+            std::sort(v2.prefix4Entries.begin(), v2.prefix4Entries.end(), [](const auto& left, const auto& right)
+            {
+                return left.key < right.key;
+            });
+
+            v2.prefix4Postings.reserve(static_cast<std::size_t>(std::min<std::uint64_t>(
+                totalPostings * 2,
+                static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()))));
+            for (auto& entry : v2.prefix4Entries)
+            {
+                const auto byteOffset = static_cast<std::uint32_t>(v2.prefix4Postings.size());
+                EncodeMergedLocalPrefix4Posting_NoLock(entry.key, locals, v2.prefix4Postings);
+                entry.offset = byteOffset;
+                entry.byteCount = static_cast<std::uint32_t>(v2.prefix4Postings.size() - byteOffset);
+            }
+
+            v2.prefix4Postings.shrink_to_fit();
         }
 
         static void DecodeDeltaPosting_NoLock(
@@ -4916,6 +5016,8 @@ namespace
                 bytes += static_cast<std::uint64_t>(ids.capacity()) * sizeof(std::uint32_t);
             }
             bytes += static_cast<std::uint64_t>(v2_.trigramEntries.capacity()) * sizeof(NativeV2BucketEntry);
+            bytes += static_cast<std::uint64_t>(v2_.prefix4Entries.capacity()) * sizeof(NativeV2BucketEntry);
+            bytes += static_cast<std::uint64_t>(v2_.prefix4Postings.capacity());
             bytes += static_cast<std::uint64_t>(v2_.childEntries.capacity()) * sizeof(NativeV2ChildBucketEntry);
             bytes += static_cast<std::uint64_t>(frnRecordIndex_.capacity()) * sizeof(FrnRecordIndexEntry);
             bytes += EstimateShortPostingBytes_NoLock();
@@ -6236,17 +6338,23 @@ namespace
             }
 
             std::vector<std::uint32_t> candidates;
-            if (!TryBuildLiteralCandidates_NoLock(prefix, candidates))
+            const bool prefix4Accelerated = TryBuildPrefix4Candidates_NoLock(prefix, candidates);
+            if (!prefix4Accelerated && !TryBuildLiteralCandidates_NoLock(prefix, candidates))
             {
                 acceleratorMode = "prefix-literal-empty";
                 return true;
+            }
+
+            if (prefix4Accelerated)
+            {
+                acceleratorMode = pathPrefix.empty() && filter == SearchFilter::All ? "v2-prefix4" : "v2-prefix4+filter";
             }
 
             ApplyFilterToCandidates_NoLock(candidates, filter);
             if (!pathPrefix.empty())
             {
                 ApplyPathScopeToCandidates_NoLock(candidates, pathPrefix);
-                acceleratorMode = "prefix-sorted+path";
+                acceleratorMode = prefix4Accelerated ? "v2-prefix4+path" : "prefix-sorted+path";
             }
 
             FillPageFromCandidateIds_NoLock(
@@ -7945,46 +8053,57 @@ namespace
                 return false;
             }
 
-            if (literal.length() <= 2)
-            {
-                auto candidates = BuildV2ContainsCandidates_NoLock(literal);
-                if (!candidates.accelerated)
-                {
-                    return false;
-                }
-
-                ids = std::move(candidates.ids);
-                return true;
-            }
-
-            std::uint64_t bestKey = 0;
-            NativeV2BucketEntry bestEntry;
-            bool hasBestEntry = false;
-            for (std::size_t i = 0; i + 2 < literal.length(); ++i)
-            {
-                const auto key = PackTrigram(literal[i], literal[i + 1], literal[i + 2]);
-                NativeV2BucketEntry entry;
-                if (!TryGetTrigramPosting_NoLock(key, entry) || entry.count == 0)
-                {
-                    ids.clear();
-                    return true;
-                }
-
-                if (!hasBestEntry || entry.count < bestEntry.count)
-                {
-                    bestKey = key;
-                    bestEntry = entry;
-                    hasBestEntry = true;
-                }
-            }
-
-            (void)bestKey;
-            if (!hasBestEntry)
+            auto candidates = BuildV2ContainsCandidates_NoLock(literal);
+            if (!candidates.accelerated)
             {
                 return false;
             }
 
-            DecodeDeltaPosting_NoLock(v2_.trigramPostings, bestEntry, ids);
+            ids = std::move(candidates.ids);
+            return true;
+        }
+
+        bool TryBuildPrefix4Candidates_NoLock(const std::wstring& prefix, std::vector<std::uint32_t>& ids) const
+        {
+            ids.clear();
+            if (prefix.length() < 4 || v2_.prefix4Entries.empty())
+            {
+                return false;
+            }
+
+            NativeV2BucketEntry entry;
+            if (!TryGetPrefix4Posting_NoLock(PackPrefix4(prefix), entry))
+            {
+                return true;
+            }
+
+            DecodeDeltaPosting_NoLock(v2_.prefix4Postings, entry, ids);
+            return ids.size() == entry.count;
+        }
+
+        bool TryGetPrefix4Posting_NoLock(std::uint64_t key, NativeV2BucketEntry& entry) const
+        {
+            auto lo = v2_.prefix4Entries.begin();
+            auto hi = v2_.prefix4Entries.end();
+            while (lo < hi)
+            {
+                auto mid = lo + ((hi - lo) / 2);
+                if (mid->key < key)
+                {
+                    lo = mid + 1;
+                }
+                else
+                {
+                    hi = mid;
+                }
+            }
+
+            if (lo == v2_.prefix4Entries.end() || lo->key != key)
+            {
+                return false;
+            }
+
+            entry = *lo;
             return true;
         }
 
@@ -9099,6 +9218,8 @@ namespace
                 v2_.postingsBytes =
                     (static_cast<std::uint64_t>(v2_.trigramEntries.size()) * sizeof(NativeV2BucketEntry))
                     + static_cast<std::uint64_t>(v2_.trigramPostings.size())
+                    + (static_cast<std::uint64_t>(v2_.prefix4Entries.size()) * sizeof(NativeV2BucketEntry))
+                    + static_cast<std::uint64_t>(v2_.prefix4Postings.size())
                     + EstimateShortPostingBytes_NoLock()
                     + (static_cast<std::uint64_t>(v2_.parentOrder.size()) * sizeof(std::uint32_t));
                 v2_.ready = true;
@@ -9176,6 +9297,8 @@ namespace
                 v2_.postingsBytes =
                     (static_cast<std::uint64_t>(v2_.trigramEntries.size()) * sizeof(NativeV2BucketEntry))
                     + static_cast<std::uint64_t>(v2_.trigramPostings.size())
+                    + (static_cast<std::uint64_t>(v2_.prefix4Entries.size()) * sizeof(NativeV2BucketEntry))
+                    + static_cast<std::uint64_t>(v2_.prefix4Postings.size())
                     + EstimateShortPostingBytes_NoLock()
                     + (static_cast<std::uint64_t>(v2_.parentOrder.size() + v2_.childRecordIds.size()) * sizeof(std::uint32_t))
                     + (static_cast<std::uint64_t>(v2_.childEntries.size()) * sizeof(NativeV2ChildBucketEntry));
@@ -9329,6 +9452,8 @@ namespace
                 v2_.postingsBytes =
                     (static_cast<std::uint64_t>(v2_.trigramEntries.size()) * sizeof(NativeV2BucketEntry))
                     + static_cast<std::uint64_t>(v2_.trigramPostings.size())
+                    + (static_cast<std::uint64_t>(v2_.prefix4Entries.size()) * sizeof(NativeV2BucketEntry))
+                    + static_cast<std::uint64_t>(v2_.prefix4Postings.size())
                     + EstimateShortPostingBytes_NoLock()
                     + (static_cast<std::uint64_t>(v2_.parentOrder.size() + v2_.childRecordIds.size()) * sizeof(std::uint32_t))
                     + (static_cast<std::uint64_t>(v2_.childEntries.size()) * sizeof(NativeV2ChildBucketEntry));
@@ -9933,6 +10058,8 @@ namespace
                     }
                     v2Copy->trigramEntries = v2_.trigramEntries;
                     v2Copy->trigramPostings = v2_.trigramPostings;
+                    v2Copy->prefix4Entries = v2_.prefix4Entries;
+                    v2Copy->prefix4Postings = v2_.prefix4Postings;
                     v2Copy->asciiCharEntries = v2_.asciiCharEntries;
                     v2Copy->asciiBigramEntries = v2_.asciiBigramEntries;
                     v2Copy->asciiCharDriveCounts = v2_.asciiCharDriveCounts;
@@ -10394,8 +10521,17 @@ namespace
 
         void QueueSnapshotSave()
         {
-            std::unique_lock<std::shared_mutex> guard(mutex_);
-            QueueSnapshotSave_NoLock();
+            if (hasShutdown_)
+            {
+                return;
+            }
+
+            {
+                std::lock_guard<std::mutex> guard(snapshotRequestMutex_);
+                snapshotSavePending_ = true;
+            }
+
+            snapshotRequestCv_.notify_one();
         }
 
         void QueueSnapshotSave_NoLock() const
@@ -11075,7 +11211,7 @@ namespace
             input.read(reinterpret_cast<char*>(&version), sizeof(version));
             input.read(reinterpret_cast<char*>(&recordCount), sizeof(recordCount));
             if (!input.good()
-                || (version != V2RuntimeSnapshotVersion6 && version != 5 && version != 4 && version != 3 && version != 2)
+                || (version != V2RuntimeSnapshotVersion7 && version != 6 && version != 5 && version != 4 && version != 3 && version != 2)
                 || recordCount != static_cast<std::int32_t>(GetRecordCount_NoLock()))
             {
                 NativeLogWrite("[NATIVE V2 RUNTIME LOAD] miss reason=version-or-record-count");
@@ -11152,7 +11288,7 @@ namespace
                 return false;
             }
 
-            if (version >= V2RuntimeSnapshotVersion6)
+            if (version >= 6)
             {
                 if (!ReadUInt32Vector(input, v2_.subtreeEnter)
                     || !ReadUInt32Vector(input, v2_.subtreeExit)
@@ -11164,6 +11300,20 @@ namespace
             else
             {
                 BuildSubtreeIntervals_NoLock();
+            }
+
+            if (version >= V2RuntimeSnapshotVersion7)
+            {
+                if (!ReadBucketEntryVector(input, v2_.prefix4Entries)
+                    || !ReadByteVector(input, v2_.prefix4Postings))
+                {
+                    return false;
+                }
+            }
+            else
+            {
+                v2_.prefix4Entries.clear();
+                v2_.prefix4Postings.clear();
             }
 
             if (version >= 3 && version < 4)
@@ -11184,6 +11334,8 @@ namespace
                     v2_.asciiCharCompressedPostings.size()
                     + v2_.asciiBigramCompressedPostings.size()
                     + v2_.nonAsciiShortCompressedPostings.size())
+                + " prefix4Buckets=" + std::to_string(v2_.prefix4Entries.size())
+                + " prefix4Bytes=" + std::to_string(v2_.prefix4Postings.size())
                 + " parentOrder=" + std::to_string(v2_.parentOrder.size())
                 + " childBuckets=" + std::to_string(v2_.childEntries.size())
                 + " childIds=" + std::to_string(v2_.childRecordIds.size()));
@@ -11213,7 +11365,7 @@ namespace
                 return;
             }
 
-            const auto version = V2RuntimeSnapshotVersion6;
+            const auto version = V2RuntimeSnapshotVersion7;
             const auto count = static_cast<std::int32_t>(recordCount);
             output.write(reinterpret_cast<const char*>(&version), sizeof(version));
             output.write(reinterpret_cast<const char*>(&count), sizeof(count));
@@ -11243,6 +11395,8 @@ namespace
             WriteUInt32Vector(output, v2.subtreeEnter);
             WriteUInt32Vector(output, v2.subtreeExit);
             WriteUInt32Vector(output, v2.subtreeRecordIds);
+            WriteBucketEntryVector(output, v2.prefix4Entries);
+            WriteByteVector(output, v2.prefix4Postings);
 
             output.flush();
             const auto ok = output.good();
@@ -11275,6 +11429,8 @@ namespace
                     v2.asciiCharCompressedPostings.size()
                     + v2.asciiBigramCompressedPostings.size()
                     + v2.nonAsciiShortCompressedPostings.size())
+                + " prefix4Buckets=" + std::to_string(v2.prefix4Entries.size())
+                + " prefix4Bytes=" + std::to_string(v2.prefix4Postings.size())
                 + " parentOrder=" + std::to_string(v2.parentOrder.size())
                 + " childBuckets=" + std::to_string(v2.childEntries.size())
                 + " childIds=" + std::to_string(v2.childRecordIds.size()));
@@ -11499,10 +11655,11 @@ namespace
             ss << "\"elapsedMs\":" << buildProgress_.elapsedMs;
             ss << "},";
             ss << "\"engineVersion\":\"native-v2\",";
-            ss << "\"readyStage\":\"" << (v2_.ready ? "records+trigram+shortQuery+pathOrder+typeBuckets" : "not-ready") << "\",";
+            ss << "\"readyStage\":\"" << (v2_.ready ? "records+trigram+prefix4+shortQuery+pathOrder+typeBuckets" : "not-ready") << "\",";
             ss << "\"capabilities\":{";
             ss << "\"records\":" << (GetRecordCount_NoLock() > 0 ? "true" : "false") << ",";
             ss << "\"trigram\":" << (v2_.ready ? "true" : "false") << ",";
+            ss << "\"prefix4\":" << (!v2_.prefix4Entries.empty() ? "true" : "false") << ",";
             ss << "\"shortQuery\":" << (v2_.ready ? "true" : "false") << ",";
             ss << "\"pathOrder\":" << (v2_.ready ? "true" : "false") << ",";
             ss << "\"typeBuckets\":" << (!allIds_.empty() ? "true" : "false");
@@ -11511,6 +11668,8 @@ namespace
             ss << "\"v2BuildMs\":" << v2_.buildMs << ",";
             ss << "\"v2TrigramBuckets\":" << v2_.trigramEntries.size() << ",";
             ss << "\"v2TrigramBytes\":" << v2_.trigramPostings.size() << ",";
+            ss << "\"v2Prefix4Buckets\":" << v2_.prefix4Entries.size() << ",";
+            ss << "\"v2Prefix4Bytes\":" << v2_.prefix4Postings.size() << ",";
             ss << "\"v2PostingsBytes\":" << v2_.postingsBytes << ",";
             ss << "\"shortPostingsBytes\":" << (
                 v2_.asciiCharCompressedPostings.size()
@@ -11526,7 +11685,7 @@ namespace
                 (static_cast<std::uint64_t>(v2_.childRecordIds.capacity()) * sizeof(std::uint32_t))
                 + (static_cast<std::uint64_t>(v2_.childEntries.capacity()) * sizeof(NativeV2ChildBucketEntry))) << ",";
             ss << "\"generationId\":" << generationId_.load(std::memory_order_relaxed) << ",";
-            ss << "\"snapshotFormatVersion\":" << V2RuntimeSnapshotVersion6 << ",";
+            ss << "\"snapshotFormatVersion\":" << V2RuntimeSnapshotVersion7 << ",";
             ss << "\"restoreMappedBytes\":0";
             ss << "},";
             ss << "\"memoryBytes\":" << EstimateNativeMemoryBytes_NoLock() << ",";
@@ -12241,6 +12400,14 @@ namespace
                 | static_cast<std::uint64_t>(static_cast<std::uint16_t>(c));
         }
 
+        static std::uint64_t PackPrefix4(std::wstring_view value)
+        {
+            return (static_cast<std::uint64_t>(static_cast<std::uint16_t>(value[0])) << 48)
+                | (static_cast<std::uint64_t>(static_cast<std::uint16_t>(value[1])) << 32)
+                | (static_cast<std::uint64_t>(static_cast<std::uint16_t>(value[2])) << 16)
+                | static_cast<std::uint64_t>(static_cast<std::uint16_t>(value[3]));
+        }
+
         static std::uint64_t PackShortToken(wchar_t a, wchar_t b, int length)
         {
             return (static_cast<std::uint64_t>(static_cast<std::uint16_t>(length)) << 48)
@@ -12680,6 +12847,45 @@ namespace
             }
 
             values.shrink_to_fit();
+            return true;
+        }
+
+        static void WriteBucketEntryVector(std::ofstream& output, const std::vector<NativeV2BucketEntry>& entries)
+        {
+            const auto count = static_cast<std::uint32_t>(entries.size());
+            output.write(reinterpret_cast<const char*>(&count), sizeof(count));
+            for (const auto& entry : entries)
+            {
+                output.write(reinterpret_cast<const char*>(&entry.key), sizeof(entry.key));
+                output.write(reinterpret_cast<const char*>(&entry.offset), sizeof(entry.offset));
+                output.write(reinterpret_cast<const char*>(&entry.count), sizeof(entry.count));
+                output.write(reinterpret_cast<const char*>(&entry.byteCount), sizeof(entry.byteCount));
+            }
+        }
+
+        static bool ReadBucketEntryVector(std::ifstream& input, std::vector<NativeV2BucketEntry>& entries)
+        {
+            std::uint32_t count = 0;
+            input.read(reinterpret_cast<char*>(&count), sizeof(count));
+            if (!input.good())
+            {
+                return false;
+            }
+
+            entries.resize(count);
+            for (auto& entry : entries)
+            {
+                input.read(reinterpret_cast<char*>(&entry.key), sizeof(entry.key));
+                input.read(reinterpret_cast<char*>(&entry.offset), sizeof(entry.offset));
+                input.read(reinterpret_cast<char*>(&entry.count), sizeof(entry.count));
+                input.read(reinterpret_cast<char*>(&entry.byteCount), sizeof(entry.byteCount));
+                if (!input.good())
+                {
+                    return false;
+                }
+            }
+
+            entries.shrink_to_fit();
             return true;
         }
 

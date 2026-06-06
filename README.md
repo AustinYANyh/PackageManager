@@ -39,6 +39,30 @@
 4. 索引宿主常驻内存必须低于 1GB。
 5. 不得破坏 USN 实时更新能力，文件新增、删除、重命名等变更必须实时体现在查询结果中。
 
+性能回归测试必须使用 Release native 与隔离快照目录，不允许修改压测脚本的用例、阈值或 USN 注入语义。推荐命令如下：
+
+```powershell
+& 'C:\Program Files\Microsoft Visual Studio\18\Community\MSBuild\Current\Bin\amd64\MSBuild.exe' Tools\MftScanner.Native\MftScanner.Native.vcxproj /p:Configuration=Release /p:Platform=x64 /m
+
+$out='artifacts\mft-sla-<stamp>'
+$src='artifacts\mft-sla-20260605-cold-remap-sidecars\snapshot'
+$dst=Join-Path $out 'snapshot'
+New-Item -ItemType Directory -Force -Path $out | Out-Null
+if(Test-Path $dst){ Remove-Item -LiteralPath $dst -Recurse -Force }
+Copy-Item -LiteralPath $src -Destination $dst -Recurse -Force
+
+.\scripts\Run-MftScannerBenchmark.ps1 `
+  -Configuration Release `
+  -Backend SharedHost `
+  -SnapshotDirectory ".\$dst" `
+  -OutputDirectory ".\$out" `
+  -SimulateUsnBacklog `
+  -BacklogChangeCounts 200000 `
+  -SkipCorrectnessPrecheck
+```
+
+`-SkipCorrectnessPrecheck` 仅用于本机缺少固定 fixture（例如 `C:\ makenumberconfig`）时跳过环境预检；脚本内 20W USN backlog 及新增、删除、重命名 synthetic correctness 校验仍必须通过。
+
 ## 运行与快速上手
 
 - 直接运行 `PackageManager.exe`（位于 `bin/Release/` 或 `bin/Debug/`），无需额外依赖（集成 Costura.Fody 以嵌入依赖）。
