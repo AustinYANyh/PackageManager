@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using PackageManager.Features.PingCode.Models;
+using PackageManager.Services;
 using PackageManager.Services.PingCode.Dto;
 using PackageManager.Services.PingCode.Model;
 
@@ -129,6 +130,7 @@ public class PingCodeWorkItemPromptService
         sb.AppendLine("- 加日志时只记录定位所需的关键上下文，不要记录敏感信息，不要引入无关重构。");
         sb.AppendLine("- 工作项中的图片已下载到仓库 .pm-ai/images/ 目录，请直接读取这些本地图片文件来理解截图、示意图等视觉信息。");
         sb.AppendLine();
+        AiPromptProtocolService.AppendCodeGraphProtocol(sb);
         sb.AppendLine("### 链接访问规则");
         sb.AppendLine("**重要：不要用 WebFetch 或 curl 访问网页链接**——它们只能拿到 SPA 空壳 HTML，拿不到实际内容。");
         sb.AppendLine("访问任何网页链接时，统一使用 headless Edge 渲染后获取完整 DOM：");

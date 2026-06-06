@@ -139,6 +139,7 @@
         <Compile Include="Models\CommonLinkItem.cs" />
 
         <!-- Cross-cutting Services -->
+        <Compile Include="Services\AiPromptProtocolService.cs" />
         <Compile Include="Services\ApplicationFinderService.cs" />
         <Compile Include="Services\DataPersistenceService.cs" />
 

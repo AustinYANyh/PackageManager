@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using PackageManager.Features.CodeWorkspace.Models;
+using PackageManager.Services;
 
 namespace PackageManager.Features.CodeWorkspace.Services
 {
@@ -64,7 +65,7 @@ Write-Host '仓库：{TerminalHelper.EscapePowerShellSingleQuoted(repo.Name ?? r
             var safeEngineName = ToSafeFileNamePart(engineName, "cli");
             var fileName = $"{DateTime.Now:yyyyMMdd-HHmmss-fff}-{safeScenario}-{safeEngineName}-{Guid.NewGuid():N}.md";
             var promptPath = Path.Combine(promptDirectory, fileName);
-            File.WriteAllText(promptPath, prompt ?? string.Empty, Encoding.UTF8);
+            File.WriteAllText(promptPath, AiPromptProtocolService.EnsureCodeGraphProtocol(prompt), Encoding.UTF8);
             return promptPath;
         }
 
