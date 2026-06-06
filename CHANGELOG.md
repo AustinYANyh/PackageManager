@@ -23,6 +23,9 @@
   - 合并流程增加预检、fetch/pull、merge、冲突继续和终止操作。
   - 冲突文件列表支持生成 AI 分析提示，便于处理合并冲突。
   - AI 提交入口改为后台检查命令与同步 skill，避免界面被环境准备阻塞。
+  - AI 提交入口为每次运行生成专属状态目录，并要求 Step 3 显式读取本次 `last_changes.json`，避免两个模型并发提交时共享 `.state` 互相覆盖。
+  - 用户级/手动执行 git-svn 提交 skill 时，Step 1 默认改为在当前仓库 `.pm-ai/commit-state` 下创建唯一状态目录，并通过 JSON 输出供 Step 3 显式复用。
+  - 已记录一次并发状态覆盖异常：首次 Step 3 误读被 `E:\PackageManager` 覆盖的共享 `.state/last_changes.json`，导致 PackageManager Git commit `ca6a601` 已提交并推送到 `master`；未手动回滚，后续改用独立 `StateDir` 与显式 `-ChangesJsonFile` 完成 MaxiBIMSH 的正确 SVN 提交。
   - 打开 IDE/Visual Studio 前异步选择并扫描项目文件，失败时保留明确状态提示。
 
 - PingCode AI 执行入口与内网资料访问：

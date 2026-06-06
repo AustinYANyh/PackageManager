@@ -748,9 +748,16 @@ namespace PackageManager.Features.CodeWorkspace.Views
             var repositorySkill = string.IsNullOrWhiteSpace(skillInfo.RepositorySkillPath)
                 ? "Write-Host '  - 当前仓库没有自己的 .claude skill。'"
                 : $"Write-Host '  - {TerminalHelper.EscapePowerShellSingleQuoted(skillInfo.RepositorySkillPath)}（只检测，不覆盖）'";
-            var prompt = BuildCommitPrompt(skillInfo.WorkingChangesScriptPath, skillInfo.LastChangesJsonPath, skillInfo.LastChangesModelJsonPath);
-            var promptArgument = AiCliLaunchService.CreatePromptFileArgument(repo.Path, prompt, "ai-commit", engineName);
-            var command = $@"
+            try
+            {
+                var runState = _aiCommitSkillService.CreateRunState(repo.Path, engineName);
+                var prompt = BuildCommitPrompt(
+                    skillInfo.WorkingChangesScriptPath,
+                    runState.StateDirectoryPath,
+                    runState.LastChangesJsonPath,
+                    runState.LastChangesModelJsonPath);
+                var promptArgument = AiCliLaunchService.CreatePromptFileArgument(repo.Path, prompt, "ai-commit", engineName);
+                var command = $@"
 Set-Location -LiteralPath {PsQuote(repo.Path)}
 Write-Host 'PackageManager AI 提交入口' -ForegroundColor Cyan
 Write-Host '提交引擎：{TerminalHelper.EscapePowerShellSingleQuoted(engineName)}' -ForegroundColor DarkCyan
@@ -758,16 +765,24 @@ Write-Host '内嵌解压：{TerminalHelper.EscapePowerShellSingleQuoted(skillInf
 Write-Host '本次执行：{TerminalHelper.EscapePowerShellSingleQuoted(skillInfo.PrimarySkillPath)}' -ForegroundColor DarkCyan
 Write-Host '规则文件：{TerminalHelper.EscapePowerShellSingleQuoted(skillInfo.SkillMarkdownPath)}' -ForegroundColor DarkCyan
 Write-Host '采集脚本：{TerminalHelper.EscapePowerShellSingleQuoted(skillInfo.WorkingChangesScriptPath)}' -ForegroundColor DarkCyan
-Write-Host '完整状态文件：{TerminalHelper.EscapePowerShellSingleQuoted(skillInfo.LastChangesJsonPath)}' -ForegroundColor DarkCyan
-Write-Host '模型状态文件：{TerminalHelper.EscapePowerShellSingleQuoted(skillInfo.LastChangesModelJsonPath)}' -ForegroundColor DarkCyan
+Write-Host '本次状态目录：{TerminalHelper.EscapePowerShellSingleQuoted(runState.StateDirectoryPath)}' -ForegroundColor DarkCyan
+Write-Host '完整状态文件：{TerminalHelper.EscapePowerShellSingleQuoted(runState.LastChangesJsonPath)}' -ForegroundColor DarkCyan
+Write-Host '模型状态文件：{TerminalHelper.EscapePowerShellSingleQuoted(runState.LastChangesModelJsonPath)}' -ForegroundColor DarkCyan
 Write-Host '已覆盖用户级 skill：' -ForegroundColor DarkCyan
 {syncedUserSkills}
 Write-Host '仓库内 skill：' -ForegroundColor DarkCyan
 {repositorySkill}
 {commandPrefix} {PsQuote(promptArgument)}
 ";
-            TerminalHelper.LaunchTerminalWithCommand(repo.Path, command, $"{engineName} 代码提交 - {repo.Name}");
-            StatusText = $"已启动 {engineName} 代码提交：{repo.Name}；使用脚本 {skillInfo.WorkingChangesScriptPath}";
+                TerminalHelper.LaunchTerminalWithCommand(repo.Path, command, $"{engineName} 代码提交 - {repo.Name}");
+                StatusText = $"已启动 {engineName} 代码提交：{repo.Name}；状态目录 {runState.StateDirectoryPath}";
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, $"启动 {engineName} 提交流程失败: {repo.Path}");
+                StatusText = $"{engineName} 提交流程启动失败: {ex.Message}";
+                MessageBox.Show($"{engineName} 提交流程启动失败: {ex.Message}", $"{engineName} 提交", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
         }
 
         private async void DoOpenIde(CodeRepository repo, string[] possibleNames, string displayName)
@@ -1608,18 +1623,23 @@ SVN冲突/树冲突：
 ";
         }
 
-        private static string BuildCommitPrompt(string workingChangesScriptPath, string lastChangesJsonPath, string lastChangesModelJsonPath)
+        private static string BuildCommitPrompt(string workingChangesScriptPath, string stateDirectoryPath, string lastChangesJsonPath, string lastChangesModelJsonPath)
         {
-            var skillMarkdownPath = Path.Combine(Path.GetDirectoryName(Path.GetDirectoryName(workingChangesScriptPath)), "SKILL.md");
+            var skillRootPath = Path.GetDirectoryName(Path.GetDirectoryName(workingChangesScriptPath));
+            var skillMarkdownPath = Path.Combine(skillRootPath, "SKILL.md");
+            var commitPushScriptPath = Path.Combine(skillRootPath, "scripts", "invoke-commit-push-interactive.ps1");
             return "按这个内嵌同步后的 git-svn-commitlog-generator skill 完成本次 Git/SVN 提交流程："
                    + $"SKILL.md=\"{skillMarkdownPath}\"。"
                    + "不要依赖当前目录或用户目录里原本安装的旧 skill；如果自动加载了同名 skill，也以这里给出的 SKILL.md 和脚本绝对路径为准。"
+                   + $"本次流程的唯一状态目录是：\"{stateDirectoryPath}\"。"
+                   + "这是并发隔离边界；Step 1、Step 2 重新采集、Step 3 必须始终使用这个目录，禁止回退到 skill 默认 .state。"
                    + "必须直接运行下面这个绝对路径脚本完成 Step 1："
-                   + $"powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{workingChangesScriptPath}\" -PromptTimeoutSeconds 30。"
+                   + $"powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{workingChangesScriptPath}\" -PromptTimeoutSeconds 30 -StateDir \"{stateDirectoryPath}\"。"
                    + $"脚本会打开/等待交互并生成 JSON；Step 1 结束后生成日志时优先读取轻量模型状态文件：\"{lastChangesModelJsonPath}\"。"
                    + $"完整状态文件只供 Step 3 提交脚本使用：\"{lastChangesJsonPath}\"，不要为了生成日志读取完整文件，除非轻量文件缺失或字段不完整。"
-                   + "不要读取仓库 .claude/skills 里的 .state/last_changes.json。"
-                   + "之后按脚本包 SKILL.md 的规则生成提交日志，并调用同一个内嵌解压目录下的 invoke-commit-push-interactive.ps1 做最终提交确认。"
+                   + "不要读取仓库 .claude/skills 里的 .state/last_changes.json，也不要读取内嵌 skill 默认 .state/last_changes.json。"
+                   + $"之后按脚本包 SKILL.md 的规则生成提交日志，并调用这个提交确认脚本：\"{commitPushScriptPath}\"。"
+                   + $"Step 3 调用时必须同时传 -StateDir \"{stateDirectoryPath}\" 和 -ChangesJsonFile \"{lastChangesJsonPath}\"，确保提交脚本读取的是本次 Step 1 采集结果。"
                    + "不要手动执行 git add、git commit、git push、svn add 或 svn commit；这些操作必须由脚本完成。";
         }
 

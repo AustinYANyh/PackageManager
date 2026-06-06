@@ -11,7 +11,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
     public class AiCliLaunchService
     {
         public const string ClaudeCliCommand = "claude --permission-mode auto";
-        public const string CodexCliCommand = "codex --ask-for-approval on-request";
+        public const string CodexCliCommand = "codex -s workspace-write -a on-request -c 'approvals_reviewer=\"auto_review\"'";
 
         private const int PromptRetentionDays = 7;
 

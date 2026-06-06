@@ -33,6 +33,7 @@ description: Git+SVN 改动由脚本采集；模型默认打开本机可见 Powe
 6. **提交日志默认紧凑，长文本才按语义换行**：标题与正文优先保持单行可读；只有单条内容明显过长、信息密集并影响阅读时，才按后文「长文本换行规则」处理。禁止为了排版整齐把短标题或短 bullet 拆成多行。
 7. **最终提交/推送也必须限时交互**：模型生成最终提交日志后，默认必须打开本机可见 PowerShell 询问是否提交并推送；`-PromptTimeoutSeconds` 默认 30 秒，超时自动选择 **第 1 个选项：提交全部提交组**。只有用户明确要求“只生成日志 / 不提交 / 不推送”时才跳过这一步。
 8. **提交日志 type 必须保持英文**：无论摘要和正文是否为中文，标题开头 `type(scope):` 中的 `type` 都必须是英文小写标识。Step 3 前必须自检标题；若 `(` 前不是英文类型，必须先改正，禁止提交。
+9. **每次执行必须使用专属状态目录**：Step 1 wrapper 在未显式传 `-StateDir` 时，会自动在当前 `Root` 仓库下创建 `.pm-ai/commit-state/<run-id>` 并输出 `StateDir`、`LastChangesJsonPath`、`LastChangesModelJsonPath`。由 PackageManager 启动时，prompt 会提前给出这些绝对路径。Step 1、依赖调整后的重新采集、Step 3 必须始终使用同一个状态目录；Step 3 必须显式传 `-ChangesJsonFile` 指向 Step 1 输出的 `LastChangesJsonPath`。不得回退读取 skill 默认 `.state/last_changes.json`，否则两个模型同时提交不同仓库时会互相覆盖状态。
 
 ## 执行流程
 
@@ -96,7 +97,9 @@ JSON 关键字段（与脚本一致）：
 
 模型读取优先级：
 
-- PackageManager / wrapper 会同时保存完整采集结果 `.state/last_changes.json` 与轻量模型视图 `.state/last_changes_model.json`。
+- wrapper 会同时保存完整采集结果 `last_changes.json` 与轻量模型视图 `last_changes_model.json`；默认位置是当前 `Root` 仓库下自动创建的 `.pm-ai/commit-state/<run-id>`，显式 `-StateDir` 会覆盖该默认值。
+- Step 1 输出的轻量 JSON 顶层包含 `StateDir`、`LastChangesJsonPath`、`LastChangesModelJsonPath`；后续读取与 Step 3 必须使用这些路径。
+- 由 PackageManager 启动时，必须使用 prompt 给出的专属 `StateDir` 和两个绝对 JSON 路径，禁止读取任何默认 `.state`。
 - **模型生成提交日志时必须优先读取 `last_changes_model.json`**；wrapper 的 stdout 也返回同一份轻量 JSON。它包含 `Root`、`Defaults`、`Counts`、`ItemsIncludedDefaultLog`、`CommitGroupsDefault`、`NeedsAdd`、`ItemsExcluded`、`Add`、`Exclude`、轻量 `ProjectsDefault` 与对应 `Diffs`，避免大仓库下读取完整 JSON 变慢。
 - 完整 `last_changes.json` 保留给 Step 3 提交脚本使用；模型只有在轻量视图缺失、字段不完整或需要排查脚本协议问题时才读取完整 JSON。
 
@@ -225,7 +228,7 @@ JSON 关键字段（与脚本一致）：
 - Step 3 的结果 JSON 由 wrapper 指定的结果文件产生；模型不得解析提交窗口输出，也不得临时创建提交 `.ps1` 替代 wrapper。
 - 若 Step 3 返回 `regenerate_requested`，模型必须优先读取并逐字展示 `ReviewFeedbackRaw`（兼容读取 `ReviewFeedback`），不得加引号伪装、不得摘要、不得改写成自己的理解；随后回到 Step 2 基于原提交范围和用户意见重写日志，重新展示逐项自检，重新计算并验证 UTF-8 Base64，然后再次调用 Step 3。不得把 `regenerate_requested` 当作 `skipped` 或已完成。
 
-Step 1 wrapper 会自动把完整采集 JSON 保存到 **本次执行的 skill root** 下的 `.state/last_changes.json`，并把模型轻量视图保存到 `.state/last_changes_model.json`。由 PackageManager 启动时，模型生成日志只能优先读取 prompt 中给出的绝对 `last_changes_model.json` 路径；不得读取仓库 `.claude/skills/git_svn_commitlog_generator/.state/last_changes.json`。
+Step 1 wrapper 会自动把完整采集 JSON 保存到 `StateDir\last_changes.json`，并把模型轻量视图保存到 `StateDir\last_changes_model.json`。如果未传 `-StateDir`，wrapper 会在当前 `Root` 仓库下创建唯一 `.pm-ai/commit-state/<run-id>`，并在轻量 JSON 顶层输出 `StateDir`、`LastChangesJsonPath`、`LastChangesModelJsonPath`。模型生成日志只能优先读取 Step 1 输出或 prompt 中给出的绝对 `LastChangesModelJsonPath`；不得读取仓库 `.claude/skills/git_svn_commitlog_generator/.state/last_changes.json` 或内嵌/user 级 skill 默认 `.state/last_changes.json`。Step 3 必须显式传 `-ChangesJsonFile "<LastChangesJsonPath>"`，确保提交脚本读取的是同一次 Step 1 采集结果。
 
 模型只负责生成 **Step 2 的最终提交日志文本**。所有模型/自动化调用都必须默认使用 `-CommitMessageBase64Utf8` 传递提交日志，不得因为当前执行器是 PowerShell 就改用兼容入口。Claude Code Bash 工具无法可靠传递中文参数，也不能用 `python -c` / `node -e` / `powershell -Command` 在 Bash 内处理中文。**因此模型必须在自身推理中直接得到最终提交日志的 UTF-8 Base64 字符串**，Step 3 命令行只传 ASCII Base64 给 `-CommitMessageBase64Utf8`。如果存在多个提交组，还必须传 `-CommitMessageGroupsBase64Utf8`，其内容是 UTF-8 JSON 的 Base64。
 

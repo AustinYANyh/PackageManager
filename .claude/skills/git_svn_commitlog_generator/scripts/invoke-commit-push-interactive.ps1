@@ -27,11 +27,15 @@ $runner = (Resolve-Path -LiteralPath $runner).Path
 $rootFull = (Resolve-Path -LiteralPath $Root).Path
 $createdMessageFile = $false
 $createdMessageGroupsFile = $false
-if (-not $StateDir) { $StateDir = Join-Path $skillRoot ".state" }
+if (-not $StateDir -and -not $ChangesJsonFile) {
+  throw "缺少 ChangesJsonFile。请使用 Step 1 输出的 LastChangesJsonPath 显式传入 -ChangesJsonFile，或传入同一次采集的 -StateDir。"
+}
+if (-not $StateDir) { $StateDir = Split-Path -Parent $ChangesJsonFile }
 if (-not [System.IO.Path]::IsPathRooted($StateDir)) {
   $StateDir = Join-Path $rootFull $StateDir
 }
 New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
+$StateDir = (Resolve-Path -LiteralPath $StateDir).Path
 if (-not $ChangesJsonFile) { $ChangesJsonFile = Join-Path $StateDir "last_changes.json" }
 $messageSources = 0
 if ($CommitMessageFile) { $messageSources++ }

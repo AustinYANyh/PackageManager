@@ -25,8 +25,6 @@ namespace PackageManager.Features.CodeWorkspace.Services
             var sourcePath = ExtractEmbeddedSkill();
             var skillMarkdownPath = Path.Combine(sourcePath, "SKILL.md");
             var wrapperPath = Path.Combine(sourcePath, "scripts", "invoke-working-changes-interactive.ps1");
-            var lastChangesJsonPath = Path.Combine(sourcePath, ".state", "last_changes.json");
-            var lastChangesModelJsonPath = Path.Combine(sourcePath, ".state", "last_changes_model.json");
             if (!File.Exists(skillMarkdownPath))
             {
                 throw new FileNotFoundException($"找不到内嵌提交 skill 说明文件：{skillMarkdownPath}");
@@ -50,7 +48,25 @@ namespace PackageManager.Features.CodeWorkspace.Services
                 ? repositorySkillPath
                 : null;
 
-            return new AiCommitSkillInfo(sourcePath, sourcePath, skillMarkdownPath, wrapperPath, lastChangesJsonPath, lastChangesModelJsonPath, syncedUserSkillPaths, detectedRepositorySkillPath);
+            return new AiCommitSkillInfo(sourcePath, sourcePath, skillMarkdownPath, wrapperPath, syncedUserSkillPaths, detectedRepositorySkillPath);
+        }
+
+        public AiCommitRunStateInfo CreateRunState(string repositoryPath, string engineName)
+        {
+            if (string.IsNullOrWhiteSpace(repositoryPath) || !Directory.Exists(repositoryPath))
+            {
+                throw new DirectoryNotFoundException("请选择有效的代码仓库。");
+            }
+
+            var safeEngineName = ToSafeFileNamePart(engineName, "ai");
+            var stateDirectoryName = $"{DateTime.Now:yyyyMMdd-HHmmss-fff}-{safeEngineName}-{Guid.NewGuid():N}";
+            var stateDirectoryPath = Path.Combine(repositoryPath, ".pm-ai", "commit-state", stateDirectoryName);
+            Directory.CreateDirectory(stateDirectoryPath);
+
+            return new AiCommitRunStateInfo(
+                stateDirectoryPath,
+                Path.Combine(stateDirectoryPath, "last_changes.json"),
+                Path.Combine(stateDirectoryPath, "last_changes_model.json"));
         }
 
         private static string ExtractEmbeddedSkill()
@@ -125,18 +141,27 @@ namespace PackageManager.Features.CodeWorkspace.Services
                 File.Copy(file, Path.Combine(targetPath, Path.GetFileName(file)), true);
             }
         }
+
+        private static string ToSafeFileNamePart(string value, string fallback)
+        {
+            var source = string.IsNullOrWhiteSpace(value) ? fallback : value.Trim().ToLowerInvariant();
+            var invalidChars = Path.GetInvalidFileNameChars();
+            var chars = source
+                .Select(ch => invalidChars.Contains(ch) || char.IsWhiteSpace(ch) ? '-' : ch)
+                .ToArray();
+            var result = new string(chars).Trim('-');
+            return string.IsNullOrWhiteSpace(result) ? fallback : result;
+        }
     }
 
     public sealed class AiCommitSkillInfo
     {
-        public AiCommitSkillInfo(string sourcePath, string primarySkillPath, string skillMarkdownPath, string workingChangesScriptPath, string lastChangesJsonPath, string lastChangesModelJsonPath, IReadOnlyList<string> syncedUserSkillPaths, string repositorySkillPath)
+        public AiCommitSkillInfo(string sourcePath, string primarySkillPath, string skillMarkdownPath, string workingChangesScriptPath, IReadOnlyList<string> syncedUserSkillPaths, string repositorySkillPath)
         {
             SourcePath = sourcePath;
             PrimarySkillPath = primarySkillPath;
             SkillMarkdownPath = skillMarkdownPath;
             WorkingChangesScriptPath = workingChangesScriptPath;
-            LastChangesJsonPath = lastChangesJsonPath;
-            LastChangesModelJsonPath = lastChangesModelJsonPath;
             SyncedUserSkillPaths = syncedUserSkillPaths;
             RepositorySkillPath = repositorySkillPath;
         }
@@ -149,12 +174,24 @@ namespace PackageManager.Features.CodeWorkspace.Services
 
         public string WorkingChangesScriptPath { get; }
 
-        public string LastChangesJsonPath { get; }
-
-        public string LastChangesModelJsonPath { get; }
-
         public IReadOnlyList<string> SyncedUserSkillPaths { get; }
 
         public string RepositorySkillPath { get; }
+    }
+
+    public sealed class AiCommitRunStateInfo
+    {
+        public AiCommitRunStateInfo(string stateDirectoryPath, string lastChangesJsonPath, string lastChangesModelJsonPath)
+        {
+            StateDirectoryPath = stateDirectoryPath;
+            LastChangesJsonPath = lastChangesJsonPath;
+            LastChangesModelJsonPath = lastChangesModelJsonPath;
+        }
+
+        public string StateDirectoryPath { get; }
+
+        public string LastChangesJsonPath { get; }
+
+        public string LastChangesModelJsonPath { get; }
     }
 }

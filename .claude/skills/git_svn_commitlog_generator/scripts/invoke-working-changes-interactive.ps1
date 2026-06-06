@@ -40,17 +40,23 @@ function ConvertTo-SingleQuotedArrayArgument([string]$ParameterName, [string[]]$
   return (" -{0} @({1})" -f $ParameterName, ($quoted -join ","))
 }
 
+function New-DefaultStateDir([string]$RootFull) {
+  $runId = "{0:yyyyMMdd-HHmmss-fff}-manual-{1}-{2}" -f (Get-Date), $PID, ([guid]::NewGuid().ToString("N"))
+  return Join-Path (Join-Path $RootFull ".pm-ai\commit-state") $runId
+}
+
 $skillRoot = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
 $terminalHost = Join-Path $skillRoot "scripts\terminal-host.ps1"
 . $terminalHost
 $collector = Join-Path $skillRoot "scripts\get-working-changes.ps1"
 $collector = (Resolve-Path -LiteralPath $collector).Path
 $rootFull = (Resolve-Path -LiteralPath $Root).Path
-if (-not $StateDir) { $StateDir = Join-Path $skillRoot ".state" }
+if (-not $StateDir) { $StateDir = New-DefaultStateDir -RootFull $rootFull }
 if (-not [System.IO.Path]::IsPathRooted($StateDir)) {
   $StateDir = Join-Path $rootFull $StateDir
 }
 New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
+$StateDir = (Resolve-Path -LiteralPath $StateDir).Path
 $lastChangesFile = Join-Path $StateDir "last_changes.json"
 $lastChangesModelFile = Join-Path $StateDir "last_changes_model.json"
 $out = Join-Path $env:TEMP ("git_svn_changes_{0}.json" -f ([guid]::NewGuid()))
@@ -103,6 +109,9 @@ function ConvertTo-ModelChangesJson {
 
   $model = [pscustomobject]@{
     Root = $Changes.Root
+    StateDir = $StateDir
+    LastChangesJsonPath = $lastChangesFile
+    LastChangesModelJsonPath = $lastChangesModelFile
     GeneratedAt = $Changes.GeneratedAt
     Defaults = $Changes.Defaults
     Counts = [pscustomobject]@{
