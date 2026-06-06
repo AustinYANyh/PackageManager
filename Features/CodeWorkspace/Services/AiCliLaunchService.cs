@@ -10,18 +10,21 @@ namespace PackageManager.Features.CodeWorkspace.Services
 {
     public class AiCliLaunchService
     {
+        public const string ClaudeCliCommand = "claude --permission-mode auto";
+        public const string CodexCliCommand = "codex --ask-for-approval on-request";
+
         private const int PromptRetentionDays = 7;
 
         public Task LaunchClaudeAsync(CodeRepository repo, string prompt, string title)
         {
             var fullPrompt = "/plan\n" + (prompt ?? string.Empty);
-            return LaunchAsync(repo, fullPrompt, title, "Claude", "claude", "claude --dangerously-skip-permissions");
+            return LaunchAsync(repo, fullPrompt, title, "Claude", "claude", ClaudeCliCommand);
         }
 
         public Task LaunchCodexAsync(CodeRepository repo, string prompt, string title)
         {
             var fullPrompt = "/plan\n" + (prompt ?? string.Empty);
-            return LaunchAsync(repo, fullPrompt, title, "Codex", "codex", "codex --sandbox danger-full-access --ask-for-approval never");
+            return LaunchAsync(repo, fullPrompt, title, "Codex", "codex", CodexCliCommand);
         }
 
         private static Task LaunchAsync(CodeRepository repo, string prompt, string title, string engineName, string commandName, string commandPrefix)

@@ -300,7 +300,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
                 AiSuggestionText = $"提示文件已生成：{promptPath}{Environment.NewLine}AI 输出建议后，将完整合并结果粘贴到这里，再点击“应用建议到文件”。";
                 TerminalHelper.LaunchTerminalWithCommand(
                     _activeConflictItem.RepositoryPath,
-                    $"Set-Location -LiteralPath {PsQuote(_activeConflictItem.RepositoryPath)}\ncodex --sandbox danger-full-access --ask-for-approval never {PsQuote(promptArgument)}",
+                    $"Set-Location -LiteralPath {PsQuote(_activeConflictItem.RepositoryPath)}\n{AiCliLaunchService.CodexCliCommand} {PsQuote(promptArgument)}",
                     $"AI 冲突分析 - {SelectedConflictFile.RelativePath}");
             });
         }

@@ -642,12 +642,12 @@ namespace PackageManager.Features.CodeWorkspace.Views
 
         private async void DoClaudeCommit(CodeRepository repo)
         {
-            await DoAiCommitAsync(repo, "Claude", "claude", "claude --dangerously-skip-permissions");
+            await DoAiCommitAsync(repo, "Claude", "claude", AiCliLaunchService.ClaudeCliCommand);
         }
 
         private async void DoCodexCommit(CodeRepository repo)
         {
-            await DoAiCommitAsync(repo, "Codex", "codex", "codex --sandbox danger-full-access --ask-for-approval never");
+            await DoAiCommitAsync(repo, "Codex", "codex", AiCliLaunchService.CodexCliCommand);
         }
 
         private async void DoPullRepository(CodeRepository repo)
@@ -859,7 +859,7 @@ Write-Host '仓库内 skill：' -ForegroundColor DarkCyan
         {
             var command = $@"
 Set-Location -LiteralPath {PsQuote(repo.Path)}
-claude --dangerously-skip-permissions
+{AiCliLaunchService.ClaudeCliCommand}
 ";
 
             TerminalHelper.LaunchTerminalWithCommand(repo.Path, command, $"Claude Code - {repo.Name}");
@@ -870,10 +870,10 @@ claude --dangerously-skip-permissions
         {
             var command = $@"
 Set-Location -LiteralPath {PsQuote(repo.Path)}
-codex --sandbox danger-full-access --ask-for-approval never
+{AiCliLaunchService.CodexCliCommand}
 ";
             TerminalHelper.LaunchTerminalWithCommand(repo.Path, command, $"Codex - {repo.Name}");
-            StatusText = $"已启动 Codex（danger-full-access / never approval）：{repo.Name}";
+            StatusText = $"已启动 Codex（Approve for me）：{repo.Name}";
         }
 
         private void DoOpenFolder(CodeRepository repo)
@@ -1565,7 +1565,7 @@ codex --sandbox danger-full-access --ask-for-approval never
             var command = $@"
 Set-Location -LiteralPath {PsQuote(repo.Path)}
 Write-Host 'PackageManager 拉取冲突 AI 分析入口' -ForegroundColor Cyan
-codex --sandbox danger-full-access --ask-for-approval never {PsQuote(promptArgument)}
+{AiCliLaunchService.CodexCliCommand} {PsQuote(promptArgument)}
 ";
             TerminalHelper.LaunchTerminalWithCommand(repo.Path, command, $"Codex 拉取冲突 - {repo.Name}");
             StatusText = $"已启动 Codex 分析拉取冲突：{repo.Name}";
