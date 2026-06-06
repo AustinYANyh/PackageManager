@@ -1347,9 +1347,13 @@ namespace
         static constexpr auto SnapshotSaveStartupDelayMilliseconds = std::chrono::milliseconds(8000);
         static constexpr auto SnapshotCompactionIdleMilliseconds = std::chrono::milliseconds(5000);
         static constexpr auto ForceFullSnapshotIdleMilliseconds = std::chrono::milliseconds(30000);
+        static constexpr auto ForceOverlayCompactionRetryMilliseconds = std::chrono::milliseconds(10000);
         static constexpr auto OverlaySegmentSaveDebounceMilliseconds = std::chrono::milliseconds(1000);
+        static constexpr auto OverlayAgeCompactionMilliseconds = std::chrono::minutes(10);
         static constexpr std::uint32_t OverlayRecordIdMask = 0x80000000u;
         static constexpr std::size_t OverlayCompactionThreshold = 65536;
+        static constexpr std::size_t OverlaySoftCompactionThreshold = 32768;
+        static constexpr std::size_t OverlayAgeCompactionThreshold = 4096;
         static constexpr std::size_t OverlayImmediateRebuildThreshold = 4096;
         static constexpr std::size_t OverlayPathScopeAncestorCacheLimit = 4096;
         static constexpr std::size_t OverlayStaleRebuildThreshold = 32768;
@@ -1403,12 +1407,14 @@ namespace
         mutable std::mutex snapshotRequestMutex_;
         mutable std::condition_variable snapshotRequestCv_;
         mutable std::thread snapshotWorkerThread_;
+        mutable std::atomic<long long> snapshotSaveRetryDelayMs_{ SnapshotSaveDebounceMilliseconds.count() };
         mutable bool snapshotSavePending_ = false;
         mutable bool snapshotWorkerStop_ = false;
         mutable std::atomic<std::uint64_t> generationId_{ 0 };
         mutable std::atomic<int> activeSearchCount_{ 0 };
         mutable std::atomic<long long> lastSearchCompletedTickMs_{ 0 };
         mutable std::atomic<long long> lastOverlayMutationTickMs_{ 0 };
+        mutable std::atomic<long long> firstUncompactedOverlayMutationTickMs_{ 0 };
         mutable std::atomic<long long> lastOverlaySegmentSaveTickMs_{ 0 };
         mutable std::atomic_bool forceFullSnapshotSavePending_{ false };
         mutable std::mutex watcherLifecycleMutex_;
@@ -1486,9 +1492,15 @@ namespace
 
                     while (shouldSave && !snapshotWorkerStop_)
                     {
+                        const auto retryDelayMs = snapshotSaveRetryDelayMs_.exchange(
+                            SnapshotSaveDebounceMilliseconds.count(),
+                            std::memory_order_acq_rel);
+                        const auto debounceDelay = std::chrono::milliseconds(std::max<long long>(
+                            SnapshotSaveDebounceMilliseconds.count(),
+                            retryDelayMs));
                         const auto wokeForNewRequest = snapshotRequestCv_.wait_for(
                             lock,
-                            SnapshotSaveDebounceMilliseconds,
+                            debounceDelay,
                             [this]()
                             {
                                 return snapshotSavePending_ || snapshotWorkerStop_;
@@ -5553,7 +5565,9 @@ namespace
 
             if (changed)
             {
-                lastOverlayMutationTickMs_.store(SteadyClockMilliseconds(), std::memory_order_release);
+                const auto mutationTickMs = SteadyClockMilliseconds();
+                lastOverlayMutationTickMs_.store(mutationTickMs, std::memory_order_release);
+                RefreshUncompactedOverlayAgeState_NoLock(mutationTickMs);
                 const bool shouldRebuildOverlaySearch = forceRebuildOverlaySearch
                     || changes.size() > OverlayImmediateRebuildThreshold
                     || ShouldRebuildOverlaySearch_NoLock();
@@ -9636,6 +9650,7 @@ namespace
             }
 
             RebuildOverlaySearchIndex_NoLock();
+            RefreshUncompactedOverlayAgeState_NoLock();
             generationId_.fetch_add(1, std::memory_order_relaxed);
             NativeLogWrite(
                 "[NATIVE V2 OVERLAY LOAD] success elapsedMs="
@@ -9960,6 +9975,220 @@ namespace
             return true;
         }
 
+        static bool TryMapV2RecordsSnapshotForRead(
+            NativeV2MappedRecords& mapped,
+            std::uint64_t& fileBytes,
+            std::uint32_t& recordCount,
+            std::uint32_t& stringPoolChars)
+        {
+            fileBytes = 0;
+            recordCount = 0;
+            stringPoolChars = 0;
+
+            const auto path = GetV2RecordsSnapshotPath();
+            if (!std::filesystem::exists(path))
+            {
+                NativeLogWrite("[NATIVE V2 RECORDS COMPACT MAP] miss reason=missing");
+                return false;
+            }
+
+            if (!mapped.file.Open(path))
+            {
+                NativeLogWrite("[NATIVE V2 RECORDS COMPACT MAP] miss reason=open-failed");
+                return false;
+            }
+
+            fileBytes = mapped.file.Size();
+            const auto* data = mapped.file.Data();
+            auto remaining = mapped.file.Size();
+            if (remaining < sizeof(std::int32_t) + (sizeof(std::uint32_t) * 3))
+            {
+                NativeLogWrite("[NATIVE V2 RECORDS COMPACT MAP] miss reason=short-header");
+                return false;
+            }
+
+            std::int32_t version = 0;
+            std::memcpy(&version, data, sizeof(version));
+            data += sizeof(version);
+            remaining -= sizeof(version);
+            std::memcpy(&mapped.recordCount, data, sizeof(mapped.recordCount));
+            data += sizeof(mapped.recordCount);
+            remaining -= sizeof(mapped.recordCount);
+            std::memcpy(&mapped.volumeCount, data, sizeof(mapped.volumeCount));
+            data += sizeof(mapped.volumeCount);
+            remaining -= sizeof(mapped.volumeCount);
+            std::memcpy(&mapped.stringPoolChars, data, sizeof(mapped.stringPoolChars));
+            data += sizeof(mapped.stringPoolChars);
+            remaining -= sizeof(mapped.stringPoolChars);
+
+            if ((version != V2RecordsSnapshotVersion1 && version != V2RecordsSnapshotVersion2)
+                || mapped.recordCount == 0
+                || mapped.volumeCount == 0)
+            {
+                NativeLogWrite("[NATIVE V2 RECORDS COMPACT MAP] miss reason=version-or-header");
+                return false;
+            }
+
+            const auto recordsBytes = static_cast<std::uint64_t>(mapped.recordCount) * sizeof(NativeV2CompactRecord);
+            const auto stringBytes = static_cast<std::uint64_t>(mapped.stringPoolChars) * sizeof(wchar_t);
+            if (recordsBytes > remaining || stringBytes > remaining - static_cast<std::size_t>(recordsBytes))
+            {
+                NativeLogWrite("[NATIVE V2 RECORDS COMPACT MAP] miss reason=invalid-size");
+                return false;
+            }
+
+            mapped.records = reinterpret_cast<const NativeV2CompactRecord*>(data);
+            data += static_cast<std::size_t>(recordsBytes);
+            remaining -= static_cast<std::size_t>(recordsBytes);
+            mapped.stringPool = reinterpret_cast<const wchar_t*>(data);
+            data += static_cast<std::size_t>(stringBytes);
+            remaining -= static_cast<std::size_t>(stringBytes);
+
+            for (std::uint32_t i = 0; i < mapped.volumeCount; ++i)
+            {
+                if (remaining < sizeof(char) + sizeof(std::int64_t) + sizeof(std::uint64_t))
+                {
+                    NativeLogWrite("[NATIVE V2 RECORDS COMPACT MAP] miss reason=invalid-volume");
+                    return false;
+                }
+
+                data += sizeof(char) + sizeof(std::int64_t) + sizeof(std::uint64_t);
+                remaining -= sizeof(char) + sizeof(std::int64_t) + sizeof(std::uint64_t);
+                if (version >= V2RecordsSnapshotVersion2)
+                {
+                    if (remaining < sizeof(std::uint32_t) + sizeof(std::uint64_t) + sizeof(char))
+                    {
+                        NativeLogWrite("[NATIVE V2 RECORDS COMPACT MAP] miss reason=invalid-volume-metrics");
+                        return false;
+                    }
+
+                    data += sizeof(std::uint32_t) + sizeof(std::uint64_t) + sizeof(char);
+                    remaining -= sizeof(std::uint32_t) + sizeof(std::uint64_t) + sizeof(char);
+                }
+            }
+
+            recordCount = mapped.recordCount;
+            stringPoolChars = mapped.stringPoolChars;
+            return true;
+        }
+
+        static bool TryGetMappedRecordNameView(
+            const NativeV2MappedRecords& mapped,
+            const NativeV2CompactRecord& compact,
+            bool lower,
+            std::wstring_view& value)
+        {
+            const auto offset = lower ? compact.lowerOffset : compact.originalOffset;
+            const auto length = lower ? compact.lowerLength : compact.originalLength;
+            if (static_cast<std::size_t>(offset) + length > mapped.stringPoolChars)
+            {
+                value = {};
+                return false;
+            }
+
+            value = std::wstring_view(mapped.stringPool + offset, length);
+            return true;
+        }
+
+        static bool BuildCompactedRecordsFromMappedSnapshot(
+            const OverlaySegmentSnapshotData& overlayData,
+            std::vector<Record>& output)
+        {
+            const auto start = std::chrono::steady_clock::now();
+            NativeV2MappedRecords mapped;
+            std::uint64_t fileBytes = 0;
+            std::uint32_t recordCount = 0;
+            std::uint32_t stringPoolChars = 0;
+            if (!TryMapV2RecordsSnapshotForRead(mapped, fileBytes, recordCount, stringPoolChars))
+            {
+                return false;
+            }
+
+            if (overlayData.stableRecordCount != 0
+                && overlayData.stableRecordCount != static_cast<std::uint64_t>(mapped.recordCount))
+            {
+                NativeLogWrite(
+                    "[NATIVE SNAPSHOT SAVE] skipped reason=stable-record-count-mismatch"
+                    " expected=" + std::to_string(overlayData.stableRecordCount)
+                    + " mapped=" + std::to_string(mapped.recordCount));
+                return false;
+            }
+
+            output.clear();
+            output.reserve(static_cast<std::size_t>(mapped.recordCount) + overlayData.overlayIndexByKey.size());
+            for (std::uint32_t i = 0; i < mapped.recordCount; ++i)
+            {
+                const auto& compact = mapped.records[i];
+                const auto key = MakeRecordKey(static_cast<wchar_t>(compact.drive), compact.frn);
+                if (overlayData.overlayDeletedKeys.find(key) != overlayData.overlayDeletedKeys.end()
+                    || overlayData.overlayIndexByKey.find(key) != overlayData.overlayIndexByKey.end())
+                {
+                    continue;
+                }
+
+                std::wstring_view originalName;
+                std::wstring_view lowerName;
+                if (!TryGetMappedRecordNameView(mapped, compact, false, originalName)
+                    || !TryGetMappedRecordNameView(mapped, compact, true, lowerName))
+                {
+                    NativeLogWrite("[NATIVE SNAPSHOT SAVE] skipped reason=compact-record-name-out-of-range");
+                    output.clear();
+                    return false;
+                }
+
+                Record record;
+                record.frn = compact.frn;
+                record.parentFrn = compact.parentFrn;
+                record.driveLetter = static_cast<wchar_t>(compact.drive);
+                record.isDirectory = (compact.flags & 0x1) != 0;
+                record.originalName.assign(originalName.data(), originalName.size());
+                record.lowerName.assign(lowerName.data(), lowerName.size());
+                output.push_back(std::move(record));
+            }
+
+            for (std::uint32_t i = 0; i < overlayData.overlayRecords.size(); ++i)
+            {
+                const auto& record = overlayData.overlayRecords[i];
+                const auto key = MakeRecordKey(record.driveLetter, record.frn);
+                const auto indexIt = overlayData.overlayIndexByKey.find(key);
+                if (indexIt == overlayData.overlayIndexByKey.end()
+                    || indexIt->second != i
+                    || overlayData.overlayDeletedKeys.find(key) != overlayData.overlayDeletedKeys.end())
+                {
+                    continue;
+                }
+
+                output.push_back(record);
+            }
+
+            std::sort(output.begin(), output.end(), [](const Record& left, const Record& right)
+            {
+                if (left.lowerName != right.lowerName)
+                {
+                    return left.lowerName < right.lowerName;
+                }
+
+                if (left.driveLetter != right.driveLetter)
+                {
+                    return left.driveLetter < right.driveLetter;
+                }
+
+                return left.frn < right.frn;
+            });
+
+            NativeLogWrite(
+                "[NATIVE SNAPSHOT SAVE] compacted-overlay-built-outside-lock"
+                " elapsedMs=" + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - start).count())
+                + " fileBytes=" + std::to_string(fileBytes)
+                + " baseRecords=" + std::to_string(recordCount)
+                + " stringPoolChars=" + std::to_string(stringPoolChars)
+                + " compactedRecords=" + std::to_string(output.size())
+                + " overlayRecords=" + std::to_string(overlayData.overlayRecords.size())
+                + " overlayDeletes=" + std::to_string(overlayData.overlayDeletedKeys.size()));
+            return true;
+        }
+
         bool SaveSnapshot(bool flushPending = false)
         {
             if (forceFullSnapshotSavePending_.load(std::memory_order_acquire))
@@ -9980,7 +10209,10 @@ namespace
             auto overlaySegmentData = std::make_unique<OverlaySegmentSnapshotData>();
             bool writeOverlaySegment = false;
             bool skipAfterOverlaySegment = false;
+            bool retryAfterOverlaySegment = false;
             bool compactedOverlay = false;
+            bool compactedRecordsBuilt = false;
+            OverlayCompactionDecision compactionDecision;
             std::uint64_t compactionGeneration = 0;
 
             {
@@ -9994,21 +10226,46 @@ namespace
                 const auto hasOverlay = !overlayRecords_.empty() || !overlayDeletedKeys_.empty();
                 if (hasOverlay)
                 {
-                    BuildOverlaySegmentSnapshotData_NoLock(*overlaySegmentData);
-                    writeOverlaySegment = true;
-                    const auto forceOverlayCompaction = ShouldForceCompactOverlay_NoLock();
-                    if (!CanCompactOverlayNow(forceOverlayCompaction))
+                    RefreshUncompactedOverlayAgeState_NoLock();
+                    compactionDecision = GetOverlayCompactionDecision_NoLock();
+                    if (!CanCompactOverlayNow(compactionDecision.force))
                     {
+                        if (!CurrentOverlaySegmentSnapshotAlreadySaved_NoLock())
+                        {
+                            BuildOverlaySegmentSnapshotData_NoLock(*overlaySegmentData);
+                            writeOverlaySegment = true;
+                        }
+
                         NativeLogWrite(
                             "[NATIVE SNAPSHOT SAVE] skipped reason=overlay-compaction-not-idle"
                             " overlayRecords=" + std::to_string(overlayRecords_.size())
                             + " overlayDeletes=" + std::to_string(overlayDeletedKeys_.size())
-                            + " forced=" + std::string(forceOverlayCompaction ? "true" : "false"));
+                            + " uncompactedChanges=" + std::to_string(compactionDecision.uncompactedChanges)
+                            + " forceReason=" + compactionDecision.reason
+                            + " forced=" + std::string(compactionDecision.force ? "true" : "false")
+                            + " overlayAgeMs=" + std::to_string(compactionDecision.ageMs)
+                            + " overlayIdleMs=" + std::to_string(compactionDecision.overlayMutationIdleMs)
+                            + " searchIdleMs=" + std::to_string(compactionDecision.searchIdleMs));
                         skipAfterOverlaySegment = true;
+                        retryAfterOverlaySegment = compactionDecision.force;
+                        if (retryAfterOverlaySegment)
+                        {
+                            snapshotSaveRetryDelayMs_.store(
+                                ForceOverlayCompactionRetryMilliseconds.count(),
+                                std::memory_order_release);
+                        }
                     }
                     else
                     {
-                        ExportStableRecords_NoLock(*recordsCopy);
+                        BuildOverlaySegmentSnapshotData_NoLock(*overlaySegmentData);
+                        writeOverlaySegment = true;
+                        const auto canBuildOutsideLock = mappedRecords_.Ready();
+                        if (!canBuildOutsideLock)
+                        {
+                            ExportStableRecords_NoLock(*recordsCopy);
+                            compactedRecordsBuilt = true;
+                        }
+
                         compactedOverlay = true;
                         compactionGeneration = generationId_.load(std::memory_order_acquire);
                         volumesCopy->reserve(volumes_.size());
@@ -10028,8 +10285,14 @@ namespace
                             " baseRecords=" + std::to_string(GetRecordCount_NoLock())
                             + " overlayRecords=" + std::to_string(overlayRecords_.size())
                             + " overlayDeletes=" + std::to_string(overlayDeletedKeys_.size())
-                            + " compactedRecords=" + std::to_string(recordsCopy->size())
-                            + " forced=" + std::string(forceOverlayCompaction ? "true" : "false"));
+                            + " uncompactedChanges=" + std::to_string(compactionDecision.uncompactedChanges)
+                            + " compactedRecords=" + std::to_string(compactedRecordsBuilt ? recordsCopy->size() : 0)
+                            + " buildOutsideLock=" + std::string(canBuildOutsideLock ? "true" : "false")
+                            + " forceReason=" + compactionDecision.reason
+                            + " forced=" + std::string(compactionDecision.force ? "true" : "false")
+                            + " overlayAgeMs=" + std::to_string(compactionDecision.ageMs)
+                            + " overlayIdleMs=" + std::to_string(compactionDecision.overlayMutationIdleMs)
+                            + " searchIdleMs=" + std::to_string(compactionDecision.searchIdleMs));
                     }
                 }
                 else if (records_.empty() && mappedRecords_.Ready())
@@ -10092,10 +10355,21 @@ namespace
             if (writeOverlaySegment)
             {
                 WriteOverlaySegmentSnapshotData(*overlaySegmentData);
-                if (skipAfterOverlaySegment)
+            }
+
+            if (skipAfterOverlaySegment)
+            {
+                return !retryAfterOverlaySegment;
+            }
+
+            if (compactedOverlay && !compactedRecordsBuilt)
+            {
+                if (!BuildCompactedRecordsFromMappedSnapshot(*overlaySegmentData, *recordsCopy))
                 {
-                    return true;
+                    return false;
                 }
+
+                compactedRecordsBuilt = true;
             }
 
             bool rebuiltV2ForSnapshot = false;
@@ -10171,7 +10445,12 @@ namespace
             std::unique_lock<std::shared_mutex> guard(mutex_, std::try_to_lock);
             if (!guard.owns_lock())
             {
-                NativeLogWrite("[NATIVE SNAPSHOT SAVE] compacted but memory-swap skipped reason=index-lock-busy");
+                OverlaySegmentSnapshotData safeData = compactedData;
+                safeData.stableRecordCount = static_cast<std::uint64_t>(compactedRecordCount);
+                safeData.compactedKeys.clear();
+                safeData.compactedDeletedKeys.clear();
+                NativeLogWrite("[NATIVE SNAPSHOT SAVE] compacted but memory-swap skipped reason=index-lock-busy action=write-idempotent-overlay");
+                WriteOverlaySegmentSnapshotData(safeData);
                 return;
             }
 
@@ -10233,6 +10512,7 @@ namespace
             overlaySegmentBaseRecordCountOverride_ = static_cast<std::uint64_t>(compactedRecordCount);
             overlayCompactedKeys_ = std::move(compactedKeys);
             overlayCompactedDeletedKeys_ = std::move(compactedDeletedKeys);
+            RefreshUncompactedOverlayAgeState_NoLock();
             NativeLogWrite(
                 "[NATIVE SNAPSHOT SAVE] compacted-overlay-stable-written records="
                 + std::to_string(compactedRecordCount)
@@ -10311,9 +10591,90 @@ namespace
             }
         }
 
+        struct OverlayCompactionDecision
+        {
+            bool force = false;
+            const char* reason = "idle";
+            std::size_t uncompactedChanges = 0;
+            long long ageMs = 0;
+            long long overlayMutationIdleMs = 0;
+            long long searchIdleMs = 0;
+        };
+
+        std::size_t CountUncompactedOverlayChanges_NoLock() const
+        {
+            std::size_t count = 0;
+            for (const auto& pair : overlayIndexByKey_)
+            {
+                if (overlayCompactedKeys_.find(pair.first) == overlayCompactedKeys_.end())
+                {
+                    ++count;
+                }
+            }
+
+            for (const auto key : overlayDeletedKeys_)
+            {
+                if (overlayCompactedDeletedKeys_.find(key) == overlayCompactedDeletedKeys_.end())
+                {
+                    ++count;
+                }
+            }
+
+            return count;
+        }
+
+        void RefreshUncompactedOverlayAgeState_NoLock(long long nowMs = SteadyClockMilliseconds()) const
+        {
+            if (CountUncompactedOverlayChanges_NoLock() == 0)
+            {
+                firstUncompactedOverlayMutationTickMs_.store(0, std::memory_order_release);
+                return;
+            }
+
+            long long expected = 0;
+            firstUncompactedOverlayMutationTickMs_.compare_exchange_strong(
+                expected,
+                nowMs,
+                std::memory_order_acq_rel,
+                std::memory_order_acquire);
+        }
+
+        OverlayCompactionDecision GetOverlayCompactionDecision_NoLock() const
+        {
+            const auto nowMs = SteadyClockMilliseconds();
+            const auto firstUncompacted = firstUncompactedOverlayMutationTickMs_.load(std::memory_order_acquire);
+            const auto lastOverlayMutation = lastOverlayMutationTickMs_.load(std::memory_order_acquire);
+            const auto lastSearchCompleted = lastSearchCompletedTickMs_.load(std::memory_order_acquire);
+
+            OverlayCompactionDecision decision;
+            decision.uncompactedChanges = CountUncompactedOverlayChanges_NoLock();
+            decision.ageMs = firstUncompacted > 0 ? std::max<long long>(0, nowMs - firstUncompacted) : 0;
+            decision.overlayMutationIdleMs = lastOverlayMutation > 0 ? std::max<long long>(0, nowMs - lastOverlayMutation) : 0;
+            decision.searchIdleMs = lastSearchCompleted > 0 ? std::max<long long>(0, nowMs - lastSearchCompleted) : 0;
+
+            if (decision.uncompactedChanges >= OverlayCompactionThreshold)
+            {
+                decision.force = true;
+                decision.reason = "hard-size";
+            }
+            else if (decision.uncompactedChanges >= OverlaySoftCompactionThreshold)
+            {
+                decision.force = true;
+                decision.reason = "soft-size";
+            }
+            else if (decision.uncompactedChanges >= OverlayAgeCompactionThreshold
+                && decision.ageMs >= OverlayAgeCompactionMilliseconds.count())
+            {
+                decision.force = true;
+                decision.reason = "age";
+            }
+
+            return decision;
+        }
+
         bool ShouldForceCompactOverlay_NoLock() const
         {
-            return overlayRecords_.size() + overlayDeletedKeys_.size() >= OverlayCompactionThreshold;
+            return GetOverlayCompactionDecision_NoLock().force;
         }
 
         bool CanCompactOverlayNow(bool ignoreOverlayMutation = false) const
@@ -10362,6 +10723,9 @@ namespace
                 volume.driveLetter = pair.second.driveLetter;
                 volume.nextUsn = pair.second.nextUsn;
                 volume.journalId = pair.second.journalId;
+                volume.recordCount = pair.second.recordCount;
+                volume.maxFrn = pair.second.maxFrn;
+                volume.enumerationComplete = pair.second.enumerationComplete;
                 data.volumes.emplace(pair.first, std::move(volume));
             }
 

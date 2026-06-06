@@ -63,6 +63,8 @@ Copy-Item -LiteralPath $src -Destination $dst -Recurse -Force
 
 `-SkipCorrectnessPrecheck` 仅用于本机缺少固定 fixture（例如 `C:\ makenumberconfig`）时跳过环境预检；脚本内 20W USN backlog 及新增、删除、重命名 synthetic correctness 校验仍必须通过。
 
+涉及 native overlay、快照合并或 USN apply 的改动，必须在同一套 Release 压测定义下复测，不允许通过暂停 live watcher、暂停 snapshot save、改变 backlog 注入语义、缩小查询集合或放宽阈值来过线。压测应使用隔离快照目录；如果要验证持续文件写入场景，只能额外制造外部 USN 噪声，不能让测试绕过正常 watcher/overlay 写入链路。合格标准仍以上述硬指标和脚本内 correctness 结果为准。
+
 ## 运行与快速上手
 
 - 直接运行 `PackageManager.exe`（位于 `bin/Release/` 或 `bin/Debug/`），无需额外依赖（集成 Costura.Fody 以嵌入依赖）。

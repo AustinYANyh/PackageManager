@@ -957,6 +957,69 @@ else {
 }
 New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
 
+$benchmarkEnvironmentNames = @(
+    "PM_ENABLE_NATIVE_INDEX",
+    "PM_DISABLE_NATIVE_INDEX",
+    "PM_MFT_INDEX_SNAPSHOT_DIR",
+    "PM_MFT_INDEX_TEST_HOOKS",
+    "PM_MFT_INDEX_HOST_STARTUP_WAIT_MS"
+)
+$processEnvironmentBackup = @{}
+foreach ($name in $benchmarkEnvironmentNames) {
+    $processEnvironmentBackup[$name] = @{
+        Exists = [Environment]::GetEnvironmentVariables("Process").Contains($name)
+        Value = [Environment]::GetEnvironmentVariable($name, "Process")
+    }
+}
+
+$userEnvironmentBackup = @{}
+$benchmarkEnvironmentRestored = $false
+
+function Set-BenchmarkUserEnvironment {
+    param(
+        [string]$Name,
+        [string]$Value
+    )
+
+    if (!$script:userEnvironmentBackup.ContainsKey($Name)) {
+        $script:userEnvironmentBackup[$Name] = @{
+            Exists = [Environment]::GetEnvironmentVariables("User").Contains($Name)
+            Value = [Environment]::GetEnvironmentVariable($Name, "User")
+        }
+    }
+
+    [Environment]::SetEnvironmentVariable($Name, $Value, "User")
+}
+
+function Restore-BenchmarkUserEnvironment {
+    foreach ($entry in $script:userEnvironmentBackup.GetEnumerator()) {
+        $value = if ($entry.Value.Exists) { $entry.Value.Value } else { $null }
+        [Environment]::SetEnvironmentVariable($entry.Key, $value, "User")
+    }
+}
+
+function Restore-BenchmarkProcessEnvironment {
+    foreach ($entry in $script:processEnvironmentBackup.GetEnumerator()) {
+        $value = if ($entry.Value.Exists) { $entry.Value.Value } else { $null }
+        [Environment]::SetEnvironmentVariable($entry.Key, $value, "Process")
+    }
+}
+
+function Restore-BenchmarkEnvironment {
+    if ($script:benchmarkEnvironmentRestored) {
+        return
+    }
+
+    Restore-BenchmarkUserEnvironment
+    Restore-BenchmarkProcessEnvironment
+    $script:benchmarkEnvironmentRestored = $true
+}
+
+trap {
+    Restore-BenchmarkEnvironment
+    break
+}
+
 $resolvedSnapshotDirectory = $null
 if (![string]::IsNullOrWhiteSpace($SnapshotDirectory)) {
     $resolvedSnapshotDirectory = [System.IO.Path]::GetFullPath($SnapshotDirectory)
@@ -981,26 +1044,6 @@ if ($SimulateUsnBacklog) {
 }
 
 $env:PM_MFT_INDEX_HOST_STARTUP_WAIT_MS = ([Math]::Max($ReadyTimeoutSeconds * 1000, 15000)).ToString()
-
-$userEnvironmentBackup = @{}
-function Set-BenchmarkUserEnvironment {
-    param(
-        [string]$Name,
-        [string]$Value
-    )
-
-    if (!$script:userEnvironmentBackup.ContainsKey($Name)) {
-        $script:userEnvironmentBackup[$Name] = [Environment]::GetEnvironmentVariable($Name, "User")
-    }
-
-    [Environment]::SetEnvironmentVariable($Name, $Value, "User")
-}
-
-function Restore-BenchmarkUserEnvironment {
-    foreach ($entry in $script:userEnvironmentBackup.GetEnumerator()) {
-        [Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, "User")
-    }
-}
 
 if ($Backend -eq "SharedHost") {
     Set-BenchmarkUserEnvironment -Name "PM_ENABLE_NATIVE_INDEX" -Value "1"
@@ -1593,7 +1636,7 @@ finally {
         }
     }
 
-    Restore-BenchmarkUserEnvironment
+    Restore-BenchmarkEnvironment
 }
 
 Start-Sleep -Milliseconds 300
