@@ -10,8 +10,9 @@ namespace PackageManager.Features.CodeWorkspace.Services
 {
     public class AiCliLaunchService
     {
-        public const string ClaudeCliCommand = "claude --permission-mode auto";
-        public const string CodexCliCommand = "codex -s workspace-write -a on-request -c 'approvals_reviewer=\"auto_review\"'";
+        public static string ClaudeCliCommand => BuildClaudeCliCommand(ResolveClaudePermissionMode());
+
+        public static string CodexCliCommand => BuildCodexCliCommand(ResolveCodexPermissionMode());
 
         private const int PromptRetentionDays = 7;
 
@@ -45,6 +46,32 @@ Write-Host '仓库：{TerminalHelper.EscapePowerShellSingleQuoted(repo.Name ?? r
 ";
             TerminalHelper.LaunchTerminalWithCommand(repo.Path, command, title);
             return Task.CompletedTask;
+        }
+
+        public static string GetClaudePermissionLabel()
+        {
+            switch (ResolveClaudePermissionMode())
+            {
+                case ClaudePermissionMode.FullAccess:
+                    return "Full Access";
+                case ClaudePermissionMode.Auto:
+                default:
+                    return "Auto";
+            }
+        }
+
+        public static string GetCodexPermissionLabel()
+        {
+            switch (ResolveCodexPermissionMode())
+            {
+                case CodexPermissionMode.AskForApproval:
+                    return "Ask for approval";
+                case CodexPermissionMode.ApproveForMe:
+                    return "Approve for me";
+                case CodexPermissionMode.FullAccess:
+                default:
+                    return "Full Access";
+            }
         }
 
         public static string CreatePromptFileArgument(string repositoryPath, string prompt, string scenario, string engineName)
@@ -145,6 +172,56 @@ Write-Host '仓库：{TerminalHelper.EscapePowerShellSingleQuoted(repo.Name ?? r
         private static string PsQuote(string value)
         {
             return $"'{TerminalHelper.EscapePowerShellSingleQuoted(value)}'";
+        }
+
+        private static string BuildClaudeCliCommand(ClaudePermissionMode mode)
+        {
+            switch (mode)
+            {
+                case ClaudePermissionMode.FullAccess:
+                    return "claude --dangerously-skip-permissions";
+                case ClaudePermissionMode.Auto:
+                default:
+                    return "claude --permission-mode auto";
+            }
+        }
+
+        private static string BuildCodexCliCommand(CodexPermissionMode mode)
+        {
+            switch (mode)
+            {
+                case CodexPermissionMode.AskForApproval:
+                    return "codex -s workspace-write -a on-request -c 'approvals_reviewer=\"user\"'";
+                case CodexPermissionMode.ApproveForMe:
+                    return "codex -s workspace-write -a on-request -c 'approvals_reviewer=\"auto_review\"'";
+                case CodexPermissionMode.FullAccess:
+                default:
+                    return "codex --sandbox danger-full-access --ask-for-approval never";
+            }
+        }
+
+        private static ClaudePermissionMode ResolveClaudePermissionMode()
+        {
+            try
+            {
+                return new DataPersistenceService().LoadSettings()?.ClaudePermissionMode ?? ClaudePermissionMode.Auto;
+            }
+            catch
+            {
+                return ClaudePermissionMode.Auto;
+            }
+        }
+
+        private static CodexPermissionMode ResolveCodexPermissionMode()
+        {
+            try
+            {
+                return new DataPersistenceService().LoadSettings()?.CodexPermissionMode ?? CodexPermissionMode.FullAccess;
+            }
+            catch
+            {
+                return CodexPermissionMode.FullAccess;
+            }
         }
     }
 }

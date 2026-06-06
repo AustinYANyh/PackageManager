@@ -977,6 +977,43 @@ namespace PackageManager.Services
     }
 
     /// <summary>
+    /// Codex CLI 权限模式。
+    /// </summary>
+    public enum CodexPermissionMode
+    {
+        /// <summary>
+        /// 允许仓库内读写，高风险操作询问。
+        /// </summary>
+        AskForApproval,
+
+        /// <summary>
+        /// 自动审批安全操作，高风险操作由 Codex 自动审查。
+        /// </summary>
+        ApproveForMe,
+
+        /// <summary>
+        /// 不询问，启用完整访问。
+        /// </summary>
+        FullAccess
+    }
+
+    /// <summary>
+    /// Claude CLI 权限模式。
+    /// </summary>
+    public enum ClaudePermissionMode
+    {
+        /// <summary>
+        /// 使用 Claude 自动权限模式。
+        /// </summary>
+        Auto,
+
+        /// <summary>
+        /// 跳过权限确认。
+        /// </summary>
+        FullAccess
+    }
+
+    /// <summary>
     /// 应用程序设置数据模型
     /// </summary>
     public class AppSettings
@@ -1025,6 +1062,18 @@ namespace PackageManager.Services
         /// </summary>
         [JsonConverter(typeof(StringEnumConverter))]
         public TerminalLaunchMode TerminalLaunchMode { get; set; } = TerminalLaunchMode.WindowsTerminalWindowsPowerShell;
+
+        /// <summary>
+        /// 获取或设置 Codex CLI 权限模式。
+        /// </summary>
+        [JsonConverter(typeof(StringEnumConverter))]
+        public CodexPermissionMode CodexPermissionMode { get; set; } = CodexPermissionMode.FullAccess;
+
+        /// <summary>
+        /// 获取或设置 Claude CLI 权限模式。
+        /// </summary>
+        [JsonConverter(typeof(StringEnumConverter))]
+        public ClaudePermissionMode ClaudePermissionMode { get; set; } = ClaudePermissionMode.Auto;
         
         /// <summary>
         /// 产品日志页的日志等级选择

@@ -878,7 +878,7 @@ Set-Location -LiteralPath {PsQuote(repo.Path)}
 ";
 
             TerminalHelper.LaunchTerminalWithCommand(repo.Path, command, $"Claude Code - {repo.Name}");
-            StatusText = $"已启动 Claude Code：{repo.Name}";
+            StatusText = $"已启动 Claude Code（{AiCliLaunchService.GetClaudePermissionLabel()}）：{repo.Name}";
         }
 
         private void DoOpenCodex(CodeRepository repo)
@@ -888,7 +888,7 @@ Set-Location -LiteralPath {PsQuote(repo.Path)}
 {AiCliLaunchService.CodexCliCommand}
 ";
             TerminalHelper.LaunchTerminalWithCommand(repo.Path, command, $"Codex - {repo.Name}");
-            StatusText = $"已启动 Codex（Approve for me）：{repo.Name}";
+            StatusText = $"已启动 Codex（{AiCliLaunchService.GetCodexPermissionLabel()}）：{repo.Name}";
         }
 
         private void DoOpenFolder(CodeRepository repo)

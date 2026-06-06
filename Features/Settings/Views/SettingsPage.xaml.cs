@@ -48,6 +48,8 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
     private bool lanTransferSilentOverwrite;
     private bool lanTransferAutoAccept;
     private TerminalLaunchModeOption selectedTerminalLaunchModeOption;
+    private CodexPermissionModeOption selectedCodexPermissionModeOption;
+    private ClaudePermissionModeOption selectedClaudePermissionModeOption;
 
     /// <summary>
     /// 初始化 <see cref="SettingsPage"/> 的新实例。
@@ -260,6 +262,36 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
     }
 
     /// <summary>
+    /// 获取 Codex 权限模式选项列表。
+    /// </summary>
+    public ObservableCollection<CodexPermissionModeOption> CodexPermissionModeOptions { get; } = new();
+
+    /// <summary>
+    /// 获取或设置当前选中的 Codex 权限模式。
+    /// </summary>
+    public CodexPermissionModeOption SelectedCodexPermissionModeOption
+    {
+        get => selectedCodexPermissionModeOption;
+
+        set => SetProperty(ref selectedCodexPermissionModeOption, value);
+    }
+
+    /// <summary>
+    /// 获取 Claude 权限模式选项列表。
+    /// </summary>
+    public ObservableCollection<ClaudePermissionModeOption> ClaudePermissionModeOptions { get; } = new();
+
+    /// <summary>
+    /// 获取或设置当前选中的 Claude 权限模式。
+    /// </summary>
+    public ClaudePermissionModeOption SelectedClaudePermissionModeOption
+    {
+        get => selectedClaudePermissionModeOption;
+
+        set => SetProperty(ref selectedClaudePermissionModeOption, value);
+    }
+
+    /// <summary>
     /// 获取索引服务性能分析日志目录的显示文本。
     /// </summary>
     public string IndexServicePerformanceLogDirectory =>
@@ -343,8 +375,13 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
             LogTxtReaders.Add("NotepadPlusPlus");
 
             InitializeTerminalLaunchModeOptions();
+            InitializeAiPermissionModeOptions();
             SelectedTerminalLaunchModeOption = FindTerminalLaunchModeOption(
                 settings?.TerminalLaunchMode ?? TerminalLaunchMode.WindowsTerminalWindowsPowerShell);
+            SelectedCodexPermissionModeOption = FindCodexPermissionModeOption(
+                settings?.CodexPermissionMode ?? CodexPermissionMode.FullAccess);
+            SelectedClaudePermissionModeOption = FindClaudePermissionModeOption(
+                settings?.ClaudePermissionMode ?? ClaudePermissionMode.Auto);
         }
         catch (Exception ex)
         {
@@ -353,6 +390,8 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
             UpdateServerUrl = string.Empty;
             DataLocation = "未知";
             SelectedTerminalLaunchModeOption = FindTerminalLaunchModeOption(TerminalLaunchMode.WindowsTerminalWindowsPowerShell);
+            SelectedCodexPermissionModeOption = FindCodexPermissionModeOption(CodexPermissionMode.FullAccess);
+            SelectedClaudePermissionModeOption = FindClaudePermissionModeOption(ClaudePermissionMode.Auto);
         }
     }
 
@@ -480,6 +519,8 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
                 LanTransferSilentOverwrite = false;
                 LanTransferAutoAccept = false;
                 SelectedTerminalLaunchModeOption = FindTerminalLaunchModeOption(TerminalLaunchMode.WindowsTerminalWindowsPowerShell);
+                SelectedCodexPermissionModeOption = FindCodexPermissionModeOption(CodexPermissionMode.FullAccess);
+                SelectedClaudePermissionModeOption = FindClaudePermissionModeOption(ClaudePermissionMode.Auto);
                 JenkinsPasswordBox.Password = string.Empty;
             }
         }
@@ -506,6 +547,8 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
             settings.FilterLogDirectories = FilterLogDirectories;
             settings.LogTxtReader = LogTxtReader;
             settings.TerminalLaunchMode = SelectedTerminalLaunchModeOption?.Mode ?? TerminalLaunchMode.WindowsTerminalWindowsPowerShell;
+            settings.CodexPermissionMode = SelectedCodexPermissionModeOption?.Mode ?? CodexPermissionMode.FullAccess;
+            settings.ClaudePermissionMode = SelectedClaudePermissionModeOption?.Mode ?? ClaudePermissionMode.Auto;
             settings.ProductLogLevel = ProductLogLevel;
             settings.JenkinsBaseUrl = string.IsNullOrWhiteSpace(JenkinsBaseUrl) ? null : JenkinsBaseUrl.Trim();
             settings.JenkinsViewName = string.IsNullOrWhiteSpace(JenkinsViewName) ? null : JenkinsViewName.Trim();
@@ -632,6 +675,36 @@ public partial class SettingsPage : Page, INotifyPropertyChanged, ICentralPage
         return TerminalLaunchModeOptions.FirstOrDefault(option => option.Mode == mode)
                ?? TerminalLaunchModeOptions.First(option => option.Mode == TerminalLaunchMode.WindowsTerminalWindowsPowerShell);
     }
+
+    private void InitializeAiPermissionModeOptions()
+    {
+        if (CodexPermissionModeOptions.Count == 0)
+        {
+            CodexPermissionModeOptions.Add(new CodexPermissionModeOption("Ask for approval", CodexPermissionMode.AskForApproval));
+            CodexPermissionModeOptions.Add(new CodexPermissionModeOption("Approve for me", CodexPermissionMode.ApproveForMe));
+            CodexPermissionModeOptions.Add(new CodexPermissionModeOption("Full Access", CodexPermissionMode.FullAccess));
+        }
+
+        if (ClaudePermissionModeOptions.Count == 0)
+        {
+            ClaudePermissionModeOptions.Add(new ClaudePermissionModeOption("Auto", ClaudePermissionMode.Auto));
+            ClaudePermissionModeOptions.Add(new ClaudePermissionModeOption("Full Access", ClaudePermissionMode.FullAccess));
+        }
+    }
+
+    private CodexPermissionModeOption FindCodexPermissionModeOption(CodexPermissionMode mode)
+    {
+        InitializeAiPermissionModeOptions();
+        return CodexPermissionModeOptions.FirstOrDefault(option => option.Mode == mode)
+               ?? CodexPermissionModeOptions.First(option => option.Mode == CodexPermissionMode.FullAccess);
+    }
+
+    private ClaudePermissionModeOption FindClaudePermissionModeOption(ClaudePermissionMode mode)
+    {
+        InitializeAiPermissionModeOptions();
+        return ClaudePermissionModeOptions.FirstOrDefault(option => option.Mode == mode)
+               ?? ClaudePermissionModeOptions.First(option => option.Mode == ClaudePermissionMode.Auto);
+    }
 }
 
 /// <summary>
@@ -654,4 +727,48 @@ public sealed class TerminalLaunchModeOption
     /// 获取选项对应的终端启动模式。
     /// </summary>
     public TerminalLaunchMode Mode { get; }
+}
+
+/// <summary>
+/// 表示设置页上的 Codex 权限模式选项。
+/// </summary>
+public sealed class CodexPermissionModeOption
+{
+    public CodexPermissionModeOption(string name, CodexPermissionMode mode)
+    {
+        Name = name;
+        Mode = mode;
+    }
+
+    /// <summary>
+    /// 获取选项显示名称。
+    /// </summary>
+    public string Name { get; }
+
+    /// <summary>
+    /// 获取选项对应的 Codex 权限模式。
+    /// </summary>
+    public CodexPermissionMode Mode { get; }
+}
+
+/// <summary>
+/// 表示设置页上的 Claude 权限模式选项。
+/// </summary>
+public sealed class ClaudePermissionModeOption
+{
+    public ClaudePermissionModeOption(string name, ClaudePermissionMode mode)
+    {
+        Name = name;
+        Mode = mode;
+    }
+
+    /// <summary>
+    /// 获取选项显示名称。
+    /// </summary>
+    public string Name { get; }
+
+    /// <summary>
+    /// 获取选项对应的 Claude 权限模式。
+    /// </summary>
+    public ClaudePermissionMode Mode { get; }
 }

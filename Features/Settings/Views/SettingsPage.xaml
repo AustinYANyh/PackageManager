@@ -83,13 +83,62 @@
                 <!-- 终端设置 -->
                 <GroupBox Header="终端设置" Margin="0,0,0,20">
                     <StackPanel Margin="10">
-                        <StackPanel Orientation="Horizontal">
-                            <controls:CTextBlock Text="代码工作区终端:" VerticalAlignment="Center"/>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="110"/>
+                                <ColumnDefinition Width="420"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <controls:CTextBlock Grid.Row="0"
+                                                 Grid.Column="0"
+                                                 Text="Codex 权限:"
+                                                 HorizontalAlignment="Left"
+                                                 TextAlignment="Left"
+                                                 VerticalAlignment="Center"/>
+                            <controls:CComboBox ItemsSource="{Binding CodexPermissionModeOptions}"
+                                                SelectedItem="{Binding SelectedCodexPermissionModeOption}"
+                                                DisplayMemberPath="Name"
+                                                Grid.Row="0"
+                                                Grid.Column="1"
+                                                Width="220"
+                                                HorizontalAlignment="Left"/>
+
+                            <controls:CTextBlock Grid.Row="1"
+                                                 Grid.Column="0"
+                                                 Text="Claude 权限:"
+                                                 HorizontalAlignment="Left"
+                                                 TextAlignment="Left"
+                                                 VerticalAlignment="Center"
+                                                 Margin="0,8,0,0"/>
+                            <controls:CComboBox ItemsSource="{Binding ClaudePermissionModeOptions}"
+                                                SelectedItem="{Binding SelectedClaudePermissionModeOption}"
+                                                DisplayMemberPath="Name"
+                                                Grid.Row="1"
+                                                Grid.Column="1"
+                                                Width="220"
+                                                HorizontalAlignment="Left"
+                                                Margin="0,8,0,0"/>
+
+                            <controls:CTextBlock Grid.Row="2"
+                                                 Grid.Column="0"
+                                                 Text="代码工作区终端:"
+                                                 HorizontalAlignment="Left"
+                                                 TextAlignment="Left"
+                                                 VerticalAlignment="Center"
+                                                 Margin="0,8,0,0"/>
                             <controls:CComboBox ItemsSource="{Binding TerminalLaunchModeOptions}"
                                                 SelectedItem="{Binding SelectedTerminalLaunchModeOption}"
                                                 DisplayMemberPath="Name"
-                                                Width="420"/>
-                        </StackPanel>
+                                                Grid.Row="2"
+                                                Grid.Column="1"
+                                                Width="420"
+                                                Margin="0,8,0,0"/>
+                        </Grid>
                         <TextBlock Text="默认使用 Windows Terminal 打开系统自带 Windows PowerShell；PowerShell 7 和 VS 开发环境仅在本机可用时显示。"
                                    Foreground="Gray"
                                    FontSize="11"
