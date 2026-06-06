@@ -211,7 +211,6 @@ namespace PackageManager.Features.CodeWorkspace.Services
             var oursText = await ReadGitStageAsync(item.RepositoryPath, relativePath, 2);
             var theirsText = await ReadGitStageAsync(item.RepositoryPath, relativePath, 3);
             var workingText = File.Exists(conflictFile.FullPath) ? File.ReadAllText(conflictFile.FullPath, Encoding.UTF8) : string.Empty;
-            var promptPath = Path.Combine(Path.GetTempPath(), $"PackageManager.MergeConflict.{Guid.NewGuid():N}.md");
             var prompt = $@"请辅助解决 Git 合并冲突，但不要自动提交或推送。
 
 仓库：{item.RepositoryPath}
@@ -244,8 +243,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
 {workingText}
 ```
 ";
-            File.WriteAllText(promptPath, prompt, Encoding.UTF8);
-            return promptPath;
+            return AiCliLaunchService.CreatePromptFile(item.RepositoryPath, prompt, "merge-conflict", "codex");
         }
 
         public void ApplyConflictSuggestion(MergeConflictFile conflictFile, string suggestionText)

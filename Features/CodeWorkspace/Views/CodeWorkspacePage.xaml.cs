@@ -749,6 +749,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
                 ? "Write-Host '  - 当前仓库没有自己的 .claude skill。'"
                 : $"Write-Host '  - {TerminalHelper.EscapePowerShellSingleQuoted(skillInfo.RepositorySkillPath)}（只检测，不覆盖）'";
             var prompt = BuildCommitPrompt(skillInfo.WorkingChangesScriptPath, skillInfo.LastChangesJsonPath, skillInfo.LastChangesModelJsonPath);
+            var promptArgument = AiCliLaunchService.CreatePromptFileArgument(repo.Path, prompt, "ai-commit", engineName);
             var command = $@"
 Set-Location -LiteralPath {PsQuote(repo.Path)}
 Write-Host 'PackageManager AI 提交入口' -ForegroundColor Cyan
@@ -763,7 +764,7 @@ Write-Host '已覆盖用户级 skill：' -ForegroundColor DarkCyan
 {syncedUserSkills}
 Write-Host '仓库内 skill：' -ForegroundColor DarkCyan
 {repositorySkill}
-{commandPrefix} {PsQuote(prompt)}
+{commandPrefix} {PsQuote(promptArgument)}
 ";
             TerminalHelper.LaunchTerminalWithCommand(repo.Path, command, $"{engineName} 代码提交 - {repo.Name}");
             StatusText = $"已启动 {engineName} 代码提交：{repo.Name}；使用脚本 {skillInfo.WorkingChangesScriptPath}";
@@ -1560,10 +1561,11 @@ codex --sandbox danger-full-access --ask-for-approval never
         private void LaunchPullConflictAi(CodeRepository repo, PullResult result)
         {
             var prompt = BuildPullConflictPrompt(repo, result);
+            var promptArgument = AiCliLaunchService.CreatePromptFileArgument(repo.Path, prompt, "pull-conflict", "codex");
             var command = $@"
 Set-Location -LiteralPath {PsQuote(repo.Path)}
 Write-Host 'PackageManager 拉取冲突 AI 分析入口' -ForegroundColor Cyan
-codex --sandbox danger-full-access --ask-for-approval never {PsQuote(prompt)}
+codex --sandbox danger-full-access --ask-for-approval never {PsQuote(promptArgument)}
 ";
             TerminalHelper.LaunchTerminalWithCommand(repo.Path, command, $"Codex 拉取冲突 - {repo.Name}");
             StatusText = $"已启动 Codex 分析拉取冲突：{repo.Name}";

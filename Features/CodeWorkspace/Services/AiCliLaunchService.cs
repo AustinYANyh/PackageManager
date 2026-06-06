@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Threading.Tasks;
 using PackageManager.Features.CodeWorkspace.Models;
 
@@ -8,7 +9,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
 {
     public class AiCliLaunchService
     {
-        private const int DirectPromptLimit = 24000;
+        private const int PromptRetentionDays = 7;
 
         public Task LaunchClaudeAsync(CodeRepository repo, string prompt, string title)
         {
@@ -30,7 +31,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
             }
 
             EnsureCommandExists(commandName);
-            var finalPrompt = BuildPromptArgument(repo.Path, prompt ?? string.Empty);
+            var finalPrompt = CreatePromptFileArgument(repo.Path, prompt ?? string.Empty, "pingcode-ai", engineName);
             var command = $@"
 Set-Location -LiteralPath {PsQuote(repo.Path)}
 Write-Host 'PackageManager PingCode AI 执行入口' -ForegroundColor Cyan
@@ -42,19 +43,69 @@ Write-Host '仓库：{TerminalHelper.EscapePowerShellSingleQuoted(repo.Name ?? r
             return Task.CompletedTask;
         }
 
-        private static string BuildPromptArgument(string repositoryPath, string prompt)
+        public static string CreatePromptFileArgument(string repositoryPath, string prompt, string scenario, string engineName)
         {
-            prompt = prompt ?? string.Empty;
-            if (prompt.Length <= DirectPromptLimit)
+            var promptPath = CreatePromptFile(repositoryPath, prompt, scenario, engineName);
+            return BuildPromptFileInstruction(promptPath);
+        }
+
+        public static string CreatePromptFile(string repositoryPath, string prompt, string scenario, string engineName)
+        {
+            if (string.IsNullOrWhiteSpace(repositoryPath) || !Directory.Exists(repositoryPath))
             {
-                return prompt;
+                throw new DirectoryNotFoundException("请选择有效的代码仓库。");
             }
 
-            var promptDirectory = Path.Combine(repositoryPath, ".pm-ai");
+            var promptDirectory = Path.Combine(repositoryPath, ".pm-ai", "prompts");
             Directory.CreateDirectory(promptDirectory);
-            var promptPath = Path.Combine(promptDirectory, "pingcode-workitem-prompt.md");
-            File.WriteAllText(promptPath, prompt);
-            return $"请读取并执行这个 PingCode 工作项 prompt 文件：{promptPath}";
+            CleanupOldPrompts(promptDirectory);
+
+            var safeScenario = ToSafeFileNamePart(scenario, "ai");
+            var safeEngineName = ToSafeFileNamePart(engineName, "cli");
+            var fileName = $"{DateTime.Now:yyyyMMdd-HHmmss-fff}-{safeScenario}-{safeEngineName}-{Guid.NewGuid():N}.md";
+            var promptPath = Path.Combine(promptDirectory, fileName);
+            File.WriteAllText(promptPath, prompt ?? string.Empty, Encoding.UTF8);
+            return promptPath;
+        }
+
+        public static string BuildPromptFileInstruction(string promptPath)
+        {
+            return $"请读取并执行这个本地 prompt 文件：\"{promptPath}\"";
+        }
+
+        private static string ToSafeFileNamePart(string value, string fallback)
+        {
+            var source = string.IsNullOrWhiteSpace(value) ? fallback : value.Trim().ToLowerInvariant();
+            var invalidChars = Path.GetInvalidFileNameChars();
+            var chars = source
+                .Select(ch => invalidChars.Contains(ch) || char.IsWhiteSpace(ch) ? '-' : ch)
+                .ToArray();
+            var result = new string(chars).Trim('-');
+            return string.IsNullOrWhiteSpace(result) ? fallback : result;
+        }
+
+        private static void CleanupOldPrompts(string promptDirectory)
+        {
+            try
+            {
+                var cutoff = DateTime.Now.AddDays(-PromptRetentionDays);
+                foreach (var file in Directory.EnumerateFiles(promptDirectory, "*.md", SearchOption.TopDirectoryOnly))
+                {
+                    try
+                    {
+                        if (File.GetLastWriteTime(file) < cutoff)
+                        {
+                            File.Delete(file);
+                        }
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+            catch
+            {
+            }
         }
 
         private static void EnsureCommandExists(string commandName)

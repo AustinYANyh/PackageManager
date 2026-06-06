@@ -295,11 +295,12 @@ namespace PackageManager.Features.CodeWorkspace.Views
             await RunBusyAsync(async () =>
             {
                 var promptPath = await _mergeService.CreateAiConflictPromptAsync(_activeConflictItem, SelectedConflictFile);
+                var promptArgument = AiCliLaunchService.BuildPromptFileInstruction(promptPath);
                 AiStatusText = $"已生成 AI 冲突分析提示: {promptPath}";
                 AiSuggestionText = $"提示文件已生成：{promptPath}{Environment.NewLine}AI 输出建议后，将完整合并结果粘贴到这里，再点击“应用建议到文件”。";
                 TerminalHelper.LaunchTerminalWithCommand(
                     _activeConflictItem.RepositoryPath,
-                    $"Set-Location -LiteralPath {PsQuote(_activeConflictItem.RepositoryPath)}\n$prompt = Get-Content -LiteralPath {PsQuote(promptPath)} -Raw\ncodex --sandbox danger-full-access --ask-for-approval never $prompt",
+                    $"Set-Location -LiteralPath {PsQuote(_activeConflictItem.RepositoryPath)}\ncodex --sandbox danger-full-access --ask-for-approval never {PsQuote(promptArgument)}",
                     $"AI 冲突分析 - {SelectedConflictFile.RelativePath}");
             });
         }

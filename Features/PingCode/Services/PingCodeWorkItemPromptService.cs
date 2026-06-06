@@ -4,7 +4,9 @@ using System.Linq;
 using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 using PackageManager.Features.PingCode.Models;
+using PackageManager.Services.PingCode.Dto;
 using PackageManager.Services.PingCode.Model;
 
 namespace PackageManager.Features.PingCode.Services;
@@ -42,7 +44,7 @@ public class PingCodeWorkItemPromptService
         };
     }
 
-    public PingCodeAiPromptRequest BuildDecomposeRequest(WorkItemDetails details)
+    public PingCodeAiPromptRequest BuildDecomposeRequest(WorkItemDetails details, List<WorkItemInfo> existingChildren = null)
     {
         if (details == null)
         {
@@ -50,7 +52,7 @@ public class PingCodeWorkItemPromptService
         }
 
         var links = ExtractLinks(details);
-        var prompt = BuildDecomposePrompt(details, links);
+        var prompt = BuildDecomposePrompt(details, links, existingChildren);
 
         return new PingCodeAiPromptRequest
         {
@@ -285,7 +287,7 @@ public class PingCodeWorkItemPromptService
         }
     }
 
-    private static string BuildDecomposePrompt(WorkItemDetails details, List<PingCodePromptLink> links)
+    private static string BuildDecomposePrompt(WorkItemDetails details, List<PingCodePromptLink> links, List<WorkItemInfo> existingChildren)
     {
         var sb = new StringBuilder();
         var isFix = IsDefect(details.Type) || IsDefect(details.DefectCategory);
@@ -304,13 +306,60 @@ public class PingCodeWorkItemPromptService
         AppendProperties(sb, details.Properties);
         AppendComments(sb, details.Comments);
         AppendLinks(sb, links);
+        AppendExistingChildrenSection(sb, existingChildren);
         AppendPlanModeAndEvidenceRules(sb);
-        AppendDecompositionInstructions(sb);
+        AppendDecompositionInstructions(sb, existingChildren);
         AppendPingCodeCreateApiInstructions(sb, details);
         return sb.ToString();
     }
 
-    private static void AppendDecompositionInstructions(StringBuilder sb)
+    private const int MaxExistingChildrenInPrompt = 30;
+
+    private static void AppendExistingChildrenSection(StringBuilder sb, List<WorkItemInfo> existingChildren)
+    {
+        if (existingChildren == null || existingChildren.Count == 0)
+        {
+            return;
+        }
+
+        var aiCount = existingChildren.Count(c => c.Title?.StartsWith("AI—") == true);
+        var manualCount = existingChildren.Count - aiCount;
+
+        if (aiCount > 0 && manualCount > 0)
+        {
+            sb.AppendLine("## 已有子工作项（混合来源）");
+        }
+        else if (aiCount > 0)
+        {
+            sb.AppendLine("## 已有子工作项（来自上次 AI 拆解）");
+        }
+        else
+        {
+            sb.AppendLine("## 已有子工作项");
+        }
+
+        sb.AppendLine();
+        sb.AppendLine($"当前工作项已有 {existingChildren.Count} 个子任务（以下仅为标题和状态摘要，你**必须**通过 API 获取每个子任务的完整描述后再做分析判断）：");
+        sb.AppendLine();
+        sb.AppendLine("| 编号 | Id | 标题 | 状态 | 来源 |");
+        sb.AppendLine("|------|-----|------|------|------|");
+        var displayCount = Math.Min(existingChildren.Count, MaxExistingChildrenInPrompt);
+        for (var i = 0; i < displayCount; i++)
+        {
+            var c = existingChildren[i];
+            var source = c.Title?.StartsWith("AI—") == true ? "AI创建" : "手动";
+            sb.AppendLine($"| {c.Identifier} | {c.Id} | {c.Title} | {c.Status} | {source} |");
+        }
+
+        if (existingChildren.Count > MaxExistingChildrenInPrompt)
+        {
+            sb.AppendLine($"| ... | | 共 {existingChildren.Count} 项，此处展示前 {MaxExistingChildrenInPrompt} 项 | | |");
+        }
+
+        sb.AppendLine();
+    }
+
+    private static void AppendDecompositionInstructions(StringBuilder sb, List<WorkItemInfo> existingChildren)
     {
         sb.AppendLine("## 拆解任务要求");
         sb.AppendLine();
@@ -328,9 +377,47 @@ public class PingCodeWorkItemPromptService
         sb.AppendLine("- 每个子任务必须有明确的标题、描述和验收标准。");
         sb.AppendLine("- 保留父工作项的上下文信息，每个子任务的描述应该自包含，让后续 AI 实现时能理解完整背景。");
         sb.AppendLine("- **子任务标题格式**：`AI—[模块名] 具体任务描述`（必须以 `AI—` 开头）。");
-        sb.AppendLine("- 子任务描述应包含：实现范围、建议故事点（你估算的工作量）、验收标准、相关文件或模块路径（如果已知）。");
+        sb.AppendLine("- 子任务 description 字段必须严格使用下方「PingCode 子工作项 description HTML 标准格式」。");
         sb.AppendLine("- **注意**：创建子任务时故事点统一填 0.1（占位值），你估算的建议故事点写在描述正文中「实现范围」和「验收标准」之间。");
         sb.AppendLine();
+        AppendSubtaskDescriptionFormatRules(sb);
+
+        if (existingChildren != null && existingChildren.Count > 0)
+        {
+            sb.AppendLine("### 去重与审查规则");
+            sb.AppendLine("- 工作项已有子任务（见上方「已有子工作项」列表），**拆解前必须先深入了解每个已有子任务的完整内容**。");
+            sb.AppendLine();
+            sb.AppendLine("**步骤 0：获取已有子任务详情（必做）**");
+            sb.AppendLine("- 上方列表仅提供了标题和状态摘要，在做任何判断之前，你必须先通过 PingCode API 获取每个已有子任务的完整详情（描述、验收标准等）。");
+            sb.AppendLine("- 调用方式：");
+            sb.AppendLine("```powershell");
+            sb.AppendLine("$headers = @{ 'Authorization' = \"Bearer $token\" }");
+            sb.AppendLine("$r = Invoke-WebRequest -Uri 'https://open.pingcode.com/v1/project/work_items/<子任务id>' -Headers $headers -SkipHttpErrorCheck");
+            sb.AppendLine("$r.Content | ConvertTo-Json -Depth 10");
+            sb.AppendLine("```");
+            sb.AppendLine("- 对上方列表中的每个子任务都执行此查询，获取完整描述后再进行下面的分析。");
+            sb.AppendLine();
+            sb.AppendLine("**对于手动创建的子任务（标题不以 `AI—` 开头）：**");
+            sb.AppendLine("- 阅读其完整描述后，视为固定约束，不要创建与之功能重叠的新任务。");
+            sb.AppendLine("- 围绕手动任务的覆盖范围，识别尚未覆盖的功能切片，只创建新增部分。");
+            sb.AppendLine();
+            sb.AppendLine("**对于 AI 创建的子任务（标题以 `AI—` 开头）：**");
+            sb.AppendLine("- 它们是之前 AI 拆解的产物，需求可能已经发生变化，**必须重新审视**。");
+            sb.AppendLine("- 阅读每个 AI 子任务的完整描述（实现范围、验收标准等），逐一对比当前工作项需求，判断：");
+            sb.AppendLine("  - **保留**：描述和范围仍与当前需求完全匹配，标注「保留」。");
+            sb.AppendLine("  - **建议删除**：已不符合当前需求或不再需要，标注「建议删除（原因）」。");
+            sb.AppendLine("  - **建议完善**：部分匹配但描述不准确或范围需要调整的，标注「建议完善（说明具体调整内容）」。");
+            sb.AppendLine("  - **新增**：当前需求中有但所有已有子任务均未覆盖的功能切片，正常创建新子任务。");
+            sb.AppendLine();
+            sb.AppendLine("**拆解方案表格输出格式：**");
+            sb.AppendLine("- 与已有手动子任务功能重叠的新任务在「描述摘要」列标注「与 XXX 功能重叠（已有，无需创建）」。");
+            sb.AppendLine("- 已有 AI 子任务在表格中标注操作建议：保留/建议删除/建议完善。");
+            sb.AppendLine("- 未被已有任务覆盖的功能切片，正常列出为新增子任务。");
+            sb.AppendLine("- 如果已有子任务（含手动和 AI）已完整覆盖所有功能切片且无需调整，直接输出「已有子任务已完整覆盖当前需求，无需创建新任务」。");
+            sb.AppendLine("- **最终只创建不重复的新拆解任务**，不要重复创建已有子任务。删除和完善的建议供用户确认后手动执行。");
+            sb.AppendLine();
+        }
+
         sb.AppendLine("### 输出要求");
         sb.AppendLine("在调用 API 创建之前，先输出拆解方案供用户确认：");
         sb.AppendLine();
@@ -339,6 +426,41 @@ public class PingCodeWorkItemPromptService
         sb.AppendLine("| 1    | AI—[模块] ... | ... | 2 | 无 |");
         sb.AppendLine();
         sb.AppendLine("**必须等待用户确认拆解方案后，再执行 API 调用创建子工作项。**");
+        sb.AppendLine();
+    }
+
+    private static void AppendSubtaskDescriptionFormatRules(StringBuilder sb)
+    {
+        sb.AppendLine("### PingCode 子工作项 description HTML 标准格式");
+        sb.AppendLine();
+        sb.AppendLine("创建 PingCode 子工作项时，`description` 字段必须使用以下 HTML 结构，并按顺序输出：");
+        sb.AppendLine();
+        sb.AppendLine("```html");
+        sb.AppendLine("<p><b>父工作项：</b>{父工作项编号} {父工作项标题}</p>");
+        sb.AppendLine("<p><b>依赖：</b>{无 | 子任务N（简述）}（仅在非首个任务时出现）</p>");
+        sb.AppendLine("<p><b>实现范围：</b></p>");
+        sb.AppendLine("<ol>");
+        sb.AppendLine("  <li>修改 <code>方法名(参数)</code>（行号）：具体改什么、怎么改</li>");
+        sb.AppendLine("  <li>修改 <code>方法名(参数)</code>（行号）：具体改什么、怎么改</li>");
+        sb.AppendLine("</ol>");
+        sb.AppendLine("<p><b>建议故事点：</b>{N}</p>");
+        sb.AppendLine("<p><b>验收标准：</b></p>");
+        sb.AppendLine("<ul>");
+        sb.AppendLine("  <li>标准1（具体可验证的条件）</li>");
+        sb.AppendLine("  <li>标准2</li>");
+        sb.AppendLine("</ul>");
+        sb.AppendLine("<p><b>关键文件：</b>{文件路径列表}</p>");
+        sb.AppendLine("<p><b>复用：</b>{已有方法/类名 + 文件位置}（仅在存在可复用代码时出现）</p>");
+        sb.AppendLine("```");
+        sb.AppendLine();
+        sb.AppendLine("格式要求：");
+        sb.AppendLine("- 每个子任务描述必须自包含，开头标明父工作项编号和标题。");
+        sb.AppendLine("- 依赖必须明确写「无」或具体依赖哪个子任务；只有非首个任务需要依赖时才写依赖段。");
+        sb.AppendLine("- 实现范围必须用 `<ol>`，每条尽量包含 `方法名(参数)`、行号、具体改什么、怎么改；不要泛泛而谈。");
+        sb.AppendLine("- 建议故事点写在 description 正文中；API 字段 `story_points` 仍统一填 0.1 占位。");
+        sb.AppendLine("- 验收标准必须是具体可验证条件。");
+        sb.AppendLine("- 关键文件必须列出需要修改或重点阅读的文件路径。");
+        sb.AppendLine("- 只有确实存在可复用代码时才输出复用段。");
         sb.AppendLine();
     }
 
@@ -388,7 +510,7 @@ public class PingCodeWorkItemPromptService
         sb.AppendLine("  \"type_id\": \"<步骤1查到的type_id>\",");
         sb.AppendLine($"  \"parent_id\": \"{details.Id}\",");
         sb.AppendLine("  \"assignee_id\": \"<步骤2查到的闫云皓user_id>\",");
-        sb.AppendLine("  \"description\": \"<p><b>实现范围：</b>...</p><p><b>建议故事点：</b>2</p><p><b>验收标准：</b>...</p>\",");
+        sb.AppendLine("  \"description\": \"<按上方 PingCode 子工作项 description HTML 标准格式生成的 HTML>\",");
         sb.AppendLine("  \"story_points\": 0.1");
         sb.AppendLine("}");
         sb.AppendLine("```");
@@ -405,7 +527,7 @@ public class PingCodeWorkItemPromptService
         sb.AppendLine("    type_id = $typeId");
         sb.AppendLine($"    parent_id = '{details.Id}'");
         sb.AppendLine("    assignee_id = $assigneeId");
-        sb.AppendLine("    description = '<p><b>实现范围：</b>...</p><p><b>建议故事点：</b>2</p><p><b>验收标准：</b>...</p>'");
+        sb.AppendLine("    description = '<按上方 PingCode 子工作项 description HTML 标准格式生成的 HTML>'");
         sb.AppendLine("    story_points = 0.1");
         sb.AppendLine("} | ConvertTo-Json -Compress");
         sb.AppendLine("$resp = Invoke-WebRequest -Uri 'https://open.pingcode.com/v1/project/work_items' -Method Post -Headers $headers -Body $body -SkipHttpErrorCheck");

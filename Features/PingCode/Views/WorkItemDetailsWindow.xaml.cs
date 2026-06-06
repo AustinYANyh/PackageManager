@@ -185,9 +185,14 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                 latestDetails = await api.GetWorkItemDetailsAsync(Details.Id) ?? Details;
             }
 
-            var token = await api.GetAccessTokenAsync();
+            var tokenTask = api.GetAccessTokenAsync();
+            var childrenTask = GetExistingChildrenSafeAsync(latestDetails?.Id);
+            await Task.WhenAll(tokenTask, childrenTask);
+
+            var token = await tokenTask;
+            var existingChildren = await childrenTask;
             var promptService = new PingCodeWorkItemPromptService();
-            var request = promptService.BuildDecomposeRequest(latestDetails);
+            var request = promptService.BuildDecomposeRequest(latestDetails, existingChildren);
             var window = new PingCodeAiExecutionWindow(request, latestDetails, token)
             {
                 Owner = this,
@@ -199,6 +204,23 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         {
             ShowLoading(false);
             MessageBox.Show("生成 AI 拆解 Prompt 失败：" + ex.Message, "PingCode AI 拆解", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private async Task<List<WorkItemInfo>> GetExistingChildrenSafeAsync(string parentWorkItemId)
+    {
+        if (string.IsNullOrWhiteSpace(parentWorkItemId))
+        {
+            return new List<WorkItemInfo>();
+        }
+
+        try
+        {
+            return await api.GetChildWorkItemsAsync(parentWorkItemId) ?? new List<WorkItemInfo>();
+        }
+        catch
+        {
+            return new List<WorkItemInfo>();
         }
     }
 
