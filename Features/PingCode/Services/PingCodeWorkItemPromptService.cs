@@ -130,7 +130,6 @@ public class PingCodeWorkItemPromptService
         sb.AppendLine("- 加日志时只记录定位所需的关键上下文，不要记录敏感信息，不要引入无关重构。");
         sb.AppendLine("- 如果 prompt 末尾列出了本地图片路径，请只读取这些明确列出的图片文件来理解截图、示意图等视觉信息，不要扫描历史图片目录。");
         sb.AppendLine();
-        AiPromptProtocolService.AppendCodeGraphProtocol(sb);
         sb.AppendLine("### 链接访问规则");
         sb.AppendLine("**优先读取 prompt 末尾列出的本地图片/HTML 资料**。PackageManager 会尽量预下载工作项图片和内网 Axure/网页资源到仓库 `.pm-ai/work-items/...` 目录。");
         sb.AppendLine("如果末尾列出了“内网网页资料（已下载到本地）”，其中的 `[页面图片]` 通常就是方案/原型正文；多模态模型必须直接读取这些图片理解需求，不要因为网页 DOM 文本少就判断“没数据”。");

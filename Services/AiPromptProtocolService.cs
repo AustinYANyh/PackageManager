@@ -15,15 +15,17 @@ namespace PackageManager.Services
             }
 
             sb.AppendLine(CodeGraphProtocolMarker);
-            sb.AppendLine("- 做代码搜索、符号定位、调用关系、影响范围分析时，必须优先使用 CodeGraph 工具链，而不是默认的 Grep/Glob/Explore agent。");
+            sb.AppendLine("- 做代码搜索、符号定位、架构理解、调用关系、影响范围分析时，必须先使用 CodeGraph 工具链。");
             sb.AppendLine("- 如果当前仓库还没有 CodeGraph 索引，先在目标仓库执行：");
             sb.AppendLine("```powershell");
             sb.AppendLine("cd your-project");
             sb.AppendLine("codegraph init -i");
             sb.AppendLine("```");
             sb.AppendLine("- 上面的 `your-project` 替换为当前仓库根目录，然后再继续做 CodeGraph 探索。");
-            sb.AppendLine("- 探索实现/模块入口时先用 `codegraph_explore`；已知符号查位置用 `codegraph_search`；查调用者、被调用者、影响范围用 `codegraph_callers` / `codegraph_callees` / `codegraph_impact`。");
-            sb.AppendLine("- 只有纯文本搜索、非代码文件、未索引内容，或 CodeGraph 未覆盖/无结果时，才回退到 Grep/Glob/Explore。");
+            sb.AppendLine("- 首次探索实现入口、模块边界或业务链路时，先调用 `codegraph_explore`。");
+            sb.AppendLine("- 已知符号查位置用 `codegraph_search` / `codegraph_node`；查调用者、被调用者、影响范围用 `codegraph_callers` / `codegraph_callees` / `codegraph_impact`。");
+            sb.AppendLine("- 长任务中每进入新的代码区域、模块或符号链路，都重新优先使用 CodeGraph，不能只在开头调用一次后完全回退。");
+            sb.AppendLine("- 只有 CodeGraph 无索引、无结果、目标不是代码、或内容未被索引时，才回退到 `rg` / 文件读取 / 普通搜索；回退时必须说明原因。");
             sb.AppendLine();
         }
 

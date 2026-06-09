@@ -715,11 +715,12 @@ namespace PackageManager.Features.CodeWorkspace.Views
         {
             if (repo.IsRefreshing)
             {
-                StatusText = $"{repo.Name} 正在执行操作，请稍后。";
+                StatusText = $"{repo.Name} 仓库状态刷新或其他操作尚未结束，请稍后重试。";
                 return;
             }
 
             AiCommitSkillInfo skillInfo;
+            var globalInstructionWarning = string.Empty;
             try
             {
                 repo.IsRefreshing = true;
@@ -727,6 +728,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
                 skillInfo = await Task.Run(() =>
                 {
                     EnsureCommandExists(commandName);
+                    globalInstructionWarning = TryEnsureGlobalAiInstructions(engineName);
                     return _aiCommitSkillService.EnsureSkillAvailable(repo.Path);
                 });
             }
@@ -775,7 +777,7 @@ Write-Host '仓库内 skill：' -ForegroundColor DarkCyan
 {commandPrefix} {PsQuote(promptArgument)}
 ";
                 TerminalHelper.LaunchTerminalWithCommand(repo.Path, command, $"{engineName} 代码提交 - {repo.Name}");
-                StatusText = $"已启动 {engineName} 代码提交：{repo.Name}；状态目录 {runState.StateDirectoryPath}";
+                StatusText = $"已启动 {engineName} 代码提交：{repo.Name}；状态目录 {runState.StateDirectoryPath}{globalInstructionWarning}";
             }
             catch (Exception ex)
             {
@@ -872,23 +874,25 @@ Write-Host '仓库内 skill：' -ForegroundColor DarkCyan
 
         private void DoOpenClaudeCode(CodeRepository repo)
         {
+            var syncWarning = TryEnsureGlobalAiInstructions("Claude");
             var command = $@"
 Set-Location -LiteralPath {PsQuote(repo.Path)}
 {AiCliLaunchService.ClaudeCliCommand}
 ";
 
             TerminalHelper.LaunchTerminalWithCommand(repo.Path, command, $"Claude Code - {repo.Name}");
-            StatusText = $"已启动 Claude Code（{AiCliLaunchService.GetClaudePermissionLabel()}）：{repo.Name}";
+            StatusText = $"已启动 Claude Code（{AiCliLaunchService.GetClaudePermissionLabel()}）：{repo.Name}{syncWarning}";
         }
 
         private void DoOpenCodex(CodeRepository repo)
         {
+            var syncWarning = TryEnsureGlobalAiInstructions("Codex");
             var command = $@"
 Set-Location -LiteralPath {PsQuote(repo.Path)}
 {AiCliLaunchService.CodexCliCommand}
 ";
             TerminalHelper.LaunchTerminalWithCommand(repo.Path, command, $"Codex - {repo.Name}");
-            StatusText = $"已启动 Codex（{AiCliLaunchService.GetCodexPermissionLabel()}）：{repo.Name}";
+            StatusText = $"已启动 Codex（{AiCliLaunchService.GetCodexPermissionLabel()}）：{repo.Name}{syncWarning}";
         }
 
         private void DoOpenFolder(CodeRepository repo)
@@ -1930,6 +1934,20 @@ SVN冲突/树冲突：
         private static string PsQuote(string value)
         {
             return $"'{TerminalHelper.EscapePowerShellSingleQuoted(value)}'";
+        }
+
+        private static string TryEnsureGlobalAiInstructions(string engineName)
+        {
+            try
+            {
+                AiGlobalInstructionService.EnsureCodeGraphInstructions();
+                return string.Empty;
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, $"同步 {engineName} 全局 CodeGraph 规则失败");
+                return "；全局 CodeGraph 规则同步失败，请查看日志";
+            }
         }
 
         private const string MsBuildBuildScriptResourceName = "PackageManager.CodeWorkspace.Scripts.Invoke-MsBuildBuild.ps1";

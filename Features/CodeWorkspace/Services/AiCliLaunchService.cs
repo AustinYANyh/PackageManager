@@ -36,6 +36,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
             }
 
             EnsureCommandExists(commandName);
+            TryEnsureGlobalInstructions(engineName);
             var finalPrompt = CreatePromptFileArgument(repo.Path, prompt ?? string.Empty, "pingcode-ai", engineName);
             var command = $@"
 Set-Location -LiteralPath {PsQuote(repo.Path)}
@@ -95,7 +96,7 @@ Write-Host '仓库：{TerminalHelper.EscapePowerShellSingleQuoted(repo.Name ?? r
             var safeEngineName = ToSafeFileNamePart(engineName, "cli");
             var fileName = $"{DateTime.Now:yyyyMMdd-HHmmss-fff}-{safeScenario}-{safeEngineName}-{Guid.NewGuid():N}.md";
             var promptPath = Path.Combine(promptDirectory, fileName);
-            File.WriteAllText(promptPath, AiPromptProtocolService.EnsureCodeGraphProtocol(prompt), Encoding.UTF8);
+            File.WriteAllText(promptPath, prompt ?? string.Empty, Encoding.UTF8);
             return promptPath;
         }
 
@@ -167,6 +168,18 @@ Write-Host '仓库：{TerminalHelper.EscapePowerShellSingleQuoted(repo.Name ?? r
             }
 
             throw new FileNotFoundException($"未在 PATH 中找到 {commandName}，请先安装或配置环境变量。");
+        }
+
+        private static void TryEnsureGlobalInstructions(string engineName)
+        {
+            try
+            {
+                AiGlobalInstructionService.EnsureCodeGraphInstructions();
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, $"同步 {engineName} 全局 CodeGraph 规则失败");
+            }
         }
 
         private static string PsQuote(string value)
