@@ -27,7 +27,7 @@ description: Git+SVN 改动由脚本采集；模型默认打开本机可见 Powe
 
 1. **脚本 JSON 输出是改动范围与用户选择的唯一数据源**：模型不得自行递归扫描目录来决定「纳入/排除哪些文件」。但生成提交日志时必须理解具体变更；若 `Diffs` 缺失、为空或不足以判断行为变化，模型必须只针对 `ItemsIncludedDefaultLog` 中未排除的路径补取只读差异或读取文件内容，不能只凭路径和项目名编造日志。生成日志前，模型还必须用 `ItemsIncludedDefaultLog` 对照 `NeedsAdd` 与 `ItemsExcluded` 做依赖闭包核对；若发现待提交文件显式使用了未纳入文件，必须在一次询问前尽量找出同一候选集内的传递依赖，禁止自行加入、取消排除或忽略风险。
 2. **交互在脚本内完成且必须可超时**：是否将 `NeedsAdd` 纳入版本库、是否排除提交项，由 `get-working-changes.ps1` 在 **Windows 可交互控制台** 内处理。脚本优先打开勾选表格；GUI 不可用时才回退编号输入。窗口会显示剩余秒数；点击“确定”或超时都会进入下一步。若超时时当前有勾选，则按当前勾选结果继续；若当前没有任何勾选，则采用默认值（不加入未跟踪 / 全部保留不排除）。回退到编号输入时，输入行同样按 `-PromptTimeoutSeconds` 超时，超时或空输入视为不选择任何 Id。**禁止**由模型在聊天里用 `Start-Sleep`、阻塞式原生选项菜单或「伪后置步骤」替代脚本交互。
-3. **模型默认限时交互调用**：生成提交日志时，模型默认必须打开本机可见 PowerShell 运行脚本 **`-Interactive -PromptTimeoutSeconds 30`**，给用户一次加入/排除机会；无人操作则脚本自动按默认项继续。只有用户明确要求“非交互 / CI / 直接生成 / 不要弹窗”时，才使用 **`-NonInteractive`**。若 Step 2 依赖关系核对后用户确认调整范围，模型只能再次调用采集 wrapper，并用 `-AddIds`、`-ExcludeIds`、`-ExcludePaths` 表达用户最终选择，随后以刷新后的 JSON 重新生成日志。
+3. **模型默认限时交互调用**：生成提交日志时，模型默认必须打开本机可见 PowerShell 运行脚本 **`-Interactive -PromptTimeoutSeconds 30`**，给用户一次加入/排除机会；无人操作则脚本自动按默认项继续。只有用户明确要求“非交互 / CI / 直接生成 / 不要弹窗”时，才使用 **`-NonInteractive`**。若 Step 2 依赖关系核对后用户确认调整范围，模型只能再次调用采集 wrapper，并用稳定路径参数 `-AddPaths`、`-ExcludePaths` 表达用户最终选择，随后以刷新后的 JSON 重新生成日志。`Id` 只是当前采集快照内的 UI 编号，禁止跨采集复用。
 4. **提交日志按版本库提交组生成**：默认只生成一条提交日志；但当 `ItemsIncludedDefaultLog` 横跨多个独立 Git 仓库或多个真实 SVN 提交组时，必须按 `CommitGroupsDefault[]` 分别生成日志。SVN 提交组按同一次 `svn commit` 可提交的仓库标识合并，优先使用 `SvnRepoUuid`，其次 `SvnRepoRootUrl`，最后才使用 `SvnWcRoot`；同一 SVN 提交组内的多个项目/目录只写一条日志，scope 用顿号合并。每个日志只描述该组自己的文件改动，不得把其他仓库/提交组的改动写进去。同一 Git 仓库内不得按文件夹或模块拆成多条提交。
 5. **不要粘贴大段 diff**：提交日志只输出抽象后的变更点，不直接贴 patch 内容。
 6. **提交日志默认紧凑，长文本才按语义换行**：标题与正文优先保持单行可读；只有单条内容明显过长、信息密集并影响阅读时，才按后文「长文本换行规则」处理。禁止为了排版整齐把短标题或短 bullet 拆成多行。
@@ -51,7 +51,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File <skill-root>/scripts/inv
 
 默认生成提交日志时不得主动传 `-IncludeDiff false`。脚本会先完成未跟踪加入与排除交互，再只对最终 **`ItemsIncludedDefaultLog`** 范围读取 diff，避免对所有候选文件读 diff。只有用户明确要求“只看文件列表 / 快速跳过 diff / 不需要精准日志”时才允许关闭 diff；如果关闭了 diff，Step 2 必须按 `ItemsIncludedDefaultLog` 补充只读差异或文件内容后再写日志。
 
-**人类在 Windows 本机终端**：需要脚本内交互时，使用 **`-Interactive`**（且 stdin 未重定向），脚本会依次（若存在）提示：① 未跟踪/未版本管理候选是否 `git add`/`svn add`；② 是否排除本次提交项。每一步都会在 `-PromptTimeoutSeconds` 后自动落默认值，因此无人值守时不会卡住；仍可用 `-AddIds`、`-ExcludeIds`、`-ExcludePaths` 跳过对应提问（与脚本实现一致）。
+**人类在 Windows 本机终端**：需要脚本内交互时，使用 **`-Interactive`**（且 stdin 未重定向），脚本会依次（若存在）提示：① 未跟踪/未版本管理候选是否 `git add`/`svn add`；② 是否排除本次提交项。每一步都会在 `-PromptTimeoutSeconds` 后自动落默认值，因此无人值守时不会卡住；仍可用 `-AddPaths`、`-ExcludePaths` 跳过对应提问。`-AddIds`、`-ExcludeIds` 只适合人工对当前窗口快照编号操作；非交互自动化默认禁止使用编号，除非显式传 `-AllowUnstableIds`。
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/get-working-changes.ps1 -Interactive -PromptTimeoutSeconds 30
@@ -82,7 +82,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_c
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/get-working-changes.ps1 -NonInteractive -UseDefaultExcludes false
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/get-working-changes.ps1 -NonInteractive -ScanUntrackedForNeedsAdd false
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/get-working-changes.ps1 -NonInteractive -PromptTimeoutSeconds 20
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/invoke-working-changes-interactive.ps1 -NonInteractive -WindowStyle Hidden -AddIds @(3,8) -ExcludeIds @(12,15)
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .claude/skills/git_svn_commitlog_generator/scripts/invoke-working-changes-interactive.ps1 -NonInteractive -WindowStyle Hidden -AddPaths @('src/NewFeature.cs','docs/spec.md') -ExcludePaths @('docs/draft.md')
 ```
 
 JSON 关键字段（与脚本一致）：
@@ -119,7 +119,7 @@ JSON 关键字段（与脚本一致）：
 - 闭包读取边界必须严格：只能读取已在 `ItemsIncludedDefaultLog` 中的文件，以及已经被上一层高可信引用命中的 `NeedsAdd` / `ItemsExcluded` 候选；不得为了找更多依赖去扫描目录、枚举同级文件或读取未命中的候选。
 - 如果发现待提交文件引用了 `NeedsAdd` 候选，必须提示“未版本管理但被使用”；如果引用了 `ItemsExcluded` 候选，必须提示“已手动排除但被使用”。
 - 命中时必须先向用户展示 `### 依赖关系核对`，表格一次性列出完整闭包：引用链路、直接引用来源文件、风险文件、风险类型、判断依据、推荐动作。随后询问用户是否调整范围；不得自行执行 `git add`、`svn add` 或取消排除。
-- 用户确认调整后，模型必须重新调用 `invoke-working-changes-interactive.ps1 -NonInteractive -WindowStyle Hidden`，用 `-AddIds` 指定要加入的 `NeedsAdd` 编号，并用 `-ExcludeIds` / `-ExcludePaths` 只保留用户仍要排除的项；刷新 JSON 后再执行一次 Step 2.1 校验闭包结果。若没有新命中，才能继续生成日志；若仍有新命中，必须一次性展示新增闭包并再次询问。
+- 用户确认调整后，模型必须重新调用 `invoke-working-changes-interactive.ps1 -NonInteractive -WindowStyle Hidden`，用 `-AddPaths` 指定要加入的 `NeedsAdd` 路径，并用 `-ExcludePaths` 表达用户仍要排除的项；刷新 JSON 后再执行一次 Step 2.1 校验闭包结果。若没有新命中，才能继续生成日志；若仍有新命中，必须一次性展示新增闭包并再次询问。禁止把上一轮 JSON 里的 `Id` 当作下一轮 `-AddIds` / `-ExcludeIds` 使用，因为重采集后编号可能漂移到其他文件。
 - 如果用户选择维持原选择，模型继续只基于 `ItemsIncludedDefaultLog` 生成日志；不得把未加入或仍排除的文件写进提交日志的变更范围，但应在日志前说明依赖核对风险已由用户选择保留。
 - 非交互 / CI / 用户明确要求不要弹窗时，不自动调整范围；若发现依赖风险，只输出核对结果并按当前范围生成日志。
 

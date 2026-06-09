@@ -13,7 +13,9 @@ param(
   [object]$UseDefaultExcludes = $true,
   [string[]]$ExcludeIds = @(),
   [string[]]$ExcludePaths = @(),
-  [string[]]$AddIds = @()
+  [string[]]$AddIds = @(),
+  [string[]]$AddPaths = @(),
+  [switch]$AllowUnstableIds
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,6 +34,66 @@ function To-Bool([object]$v, [bool]$defaultValue) {
   if ($s -in @("1","true","t","yes","y","on")) { return $true }
   if ($s -in @("0","false","f","no","n","off")) { return $false }
   return $defaultValue
+}
+
+function Normalize-SelectionPath([string]$path, [string]$rootFull) {
+  if (-not $path) { return "" }
+  $p = $path.Trim().Trim('"').Trim("'")
+  if (-not $p) { return "" }
+
+  try {
+    if ([System.IO.Path]::IsPathRooted($p)) {
+      $full = [System.IO.Path]::GetFullPath($p)
+      $root = [System.IO.Path]::GetFullPath($rootFull).TrimEnd('\','/')
+      $prefix = $root + [System.IO.Path]::DirectorySeparatorChar
+      if ($full.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $p = $full.Substring($prefix.Length)
+      } elseif ($full.Equals($root, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $p = ""
+      }
+    }
+  } catch {
+  }
+
+  $p = $p -replace '\\','/'
+  while ($p.StartsWith("./")) { $p = $p.Substring(2) }
+  return $p.TrimStart('/')
+}
+
+function Get-ItemSelectionPathKeys($item, [string]$rootFull) {
+  $raw = New-Object 'System.Collections.Generic.List[string]'
+  foreach ($name in @("Path", "GitRepoPath", "GitRepoRenamedFrom")) {
+    $value = Get-ItemPropText -item $item -name $name
+    if ($value) { [void]$raw.Add($value) }
+  }
+
+  $gitRepoRelRoot = Get-ItemPropText -item $item -name "GitRepoRelRoot"
+  $gitRepoPath = Get-ItemPropText -item $item -name "GitRepoPath"
+  if ($gitRepoRelRoot -and $gitRepoPath) {
+    [void]$raw.Add(("{0}/{1}" -f $gitRepoRelRoot.TrimEnd('/'), $gitRepoPath))
+  }
+
+  $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+  foreach ($value in $raw) {
+    $norm = Normalize-SelectionPath -path $value -rootFull $rootFull
+    if ($norm -and $seen.Add($norm)) { $norm }
+  }
+}
+
+function Test-ItemSelectionPath($item, $selectionPathSet, [string]$rootFull, [bool]$AllowDirectoryPrefix) {
+  if ($null -eq $selectionPathSet -or $selectionPathSet.Count -eq 0) { return $false }
+  $keys = @(Get-ItemSelectionPathKeys -item $item -rootFull $rootFull)
+  foreach ($key in $keys) {
+    if ($selectionPathSet.Contains($key)) { return $true }
+    if ($AllowDirectoryPrefix) {
+      foreach ($selected in $selectionPathSet) {
+        if (-not $selected -or -not $selected.EndsWith("/")) { continue }
+        if ($key.StartsWith($selected, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+      }
+    }
+  }
+
+  return $false
 }
 
 function Test-WindowsConsoleChoice {
@@ -1230,6 +1292,13 @@ if ($PromptTimeoutSeconds -lt 1) { $PromptTimeoutSeconds = 30 }
 $IncludeDiff = To-Bool -v $IncludeDiff -defaultValue $true
 $Svn = To-Bool -v $Svn -defaultValue $true
 $UseDefaultExcludes = To-Bool -v $UseDefaultExcludes -defaultValue $true
+if ($nonInteractiveMode -and -not $AllowUnstableIds.IsPresent) {
+  $hasAddIds = @($AddIds | Where-Object { $null -ne $_ -and $_ -ne "" }).Count -gt 0
+  $hasExcludeIds = @($ExcludeIds | Where-Object { $null -ne $_ -and $_ -ne "" }).Count -gt 0
+  if ($hasAddIds -or $hasExcludeIds) {
+    throw "非交互自动化禁止使用跨采集不稳定编号参数 -AddIds/-ExcludeIds；请改用 -AddPaths/-ExcludePaths。若确认只针对当前快照，可显式传 -AllowUnstableIds。"
+  }
+}
 $hasGit = Test-IsGitRepo -rootFull $rootFull
 $gitRepoRoot = $rootFull
 if ($hasGit) {
@@ -1317,11 +1386,11 @@ foreach ($id in $ExcludeIds) {
   $v = 0
   if ([int]::TryParse($id, [ref]$v)) { [void]$excludeIdSet.Add($v) }
 }
-$excludePathSet = New-Object System.Collections.Generic.HashSet[string]
+$excludePathSet = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
 foreach ($p in $ExcludePaths) {
   if (-not $p) { continue }
-  $norm = $p.Trim() -replace '\\','/'
-  [void]$excludePathSet.Add($norm)
+  $norm = Normalize-SelectionPath -path $p -rootFull $rootFull
+  if ($norm) { [void]$excludePathSet.Add($norm) }
 }
 
 # Assign stable ids by (Source, Path, ...), then filter by id/path
@@ -1373,20 +1442,9 @@ foreach ($item in @($items | Where-Object { $_.Source -eq "svn" })) {
   if ($info.RepoUuid) { $item.SvnRepoUuid = $info.RepoUuid }
 }
 
-function Is-ExcludedItem($item, $excludeIdSet, $excludePathSet) {
+function Is-ExcludedItem($item, $excludeIdSet, $excludePathSet, [string]$rootFull) {
   if ($excludeIdSet.Contains([int]$item.Id)) { return $true }
-  $p = $item.Path
-  foreach ($ex in $excludePathSet) {
-    if (-not $ex) { continue }
-    if ($p -eq $ex) { return $true }
-    if ($ex.EndsWith("/")) {
-      if ($p.StartsWith($ex)) { return $true }
-    } else {
-      # treat as prefix if ends with wildcard-like slash missing? keep exact unless caller adds /
-      continue
-    }
-  }
-  return $false
+  return (Test-ItemSelectionPath -item $item -selectionPathSet $excludePathSet -rootFull $rootFull -AllowDirectoryPrefix $true)
 }
 
 function Is-GitUntracked($item) {
@@ -1529,6 +1587,7 @@ function Refresh-ItemsAfterVersionControlAdd(
 }
 
 $addIdSet = New-Object System.Collections.Generic.HashSet[int]
+$addPathSet = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::OrdinalIgnoreCase)
 $addAllCandidates = $false
 foreach ($aid in $AddIds) {
   if ($aid -and $aid.Trim().ToLowerInvariant() -eq "all") {
@@ -1537,6 +1596,10 @@ foreach ($aid in $AddIds) {
   }
   $v = 0
   if ([int]::TryParse($aid, [ref]$v)) { [void]$addIdSet.Add($v) }
+}
+foreach ($p in $AddPaths) {
+  $norm = Normalize-SelectionPath -path $p -rootFull $rootFull
+  if ($norm) { [void]$addPathSet.Add($norm) }
 }
 
 $consoleChoiceUsed = $false
@@ -1568,7 +1631,8 @@ if (-not $nonInteractiveMode -and (Test-WindowsConsoleChoice)) {
 
 $addActions = @()
 foreach ($it in $items) {
-  if ($addAllCandidates -or $addIdSet.Contains([int]$it.Id)) {
+  $matchesAddPath = Test-ItemSelectionPath -item $it -selectionPathSet $addPathSet -rootFull $rootFull -AllowDirectoryPrefix $false
+  if ($addAllCandidates -or $addIdSet.Contains([int]$it.Id) -or $matchesAddPath) {
     $kind = if (((Is-GitUntracked $it) -or (Is-SvnUnversioned $it)) -and (Is-CommonAddCandidate $it)) {
       if (Is-GitUntracked $it) { "git-add" } else { "svn-add" }
     } else { "" }
@@ -1605,7 +1669,7 @@ if (-not $nonInteractiveMode -and (Test-WindowsConsoleChoice)) {
   $excludeStepTitle = if ($ScanUntrackedForNeedsAdd) { "步骤 2/2" } else { "步骤 1/1" }
   $excludePromptList = @(
     $items | Where-Object {
-      (Is-TrackedPendingChange $_) -and -not (Is-ExcludedItem -item $_ -excludeIdSet $excludeIdSet -excludePathSet $excludePathSet)
+      (Is-TrackedPendingChange $_) -and -not (Is-ExcludedItem -item $_ -excludeIdSet $excludeIdSet -excludePathSet $excludePathSet -rootFull $rootFull)
     } | Sort-Object Id
   )
 
@@ -1643,7 +1707,7 @@ if (-not $nonInteractiveMode -and (Test-WindowsConsoleChoice)) {
 $excluded = @()
 $included = @()
 foreach ($it in $items) {
-  if (Is-ExcludedItem -item $it -excludeIdSet $excludeIdSet -excludePathSet $excludePathSet) { $excluded += $it } else { $included += $it }
+  if (Is-ExcludedItem -item $it -excludeIdSet $excludeIdSet -excludePathSet $excludePathSet -rootFull $rootFull) { $excluded += $it } else { $included += $it }
 }
 
 $needsAdd = @($included | Where-Object { ((Is-GitUntracked $_) -or (Is-SvnUnversioned $_)) -and (Is-CommonAddCandidate $_) } | Sort-Object Id)
@@ -1726,9 +1790,12 @@ $out = [pscustomobject]@{
     NonInteractive = $nonInteractiveMode
     PromptTimeoutSeconds = $PromptTimeoutSeconds
     ConsoleChoiceUsed = $consoleChoiceUsed
+    AllowUnstableIds = $AllowUnstableIds.IsPresent
   }
   Add = [pscustomobject]@{
     AddIds = @($AddIds)
+    AddPaths = @($AddPaths)
+    ResolvedAddPaths = @($addPathSet)
     Actions = @($addActions)
   }
   StateRefresh = [pscustomobject]@{
@@ -1740,6 +1807,7 @@ $out = [pscustomobject]@{
   Exclude = [pscustomobject]@{
     ExcludeIds = @($ExcludeIds)
     ExcludePaths = @($ExcludePaths)
+    ResolvedExcludePaths = @($excludePathSet)
   }
   Git = [pscustomobject]@{
     HasRepo = $hasGit

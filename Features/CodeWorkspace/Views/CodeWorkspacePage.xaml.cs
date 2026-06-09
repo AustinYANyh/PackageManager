@@ -1640,6 +1640,7 @@ SVN冲突/树冲突：
                    + "必须直接运行下面这个绝对路径脚本完成 Step 1："
                    + $"powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"{workingChangesScriptPath}\" -PromptTimeoutSeconds 30 -StateDir \"{stateDirectoryPath}\"。"
                    + $"脚本会打开/等待交互并生成 JSON；Step 1 结束后生成日志时优先读取轻量模型状态文件：\"{lastChangesModelJsonPath}\"。"
+                   + "如果依赖核对后需要重新采集并调整范围，必须用 -AddPaths/-ExcludePaths 传稳定仓库相对路径；Id 只属于单次采集快照，禁止跨采集复用 -AddIds/-ExcludeIds。"
                    + $"完整状态文件只供 Step 3 提交脚本使用：\"{lastChangesJsonPath}\"，不要为了生成日志读取完整文件，除非轻量文件缺失或字段不完整。"
                    + "不要读取仓库 .claude/skills 里的 .state/last_changes.json，也不要读取内嵌 skill 默认 .state/last_changes.json。"
                    + $"之后按脚本包 SKILL.md 的规则生成提交日志，并调用这个提交确认脚本：\"{commitPushScriptPath}\"。"

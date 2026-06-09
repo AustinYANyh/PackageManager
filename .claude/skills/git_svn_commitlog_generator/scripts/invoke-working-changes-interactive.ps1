@@ -9,8 +9,10 @@ param(
   [object]$Svn = $true,
   [object]$UseDefaultExcludes = $true,
   [string[]]$AddIds = @(),
+  [string[]]$AddPaths = @(),
   [string[]]$ExcludeIds = @(),
   [string[]]$ExcludePaths = @(),
+  [switch]$AllowUnstableIds,
   [string]$StateDir = "",
   [ValidateSet("Normal","Hidden","Minimized","Maximized")]
   [string]$WindowStyle = "Normal"
@@ -147,13 +149,15 @@ $outQ = Quote-ForSingleQuotedPowerShell $out
 $errQ = Quote-ForSingleQuotedPowerShell $err
 $selectionArgs = ""
 $selectionArgs += ConvertTo-SingleQuotedArrayArgument -ParameterName "AddIds" -Values $AddIds
+$selectionArgs += ConvertTo-SingleQuotedArrayArgument -ParameterName "AddPaths" -Values $AddPaths
 $selectionArgs += ConvertTo-SingleQuotedArrayArgument -ParameterName "ExcludeIds" -Values $ExcludeIds
 $selectionArgs += ConvertTo-SingleQuotedArrayArgument -ParameterName "ExcludePaths" -Values $ExcludePaths
+$unstableIdsArg = if ($AllowUnstableIds.IsPresent) { " -AllowUnstableIds" } else { "" }
 
 $innerCommand = @"
 try {
   `$ErrorActionPreference = 'Stop'
-  & '$collectorQ' -Root '$rootQ' $interactionArg -PromptTimeoutSeconds $PromptTimeoutSeconds -ScanUntrackedForNeedsAdd $scanText -IncludeDiff $includeDiffText -MaxDiffBytesPerFile $MaxDiffBytesPerFile -MaxFilesWithDiff $MaxFilesWithDiff -Svn $svnText -UseDefaultExcludes $useDefaultExcludesText$selectionArgs | Set-Content -LiteralPath '$outQ' -Encoding UTF8
+  & '$collectorQ' -Root '$rootQ' $interactionArg -PromptTimeoutSeconds $PromptTimeoutSeconds -ScanUntrackedForNeedsAdd $scanText -IncludeDiff $includeDiffText -MaxDiffBytesPerFile $MaxDiffBytesPerFile -MaxFilesWithDiff $MaxFilesWithDiff -Svn $svnText -UseDefaultExcludes $useDefaultExcludesText$selectionArgs$unstableIdsArg | Set-Content -LiteralPath '$outQ' -Encoding UTF8
 } catch {
   (`$_ | Out-String) | Set-Content -LiteralPath '$errQ' -Encoding UTF8
   exit 1
