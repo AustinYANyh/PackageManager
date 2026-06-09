@@ -222,7 +222,7 @@ public partial class PingCodeAiExecutionWindow : Window, INotifyPropertyChanged
             return null;
         }
 
-        var targetDir = Path.Combine(repoPath, ".pm-ai", "images");
+        var targetDir = GetWorkItemImageDirectory(repoPath);
         if (Directory.Exists(targetDir))
         {
             Directory.Delete(targetDir, true);
@@ -232,20 +232,60 @@ public partial class PingCodeAiExecutionWindow : Window, INotifyPropertyChanged
         var sb = new StringBuilder();
         sb.AppendLine("## 工作项图片（已下载到本地）");
         sb.AppendLine("以下图片已保存到仓库本地，请直接读取这些文件来理解截图、示意图等视觉信息。");
+        var copiedCount = 0;
         foreach (var img in successImages)
         {
             var destPath = Path.Combine(targetDir, img.FileName);
             try
             {
                 File.Copy(img.LocalPath, destPath, true);
-                sb.AppendLine($"- .pm-ai/images/{img.FileName}（来源：{img.SourceContext}）");
+                copiedCount++;
+                sb.AppendLine($"- {ToRepoRelativePath(repoPath, destPath)}（来源：{img.SourceContext}）");
             }
             catch
             {
             }
         }
 
-        return sb.ToString();
+        return copiedCount == 0 ? null : sb.ToString();
+    }
+
+    private string GetWorkItemImageDirectory(string repoPath)
+    {
+        return Path.Combine(repoPath, ".pm-ai", "work-items", GetSafeWorkItemKey(), "images");
+    }
+
+    private string GetSafeWorkItemKey()
+    {
+        var key = request.Identifier;
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            key = request.WorkItemId;
+        }
+
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            key = "unknown";
+        }
+
+        var invalidChars = Path.GetInvalidFileNameChars();
+        var chars = key.Trim()
+            .Select(ch => invalidChars.Contains(ch) ? '_' : ch)
+            .ToArray();
+        var safe = new string(chars).Trim('.', ' ');
+        return string.IsNullOrWhiteSpace(safe) ? "unknown" : safe;
+    }
+
+    private static string ToRepoRelativePath(string repoPath, string fullPath)
+    {
+        var relative = fullPath;
+        if (!string.IsNullOrWhiteSpace(repoPath) &&
+            fullPath.StartsWith(repoPath, StringComparison.OrdinalIgnoreCase))
+        {
+            relative = fullPath.Substring(repoPath.Length).TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+
+        return relative.Replace(Path.DirectorySeparatorChar, '/').Replace(Path.AltDirectorySeparatorChar, '/');
     }
 
     private string BuildPingCodeTokenSection()

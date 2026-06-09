@@ -128,7 +128,7 @@ public class PingCodeWorkItemPromptService
         sb.AppendLine("- 如果没有现成可用的 DesktopDebugLoggerBase 派生日志类，就新增一个继承 DesktopDebugLoggerBase 的调试日志类。");
         sb.AppendLine("- 缺证据时先加最小必要调试日志，日志应输出到桌面，等待用户复现并提供日志后，再基于日志精准分析和修复。");
         sb.AppendLine("- 加日志时只记录定位所需的关键上下文，不要记录敏感信息，不要引入无关重构。");
-        sb.AppendLine("- 工作项中的图片已下载到仓库 .pm-ai/images/ 目录，请直接读取这些本地图片文件来理解截图、示意图等视觉信息。");
+        sb.AppendLine("- 如果 prompt 末尾列出了本地图片路径，请只读取这些明确列出的图片文件来理解截图、示意图等视觉信息，不要扫描历史图片目录。");
         sb.AppendLine();
         AiPromptProtocolService.AppendCodeGraphProtocol(sb);
         sb.AppendLine("### 链接访问规则");
