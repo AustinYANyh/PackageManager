@@ -132,14 +132,12 @@ public class PingCodeWorkItemPromptService
         sb.AppendLine();
         AiPromptProtocolService.AppendCodeGraphProtocol(sb);
         sb.AppendLine("### 链接访问规则");
-        sb.AppendLine("**重要：不要用 WebFetch 或 curl 访问网页链接**——它们只能拿到 SPA 空壳 HTML，拿不到实际内容。");
-        sb.AppendLine("访问任何网页链接时，统一使用 headless Edge 渲染后获取完整 DOM：");
-        sb.AppendLine("```bash");
-        sb.AppendLine("powershell.exe -NoProfile -Command \"& (Get-Command msedge).Source --headless --disable-gpu --dump-dom '<URL>'\"");
-        sb.AppendLine("```");
+        sb.AppendLine("**优先读取 prompt 末尾列出的本地图片/HTML 资料**。PackageManager 会尽量预下载工作项图片和内网 Axure/网页资源到仓库 `.pm-ai/work-items/...` 目录。");
+        sb.AppendLine("如果末尾列出了“内网网页资料（已下载到本地）”，其中的 `[页面图片]` 通常就是方案/原型正文；多模态模型必须直接读取这些图片理解需求，不要因为网页 DOM 文本少就判断“没数据”。");
+        sb.AppendLine("只有没有本地下载资料或资料下载失败时，才自行访问链接。普通 WebFetch/curl/headless DOM 可能只能拿到页面壳，不能作为唯一依据。");
         sb.AppendLine("- **内网链接**（192.168.x.x、10.x.x.x 等内网地址）：无需认证，直接访问。务必主动访问获取方案、设计、原型等完整信息。");
         sb.AppendLine("- **PingCode 链接**（*.pingcode.com）：需要在 URL 后追加 access_token 参数认证（见 prompt 末尾的凭证信息）。");
-        sb.AppendLine("- **内网 Axure 原型**：start.html 是空壳框架。正确做法：先访问同目录下 `data/document.js` 提取各子页面的 `url` 字段，然后逐个访问子页面 HTML。");
+        sb.AppendLine("- **内网 Axure 原型**：start.html/首页通常是空壳框架。正确做法：先访问同目录下 `data/document.js` 提取各子页面的 `url` 字段，再逐个访问子页面 HTML。很多子页面正文实际是一张 `images/<页面名>/u*.png` 大图，必须下载或读取该图片。");
         sb.AppendLine();
     }
 

@@ -50,3 +50,28 @@ public class DownloadedImage
         ? $"{FileName}（{SourceContext}）"
         : $"{FileName}（{SourceContext}）- 失败：{Error}";
 }
+
+public class DownloadedIntranetResource
+{
+    public string OriginalUrl { get; set; }
+
+    public string LocalPath { get; set; }
+
+    public string FileName { get; set; }
+
+    public string SourceContext { get; set; }
+
+    public string Title { get; set; }
+
+    public string ResourceKind { get; set; }
+
+    public bool Success { get; set; }
+
+    public string Error { get; set; }
+
+    public bool IsImage => string.Equals(ResourceKind, "Image", System.StringComparison.OrdinalIgnoreCase);
+
+    public string DisplayText => Success
+        ? $"{FileName}（{ResourceKind}，{SourceContext}）"
+        : $"{FileName}（{ResourceKind}，{SourceContext}）- 失败：{Error}";
+}

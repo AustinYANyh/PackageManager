@@ -217,6 +217,7 @@
         <Compile Include="Features\PingCode\Models\PingCodeAiPromptRequest.cs" />
         <Compile Include="Features\PingCode\Services\PingCodeWorkItemPromptService.cs" />
         <Compile Include="Features\PingCode\Services\PingCodeImageDownloadService.cs" />
+        <Compile Include="Features\PingCode\Services\IntranetPageDownloadService.cs" />
         <Compile Include="Features\PingCode\Services\PingCodeApiService.cs" />
         <Compile Include="Features\PingCode\Services\PingCodeApiService.Attachments.cs" />
         <Compile Include="Features\PingCode\Services\PingCodeApiService.Authentication.cs" />

@@ -46,9 +46,11 @@
             <GroupBox Grid.Column="0" Header="提炼出的链接与图片" Margin="0,0,10,0">
                 <Grid>
                     <Grid.RowDefinitions>
+                        <RowDefinition Height="2*" />
+                        <RowDefinition Height="Auto" />
                         <RowDefinition Height="*" />
                         <RowDefinition Height="Auto" />
-                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="*" />
                     </Grid.RowDefinitions>
                     <controls:CListView Grid.Row="0" ItemsSource="{Binding Links}"
                                         BorderThickness="0"
@@ -69,7 +71,19 @@
                     <TextBlock Grid.Row="1" Text="已提取图片" FontWeight="SemiBold" Margin="0,8,0,4" Foreground="#1F2937" />
                     <controls:CListView Grid.Row="2" ItemsSource="{Binding DownloadedImages}"
                                         BorderThickness="0"
-                                        MaxHeight="160"
+                                        ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                        ScrollViewer.VerticalScrollBarVisibility="Auto">
+                        <controls:CListView.ItemTemplate>
+                            <DataTemplate>
+                                <Border Padding="4" Margin="0,0,0,4" BorderBrush="#E5E7EB" BorderThickness="0,0,0,1">
+                                    <TextBlock Text="{Binding DisplayText}" TextWrapping="Wrap" Foreground="#374151" />
+                                </Border>
+                            </DataTemplate>
+                        </controls:CListView.ItemTemplate>
+                    </controls:CListView>
+                    <TextBlock Grid.Row="3" Text="已下载内网页面资源" FontWeight="SemiBold" Margin="0,8,0,4" Foreground="#1F2937" />
+                    <controls:CListView Grid.Row="4" ItemsSource="{Binding DownloadedIntranetResources}"
+                                        BorderThickness="0"
                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                                         ScrollViewer.VerticalScrollBarVisibility="Auto">
                         <controls:CListView.ItemTemplate>

@@ -23,9 +23,11 @@ public partial class PingCodeAiExecutionWindow : Window, INotifyPropertyChanged
     private readonly DataPersistenceService dataPersistenceService;
     private readonly AiCliLaunchService aiCliLaunchService;
     private readonly PingCodeImageDownloadService imageDownloadService;
+    private readonly IntranetPageDownloadService intranetPageDownloadService;
     private readonly string initialPrompt;
     private readonly string accessToken;
     private readonly string tempImageDirectory;
+    private readonly string tempIntranetDirectory;
     private CodeRepository selectedRepository;
     private string promptText;
     private string statusText;
@@ -38,9 +40,11 @@ public partial class PingCodeAiExecutionWindow : Window, INotifyPropertyChanged
         dataPersistenceService = ServiceLocator.Resolve<DataPersistenceService>() ?? new DataPersistenceService();
         aiCliLaunchService = ServiceLocator.Resolve<AiCliLaunchService>() ?? new AiCliLaunchService();
         imageDownloadService = new PingCodeImageDownloadService();
+        intranetPageDownloadService = new IntranetPageDownloadService();
         initialPrompt = request.InitialPrompt ?? string.Empty;
         promptText = initialPrompt;
         tempImageDirectory = Path.Combine(Path.GetTempPath(), $"pm-ai-images-{request.WorkItemId ?? "unknown"}");
+        tempIntranetDirectory = Path.Combine(Path.GetTempPath(), $"pm-ai-intranet-{request.WorkItemId ?? "unknown"}");
         InitializeComponent();
         DataContext = this;
         LoadRepositories();
@@ -54,6 +58,8 @@ public partial class PingCodeAiExecutionWindow : Window, INotifyPropertyChanged
     public ObservableCollection<PingCodePromptLink> Links { get; } = new ObservableCollection<PingCodePromptLink>();
 
     public ObservableCollection<DownloadedImage> DownloadedImages { get; } = new ObservableCollection<DownloadedImage>();
+
+    public ObservableCollection<DownloadedIntranetResource> DownloadedIntranetResources { get; } = new ObservableCollection<DownloadedIntranetResource>();
 
     public string HeaderText => $"PingCode AI {request.ActionKind}: {request.Title}";
 
@@ -143,16 +149,27 @@ public partial class PingCodeAiExecutionWindow : Window, INotifyPropertyChanged
                 Directory.Delete(tempImageDirectory, true);
             }
 
+            if (Directory.Exists(tempIntranetDirectory))
+            {
+                Directory.Delete(tempIntranetDirectory, true);
+            }
+
             var images = await imageDownloadService.DownloadImagesAsync(workItemDetails, accessToken, tempImageDirectory);
             foreach (var img in images)
             {
                 DownloadedImages.Add(img);
             }
 
+            StatusText = "正在下载内网页面资源...";
+            var intranetResources = await intranetPageDownloadService.DownloadPagesAsync(request.Links, tempIntranetDirectory);
+            foreach (var resource in intranetResources)
+            {
+                DownloadedIntranetResources.Add(resource);
+            }
+
             var imgSuccess = images.Count(x => x.Success);
-            StatusText = images.Count == 0
-                ? "未发现图片。已加载 " + Repositories.Count + " 个代码仓库。"
-                : $"已提取：图片 {imgSuccess}/{images.Count}。";
+            var intranetSuccess = intranetResources.Count(x => x.Success);
+            StatusText = $"已提取：工作项图片 {imgSuccess}/{images.Count}，内网页面资源 {intranetSuccess}/{intranetResources.Count}。";
         }
         catch (Exception ex)
         {
@@ -182,6 +199,12 @@ public partial class PingCodeAiExecutionWindow : Window, INotifyPropertyChanged
             if (!string.IsNullOrWhiteSpace(imageSection))
             {
                 finalPrompt = finalPrompt + "\n\n" + imageSection;
+            }
+
+            var intranetSection = CopyIntranetResourcesToRepoAndBuildPromptSection(SelectedRepository.Path);
+            if (!string.IsNullOrWhiteSpace(intranetSection))
+            {
+                finalPrompt = finalPrompt + "\n\n" + intranetSection;
             }
 
             if (!string.IsNullOrWhiteSpace(accessToken))
@@ -250,9 +273,71 @@ public partial class PingCodeAiExecutionWindow : Window, INotifyPropertyChanged
         return copiedCount == 0 ? null : sb.ToString();
     }
 
+    private string CopyIntranetResourcesToRepoAndBuildPromptSection(string repoPath)
+    {
+        var resources = DownloadedIntranetResources.Where(x => x.Success).ToList();
+        var failedResources = DownloadedIntranetResources.Where(x => !x.Success).ToList();
+        if (resources.Count == 0 && failedResources.Count == 0)
+        {
+            return null;
+        }
+
+        var targetDir = GetIntranetResourceDirectory(repoPath);
+        if (Directory.Exists(targetDir))
+        {
+            Directory.Delete(targetDir, true);
+        }
+
+        Directory.CreateDirectory(targetDir);
+        var sb = new StringBuilder();
+        sb.AppendLine("## 内网网页资料（已下载到本地）");
+        sb.AppendLine("工作项中的内网 Axure/网页内容已尽量下载到仓库本地。很多 Axure 页面正文不是 DOM 文本，而是一张页面截图图片；多模态模型请直接读取下面列出的图片文件来理解需求。");
+        var copiedImages = 0;
+        var copiedHtml = 0;
+        foreach (var resource in resources)
+        {
+            var destPath = Path.Combine(targetDir, resource.FileName);
+            try
+            {
+                File.Copy(resource.LocalPath, destPath, true);
+                var relativePath = ToRepoRelativePath(repoPath, destPath);
+                if (resource.IsImage)
+                {
+                    copiedImages++;
+                    sb.AppendLine($"- [页面图片] {relativePath}（标题：{resource.Title ?? "未命名"}；来源：{resource.SourceContext}；原始地址：{resource.OriginalUrl}）");
+                }
+                else
+                {
+                    copiedHtml++;
+                    sb.AppendLine($"- [页面HTML] {relativePath}（标题：{resource.Title ?? "未命名"}；来源：{resource.SourceContext}；原始地址：{resource.OriginalUrl}）");
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        if (failedResources.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("以下内网页面资源下载失败，不要把它们误判为没有需求数据：");
+            foreach (var resource in failedResources)
+            {
+                sb.AppendLine($"- {resource.OriginalUrl}（来源：{resource.SourceContext}；错误：{resource.Error}）");
+            }
+        }
+
+        return copiedImages == 0 && copiedHtml == 0 && failedResources.Count == 0 ? null : sb.ToString();
+    }
+
     private string GetWorkItemImageDirectory(string repoPath)
     {
         return Path.Combine(repoPath, ".pm-ai", "work-items", GetSafeWorkItemKey(), "images");
+    }
+
+    private string GetIntranetResourceDirectory(string repoPath)
+    {
+        return Path.Combine(repoPath, ".pm-ai", "work-items", GetSafeWorkItemKey(), "intranet-pages");
     }
 
     private string GetSafeWorkItemKey()
