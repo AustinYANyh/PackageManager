@@ -36,6 +36,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
         private string _refreshButtonText = "刷新状态";
         private string _subRepositoryFilter;
         private CancellationTokenSource _autoRefreshCts;
+        private Task _aiCommitEnvironmentWarmupTask;
         private bool _hasLoaded;
         private bool _isRefreshingStatus;
         private bool _isCacheEventSubscribed;
@@ -131,6 +132,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
             _vcsCacheService.ApplyCachedStatuses(Repositories);
             RefreshSubRepositoryView();
             HandlePendingNavigationRequest();
+            StartAiCommitEnvironmentWarmup();
             if (!_hasLoaded)
             {
                 _hasLoaded = true;
@@ -386,6 +388,26 @@ namespace PackageManager.Features.CodeWorkspace.Views
             }
         }
 
+        private bool TryBeginRepositoryOperation(CodeRepository repo, string operationName)
+        {
+            if (repo.IsRepositoryOperationRunning)
+            {
+                StatusText = $"{repo.Name} 正在执行其他仓库操作，暂不能启动{operationName}。";
+                return false;
+            }
+
+            repo.IsRepositoryOperationRunning = true;
+            return true;
+        }
+
+        private static void EndRepositoryOperation(CodeRepository repo)
+        {
+            if (repo != null)
+            {
+                repo.IsRepositoryOperationRunning = false;
+            }
+        }
+
         private void ManageRepositoriesButton_Click(object sender, RoutedEventArgs e)
         {
             var page = new CodeRepositoryManagementPage();
@@ -561,6 +583,44 @@ namespace PackageManager.Features.CodeWorkspace.Views
             _autoRefreshCts?.Cancel();
         }
 
+        private void StartAiCommitEnvironmentWarmup()
+        {
+            if (_aiCommitEnvironmentWarmupTask != null)
+            {
+                return;
+            }
+
+            _aiCommitEnvironmentWarmupTask = Task.Run(() =>
+            {
+                try
+                {
+                    TryEnsureGlobalAiInstructions("AI 提交");
+                    _aiCommitSkillService.EnsureSkillAvailable(null);
+                }
+                catch (Exception ex)
+                {
+                    LoggingService.LogError(ex, "预热 AI 提交环境失败");
+                }
+            });
+        }
+
+        private async Task WaitForAiCommitEnvironmentWarmupAsync()
+        {
+            StartAiCommitEnvironmentWarmup();
+            var warmupTask = _aiCommitEnvironmentWarmupTask;
+            if (warmupTask == null)
+            {
+                return;
+            }
+
+            if (!warmupTask.IsCompleted)
+            {
+                StatusText = "AI 提交环境正在预热，完成后继续启动...";
+            }
+
+            await warmupTask;
+        }
+
         private void SyncRepositories()
         {
             var previousSelectionPath = NormalizePath(SelectedRepository?.Path);
@@ -652,10 +712,14 @@ namespace PackageManager.Features.CodeWorkspace.Views
 
         private async void DoPullRepository(CodeRepository repo)
         {
+            if (!TryBeginRepositoryOperation(repo, "拉取代码"))
+            {
+                return;
+            }
+
             StatusText = $"正在拉取代码: {repo.Name}";
             try
             {
-                repo.IsRefreshing = true;
                 var result = await PullRepositoryAsync(repo);
                 if (result.HasConflicts)
                 {
@@ -697,7 +761,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
             }
             finally
             {
-                repo.IsRefreshing = false;
+                EndRepositoryOperation(repo);
             }
         }
 
@@ -713,9 +777,8 @@ namespace PackageManager.Features.CodeWorkspace.Views
 
         private async Task DoAiCommitAsync(CodeRepository repo, string engineName, string commandName, string commandPrefix)
         {
-            if (repo.IsRefreshing)
+            if (!TryBeginRepositoryOperation(repo, $"{engineName} 提交"))
             {
-                StatusText = $"{repo.Name} 仓库状态刷新或其他操作尚未结束，请稍后重试。";
                 return;
             }
 
@@ -723,8 +786,8 @@ namespace PackageManager.Features.CodeWorkspace.Views
             var globalInstructionWarning = string.Empty;
             try
             {
-                repo.IsRefreshing = true;
                 StatusText = $"正在准备 {engineName} 提交环境...";
+                await WaitForAiCommitEnvironmentWarmupAsync();
                 skillInfo = await Task.Run(() =>
                 {
                     EnsureCommandExists(commandName);
@@ -738,10 +801,6 @@ namespace PackageManager.Features.CodeWorkspace.Views
                 StatusText = $"{engineName} 提交环境准备失败: {ex.Message}";
                 MessageBox.Show($"{engineName} 提交环境准备失败: {ex.Message}", $"{engineName} 提交", MessageBoxButton.OK, MessageBoxImage.Error);
                 return;
-            }
-            finally
-            {
-                repo.IsRefreshing = false;
             }
 
             var syncedUserSkills = skillInfo.SyncedUserSkillPaths.Count == 0
@@ -784,6 +843,10 @@ Write-Host '仓库内 skill：' -ForegroundColor DarkCyan
                 LoggingService.LogError(ex, $"启动 {engineName} 提交流程失败: {repo.Path}");
                 StatusText = $"{engineName} 提交流程启动失败: {ex.Message}";
                 MessageBox.Show($"{engineName} 提交流程启动失败: {ex.Message}", $"{engineName} 提交", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                EndRepositoryOperation(repo);
             }
         }
 

@@ -9,6 +9,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
     public sealed class AiCommitSkillService
     {
         public const string SkillDirectoryName = "git_svn_commitlog_generator";
+        private static readonly object SkillSyncGate = new object();
 
         private static readonly IDictionary<string, string> EmbeddedSkillFiles = new Dictionary<string, string>
         {
@@ -22,33 +23,36 @@ namespace PackageManager.Features.CodeWorkspace.Services
 
         public AiCommitSkillInfo EnsureSkillAvailable(string repositoryPath)
         {
-            var sourcePath = ExtractEmbeddedSkill();
-            var skillMarkdownPath = Path.Combine(sourcePath, "SKILL.md");
-            var wrapperPath = Path.Combine(sourcePath, "scripts", "invoke-working-changes-interactive.ps1");
-            if (!File.Exists(skillMarkdownPath))
+            lock (SkillSyncGate)
             {
-                throw new FileNotFoundException($"找不到内嵌提交 skill 说明文件：{skillMarkdownPath}");
+                var sourcePath = ExtractEmbeddedSkill();
+                var skillMarkdownPath = Path.Combine(sourcePath, "SKILL.md");
+                var wrapperPath = Path.Combine(sourcePath, "scripts", "invoke-working-changes-interactive.ps1");
+                if (!File.Exists(skillMarkdownPath))
+                {
+                    throw new FileNotFoundException($"找不到内嵌提交 skill 说明文件：{skillMarkdownPath}");
+                }
+
+                if (!File.Exists(wrapperPath))
+                {
+                    throw new FileNotFoundException($"找不到内嵌提交采集脚本：{wrapperPath}");
+                }
+
+                var userSkillTargets = GetUserSkillTargets().ToList();
+                var syncedUserSkillPaths = new List<string>();
+                foreach (var target in userSkillTargets)
+                {
+                    SyncSkillDirectory(sourcePath, target);
+                    syncedUserSkillPaths.Add(target);
+                }
+
+                var repositorySkillPath = GetRepositorySkillTarget(repositoryPath);
+                var detectedRepositorySkillPath = !string.IsNullOrWhiteSpace(repositorySkillPath) && Directory.Exists(repositorySkillPath)
+                    ? repositorySkillPath
+                    : null;
+
+                return new AiCommitSkillInfo(sourcePath, sourcePath, skillMarkdownPath, wrapperPath, syncedUserSkillPaths, detectedRepositorySkillPath);
             }
-
-            if (!File.Exists(wrapperPath))
-            {
-                throw new FileNotFoundException($"找不到内嵌提交采集脚本：{wrapperPath}");
-            }
-
-            var userSkillTargets = GetUserSkillTargets().ToList();
-            var syncedUserSkillPaths = new List<string>();
-            foreach (var target in userSkillTargets)
-            {
-                SyncSkillDirectory(sourcePath, target);
-                syncedUserSkillPaths.Add(target);
-            }
-
-            var repositorySkillPath = GetRepositorySkillTarget(repositoryPath);
-            var detectedRepositorySkillPath = !string.IsNullOrWhiteSpace(repositorySkillPath) && Directory.Exists(repositorySkillPath)
-                ? repositorySkillPath
-                : null;
-
-            return new AiCommitSkillInfo(sourcePath, sourcePath, skillMarkdownPath, wrapperPath, syncedUserSkillPaths, detectedRepositorySkillPath);
         }
 
         public AiCommitRunStateInfo CreateRunState(string repositoryPath, string engineName)

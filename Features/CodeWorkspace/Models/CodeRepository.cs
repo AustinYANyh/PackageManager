@@ -42,6 +42,7 @@ namespace PackageManager.Features.CodeWorkspace.Models
         private ObservableCollection<VcsChangedFile> _rootSvnChangedFiles = new ObservableCollection<VcsChangedFile>();
         private DateTime _lastStatusRefresh;
         private bool _isRefreshing;
+        private bool _isRepositoryOperationRunning;
         private bool _hasConflict;
         private string _linkedPackageKey;
         private string _linkedPackageName;
@@ -515,6 +516,20 @@ namespace PackageManager.Features.CodeWorkspace.Models
                 if (SetProperty(ref _isRefreshing, value))
                 {
                     OnPropertyChanged(nameof(ChangesSummary));
+                    OnPropertyChanged(nameof(VcsTooltip));
+                    OnPropertyChanged(nameof(RootStatusDetail));
+                }
+            }
+        }
+
+        [JsonIgnore]
+        public bool IsRepositoryOperationRunning
+        {
+            get => _isRepositoryOperationRunning;
+            set
+            {
+                if (SetProperty(ref _isRepositoryOperationRunning, value))
+                {
                     OnPropertyChanged(nameof(VcsTooltip));
                     OnPropertyChanged(nameof(RootStatusDetail));
                 }

@@ -63,6 +63,23 @@ namespace PackageManager
 
             InitializeCommonStartupHotkey();
             codeWorkspaceVcsCache.StartWarmup();
+            StartAiCommitEnvironmentWarmup();
+        }
+
+        private static void StartAiCommitEnvironmentWarmup()
+        {
+            Task.Run(() =>
+            {
+                try
+                {
+                    AiGlobalInstructionService.EnsureCodeGraphInstructions();
+                    new AiCommitSkillService().EnsureSkillAvailable(null);
+                }
+                catch (Exception ex)
+                {
+                    LoggingService.LogError(ex, "启动时预热 AI 提交环境失败");
+                }
+            });
         }
 
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
