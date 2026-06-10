@@ -888,18 +888,23 @@ namespace
             long long elapsedMs = 0;
         };
 
-        struct EnumeratedVolume
-        {
-            wchar_t driveLetter = L'\0';
-            bool success = false;
-            std::vector<Record> records;
-            VolumeState volume;
-            std::string error;
-        };
+    struct EnumeratedVolume
+    {
+        wchar_t driveLetter = L'\0';
+        bool success = false;
+        std::vector<Record> records;
+        VolumeState volume;
+        std::string error;
+        std::size_t catchUpChangeCount = 0;
+        bool catchUpApplied = false;
+    };
 
         struct ShadowRepairSnapshot
         {
             wchar_t repairedDrive = L'\0';
+            std::uint64_t repairStartGeneration = 0;
+            std::unordered_set<std::uint64_t> preRepairOverlayRecordKeys;
+            std::unordered_set<std::uint64_t> preRepairOverlayDeletedKeys;
             std::vector<Record> records;
             std::unordered_map<wchar_t, VolumeState> volumes;
             NativeV2Accelerator v2;
@@ -912,6 +917,20 @@ namespace
             std::array<std::vector<std::uint32_t>, 26> driveIds;
             std::unordered_map<std::wstring, std::vector<std::uint32_t>> extensionIds;
             std::vector<FrnRecordIndexEntry> frnRecordIndex;
+        };
+
+        struct RepairOverlayMergeStats
+        {
+            std::size_t overlayRecordsSeen = 0;
+            std::size_t overlayRecordsAbsorbed = 0;
+            std::size_t overlayRecordsDroppedMissing = 0;
+            std::size_t overlayRecordsRetained = 0;
+            std::size_t overlayDeletesSeen = 0;
+            std::size_t overlayDeletesAbsorbed = 0;
+            std::size_t overlayDeletesRetained = 0;
+            std::size_t baselineSuppressedByOverlay = 0;
+            std::uint64_t repairStartGeneration = 0;
+            std::uint64_t repairCommitGeneration = 0;
         };
 
     public:
@@ -1314,6 +1333,20 @@ namespace
             if (action == "waitForDeltaIndexed" || action == "getDeltaState")
             {
                 return BuildDeltaStateJson(true, 0);
+            }
+
+            if (action == "simulateRepairOverlayDeleteRace")
+            {
+                int seed = 0;
+                TryReadJsonIntField(requestJson, "seed", seed);
+                return SimulateRepairOverlayDeleteRace(seed);
+            }
+
+            if (action == "simulateFullRebuildEnumerationDeleteRace")
+            {
+                int seed = 0;
+                TryReadJsonIntField(requestJson, "seed", seed);
+                return SimulateFullRebuildEnumerationDeleteRace(seed);
             }
 
             return BuildErrorJson("unknown-test-action");
@@ -2266,6 +2299,16 @@ namespace
             std::uint64_t lastFrn = std::numeric_limits<std::uint64_t>::max();
             std::uint32_t lastRecordIndex = std::numeric_limits<std::uint32_t>::max();
 
+            USN_JOURNAL_DATA_V0 startJournalData{};
+            const bool haveStartJournal = QueryJournal_NoLock(handle, startJournalData);
+            if (!haveStartJournal)
+            {
+                error = "query-start-journal-failed:" + std::to_string(GetLastError());
+                std::free(buffer);
+                CloseHandle(handle);
+                return false;
+            }
+
             MftEnumDataV0Native enumData{};
             enumData.StartFileReferenceNumber = 0;
             enumData.LowUsn = 0;
@@ -2397,6 +2440,52 @@ namespace
             {
                 volume.nextUsn = journalData.NextUsn;
                 volume.journalId = journalData.UsnJournalID;
+            }
+            else
+            {
+                error = "query-end-journal-failed:" + std::to_string(GetLastError());
+                std::free(buffer);
+                CloseHandle(handle);
+                return false;
+            }
+
+            if (startJournalData.UsnJournalID != journalData.UsnJournalID)
+            {
+                error = "journal-changed-during-enumeration";
+                std::free(buffer);
+                CloseHandle(handle);
+                return false;
+            }
+
+            if (startJournalData.NextUsn > 0 && startJournalData.NextUsn < journalData.NextUsn)
+            {
+                UsnReadState catchUpState;
+                catchUpState.driveLetter = driveLetter;
+                catchUpState.nextUsn = startJournalData.NextUsn;
+                catchUpState.journalId = startJournalData.UsnJournalID;
+                std::vector<NativeChange> catchUpChanges;
+                bool journalReset = false;
+                if (!CatchUpVolumeDetailed(catchUpState, nullptr, catchUpChanges, journalReset))
+                {
+                    error = journalReset
+                        ? "enumeration-window-catchup-journal-reset"
+                        : "enumeration-window-catchup-failed";
+                    std::free(buffer);
+                    CloseHandle(handle);
+                    return false;
+                }
+
+                ApplyUsnReadState(volume, std::move(catchUpState));
+                if (ApplyEnumerationWindowChanges(outRecords, volume, catchUpChanges))
+                {
+                    NativeLogWrite(
+                        "[NATIVE MFT ENUM CATCHUP] drive="
+                        + std::string(1, static_cast<char>(driveLetter))
+                        + " changes=" + std::to_string(catchUpChanges.size())
+                        + " startUsn=" + std::to_string(startJournalData.NextUsn)
+                        + " endUsn=" + std::to_string(volume.nextUsn)
+                        + " records=" + std::to_string(outRecords.size()));
+                }
             }
 
             outVolume = std::move(volume);
@@ -5138,6 +5227,59 @@ namespace
             return journalReset;
         }
 
+        bool CatchUpVolumeDetailed(
+            UsnReadState& volumeState,
+            const std::atomic_bool* stopToken,
+            std::vector<NativeChange>& allChanges,
+            bool& journalReset)
+        {
+            allChanges.clear();
+            journalReset = false;
+
+            const HANDLE handle = OpenVolumeHandle(BuildVolumePath(volumeState.driveLetter));
+            if (handle == INVALID_HANDLE_VALUE)
+            {
+                return false;
+            }
+
+            auto* buffer = static_cast<std::byte*>(std::malloc(CatchUpBufferSize));
+            if (buffer == nullptr)
+            {
+                CloseHandle(handle);
+                throw std::bad_alloc();
+            }
+
+            bool success = true;
+            std::vector<NativeChange> changes;
+            while (true)
+            {
+                if (stopToken != nullptr && stopToken->load())
+                {
+                    break;
+                }
+
+                changes.clear();
+                bool readJournalReset = false;
+                if (!ReadUsnChanges_NoLock(handle, volumeState, buffer, CatchUpBufferSize, 0, stopToken, changes, readJournalReset))
+                {
+                    journalReset = readJournalReset;
+                    success = false;
+                    break;
+                }
+
+                if (changes.empty())
+                {
+                    break;
+                }
+
+                allChanges.insert(allChanges.end(), changes.begin(), changes.end());
+            }
+
+            std::free(buffer);
+            CloseHandle(handle);
+            return success;
+        }
+
         static VolumeState CopyVolumeCheckpoint(const VolumeState& source)
         {
             VolumeState copy;
@@ -5149,6 +5291,103 @@ namespace
             copy.enumerationComplete = source.enumerationComplete;
             copy.pendingRenameOldByFrn = source.pendingRenameOldByFrn;
             return copy;
+        }
+
+        static void RebuildRecordKeyIndex(
+            const std::vector<Record>& records,
+            std::unordered_map<std::uint64_t, std::size_t>& index)
+        {
+            index.clear();
+            index.reserve(records.size());
+            for (std::size_t i = 0; i < records.size(); ++i)
+            {
+                const auto& record = records[i];
+                index[MakeRecordKey(record.driveLetter, record.frn)] = i;
+            }
+        }
+
+        static bool ApplyEnumerationWindowChanges(
+            std::vector<Record>& records,
+            VolumeState& volume,
+            const std::vector<NativeChange>& changes)
+        {
+            if (changes.empty())
+            {
+                return false;
+            }
+
+            std::unordered_map<std::uint64_t, std::size_t> indexByKey;
+            RebuildRecordKeyIndex(records, indexByKey);
+            bool changed = false;
+            for (const auto& change : changes)
+            {
+                const auto key = MakeRecordKey(change.driveLetter, change.frn);
+                if (change.kind == ChangeKind::Delete)
+                {
+                    const auto it = indexByKey.find(key);
+                    if (it == indexByKey.end() || it->second >= records.size())
+                    {
+                        continue;
+                    }
+
+                    const auto removeIndex = it->second;
+                    const auto lastIndex = records.size() - 1;
+                    if (removeIndex != lastIndex)
+                    {
+                        records[removeIndex] = std::move(records[lastIndex]);
+                        indexByKey[MakeRecordKey(records[removeIndex].driveLetter, records[removeIndex].frn)] = removeIndex;
+                    }
+
+                    records.pop_back();
+                    indexByKey.erase(it);
+                    volume.pendingRenameOldByFrn.erase(change.frn);
+                    changed = true;
+                    continue;
+                }
+
+                if (change.kind != ChangeKind::Create && change.kind != ChangeKind::Rename)
+                {
+                    continue;
+                }
+
+                Record record;
+                record.frn = change.frn;
+                record.parentFrn = change.parentFrn;
+                record.driveLetter = change.driveLetter;
+                record.isDirectory = change.isDirectory;
+                record.originalName = change.originalName;
+                record.lowerName = change.lowerName.empty() ? ToLower(change.originalName) : change.lowerName;
+
+                const auto it = indexByKey.find(key);
+                if (it == indexByKey.end())
+                {
+                    indexByKey[key] = records.size();
+                    records.push_back(std::move(record));
+                }
+                else if (it->second < records.size())
+                {
+                    records[it->second] = std::move(record);
+                }
+
+                changed = true;
+            }
+
+            if (changed)
+            {
+                volume.recordCount = static_cast<std::uint32_t>(std::min<std::size_t>(
+                    records.size(),
+                    std::numeric_limits<std::uint32_t>::max()));
+                volume.maxFrn = 0;
+                for (const auto& record : records)
+                {
+                    if (record.frn > volume.maxFrn)
+                    {
+                        volume.maxFrn = record.frn;
+                    }
+                }
+            }
+
+            return changed;
         }
 
         bool QueryJournalCheckpointForDrive(wchar_t driveLetter, USN_JOURNAL_DATA_V0& journalData) const
@@ -5214,6 +5453,35 @@ namespace
             const auto drive = static_cast<wchar_t>(towupper(driveLetter));
             NativeLogWrite("[NATIVE JOURNAL RESET REPAIR] volume-build-start drive=" + std::string(1, static_cast<char>(drive)));
 
+            ShadowRepairSnapshot snapshot;
+            snapshot.repairedDrive = drive;
+            {
+                std::shared_lock<std::shared_mutex> guard(mutex_);
+                if (hasShutdown_)
+                {
+                    throw std::runtime_error("native index is shutting down");
+                }
+
+                snapshot.repairStartGeneration = generationId_.load(std::memory_order_acquire);
+                snapshot.preRepairOverlayRecordKeys.reserve(overlayIndexByKey_.size());
+                for (const auto& pair : overlayIndexByKey_)
+                {
+                    if (GetDriveFromRecordKey(pair.first) == drive)
+                    {
+                        snapshot.preRepairOverlayRecordKeys.insert(pair.first);
+                    }
+                }
+
+                snapshot.preRepairOverlayDeletedKeys.reserve(overlayDeletedKeys_.size());
+                for (const auto key : overlayDeletedKeys_)
+                {
+                    if (GetDriveFromRecordKey(key) == drive)
+                    {
+                        snapshot.preRepairOverlayDeletedKeys.insert(key);
+                    }
+                }
+            }
+
             USN_JOURNAL_DATA_V0 startJournalData{};
             const bool haveStartJournal = QueryJournalCheckpointForDrive(drive, startJournalData);
             if (!haveStartJournal)
@@ -5242,8 +5510,6 @@ namespace
             const auto enumMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - enumStart).count();
 
-            ShadowRepairSnapshot snapshot;
-            snapshot.repairedDrive = drive;
             const auto exportStart = std::chrono::steady_clock::now();
             {
                 std::shared_lock<std::shared_mutex> guard(mutex_);
@@ -5295,6 +5561,9 @@ namespace
                 + " derivedMs=" + std::to_string(derivedMs)
                 + " records=" + std::to_string(snapshot.records.size())
                 + " repairedRecords=" + std::to_string(snapshot.volumes[drive].recordCount)
+                + " repairStartGeneration=" + std::to_string(snapshot.repairStartGeneration)
+                + " preRepairOverlayRecords=" + std::to_string(snapshot.preRepairOverlayRecordKeys.size())
+                + " preRepairOverlayDeletes=" + std::to_string(snapshot.preRepairOverlayDeletedKeys.size())
                 + " repairNextUsn=" + std::to_string(snapshot.volumes[drive].nextUsn)
                 + " journalId=" + std::to_string(snapshot.volumes[drive].journalId));
             return snapshot;
@@ -5356,6 +5625,157 @@ namespace
             }
         }
 
+        static wchar_t GetDriveFromRecordKey(std::uint64_t key)
+        {
+            return static_cast<wchar_t>(towupper(static_cast<wchar_t>((key >> 56) & 0xFF)));
+        }
+
+        static bool ContainsRecordKey(
+            const std::vector<FrnRecordIndexEntry>& index,
+            std::uint64_t key)
+        {
+            auto lo = index.begin();
+            auto hi = index.end();
+            while (lo < hi)
+            {
+                auto mid = lo + ((hi - lo) / 2);
+                if (mid->key < key)
+                {
+                    lo = mid + 1;
+                }
+                else
+                {
+                    hi = mid;
+                }
+            }
+
+            return lo != index.end() && lo->key == key;
+        }
+
+        static const Record* TryGetSnapshotRecordByKey(
+            const ShadowRepairSnapshot& snapshot,
+            std::uint64_t key)
+        {
+            auto lo = snapshot.frnRecordIndex.begin();
+            auto hi = snapshot.frnRecordIndex.end();
+            while (lo < hi)
+            {
+                auto mid = lo + ((hi - lo) / 2);
+                if (mid->key < key)
+                {
+                    lo = mid + 1;
+                }
+                else
+                {
+                    hi = mid;
+                }
+            }
+
+            if (lo == snapshot.frnRecordIndex.end()
+                || lo->key != key
+                || lo->recordId >= snapshot.records.size())
+            {
+                return nullptr;
+            }
+
+            return &snapshot.records[lo->recordId];
+        }
+
+        RepairOverlayMergeStats ReconcileRepairOverlayForDrive_NoLock(
+            wchar_t driveLetter,
+            const ShadowRepairSnapshot& snapshot)
+        {
+            RepairOverlayMergeStats stats;
+            stats.repairStartGeneration = snapshot.repairStartGeneration;
+            stats.repairCommitGeneration = generationId_.load(std::memory_order_acquire);
+            const auto drive = static_cast<wchar_t>(towupper(driveLetter));
+
+            for (auto it = overlayIndexByKey_.begin(); it != overlayIndexByKey_.end();)
+            {
+                const auto key = it->first;
+                if (GetDriveFromRecordKey(key) != drive)
+                {
+                    ++it;
+                    continue;
+                }
+
+                ++stats.overlayRecordsSeen;
+                const bool existedBeforeRepair = snapshot.preRepairOverlayRecordKeys.find(key) != snapshot.preRepairOverlayRecordKeys.end();
+                const auto overlayRecordIndex = it->second;
+                const auto* repairRecord = TryGetSnapshotRecordByKey(snapshot, key);
+                const bool canAbsorbOverlayRecord = existedBeforeRepair
+                    && repairRecord != nullptr
+                    && overlayRecordIndex < overlayRecords_.size()
+                    && RecordsEquivalentForCompaction(*repairRecord, overlayRecords_[overlayRecordIndex]);
+                if (canAbsorbOverlayRecord)
+                {
+                    it = overlayIndexByKey_.erase(it);
+                    ++stats.overlayRecordsAbsorbed;
+                    continue;
+                }
+
+                if (overlayRecordIndex >= overlayRecords_.size())
+                {
+                    it = overlayIndexByKey_.erase(it);
+                    ++stats.overlayRecordsDroppedMissing;
+                    continue;
+                }
+
+                ++stats.overlayRecordsRetained;
+                ++it;
+            }
+
+            for (auto it = overlayDeletedKeys_.begin(); it != overlayDeletedKeys_.end();)
+            {
+                const auto key = *it;
+                if (GetDriveFromRecordKey(key) != drive)
+                {
+                    ++it;
+                    continue;
+                }
+
+                ++stats.overlayDeletesSeen;
+                const bool presentInRepairBase = ContainsRecordKey(snapshot.frnRecordIndex, key);
+                if (presentInRepairBase)
+                {
+                    ++stats.overlayDeletesRetained;
+                    ++stats.baselineSuppressedByOverlay;
+                    ++it;
+                }
+                else
+                {
+                    it = overlayDeletedKeys_.erase(it);
+                    ++stats.overlayDeletesAbsorbed;
+                }
+            }
+
+            for (auto it = overlayCompactedKeys_.begin(); it != overlayCompactedKeys_.end();)
+            {
+                if (GetDriveFromRecordKey(*it) == drive)
+                {
+                    it = overlayCompactedKeys_.erase(it);
+                }
+                else
+                {
+                    ++it;
+                }
+            }
+
+            for (auto it = overlayCompactedDeletedKeys_.begin(); it != overlayCompactedDeletedKeys_.end();)
+            {
+                if (GetDriveFromRecordKey(*it) == drive)
+                {
+                    it = overlayCompactedDeletedKeys_.erase(it);
+                }
+                else
+                {
+                    ++it;
+                }
+            }
+
+            return stats;
+        }
+
         bool CommitShadowRepairSnapshot(ShadowRepairSnapshot&& snapshot)
         {
             const auto commitStart = std::chrono::steady_clock::now();
@@ -5399,10 +5819,10 @@ namespace
             configIds_ = std::move(snapshot.configIds);
             driveIds_ = std::move(snapshot.driveIds);
             extensionIds_ = std::move(snapshot.extensionIds);
+            const auto overlayMergeStats = ReconcileRepairOverlayForDrive_NoLock(repairedDrive, snapshot);
             frnRecordIndex_ = std::move(snapshot.frnRecordIndex);
             recordIndexByKey_.clear();
             exactNameIds_.clear();
-            RemoveOverlayEntriesForDrive_NoLock(repairedDrive);
             RebuildOverlaySuppressedRecordIds_NoLock();
             RebuildOverlaySearchIndex_NoLock();
             overlayStalePostingEstimate_ = 0;
@@ -5429,7 +5849,17 @@ namespace
                 + " records=" + std::to_string(GetRecordCount_NoLock())
                 + " volumes=" + std::to_string(volumes_.size())
                 + " overlayRecords=" + std::to_string(overlayRecords_.size())
-                + " overlayDeletes=" + std::to_string(overlayDeletedKeys_.size()));
+                + " overlayDeletes=" + std::to_string(overlayDeletedKeys_.size())
+                + " repairStartGeneration=" + std::to_string(overlayMergeStats.repairStartGeneration)
+                + " repairCommitGeneration=" + std::to_string(overlayMergeStats.repairCommitGeneration)
+                + " repairOverlayRecordsSeen=" + std::to_string(overlayMergeStats.overlayRecordsSeen)
+                + " repairOverlayRecordsAbsorbed=" + std::to_string(overlayMergeStats.overlayRecordsAbsorbed)
+                + " repairOverlayRecordsDroppedMissing=" + std::to_string(overlayMergeStats.overlayRecordsDroppedMissing)
+                + " repairOverlayRecordsRetained=" + std::to_string(overlayMergeStats.overlayRecordsRetained)
+                + " repairOverlayDeletesSeen=" + std::to_string(overlayMergeStats.overlayDeletesSeen)
+                + " repairOverlayDeletesAbsorbed=" + std::to_string(overlayMergeStats.overlayDeletesAbsorbed)
+                + " repairOverlayDeletesRetained=" + std::to_string(overlayMergeStats.overlayDeletesRetained)
+                + " repairBaselineSuppressedByOverlay=" + std::to_string(overlayMergeStats.baselineSuppressedByOverlay));
             return true;
         }
 
@@ -6154,6 +6584,111 @@ namespace
                 + " applyMs=" + std::to_string(applyMs)
                 + " totalMs=" + std::to_string(totalMs));
             return BuildDeltaStateJson(true, totalMs, emitMs, applyMs);
+        }
+
+        std::string SimulateRepairOverlayDeleteRace(int seed)
+        {
+            const auto totalStart = std::chrono::steady_clock::now();
+            ShadowRepairSnapshot snapshot;
+            std::uint64_t markerKey = 0;
+            std::wstring markerName;
+
+            const auto drive = L'Z';
+            const std::uint64_t parent = NtfsRootFileReferenceNumber;
+
+            snapshot.repairedDrive = drive;
+            snapshot.repairStartGeneration = generationId_.load(std::memory_order_acquire);
+
+            markerName = L"__pm_repair_deleted_marker_" + std::to_wstring(seed) + L".txt";
+            Record marker;
+            marker.driveLetter = drive;
+            marker.frn = 0x00F0000000000000ull | (static_cast<std::uint64_t>(seed) & 0x0000000000FFFFFFull);
+            marker.parentFrn = parent;
+            marker.isDirectory = false;
+            marker.originalName = markerName;
+            marker.lowerName = ToLower(markerName);
+            markerKey = MakeRecordKey(marker.driveLetter, marker.frn);
+            snapshot.records.push_back(std::move(marker));
+            snapshot.frnRecordIndex.push_back({ markerKey, 0 });
+
+            RepairOverlayMergeStats stats;
+            {
+                std::unique_lock<std::shared_mutex> guard(mutex_);
+                const auto savedOverlayIndexByKey = overlayIndexByKey_;
+                const auto savedOverlayDeletedKeys = overlayDeletedKeys_;
+                const auto savedOverlayCompactedKeys = overlayCompactedKeys_;
+                const auto savedOverlayCompactedDeletedKeys = overlayCompactedDeletedKeys_;
+
+                overlayDeletedKeys_.insert(markerKey);
+                overlayCompactedDeletedKeys_.erase(markerKey);
+                overlayIndexByKey_.erase(markerKey);
+
+                stats = ReconcileRepairOverlayForDrive_NoLock(snapshot.repairedDrive, snapshot);
+
+                overlayIndexByKey_ = savedOverlayIndexByKey;
+                overlayDeletedKeys_ = savedOverlayDeletedKeys;
+                overlayCompactedKeys_ = savedOverlayCompactedKeys;
+                overlayCompactedDeletedKeys_ = savedOverlayCompactedDeletedKeys;
+            }
+
+            const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - totalStart).count();
+            std::ostringstream ss;
+            ss << "{";
+            ss << "\"success\":" << (stats.overlayDeletesRetained == 1 && stats.baselineSuppressedByOverlay == 1 ? "true" : "false") << ",";
+            ss << "\"overlayDeletesSeen\":" << stats.overlayDeletesSeen << ",";
+            ss << "\"overlayDeletesAbsorbed\":" << stats.overlayDeletesAbsorbed << ",";
+            ss << "\"overlayDeletesRetained\":" << stats.overlayDeletesRetained << ",";
+            ss << "\"baselineSuppressedByOverlay\":" << stats.baselineSuppressedByOverlay << ",";
+            ss << "\"mutatesLiveIndex\":false,";
+            ss << "\"marker\":\"" << EscapeJson(WideToUtf8(markerName)) << "\",";
+            ss << "\"totalMs\":" << totalMs;
+            ss << "}";
+            return ss.str();
+        }
+
+        std::string SimulateFullRebuildEnumerationDeleteRace(int seed)
+        {
+            const auto totalStart = std::chrono::steady_clock::now();
+            const auto drive = L'Z';
+            const std::uint64_t markerFrn = 0x00E0000000000000ull | (static_cast<std::uint64_t>(seed) & 0x0000000000FFFFFFull);
+            const std::uint64_t parent = NtfsRootFileReferenceNumber;
+            const std::wstring markerName = L"__pm_full_rebuild_deleted_marker_" + std::to_wstring(seed) + L".txt";
+
+            std::vector<Record> records;
+            Record marker;
+            marker.driveLetter = drive;
+            marker.frn = markerFrn;
+            marker.parentFrn = parent;
+            marker.isDirectory = false;
+            marker.originalName = markerName;
+            marker.lowerName = ToLower(markerName);
+            records.push_back(std::move(marker));
+
+            VolumeState volume;
+            volume.driveLetter = drive;
+            volume.recordCount = 1;
+            volume.maxFrn = markerFrn;
+            volume.enumerationComplete = true;
+
+            std::vector<NativeChange> changes;
+            changes.push_back(BuildSyntheticChange(ChangeKind::Delete, drive, markerFrn, parent, markerName));
+            const bool changed = ApplyEnumerationWindowChanges(records, volume, changes);
+
+            const auto totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - totalStart).count();
+            std::ostringstream ss;
+            ss << "{";
+            ss << "\"success\":" << (changed && records.empty() && volume.recordCount == 0 && volume.maxFrn == 0 ? "true" : "false") << ",";
+            ss << "\"changed\":" << (changed ? "true" : "false") << ",";
+            ss << "\"remainingRecords\":" << records.size() << ",";
+            ss << "\"volumeRecordCount\":" << volume.recordCount << ",";
+            ss << "\"volumeMaxFrn\":" << volume.maxFrn << ",";
+            ss << "\"mutatesLiveIndex\":false,";
+            ss << "\"marker\":\"" << EscapeJson(WideToUtf8(markerName)) << "\",";
+            ss << "\"totalMs\":" << totalMs;
+            ss << "}";
+            return ss.str();
         }
 
         std::string BuildDeltaStateJson(bool success, long long totalMs, long long emitMs = 0, long long applyMs = 0) const
