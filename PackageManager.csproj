@@ -438,6 +438,21 @@
           <DependentUpon>DashboardPage.xaml</DependentUpon>
         </Compile>
 
+        <!-- Features/DailyLog -->
+        <Compile Include="Features\DailyLog\Models\DailyLogEntry.cs" />
+        <Compile Include="Features\DailyLog\Services\GitLogCollectorService.cs" />
+        <Compile Include="Features\DailyLog\Services\SvnLogCollectorService.cs" />
+        <Compile Include="Features\DailyLog\Services\PingCodeTodoService.cs" />
+        <Compile Include="Features\DailyLog\Services\DailyLogGeneratorService.cs" />
+        <Page Include="Features\DailyLog\Views\DailyLogPage.xaml">
+          <Generator>MSBuild:Compile</Generator>
+          <SubType>Designer</SubType>
+        </Page>
+        <Compile Include="Features\DailyLog\Views\DailyLogPage.xaml.cs">
+          <DependentUpon>DailyLogPage.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+
         <!-- Features/Notifications -->
         <Compile Include="Features\Notifications\Models\NotificationItem.cs" />
         <Compile Include="Features\Notifications\Services\NotificationService.cs" />

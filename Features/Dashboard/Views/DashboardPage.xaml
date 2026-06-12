@@ -252,6 +252,13 @@
             <!-- 日志 -->
             <controls:CTextBlock Text="日志" FontSize="13" FontWeight="SemiBold" Foreground="#99000000" Margin="0,0,0,8" HorizontalAlignment="Left"/>
             <WrapPanel Margin="0,0,0,20">
+                <Border Style="{StaticResource DashboardCard}" Tag="daily-log" MouseLeftButtonUp="NavigationCard_Click">
+                    <StackPanel>
+                        <TextBlock Text="&#xE81D;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#2B7FFF" Margin="0,0,0,8"/>
+                        <controls:CTextBlock Text="工作日报" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" TextAlignment="Left"/>
+                        <controls:CTextBlock Text="采集提交与待办生成日报" Foreground="#6B6B6B" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Left" TextAlignment="Left"/>
+                    </StackPanel>
+                </Border>
                 <Border Style="{StaticResource DashboardCard}" Tag="product-logs" MouseLeftButtonUp="NavigationCard_Click">
                     <StackPanel>
                         <TextBlock Text="&#xE7BA;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#2B7FFF" Margin="0,0,0,8"/>

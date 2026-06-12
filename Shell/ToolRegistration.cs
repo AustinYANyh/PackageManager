@@ -1,5 +1,6 @@
 using System.IO;
 using PackageManager.Features.CodeWorkspace.Views;
+using PackageManager.Features.DailyLog.Views;
 using PackageManager.Shell;
 using PackageManager.Views;
 using PackageManager.Views.KanBan;
@@ -99,6 +100,15 @@ namespace PackageManager.Services
             });
 
             // --- 日志 ---
+
+            registry.Register(new ToolPageDescriptor
+            {
+                Key = "daily-log",
+                DisplayName = "工作日报",
+                Glyph = "\uE81D",
+                Group = "日志",
+                Factory = () => new DailyLogPage()
+            });
 
             registry.Register(new ToolPageDescriptor
             {
