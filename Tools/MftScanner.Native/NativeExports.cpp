@@ -1423,6 +1423,7 @@ namespace
         std::uint64_t overlaySegmentBaseRecordCountOverride_ = 0;
         std::unordered_set<std::uint64_t> overlayCompactedKeys_;
         std::unordered_set<std::uint64_t> overlayCompactedDeletedKeys_;
+        std::atomic_bool overlayCompactionRebindBase_{ false };
         mutable std::mutex overlaySegmentSaveMutex_;
         mutable std::atomic<std::uint64_t> lastOverlaySegmentSaveSignature_{ 0 };
         std::unordered_map<std::uint64_t, std::size_t> recordIndexByKey_;
@@ -2023,6 +2024,7 @@ namespace
             overlaySegmentBaseRecordCountOverride_ = 0;
             overlayCompactedKeys_.clear();
             overlayCompactedDeletedKeys_.clear();
+            overlayCompactionRebindBase_.store(false, std::memory_order_release);
             recordIndexByKey_.clear();
             frnRecordIndex_.clear();
             volumes_.clear();
@@ -4640,6 +4642,7 @@ namespace
                 overlaySegmentBaseRecordCountOverride_ = 0;
                 overlayCompactedKeys_.clear();
                 overlayCompactedDeletedKeys_.clear();
+                overlayCompactionRebindBase_.store(false, std::memory_order_release);
             }
             if (!mappedRecords_.Ready())
             {
@@ -5827,6 +5830,7 @@ namespace
             RebuildOverlaySearchIndex_NoLock();
             overlayStalePostingEstimate_ = 0;
             overlaySegmentBaseRecordCountOverride_ = 0;
+            overlayCompactionRebindBase_.store(false, std::memory_order_release);
             ClearPathScopeRecordIdsCache_NoLock();
             derivedDirty_ = false;
             isBackgroundCatchUpInProgress_ = false;
@@ -10538,6 +10542,7 @@ namespace
             overlaySegmentBaseRecordCountOverride_ = 0;
             overlayCompactedKeys_.clear();
             overlayCompactedDeletedKeys_.clear();
+            overlayCompactionRebindBase_.store(false, std::memory_order_release);
             overlayRecords_.reserve(loadedOverlayRecords.size());
             overlayIndexByKey_.reserve(loadedOverlayRecords.size());
             for (auto& record : loadedOverlayRecords)
@@ -10659,6 +10664,29 @@ namespace
             return true;
         }
 
+        void ClearOverlaySegmentBaseBinding_NoLock(const char* reason)
+        {
+            const auto previousStableRecordCount = overlaySegmentBaseRecordCountOverride_;
+            const auto previousCompactedKeys = overlayCompactedKeys_.size();
+            const auto previousCompactedDeletedKeys = overlayCompactedDeletedKeys_.size();
+
+            overlaySegmentBaseRecordCountOverride_ = 0;
+            overlayCompactedKeys_.clear();
+            overlayCompactedDeletedKeys_.clear();
+            overlayCompactionRebindBase_.store(false, std::memory_order_release);
+            lastOverlaySegmentSaveSignature_.store(0, std::memory_order_release);
+
+            NativeLogWrite(
+                "[NATIVE V2 OVERLAY SAVE] cleared-base-binding reason="
+                + std::string(reason != nullptr ? reason : "unknown")
+                + " previousStableRecords=" + std::to_string(previousStableRecordCount)
+                + " currentBaseRecords=" + std::to_string(GetRecordCount_NoLock())
+                + " overlayRecords=" + std::to_string(overlayRecords_.size())
+                + " overlayDeletes=" + std::to_string(overlayDeletedKeys_.size())
+                + " compactedOverlayKeys=" + std::to_string(previousCompactedKeys)
+                + " compactedDeleteKeys=" + std::to_string(previousCompactedDeletedKeys));
+        }
+
         bool CanForceFullSnapshotNow(bool ignoreIdleGate = false) const
         {
             if (activeSearchCount_.load(std::memory_order_acquire) > 0)
@@ -10706,14 +10734,8 @@ namespace
                 return false;
             }
 
-            OverlaySegmentSnapshotData overlaySegmentData;
             const auto hasOverlay = !overlayRecords_.empty() || !overlayDeletedKeys_.empty();
             const auto directSaveStart = std::chrono::steady_clock::now();
-            if (hasOverlay)
-            {
-                BuildOverlaySegmentSnapshotData_NoLock(overlaySegmentData);
-                WriteOverlaySegmentSnapshotData(overlaySegmentData);
-            }
 
             const auto recordsRemapStart = std::chrono::steady_clock::now();
             const bool recordsRemapped = hasRecords ? WriteAndMapCurrentRecords_NoLock() : mappedRecords_.Ready();
@@ -10745,6 +10767,10 @@ namespace
             WriteV2PostingsSnapshotFile(recordCount, v2_);
             WriteV2RuntimeSnapshotFile(recordCount, v2_);
             WriteV2TypeBucketsSnapshotFile(recordCount, allIds_, directoryIds_, launchableIds_, scriptIds_, logIds_, configIds_, extensionIds_);
+            ClearOverlaySegmentBaseBinding_NoLock("force-full-success");
+            OverlaySegmentSnapshotData reboundOverlaySegmentData;
+            BuildOverlaySegmentSnapshotData_NoLock(reboundOverlaySegmentData);
+            WriteOverlaySegmentSnapshotData(reboundOverlaySegmentData);
             forceFullSnapshotSavePending_.store(false, std::memory_order_release);
             NativeLogWrite(
                 "[NATIVE SNAPSHOT SAVE] force-full-generation success elapsedMs="
@@ -11006,7 +11032,7 @@ namespace
             return true;
         }
 
-        static bool BuildCompactedRecordsFromMappedSnapshot(
+        bool BuildCompactedRecordsFromMappedSnapshot(
             const OverlaySegmentSnapshotData& overlayData,
             std::vector<Record>& output)
         {
@@ -11023,10 +11049,15 @@ namespace
             if (overlayData.stableRecordCount != 0
                 && overlayData.stableRecordCount != static_cast<std::uint64_t>(mapped.recordCount))
             {
+                overlayCompactionRebindBase_.store(true, std::memory_order_release);
+                snapshotSaveRetryDelayMs_.store(
+                    ForceOverlayCompactionRetryMilliseconds.count(),
+                    std::memory_order_release);
                 NativeLogWrite(
                     "[NATIVE SNAPSHOT SAVE] skipped reason=stable-record-count-mismatch"
                     " expected=" + std::to_string(overlayData.stableRecordCount)
-                    + " mapped=" + std::to_string(mapped.recordCount));
+                    + " mapped=" + std::to_string(mapped.recordCount)
+                    + " action=retry-rebound-base-compaction");
                 return false;
             }
 
@@ -11128,8 +11159,28 @@ namespace
             bool retryAfterOverlaySegment = false;
             bool compactedOverlay = false;
             bool compactedRecordsBuilt = false;
+            bool reboundBaseThisSave = false;
             OverlayCompactionDecision compactionDecision;
             std::uint64_t compactionGeneration = 0;
+
+            if (overlayCompactionRebindBase_.load(std::memory_order_acquire))
+            {
+                std::unique_lock<std::shared_mutex> rebindGuard(mutex_, std::try_to_lock);
+                if (!rebindGuard.owns_lock())
+                {
+                    NativeLogWrite("[NATIVE SNAPSHOT SAVE] skipped reason=overlay-rebind-index-lock-busy");
+                    snapshotSaveRetryDelayMs_.store(
+                        ForceOverlayCompactionRetryMilliseconds.count(),
+                        std::memory_order_release);
+                    return false;
+                }
+
+                if (overlayCompactionRebindBase_.load(std::memory_order_acquire))
+                {
+                    ClearOverlaySegmentBaseBinding_NoLock("stable-record-count-mismatch");
+                    reboundBaseThisSave = true;
+                }
+            }
 
             {
                 std::shared_lock<std::shared_mutex> guard(mutex_, std::try_to_lock);
@@ -11180,6 +11231,7 @@ namespace
                         {
                             ExportStableRecords_NoLock(*recordsCopy);
                             compactedRecordsBuilt = true;
+                            overlayCompactionRebindBase_.store(false, std::memory_order_release);
                         }
 
                         compactedOverlay = true;
@@ -11204,6 +11256,7 @@ namespace
                             + " uncompactedChanges=" + std::to_string(compactionDecision.uncompactedChanges)
                             + " compactedRecords=" + std::to_string(compactedRecordsBuilt ? recordsCopy->size() : 0)
                             + " buildOutsideLock=" + std::string(canBuildOutsideLock ? "true" : "false")
+                            + " reboundBase=" + std::string(reboundBaseThisSave ? "true" : "false")
                             + " forceReason=" + compactionDecision.reason
                             + " forced=" + std::string(compactionDecision.force ? "true" : "false")
                             + " overlayAgeMs=" + std::to_string(compactionDecision.ageMs)
@@ -11428,6 +11481,7 @@ namespace
             overlaySegmentBaseRecordCountOverride_ = static_cast<std::uint64_t>(compactedRecordCount);
             overlayCompactedKeys_ = std::move(compactedKeys);
             overlayCompactedDeletedKeys_ = std::move(compactedDeletedKeys);
+            overlayCompactionRebindBase_.store(false, std::memory_order_release);
             RefreshUncompactedOverlayAgeState_NoLock();
             NativeLogWrite(
                 "[NATIVE SNAPSHOT SAVE] compacted-overlay-stable-written records="
