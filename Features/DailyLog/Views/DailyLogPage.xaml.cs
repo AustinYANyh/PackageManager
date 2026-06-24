@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -15,10 +17,16 @@ namespace PackageManager.Features.DailyLog.Views
     /// </summary>
     public partial class DailyLogPage : Page
     {
+        private const string GitAuthorFilter = "AustinYanyh";
+        private const string SvnAuthorFilter = "yanyunhao";
+
         private readonly GitLogCollectorService gitCollector = new GitLogCollectorService();
         private readonly SvnLogCollectorService svnCollector = new SvnLogCollectorService();
         private readonly PingCodeTodoService pingCodeTodo = new PingCodeTodoService();
         private readonly DailyLogGeneratorService generator = new DailyLogGeneratorService();
+        private readonly DailyLogDraftStore draftStore = new DailyLogDraftStore();
+
+        private bool suppressDraftSave;
 
         /// <summary>
         /// 初始化 <see cref="DailyLogPage"/>。
@@ -27,17 +35,19 @@ namespace PackageManager.Features.DailyLog.Views
         {
             InitializeComponent();
             DatePick.SelectedDate = DateTime.Today;
+            Loaded += Page_Loaded;
+            Unloaded += Page_Unloaded;
+            LogTextBox.TextChanged += LogTextBox_TextChanged;
         }
 
         private async void Generate_Click(object sender, RoutedEventArgs e)
         {
             var date = DatePick.SelectedDate ?? DateTime.Today;
             StatusText.Text = "正在采集数据...";
-            LogTextBox.Text = "";
 
             try
             {
-                var settings = ServiceLocator.Resolve<DataPersistenceService>().LoadSettings();
+                var settings = ServiceLocator.Resolve<DataPersistenceService>()?.LoadSettings();
                 var repos = settings?.CodeRepositories ?? new List<PackageManager.Features.CodeWorkspace.Models.CodeRepository>();
 
                 var allGit = new List<DailyLogEntry>();
@@ -45,28 +55,23 @@ namespace PackageManager.Features.DailyLog.Views
 
                 await Task.Run(() =>
                 {
-                    foreach (var repo in repos)
+                    foreach (var repoPath in EnumerateRepositoryRoots(repos))
                     {
-                        if (string.IsNullOrWhiteSpace(repo.Path))
+                        if (HasGitMetadata(repoPath))
                         {
-                            continue;
+                            allGit.AddRange(gitCollector.Collect(repoPath, date, GitAuthorFilter));
                         }
 
-                        if (System.IO.Directory.Exists(System.IO.Path.Combine(repo.Path, ".git")))
+                        if (Directory.Exists(Path.Combine(repoPath, ".svn")))
                         {
-                            allGit.AddRange(gitCollector.Collect(repo.Path, date));
-                        }
-
-                        if (System.IO.Directory.Exists(System.IO.Path.Combine(repo.Path, ".svn")))
-                        {
-                            allSvn.AddRange(svnCollector.Collect(repo.Path, date));
+                            allSvn.AddRange(svnCollector.Collect(repoPath, date, SvnAuthorFilter));
                         }
                     }
                 });
 
                 StatusText.Text = $"Git: {allGit.Count} 条, SVN: {allSvn.Count} 条, 正在查询 PingCode...";
 
-                List<WorkItemInfo> todoItems = null;
+                List<WorkItemInfo> todoItems;
                 try
                 {
                     todoItems = await pingCodeTodo.GetTodoItemsAsync();
@@ -77,17 +82,92 @@ namespace PackageManager.Features.DailyLog.Views
                 }
 
                 var logText = generator.Generate(date, allGit, allSvn, todoItems);
-                LogTextBox.Text = logText;
-                LogTextBox.Focus();
-                LogTextBox.SelectAll();
-
+                SetLogText(logText);
                 StatusText.Text = $"已生成日报 (Git: {allGit.Count}, SVN: {allSvn.Count}, 明日计划: {todoItems?.Count ?? 0})";
             }
             catch (Exception ex)
             {
                 StatusText.Text = "生成失败: " + ex.Message;
-                LogTextBox.Text = $"生成日报时出错:\n{ex.Message}\n\n{ex.StackTrace}";
+                SetLogText($"生成日报时出错:\n{ex.Message}\n\n{ex.StackTrace}");
             }
+        }
+
+        private static IEnumerable<string> EnumerateRepositoryRoots(IEnumerable<PackageManager.Features.CodeWorkspace.Models.CodeRepository> repos)
+        {
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var repo in repos ?? Enumerable.Empty<PackageManager.Features.CodeWorkspace.Models.CodeRepository>())
+            {
+                if (repo == null || string.IsNullOrWhiteSpace(repo.Path) || !Directory.Exists(repo.Path))
+                {
+                    continue;
+                }
+
+                foreach (var path in EnumerateRepositoryRoots(repo.Path))
+                {
+                    if (seen.Add(path))
+                    {
+                        yield return path;
+                    }
+                }
+            }
+        }
+
+        private static IEnumerable<string> EnumerateRepositoryRoots(string rootPath)
+        {
+            if (HasGitMetadata(rootPath) || Directory.Exists(Path.Combine(rootPath, ".svn")))
+            {
+                yield return rootPath;
+            }
+
+            foreach (var child in EnumerateCandidateDirectories(rootPath))
+            {
+                if (HasGitMetadata(child) || Directory.Exists(Path.Combine(child, ".svn")))
+                {
+                    yield return child;
+                    continue;
+                }
+
+                foreach (var grandChild in EnumerateCandidateDirectories(child))
+                {
+                    if (HasGitMetadata(grandChild) || Directory.Exists(Path.Combine(grandChild, ".svn")))
+                    {
+                        yield return grandChild;
+                    }
+                }
+            }
+        }
+
+        private static IEnumerable<string> EnumerateCandidateDirectories(string path)
+        {
+            try
+            {
+                return Directory.GetDirectories(path)
+                    .Where(dir => !ShouldSkipDirectory(Path.GetFileName(dir)))
+                    .ToList();
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return Enumerable.Empty<string>();
+            }
+            catch (IOException)
+            {
+                return Enumerable.Empty<string>();
+            }
+        }
+
+        private static bool HasGitMetadata(string path)
+        {
+            return Directory.Exists(Path.Combine(path, ".git")) || File.Exists(Path.Combine(path, ".git"));
+        }
+
+        private static bool ShouldSkipDirectory(string dirName)
+        {
+            return string.IsNullOrWhiteSpace(dirName) ||
+                   dirName.StartsWith(".", StringComparison.Ordinal) ||
+                   string.Equals(dirName, "node_modules", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(dirName, "bin", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(dirName, "obj", StringComparison.OrdinalIgnoreCase) ||
+                   string.Equals(dirName, "packages", StringComparison.OrdinalIgnoreCase);
         }
 
         private void Copy_Click(object sender, RoutedEventArgs e)
@@ -107,6 +187,62 @@ namespace PackageManager.Features.DailyLog.Views
             {
                 StatusText.Text = "复制失败: " + ex.Message;
             }
+        }
+
+        private void Page_Loaded(object sender, RoutedEventArgs e)
+        {
+            DatePick.SelectedDate = DateTime.Today;
+
+            if (!string.IsNullOrWhiteSpace(LogTextBox.Text))
+            {
+                return;
+            }
+
+            var draft = draftStore.LoadDraft();
+            if (string.IsNullOrWhiteSpace(draft))
+            {
+                return;
+            }
+
+            SetLogText(draft, updateDraft: false);
+            StatusText.Text = "已恢复上次日报草稿。";
+        }
+
+        private void Page_Unloaded(object sender, RoutedEventArgs e)
+        {
+            SaveDraft(LogTextBox.Text);
+        }
+
+        private void LogTextBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (suppressDraftSave)
+            {
+                return;
+            }
+
+            SaveDraft(LogTextBox.Text);
+        }
+
+        private void SetLogText(string text, bool updateDraft = true)
+        {
+            suppressDraftSave = true;
+            LogTextBox.Text = text ?? string.Empty;
+            suppressDraftSave = false;
+
+            if (updateDraft)
+            {
+                SaveDraft(LogTextBox.Text);
+            }
+        }
+
+        private void SaveDraft(string text)
+        {
+            if (suppressDraftSave)
+            {
+                return;
+            }
+
+            draftStore.SaveDraft(text);
         }
     }
 }

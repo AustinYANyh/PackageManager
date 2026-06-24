@@ -17,8 +17,9 @@ namespace PackageManager.Features.DailyLog.Services
         /// </summary>
         /// <param name="wcRoot">SVN 工作副本根目录。</param>
         /// <param name="date">目标日期。</param>
+        /// <param name="authorFilter">作者过滤（可选，为空则采集所有人的提交）。</param>
         /// <returns>提交记录列表。</returns>
-        public List<DailyLogEntry> Collect(string wcRoot, DateTime date)
+        public List<DailyLogEntry> Collect(string wcRoot, DateTime date, string authorFilter = null)
         {
             var result = new List<DailyLogEntry>();
             if (string.IsNullOrWhiteSpace(wcRoot) || !Directory.Exists(Path.Combine(wcRoot, ".svn")))
@@ -27,8 +28,9 @@ namespace PackageManager.Features.DailyLog.Services
             }
 
             var repoName = new DirectoryInfo(wcRoot).Name;
-            var dateStr = date.ToString("yyyy-MM-dd");
-            var args = $"log -r {{{dateStr}}}:{{{dateStr}}} --xml -v \"{wcRoot}\"";
+            var startDate = date.Date;
+            var endDate = startDate.AddDays(1);
+            var args = $"log -r {{{startDate:yyyy-MM-ddTHH:mm:ss}}}:{{{endDate:yyyy-MM-ddTHH:mm:ss}}} --xml -v \"{wcRoot}\"";
 
             var output = RunSvn(args);
             if (string.IsNullOrWhiteSpace(output))
@@ -45,6 +47,17 @@ namespace PackageManager.Features.DailyLog.Services
                     var author = logEntry.Element("author")?.Value ?? "";
                     var msg = logEntry.Element("msg")?.Value ?? "";
                     var dateStr2 = logEntry.Element("date")?.Value ?? "";
+                    var entryDate = DateTime.TryParse(dateStr2, out var dt) ? dt.ToLocalTime() : date;
+                    if (entryDate.Date != startDate)
+                    {
+                        continue;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(authorFilter) &&
+                        !string.Equals(author.Trim(), authorFilter.Trim(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
 
                     result.Add(new DailyLogEntry
                     {
@@ -52,7 +65,7 @@ namespace PackageManager.Features.DailyLog.Services
                         CommitHash = $"r{revision}",
                         Message = msg.Trim(),
                         Author = author.Trim(),
-                        Date = DateTime.TryParse(dateStr2, out var dt) ? dt : date,
+                        Date = entryDate,
                         Source = "svn"
                     });
                 }

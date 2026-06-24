@@ -441,6 +441,7 @@
         <!-- Features/DailyLog -->
         <Compile Include="Features\DailyLog\Models\DailyLogEntry.cs" />
         <Compile Include="Features\DailyLog\Services\GitLogCollectorService.cs" />
+        <Compile Include="Features\DailyLog\Services\DailyLogDraftStore.cs" />
         <Compile Include="Features\DailyLog\Services\SvnLogCollectorService.cs" />
         <Compile Include="Features\DailyLog\Services\PingCodeTodoService.cs" />
         <Compile Include="Features\DailyLog\Services\DailyLogGeneratorService.cs" />

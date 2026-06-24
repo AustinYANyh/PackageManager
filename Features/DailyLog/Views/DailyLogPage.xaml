@@ -28,7 +28,6 @@
 
             <TextBlock Grid.Column="0" Text="日期:" VerticalAlignment="Center" Margin="0,0,8,0" />
             <DatePicker Grid.Column="1" x:Name="DatePick" Width="160" Height="30"
-                        SelectedDate="{Binding SelectedDate, Mode=TwoWay}"
                         VerticalAlignment="Center" />
 
             <button:CButton Grid.Column="2" Content="生成日报" Width="100" Height="32"

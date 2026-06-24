@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using PackageManager.Features.DailyLog.Models;
 using PackageManager.Services.PingCode.Dto;
 
@@ -42,28 +43,14 @@ namespace PackageManager.Features.DailyLog.Services
             }
             else
             {
-                var grouped = allCommits
-                    .GroupBy(c => c.RepoName)
-                    .OrderBy(g => g.Key);
+                var commits = allCommits
+                    .OrderBy(c => c.Date)
+                    .ThenBy(c => c.Message)
+                    .ToList();
 
-                var idx = 1;
-                foreach (var group in grouped)
+                for (int i = 0; i < commits.Count; i++)
                 {
-                    var commits = group.ToList();
-                    if (commits.Count == 1)
-                    {
-                        sb.AppendLine($"{idx}. {group.Key}: { commits[0].Message}");
-                    }
-                    else
-                    {
-                        sb.AppendLine($"{idx}. {group.Key}:");
-                        foreach (var c in commits)
-                        {
-                            sb.AppendLine($"   - {c.Message}");
-                        }
-                    }
-
-                    idx++;
+                    sb.AppendLine($"{i + 1}. {GetSummaryTitle(commits[i].Message)}");
                 }
             }
 
@@ -114,6 +101,22 @@ namespace PackageManager.Features.DailyLog.Services
             if (p.Contains("medium") || p.Contains("中")) return 2;
             if (p.Contains("low") || p.Contains("低")) return 1;
             return 0;
+        }
+
+        private static string GetSummaryTitle(string message)
+        {
+            if (string.IsNullOrWhiteSpace(message))
+            {
+                return "未填写提交说明";
+            }
+
+            var firstLine = message
+                .Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(line => line.Trim())
+                .FirstOrDefault(line => !string.IsNullOrWhiteSpace(line)) ?? message.Trim();
+
+            var normalized = Regex.Replace(firstLine, @"^\w+(?:\([^)]+\))?\s*[:：]\s*", string.Empty).Trim();
+            return string.IsNullOrWhiteSpace(normalized) ? firstLine : normalized;
         }
     }
 }

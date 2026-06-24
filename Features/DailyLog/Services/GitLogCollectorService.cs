@@ -22,7 +22,8 @@ namespace PackageManager.Features.DailyLog.Services
         public List<DailyLogEntry> Collect(string repoPath, DateTime date, string author = null)
         {
             var result = new List<DailyLogEntry>();
-            if (string.IsNullOrWhiteSpace(repoPath) || !Directory.Exists(Path.Combine(repoPath, ".git")))
+            if (string.IsNullOrWhiteSpace(repoPath) ||
+                (!Directory.Exists(Path.Combine(repoPath, ".git")) && !File.Exists(Path.Combine(repoPath, ".git"))))
             {
                 return result;
             }
