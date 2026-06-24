@@ -28,6 +28,7 @@ public partial class PingCodeAiExecutionWindow : Window, INotifyPropertyChanged
     private readonly string accessToken;
     private readonly string tempImageDirectory;
     private readonly string tempIntranetDirectory;
+    private readonly Task assetsLoadTask;
     private CodeRepository selectedRepository;
     private string promptText;
     private string statusText;
@@ -48,7 +49,7 @@ public partial class PingCodeAiExecutionWindow : Window, INotifyPropertyChanged
         InitializeComponent();
         DataContext = this;
         LoadRepositories();
-        Loaded += async (_, __) => await DownloadAssetsAsync();
+        assetsLoadTask = DownloadAssetsAsync();
     }
 
     public event PropertyChangedEventHandler PropertyChanged;
@@ -118,10 +119,26 @@ public partial class PingCodeAiExecutionWindow : Window, INotifyPropertyChanged
         StatusText = "已恢复初始 Prompt。";
     }
 
-    private void CopyPrompt_Click(object sender, RoutedEventArgs e)
+    private async void CopyPrompt_Click(object sender, RoutedEventArgs e)
     {
-        Clipboard.SetText(PromptText ?? string.Empty);
-        StatusText = "已复制 Prompt。";
+        if (SelectedRepository == null)
+        {
+            MessageBox.Show("请先选择目标代码仓库。", "PingCode AI 执行", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        try
+        {
+            StatusText = "正在准备完整 Prompt...";
+            var finalPrompt = await BuildFinalPromptAsync(SelectedRepository.Path);
+            Clipboard.SetText(finalPrompt ?? string.Empty);
+            StatusText = "已复制完整 Prompt。";
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"复制失败：{ex.Message}";
+            MessageBox.Show($"复制失败：{ex.Message}", "PingCode AI 执行", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private async void ClaudeExecute_Click(object sender, RoutedEventArgs e)
@@ -194,28 +211,7 @@ public partial class PingCodeAiExecutionWindow : Window, INotifyPropertyChanged
         try
         {
             StatusText = useClaude ? "正在启动 Claude..." : "正在启动 Codex...";
-            var finalPrompt = PromptText;
-            var imageSection = CopyImagesToRepoAndBuildPromptSection(SelectedRepository.Path);
-            if (!string.IsNullOrWhiteSpace(imageSection))
-            {
-                finalPrompt = finalPrompt + "\n\n" + imageSection;
-            }
-
-            var intranetSection = CopyIntranetResourcesToRepoAndBuildPromptSection(SelectedRepository.Path);
-            if (!string.IsNullOrWhiteSpace(intranetSection))
-            {
-                finalPrompt = finalPrompt + "\n\n" + intranetSection;
-            }
-
-            if (!string.IsNullOrWhiteSpace(accessToken))
-            {
-                finalPrompt = finalPrompt + "\n\n" + BuildPingCodeTokenSection();
-            }
-
-            if (request.ActionKind == "拆解" && !string.IsNullOrWhiteSpace(accessToken))
-            {
-                finalPrompt = finalPrompt + "\n\n" + BuildPingCodeApiAuthSection();
-            }
+            var finalPrompt = await BuildFinalPromptAsync(SelectedRepository.Path);
 
             if (useClaude)
             {
@@ -235,6 +231,36 @@ public partial class PingCodeAiExecutionWindow : Window, INotifyPropertyChanged
             StatusText = $"启动失败：{ex.Message}";
             MessageBox.Show($"启动失败：{ex.Message}", "PingCode AI 执行", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    private async Task<string> BuildFinalPromptAsync(string repoPath)
+    {
+        await assetsLoadTask;
+
+        var finalPrompt = PromptText ?? string.Empty;
+        var imageSection = CopyImagesToRepoAndBuildPromptSection(repoPath);
+        if (!string.IsNullOrWhiteSpace(imageSection))
+        {
+            finalPrompt = finalPrompt + "\n\n" + imageSection;
+        }
+
+        var intranetSection = CopyIntranetResourcesToRepoAndBuildPromptSection(repoPath);
+        if (!string.IsNullOrWhiteSpace(intranetSection))
+        {
+            finalPrompt = finalPrompt + "\n\n" + intranetSection;
+        }
+
+        if (!string.IsNullOrWhiteSpace(accessToken))
+        {
+            finalPrompt = finalPrompt + "\n\n" + BuildPingCodeTokenSection();
+        }
+
+        if (request.ActionKind == "拆解" && !string.IsNullOrWhiteSpace(accessToken))
+        {
+            finalPrompt = finalPrompt + "\n\n" + BuildPingCodeApiAuthSection();
+        }
+
+        return finalPrompt;
     }
 
     private string CopyImagesToRepoAndBuildPromptSection(string repoPath)
