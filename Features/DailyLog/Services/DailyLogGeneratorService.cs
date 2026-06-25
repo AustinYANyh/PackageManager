@@ -19,12 +19,14 @@ namespace PackageManager.Features.DailyLog.Services
         /// <param name="date">日报日期。</param>
         /// <param name="gitCommits">Git 提交列表。</param>
         /// <param name="svnCommits">SVN 提交列表。</param>
+        /// <param name="completedItems">PingCode 当天完成的工作项。</param>
         /// <param name="todoItems">PingCode 未开始工作项。</param>
         /// <returns>格式化的日报文本。</returns>
         public string Generate(
             DateTime date,
             List<DailyLogEntry> gitCommits,
             List<DailyLogEntry> svnCommits,
+            List<WorkItemInfo> completedItems,
             List<WorkItemInfo> todoItems)
         {
             var sb = new StringBuilder();
@@ -33,24 +35,16 @@ namespace PackageManager.Features.DailyLog.Services
 
             // 模块 1：今日工作
             sb.AppendLine("一、今日工作");
-            var allCommits = new List<DailyLogEntry>();
-            if (gitCommits != null) allCommits.AddRange(gitCommits);
-            if (svnCommits != null) allCommits.AddRange(svnCommits);
-
-            if (allCommits.Count == 0)
+            var todayWorkItems = BuildTodayWorkItems(gitCommits, svnCommits, completedItems);
+            if (todayWorkItems.Count == 0)
             {
                 sb.AppendLine("无");
             }
             else
             {
-                var commits = allCommits
-                    .OrderBy(c => c.Date)
-                    .ThenBy(c => c.Message)
-                    .ToList();
-
-                for (int i = 0; i < commits.Count; i++)
+                for (int i = 0; i < todayWorkItems.Count; i++)
                 {
-                    sb.AppendLine($"{i + 1}. {GetSummaryTitle(commits[i].Message)}");
+                    sb.AppendLine($"{i + 1}. {todayWorkItems[i]}");
                 }
             }
 
@@ -91,6 +85,60 @@ namespace PackageManager.Features.DailyLog.Services
             return sb.ToString();
         }
 
+        private static List<string> BuildTodayWorkItems(
+            IEnumerable<DailyLogEntry> gitCommits,
+            IEnumerable<DailyLogEntry> svnCommits,
+            IEnumerable<WorkItemInfo> completedItems)
+        {
+            var result = new List<string>();
+            var allCommits = new List<DailyLogEntry>();
+            if (gitCommits != null) allCommits.AddRange(gitCommits);
+            if (svnCommits != null) allCommits.AddRange(svnCommits);
+
+            result.AddRange(allCommits
+                .OrderBy(c => c.Date)
+                .ThenBy(c => c.Message)
+                .Select(c => GetSummaryTitle(c.Message)));
+
+            if (completedItems != null)
+            {
+                result.AddRange(completedItems
+                    .Where(item => item != null)
+                    .OrderBy(item => item.CompletedAt ?? item.UpdatedAt ?? DateTime.MinValue)
+                    .ThenBy(item => item.Title)
+                    .Select(GetWorkItemSummary));
+            }
+
+            return DeduplicateWorkItems(result);
+        }
+
+        private static List<string> DeduplicateWorkItems(IEnumerable<string> items)
+        {
+            var result = new List<string>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var item in items ?? Enumerable.Empty<string>())
+            {
+                var text = (item ?? string.Empty).Trim();
+                if (string.IsNullOrWhiteSpace(text))
+                {
+                    continue;
+                }
+
+                if (seen.Add(NormalizeWorkItemKey(text)))
+                {
+                    result.Add(text);
+                }
+            }
+
+            return result;
+        }
+
+        private static string NormalizeWorkItemKey(string text)
+        {
+            return Regex.Replace(text ?? string.Empty, @"\s+", string.Empty).Trim();
+        }
+
         private static int GetPriorityWeight(string priority)
         {
             if (string.IsNullOrWhiteSpace(priority)) return 0;
@@ -117,6 +165,18 @@ namespace PackageManager.Features.DailyLog.Services
 
             var normalized = Regex.Replace(firstLine, @"^\w+(?:\([^)]+\))?\s*[:：]\s*", string.Empty).Trim();
             return string.IsNullOrWhiteSpace(normalized) ? firstLine : normalized;
+        }
+
+        private static string GetWorkItemSummary(WorkItemInfo item)
+        {
+            if (item == null)
+            {
+                return "未命名工作项";
+            }
+
+            var title = string.IsNullOrWhiteSpace(item.Title) ? "未命名工作项" : item.Title.Trim();
+            var identifier = string.IsNullOrWhiteSpace(item.Identifier) ? item.Id : item.Identifier;
+            return string.IsNullOrWhiteSpace(identifier) ? title : $"[{identifier}] {title}";
         }
     }
 }

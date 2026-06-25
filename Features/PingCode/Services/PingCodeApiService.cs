@@ -492,6 +492,8 @@ public partial class PingCodeApiService
 
                         var endAt = FromUnixSeconds(d.EndAt);
                         var startAt = FromUnixSeconds(d.StartAt);
+                        var completedAt = FromUnixSeconds(d.CompletedAt);
+                        var updatedAt = FromUnixSeconds(d.UpdatedAt);
                         var commentCount = 0;
                         object cc;
                         if (d.Properties != null)
@@ -723,6 +725,8 @@ public partial class PingCodeApiService
                             HtmlUrl = htmlUrl,
                             StartAt = startAt,
                             EndAt = endAt,
+                            CompletedAt = completedAt,
+                            UpdatedAt = updatedAt,
                             CommentCount = commentCount,
                             Tags = tagNames,
                             ParticipantIds = partIds,

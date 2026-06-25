@@ -444,6 +444,7 @@
         <Compile Include="Features\DailyLog\Services\DailyLogDraftStore.cs" />
         <Compile Include="Features\DailyLog\Services\SvnLogCollectorService.cs" />
         <Compile Include="Features\DailyLog\Services\PingCodeTodoService.cs" />
+        <Compile Include="Features\DailyLog\Services\DailyLogFormatterService.cs" />
         <Compile Include="Features\DailyLog\Services\DailyLogGeneratorService.cs" />
         <Page Include="Features\DailyLog\Views\DailyLogPage.xaml">
           <Generator>MSBuild:Compile</Generator>

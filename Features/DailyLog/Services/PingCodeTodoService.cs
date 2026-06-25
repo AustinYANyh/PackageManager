@@ -34,19 +34,7 @@ namespace PackageManager.Features.DailyLog.Services
             var result = new List<WorkItemInfo>();
             try
             {
-                var project = SelectDefaultProject(await api.GetProjectsAsync());
-                if (project == null || string.IsNullOrWhiteSpace(project.Id))
-                {
-                    return result;
-                }
-
-                var iteration = SelectDefaultIteration(await api.GetNotCompletedIterationsByProjectAsync(project.Id));
-                if (iteration == null || string.IsNullOrWhiteSpace(iteration.Id))
-                {
-                    return result;
-                }
-
-                var items = await api.GetIterationWorkItemsAsync(iteration.Id);
+                var items = await GetScopedItemsAsync();
                 foreach (var item in items.Where(item => item != null && IsTodoState(item.StateCategory) && IsSelectedAssignee(item)))
                 {
                     result.Add(item);
@@ -57,6 +45,48 @@ namespace PackageManager.Features.DailyLog.Services
             }
 
             return result;
+        }
+
+        /// <summary>
+        /// 获取看板统计默认项目与默认迭代中的当天完成开发任务项。
+        /// </summary>
+        /// <param name="date">日报日期。</param>
+        /// <returns>当天完成或进入可测试状态的工作项列表。</returns>
+        public async Task<List<WorkItemInfo>> GetCompletedItemsAsync(DateTime date)
+        {
+            var result = new List<WorkItemInfo>();
+            try
+            {
+                var items = await GetScopedItemsAsync();
+                foreach (var item in items.Where(item => item != null && IsSelectedAssignee(item) && IsCompletedDevelopmentItem(item, date))
+                                          .GroupBy(GetStableKey, StringComparer.OrdinalIgnoreCase)
+                                          .Select(group => group.First()))
+                {
+                    result.Add(item);
+                }
+            }
+            catch
+            {
+            }
+
+            return result;
+        }
+
+        private async Task<List<WorkItemInfo>> GetScopedItemsAsync()
+        {
+            var project = SelectDefaultProject(await api.GetProjectsAsync());
+            if (project == null || string.IsNullOrWhiteSpace(project.Id))
+            {
+                return new List<WorkItemInfo>();
+            }
+
+            var iteration = SelectDefaultIteration(await api.GetNotCompletedIterationsByProjectAsync(project.Id));
+            if (iteration == null || string.IsNullOrWhiteSpace(iteration.Id))
+            {
+                return new List<WorkItemInfo>();
+            }
+
+            return await api.GetIterationWorkItemsAsync(iteration.Id);
         }
 
         private static bool IsTodoState(string stateCategory)
@@ -90,6 +120,40 @@ namespace PackageManager.Features.DailyLog.Services
             var text = value.Trim();
             return AssigneeFilters.Any(filter => string.Equals(text, filter, StringComparison.OrdinalIgnoreCase) ||
                                                  text.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0);
+        }
+
+        private static bool IsCompletedDevelopmentItem(WorkItemInfo item, DateTime date)
+        {
+            var category = (item?.StateCategory ?? string.Empty).Trim();
+            if (string.Equals(category, "可测试", StringComparison.OrdinalIgnoreCase))
+            {
+                return IsSameLocalDate(item.UpdatedAt, date);
+            }
+
+            if (string.Equals(category, "已完成", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(category, "已关闭", StringComparison.OrdinalIgnoreCase))
+            {
+                return IsSameLocalDate(item.CompletedAt, date) || IsSameLocalDate(item.UpdatedAt, date);
+            }
+
+            return false;
+        }
+
+        private static bool IsSameLocalDate(DateTime? timestamp, DateTime targetDate)
+        {
+            if (!timestamp.HasValue)
+            {
+                return false;
+            }
+
+            var value = timestamp.Value;
+            var localDate = value.Kind == DateTimeKind.Utc ? value.ToLocalTime().Date : value.Date;
+            return localDate == targetDate.Date;
+        }
+
+        private static string GetStableKey(WorkItemInfo item)
+        {
+            return item?.Id ?? item?.Identifier ?? item?.Title ?? string.Empty;
         }
 
         private static Entity SelectDefaultProject(IEnumerable<Entity> projects)

@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using PackageManager.Features.DailyLog.Models;
 using PackageManager.Features.DailyLog.Services;
 using PackageManager.Services;
@@ -24,6 +25,7 @@ namespace PackageManager.Features.DailyLog.Views
         private readonly SvnLogCollectorService svnCollector = new SvnLogCollectorService();
         private readonly PingCodeTodoService pingCodeTodo = new PingCodeTodoService();
         private readonly DailyLogGeneratorService generator = new DailyLogGeneratorService();
+        private readonly DailyLogFormatterService formatter = new DailyLogFormatterService();
         private readonly DailyLogDraftStore draftStore = new DailyLogDraftStore();
 
         private bool suppressDraftSave;
@@ -38,6 +40,7 @@ namespace PackageManager.Features.DailyLog.Views
             Loaded += Page_Loaded;
             Unloaded += Page_Unloaded;
             LogTextBox.TextChanged += LogTextBox_TextChanged;
+            LogTextBox.PreviewKeyDown += LogTextBox_PreviewKeyDown;
         }
 
         private async void Generate_Click(object sender, RoutedEventArgs e)
@@ -72,6 +75,7 @@ namespace PackageManager.Features.DailyLog.Views
                 StatusText.Text = $"Git: {allGit.Count} 条, SVN: {allSvn.Count} 条, 正在查询 PingCode...";
 
                 List<WorkItemInfo> todoItems;
+                List<WorkItemInfo> completedItems;
                 try
                 {
                     todoItems = await pingCodeTodo.GetTodoItemsAsync();
@@ -81,9 +85,18 @@ namespace PackageManager.Features.DailyLog.Views
                     todoItems = new List<WorkItemInfo>();
                 }
 
-                var logText = generator.Generate(date, allGit, allSvn, todoItems);
-                SetLogText(logText);
-                StatusText.Text = $"已生成日报 (Git: {allGit.Count}, SVN: {allSvn.Count}, 明日计划: {todoItems?.Count ?? 0})";
+                try
+                {
+                    completedItems = await pingCodeTodo.GetCompletedItemsAsync(date);
+                }
+                catch
+                {
+                    completedItems = new List<WorkItemInfo>();
+                }
+
+                var logText = generator.Generate(date, allGit, allSvn, completedItems, todoItems);
+                SetLogText(formatter.Format(logText));
+                StatusText.Text = $"已生成日报 (Git: {allGit.Count}, SVN: {allSvn.Count}, PingCode完成: {completedItems?.Count ?? 0}, 明日计划: {todoItems?.Count ?? 0})";
             }
             catch (Exception ex)
             {
@@ -221,6 +234,19 @@ namespace PackageManager.Features.DailyLog.Views
             }
 
             SaveDraft(LogTextBox.Text);
+        }
+
+        private void LogTextBox_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key != Key.D || Keyboard.Modifiers != ModifierKeys.Control)
+            {
+                return;
+            }
+
+            SetLogText(formatter.Format(LogTextBox.Text));
+            LogTextBox.CaretIndex = LogTextBox.Text.Length;
+            StatusText.Text = "已格式化日报";
+            e.Handled = true;
         }
 
         private void SetLogText(string text, bool updateDraft = true)

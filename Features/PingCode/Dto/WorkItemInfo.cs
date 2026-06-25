@@ -101,6 +101,16 @@ public class WorkItemInfo : INotifyPropertyChanged
     public DateTime? EndAt { get; set; }
 
     /// <summary>
+    /// 获取或设置工作项的完成时间。
+    /// </summary>
+    public DateTime? CompletedAt { get; set; }
+
+    /// <summary>
+    /// 获取或设置工作项的最后更新时间。
+    /// </summary>
+    public DateTime? UpdatedAt { get; set; }
+
+    /// <summary>
     /// 获取或设置工作项的评论数量。
     /// </summary>
     public int CommentCount { get; set; }
@@ -158,6 +168,8 @@ public class WorkItemInfo : INotifyPropertyChanged
         HtmlUrl = other.HtmlUrl;
         StartAt = other.StartAt;
         EndAt = other.EndAt;
+        CompletedAt = other.CompletedAt;
+        UpdatedAt = other.UpdatedAt;
         CommentCount = other.CommentCount;
         Tags = new List<string>(other.Tags ?? new List<string>());
         ParticipantIds = new List<string>(other.ParticipantIds ?? new List<string>());
@@ -181,6 +193,8 @@ public class WorkItemInfo : INotifyPropertyChanged
         OnPropertyChanged(nameof(HtmlUrl));
         OnPropertyChanged(nameof(StartAt));
         OnPropertyChanged(nameof(EndAt));
+        OnPropertyChanged(nameof(CompletedAt));
+        OnPropertyChanged(nameof(UpdatedAt));
         OnPropertyChanged(nameof(CommentCount));
         OnPropertyChanged(nameof(Tags));
         OnPropertyChanged(nameof(ParticipantIds));
