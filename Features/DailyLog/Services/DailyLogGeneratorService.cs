@@ -13,6 +13,9 @@ namespace PackageManager.Features.DailyLog.Services
     /// </summary>
     public class DailyLogGeneratorService
     {
+        private const double TomorrowPlanTargetStoryPoints = 1.0;
+        private const int TomorrowPlanMaxItems = 4;
+
         /// <summary>
         /// 根据采集数据生成日报文本。
         /// </summary>
@@ -63,10 +66,7 @@ namespace PackageManager.Features.DailyLog.Services
             }
             else
             {
-                var sorted = todoItems
-                    .OrderByDescending(i => GetPriorityWeight(i.Priority))
-                    .ThenBy(i => i.Title)
-                    .ToList();
+                var sorted = BuildTomorrowPlanItems(todoItems);
 
                 for (int i = 0; i < sorted.Count; i++)
                 {
@@ -112,6 +112,42 @@ namespace PackageManager.Features.DailyLog.Services
             return DeduplicateWorkItems(result);
         }
 
+        private static List<WorkItemInfo> BuildTomorrowPlanItems(IEnumerable<WorkItemInfo> todoItems)
+        {
+            var selected = new List<WorkItemInfo>();
+            var totalStoryPoints = 0d;
+
+            var priorityGroups = (todoItems ?? Enumerable.Empty<WorkItemInfo>())
+                .Where(item => item != null)
+                .GroupBy(item => GetPriorityWeight(item.Priority))
+                .OrderByDescending(group => group.Key);
+
+            foreach (var group in priorityGroups)
+            {
+                var items = group
+                    .OrderBy(item => GetStoryPointSortValue(item))
+                    .ThenBy(item => item.Title)
+                    .ToList();
+
+                foreach (var item in items)
+                {
+                    if (selected.Count >= TomorrowPlanMaxItems)
+                    {
+                        return selected;
+                    }
+
+                    selected.Add(item);
+                    totalStoryPoints += GetCapacityStoryPoints(item);
+                    if (totalStoryPoints >= TomorrowPlanTargetStoryPoints)
+                    {
+                        return selected;
+                    }
+                }
+            }
+
+            return selected;
+        }
+
         private static List<string> DeduplicateWorkItems(IEnumerable<string> items)
         {
             var result = new List<string>();
@@ -149,6 +185,18 @@ namespace PackageManager.Features.DailyLog.Services
             if (p.Contains("medium") || p.Contains("中")) return 2;
             if (p.Contains("low") || p.Contains("低")) return 1;
             return 0;
+        }
+
+        private static double GetStoryPointSortValue(WorkItemInfo item)
+        {
+            var storyPoints = item?.StoryPoints ?? 0;
+            return storyPoints > 0 ? storyPoints : double.MaxValue;
+        }
+
+        private static double GetCapacityStoryPoints(WorkItemInfo item)
+        {
+            var storyPoints = item?.StoryPoints ?? 0;
+            return storyPoints > 0 ? storyPoints : TomorrowPlanTargetStoryPoints;
         }
 
         private static string GetSummaryTitle(string message)

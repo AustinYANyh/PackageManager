@@ -238,6 +238,13 @@ namespace PackageManager.Features.DailyLog.Views
 
         private void LogTextBox_PreviewKeyDown(object sender, KeyEventArgs e)
         {
+            if (e.Key == Key.Delete && Keyboard.Modifiers == ModifierKeys.None)
+            {
+                ClearCurrentLine();
+                e.Handled = true;
+                return;
+            }
+
             if (e.Key != Key.D || Keyboard.Modifiers != ModifierKeys.Control)
             {
                 return;
@@ -247,6 +254,40 @@ namespace PackageManager.Features.DailyLog.Views
             LogTextBox.CaretIndex = LogTextBox.Text.Length;
             StatusText.Text = "已格式化日报";
             e.Handled = true;
+        }
+
+        private void ClearCurrentLine()
+        {
+            var text = LogTextBox.Text ?? string.Empty;
+            var caretIndex = LogTextBox.CaretIndex;
+            if (caretIndex < 0)
+            {
+                caretIndex = 0;
+            }
+
+            if (caretIndex > text.Length)
+            {
+                caretIndex = text.Length;
+            }
+
+            var lineStart = text.LastIndexOf('\n', Math.Max(0, caretIndex - 1));
+            lineStart = lineStart < 0 ? 0 : lineStart + 1;
+
+            var lineEnd = text.IndexOf('\n', caretIndex);
+            if (lineEnd < 0)
+            {
+                lineEnd = text.Length;
+            }
+
+            if (lineEnd <= lineStart)
+            {
+                return;
+            }
+
+            var cleared = text.Remove(lineStart, lineEnd - lineStart);
+            SetLogText(cleared);
+            LogTextBox.CaretIndex = Math.Min(lineStart, LogTextBox.Text.Length);
+            StatusText.Text = "已清空当前行";
         }
 
         private void SetLogText(string text, bool updateDraft = true)
