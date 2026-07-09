@@ -13,6 +13,72 @@ namespace PackageManager.Services
         private const string BeginMarker = "<!-- PackageManager CodeGraph Instructions: Begin -->";
         private const string EndMarker = "<!-- PackageManager CodeGraph Instructions: End -->";
         private const string CodeGraphIdleTimeoutMs = "36000000";
+        private const string BehaviorBeginMarker = "<!-- PackageManager Behavior Rules: Begin -->";
+        private const string BehaviorEndMarker = "<!-- PackageManager Behavior Rules: End -->";
+
+        public static void EnsureBehaviorRules()
+        {
+            lock (SyncRoot)
+            {
+                var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+                if (string.IsNullOrWhiteSpace(userProfile))
+                {
+                    return;
+                }
+
+                var agentsPath = Path.Combine(userProfile, ".codex", "AGENTS.md");
+                Directory.CreateDirectory(Path.GetDirectoryName(agentsPath));
+
+                var existing = File.Exists(agentsPath) ? File.ReadAllText(agentsPath, Encoding.UTF8) : string.Empty;
+                if (existing.IndexOf(BehaviorBeginMarker, StringComparison.Ordinal) >= 0
+                    && existing.IndexOf(BehaviorEndMarker, StringComparison.Ordinal) >= 0)
+                {
+                    return;
+                }
+
+                var block = BuildBehaviorRulesBlock();
+                string next;
+                if (string.IsNullOrWhiteSpace(existing))
+                {
+                    next = block + Environment.NewLine;
+                }
+                else
+                {
+                    var separator = existing.EndsWith(Environment.NewLine, StringComparison.Ordinal)
+                        ? Environment.NewLine
+                        : Environment.NewLine + Environment.NewLine;
+                    next = existing + separator + block + Environment.NewLine;
+                }
+
+                WriteWithBackup(agentsPath, next, File.Exists(agentsPath));
+            }
+        }
+
+        private static string BuildBehaviorRulesBlock()
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine(BehaviorBeginMarker);
+            sb.AppendLine();
+            sb.AppendLine("## 先分析再执行");
+            sb.AppendLine();
+            sb.AppendLine("收到问题或反馈时，严禁跳过分析直接改代码。必须先做以下步骤：");
+            sb.AppendLine();
+            sb.AppendLine("1. **读取日志和错误信息** — 先看控制台输出、日志文件、崩溃报告，提取关键错误信息");
+            sb.AppendLine("2. **结合现有代码分析原因** — 根据错误信息找到相关代码，理解上下文，分析根因");
+            sb.AppendLine("3. **给出结论** — 向用户说明问题原因和建议的修复方案");
+            sb.AppendLine("4. **等待确认** — 在用户确认分析正确之前，不要修改任何代码文件");
+            sb.AppendLine();
+            sb.AppendLine("以下行为严禁：");
+            sb.AppendLine("- 未经确认就直接修改代码（包括 Edit、Write 等工具）");
+            sb.AppendLine("- 未经要求就主动尝试编译构建（很多项目未必能编译通过，编译会浪费大量 token）");
+            sb.AppendLine("- 分析完成后自作主张执行修复，而不是先报告结论");
+            sb.AppendLine("- 日志位置不明确时自行搜索探查（探查耗时且浪费 token）");
+            sb.AppendLine();
+            sb.AppendLine("当需要读取日志但位置不明确时，必须第一时间向用户给出选项让用户选择，而不是开放式提问让用户自己输入。给出两个选项：① 自行搜索（结合代码结构定位日志路径，而非暴力全盘搜索）② 用户输入（用户提供的路径或关键词，据此查找）。用户点击选项即可，不要让用户手动打字回复。");
+            sb.AppendLine();
+            sb.Append(BehaviorEndMarker);
+            return sb.ToString();
+        }
 
         public static AiGlobalInstructionSyncResult EnsureCodeGraphInstructions()
         {

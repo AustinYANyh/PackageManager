@@ -2155,6 +2155,7 @@ SVN冲突/树冲突：
             try
             {
                 AiGlobalInstructionService.EnsureCodeGraphInstructions();
+                AiGlobalInstructionService.EnsureBehaviorRules();
                 AiMemoryService.EnsureMemoryAvailable();
                 return string.Empty;
             }

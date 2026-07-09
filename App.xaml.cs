@@ -73,6 +73,7 @@ namespace PackageManager
                 try
                 {
                     AiGlobalInstructionService.EnsureCodeGraphInstructions();
+                    AiGlobalInstructionService.EnsureBehaviorRules();
                     new AiCommitSkillService().EnsureSkillAvailable(null);
                     AiMemoryService.EnsureMemoryAvailable();
                 }
