@@ -717,10 +717,14 @@ namespace PackageManager.Features.CodeWorkspace.Views
                 return;
             }
 
-            StatusText = $"正在拉取代码: {repo.Name}";
+            StatusText = $"准备拉取：{repo.Name}";
             try
             {
-                var result = await PullRepositoryAsync(repo);
+                var result = await PullRepositoryAsync(
+                    repo,
+                    progress => StatusText = BuildPullProgressText(progress));
+
+                var summaryText = BuildPullSummaryText(repo, result);
                 if (result.HasConflicts)
                 {
                     var conflictMessage = BuildConflictMessage(result);
@@ -738,19 +742,19 @@ namespace PackageManager.Features.CodeWorkspace.Views
                         DoOpenFolder(repo);
                     }
 
-                    StatusText = $"拉取完成但有冲突: {repo.Name}";
+                    StatusText = summaryText;
                 }
                 else if (result.Success)
                 {
                     await _vcsStatusService.RefreshRepositoryStatusAsync(repo, forceRefresh: true, includeRemoteStatus: true);
                     _vcsCacheService.UpdateCache(repo);
                     RefreshSubRepositoryView();
-                    StatusText = $"拉取成功: {repo.Name}";
+                    StatusText = summaryText;
                 }
                 else
                 {
-                    StatusText = $"拉取失败: {result.ErrorMessage}";
-                    MessageBox.Show($"拉取失败: {result.ErrorMessage}", "拉取代码", MessageBoxButton.OK, MessageBoxImage.Error);
+                    StatusText = summaryText;
+                    MessageBox.Show(BuildFailureMessage(result), "拉取代码", MessageBoxButton.OK, MessageBoxImage.Error);
                 }
             }
             catch (Exception ex)
@@ -1288,120 +1292,256 @@ Set-Location -LiteralPath {PsQuote(repo.Path)}
             throw new FileNotFoundException($"未找到 {commandName} 命令，请确认已安装并加入 PATH。");
         }
 
-        private async Task<PullResult> PullRepositoryAsync(CodeRepository repo)
+        private async Task<PullResult> PullRepositoryAsync(CodeRepository repo, Action<PullProgressInfo> reportProgress = null)
         {
             var result = new PullResult { Success = true };
-            var hasGit = Directory.Exists(Path.Combine(repo.Path, ".git")) || File.Exists(Path.Combine(repo.Path, ".git"));
-            var hasRootSvn = Directory.Exists(Path.Combine(repo.Path, ".svn"));
+            var steps = BuildPullSteps(repo);
+            result.TotalSteps = steps.Count;
 
-            if (hasGit)
-            {
-                var gitResult = await RunCommandAsync("git", "pull", repo.Path, TimeSpan.FromSeconds(60));
-                if (gitResult.ExitCode != 0)
-                {
-                    result.Success = false;
-                    result.ErrorMessage = AppendError(result.ErrorMessage, BuildCommandFailure("Git拉取失败 (根仓库)", gitResult), null);
-                }
-
-                var gitText = (gitResult.Output ?? string.Empty) + Environment.NewLine + (gitResult.Error ?? string.Empty);
-                if (gitText.IndexOf("CONFLICT", StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    result.HasConflicts = true;
-                    result.GitConflicts.AddRange(ParseGitConflicts(gitText).Select(conflict => $"根仓库: {conflict}"));
-                }
-
-                await AppendGitWorkingConflictsAsync(repo.Path, "根仓库", result);
-            }
-
-            var gitSubRepositories = new List<Tuple<string, string>>();
-            if (repo.SubRepositories != null)
-            {
-                gitSubRepositories.AddRange(repo.SubRepositories
-                    .Where(sub => sub.VcsType == VcsType.Git && !string.IsNullOrWhiteSpace(sub.RelativePath))
-                    .Select(sub => Tuple.Create(sub.RelativePath, Path.Combine(repo.Path, sub.RelativePath)))
-                    .Where(sub => Directory.Exists(sub.Item2)));
-            }
-
-            foreach (var gitSubRepository in gitSubRepositories)
-            {
-                var gitResult = await RunCommandAsync("git", "pull", gitSubRepository.Item2, TimeSpan.FromSeconds(60));
-                if (gitResult.ExitCode != 0)
-                {
-                    result.Success = false;
-                    result.ErrorMessage = AppendError(
-                        result.ErrorMessage,
-                        BuildCommandFailure($"Git拉取失败 ({gitSubRepository.Item1})", gitResult),
-                        null);
-                }
-
-                var gitText = (gitResult.Output ?? string.Empty) + Environment.NewLine + (gitResult.Error ?? string.Empty);
-                if (gitText.IndexOf("CONFLICT", StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    result.HasConflicts = true;
-                    result.GitConflicts.AddRange(ParseGitConflicts(gitText).Select(conflict => $"{gitSubRepository.Item1}: {conflict}"));
-                }
-
-                await AppendGitWorkingConflictsAsync(gitSubRepository.Item2, gitSubRepository.Item1, result);
-            }
-
-            var svnPaths = new List<string>();
-            if (hasRootSvn && !hasGit)
-            {
-                svnPaths.Add(repo.Path);
-            }
-
-            if (repo.SubRepositories != null)
-            {
-                svnPaths.AddRange(repo.SubRepositories
-                    .Where(sub => sub.VcsType == VcsType.Svn)
-                    .Where(sub => !string.IsNullOrWhiteSpace(sub.RelativePath))
-                    .Select(sub => Path.Combine(repo.Path, sub.RelativePath))
-                    .Where(Directory.Exists));
-            }
-
-            if (svnPaths.Count > 0)
-            {
-                var svnTasks = svnPaths.Distinct(StringComparer.OrdinalIgnoreCase)
-                    .Select(async path => new
-                    {
-                        Path = path,
-                        Result = await RunCommandAsync("svn", "update", path, TimeSpan.FromSeconds(60)),
-                    });
-                var svnResults = await Task.WhenAll(svnTasks);
-                foreach (var svnResult in svnResults)
-                {
-                    if (svnResult.Result.ExitCode != 0)
-                    {
-                        result.Success = false;
-                        var relativePath = GetRepositoryRelativePath(repo.Path, svnResult.Path);
-                        result.ErrorMessage = AppendError(
-                            result.ErrorMessage,
-                            BuildCommandFailure($"SVN更新失败 ({relativePath})", svnResult.Result),
-                            null);
-                    }
-
-                    var svnText = (svnResult.Result.Output ?? string.Empty) + Environment.NewLine + (svnResult.Result.Error ?? string.Empty);
-                    if (HasSvnConflict(svnText))
-                    {
-                        result.HasConflicts = true;
-                        result.SvnConflicts.Add(GetRepositoryRelativePath(repo.Path, svnResult.Path));
-                    }
-
-                    await AppendSvnWorkingConflictsAsync(repo.Path, svnResult.Path, result);
-                }
-            }
-
-            if (!hasGit && gitSubRepositories.Count == 0 && !hasRootSvn && svnPaths.Count == 0)
+            if (steps.Count == 0)
             {
                 result.Success = false;
                 result.ErrorMessage = "未检测到 Git 或 SVN 仓库。";
+                return result;
+            }
+
+            for (int i = 0; i < steps.Count; i++)
+            {
+                var step = steps[i];
+                var progress = new PullProgressInfo(i + 1, steps.Count, step.DisplayName);
+                reportProgress?.Invoke(progress);
+
+                var commandResult = await RunCommandAsync(step.CommandFileName, step.CommandArguments, step.WorkingDirectory, TimeSpan.FromSeconds(60));
+                var stepResult = new PullStepResult
+                {
+                    DisplayName = step.DisplayName,
+                    ShortName = step.ShortName,
+                    VcsType = step.VcsType,
+                    OutputSummary = BuildCommandSummary(commandResult?.Output),
+                    ErrorSummary = BuildCommandSummary(commandResult?.Error),
+                };
+                result.StepResults.Add(stepResult);
+
+                if (commandResult.ExitCode != 0)
+                {
+                    result.Success = false;
+                    stepResult.Succeeded = false;
+                    stepResult.FailureMessage = BuildCommandFailure($"{step.OperationLabel}失败 ({step.ShortName})", commandResult);
+                    result.ErrorMessage = AppendError(result.ErrorMessage, stepResult.FailureMessage, null);
+                }
+                else
+                {
+                    stepResult.Succeeded = true;
+                }
+
+                var commandText = (commandResult.Output ?? string.Empty) + Environment.NewLine + (commandResult.Error ?? string.Empty);
+                if (step.VcsType == VcsType.Git)
+                {
+                    if (commandText.IndexOf("CONFLICT", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        foreach (var conflict in ParseGitConflicts(commandText))
+                        {
+                            AddGitConflict(result, stepResult, $"{step.ShortName}: {conflict}");
+                        }
+                    }
+
+                    await AppendGitWorkingConflictsAsync(step.WorkingDirectory, step.ShortName, result, stepResult);
+                }
+                else if (step.VcsType == VcsType.Svn)
+                {
+                    if (HasSvnConflict(commandText))
+                    {
+                        AddSvnConflict(result, stepResult, step.ShortName);
+                    }
+
+                    await AppendSvnWorkingConflictsAsync(repo.Path, step.WorkingDirectory, step.ShortName, result, stepResult);
+                }
             }
 
             DeduplicatePullConflicts(result);
             return result;
         }
 
-        private static async Task AppendGitWorkingConflictsAsync(string workingDirectory, string label, PullResult result)
+        private static List<PullStep> BuildPullSteps(CodeRepository repo)
+        {
+            var steps = new List<PullStep>();
+            if (repo == null || string.IsNullOrWhiteSpace(repo.Path) || !Directory.Exists(repo.Path))
+            {
+                return steps;
+            }
+
+            var hasGit = Directory.Exists(Path.Combine(repo.Path, ".git")) || File.Exists(Path.Combine(repo.Path, ".git"));
+            var hasRootSvn = Directory.Exists(Path.Combine(repo.Path, ".svn"));
+            if (hasGit)
+            {
+                steps.Add(new PullStep
+                {
+                    DisplayName = $"{repo.Name} / 根 Git",
+                    ShortName = "根 Git",
+                    OperationLabel = "Git拉取",
+                    WorkingDirectory = repo.Path,
+                    CommandFileName = "git",
+                    CommandArguments = "pull",
+                    VcsType = VcsType.Git,
+                });
+            }
+
+            if (repo.SubRepositories != null)
+            {
+                foreach (var sub in repo.SubRepositories
+                    .Where(sub => sub.VcsType == VcsType.Git && !string.IsNullOrWhiteSpace(sub.RelativePath))
+                    .GroupBy(sub => sub.RelativePath.Trim(), StringComparer.OrdinalIgnoreCase)
+                    .Select(group => group.First()))
+                {
+                    var subPath = Path.Combine(repo.Path, sub.RelativePath);
+                    if (!Directory.Exists(subPath))
+                    {
+                        continue;
+                    }
+
+                    steps.Add(new PullStep
+                    {
+                        DisplayName = $"{repo.Name} / Git 子仓库 / {sub.RelativePath}",
+                        ShortName = $"Git 子仓库 / {sub.RelativePath}",
+                        OperationLabel = "Git拉取",
+                        WorkingDirectory = subPath,
+                        CommandFileName = "git",
+                        CommandArguments = "pull",
+                        VcsType = VcsType.Git,
+                    });
+                }
+            }
+
+            if (hasRootSvn && !hasGit)
+            {
+                steps.Add(new PullStep
+                {
+                    DisplayName = $"{repo.Name} / 根 SVN",
+                    ShortName = "根 SVN",
+                    OperationLabel = "SVN更新",
+                    WorkingDirectory = repo.Path,
+                    CommandFileName = "svn",
+                    CommandArguments = "update",
+                    VcsType = VcsType.Svn,
+                });
+            }
+
+            if (repo.SubRepositories != null)
+            {
+                foreach (var sub in repo.SubRepositories
+                    .Where(sub => sub.VcsType == VcsType.Svn && !string.IsNullOrWhiteSpace(sub.RelativePath))
+                    .GroupBy(sub => sub.RelativePath.Trim(), StringComparer.OrdinalIgnoreCase)
+                    .Select(group => group.First()))
+                {
+                    var subPath = Path.Combine(repo.Path, sub.RelativePath);
+                    if (!Directory.Exists(subPath))
+                    {
+                        continue;
+                    }
+
+                    steps.Add(new PullStep
+                    {
+                        DisplayName = $"{repo.Name} / SVN 子目录 / {sub.RelativePath}",
+                        ShortName = $"SVN 子目录 / {sub.RelativePath}",
+                        OperationLabel = "SVN更新",
+                        WorkingDirectory = subPath,
+                        CommandFileName = "svn",
+                        CommandArguments = "update",
+                        VcsType = VcsType.Svn,
+                    });
+                }
+            }
+
+            return steps;
+        }
+
+        private static string BuildPullProgressText(PullProgressInfo progress)
+        {
+            if (progress == null)
+            {
+                return "正在拉取代码...";
+            }
+
+            return $"拉取代码 {progress.CurrentStep}/{progress.TotalSteps}：{progress.CurrentDisplayName}";
+        }
+
+        private static string BuildPullSummaryText(CodeRepository repo, PullResult result)
+        {
+            var repositoryName = repo?.Name ?? "当前仓库";
+            var cleanSuccessCount = result?.StepResults.Count(step => step.IsCleanSuccess) ?? 0;
+            var conflictCount = result?.StepResults.Count(step => step.IsConflict) ?? 0;
+            var failureCount = result?.StepResults.Count(step => step.IsFailure) ?? 0;
+            if ((result?.StepResults.Count ?? 0) == 0 && result != null && !result.Success)
+            {
+                failureCount = 1;
+            }
+
+            return $"拉取完成：{repositoryName}（成功 {cleanSuccessCount} 项，冲突 {conflictCount} 项，失败 {failureCount} 项）";
+        }
+
+        private static string BuildFailureMessage(PullResult result)
+        {
+            if (result == null)
+            {
+                return "拉取失败。";
+            }
+
+            var failedSteps = result.StepResults
+                .Where(step => step.IsFailure)
+                .Select(step => string.IsNullOrWhiteSpace(step.FailureMessage)
+                    ? "- " + step.DisplayName
+                    : "- " + step.FailureMessage)
+                .ToList();
+            if (failedSteps.Count == 0)
+            {
+                return "拉取失败: " + (string.IsNullOrWhiteSpace(result.ErrorMessage) ? "请查看日志。" : result.ErrorMessage);
+            }
+
+            return "以下仓库项拉取失败：" + Environment.NewLine + string.Join(Environment.NewLine, failedSteps);
+        }
+
+        private static void AddGitConflict(PullResult result, PullStepResult stepResult, string conflict)
+        {
+            if (string.IsNullOrWhiteSpace(conflict))
+            {
+                return;
+            }
+
+            result.HasConflicts = true;
+            result.GitConflicts.Add(conflict);
+            stepResult?.GitConflicts.Add(conflict);
+        }
+
+        private static void AddSvnConflict(PullResult result, PullStepResult stepResult, string conflict)
+        {
+            if (string.IsNullOrWhiteSpace(conflict))
+            {
+                return;
+            }
+
+            result.HasConflicts = true;
+            result.SvnConflicts.Add(conflict);
+            stepResult?.SvnConflicts.Add(conflict);
+        }
+
+        private static void AddMarkerConflict(PullResult result, PullStepResult stepResult, string conflict)
+        {
+            if (string.IsNullOrWhiteSpace(conflict))
+            {
+                return;
+            }
+
+            result.HasConflicts = true;
+            result.MarkerConflicts.Add(conflict);
+            stepResult?.MarkerConflicts.Add(conflict);
+        }
+
+        private static string BuildCommandSummary(string text)
+        {
+            return SplitCommandLines(text).FirstOrDefault();
+        }
+
+        private static async Task AppendGitWorkingConflictsAsync(string workingDirectory, string label, PullResult result, PullStepResult stepResult)
         {
             if (string.IsNullOrWhiteSpace(workingDirectory) || !Directory.Exists(workingDirectory))
             {
@@ -1415,8 +1555,7 @@ Set-Location -LiteralPath {PsQuote(repo.Path)}
                 TimeSpan.FromSeconds(30));
             foreach (var path in SplitCommandLines(unmergedResult.Output))
             {
-                result.HasConflicts = true;
-                result.GitConflicts.Add($"{label}: {path}");
+                AddGitConflict(result, stepResult, $"{label}: {path}");
             }
 
             var markerResult = await RunCommandAsync(
@@ -1428,13 +1567,12 @@ Set-Location -LiteralPath {PsQuote(repo.Path)}
             {
                 foreach (var marker in ParseGitGrepPaths(markerResult.Output))
                 {
-                    result.HasConflicts = true;
-                    result.MarkerConflicts.Add($"{label}: {marker}");
+                    AddMarkerConflict(result, stepResult, $"{label}: {marker}");
                 }
             }
         }
 
-        private static async Task AppendSvnWorkingConflictsAsync(string repositoryPath, string svnPath, PullResult result)
+        private static async Task AppendSvnWorkingConflictsAsync(string repositoryPath, string svnPath, string label, PullResult result, PullStepResult stepResult)
         {
             if (string.IsNullOrWhiteSpace(svnPath) || !Directory.Exists(svnPath))
             {
@@ -1444,11 +1582,13 @@ Set-Location -LiteralPath {PsQuote(repo.Path)}
             var statusResult = await RunCommandAsync("svn", "status", svnPath, TimeSpan.FromSeconds(30));
             foreach (var conflict in ParseSvnStatusConflicts(statusResult.Output))
             {
-                result.HasConflicts = true;
                 var relativeRoot = GetRepositoryRelativePath(repositoryPath, svnPath);
-                result.SvnConflicts.Add(string.Equals(relativeRoot, "根仓库", StringComparison.OrdinalIgnoreCase)
-                    ? conflict
-                    : $"{relativeRoot}: {conflict}");
+                AddSvnConflict(
+                    result,
+                    stepResult,
+                    string.Equals(relativeRoot, "根仓库", StringComparison.OrdinalIgnoreCase)
+                        ? $"{label}: {conflict}"
+                        : $"{relativeRoot}: {conflict}");
             }
         }
 
@@ -1617,6 +1757,16 @@ Set-Location -LiteralPath {PsQuote(repo.Path)}
         private static string BuildConflictMessage(PullResult result)
         {
             var parts = new List<string> { "检测到冲突或冲突标记，建议先处理后再编译。" };
+            var conflictSteps = result.StepResults
+                .Where(step => step.IsConflict)
+                .Select(step => step.DisplayName)
+                .Take(8)
+                .ToList();
+            if (conflictSteps.Count > 0)
+            {
+                parts.Add("涉及仓库项: " + string.Join(", ", conflictSteps));
+            }
+
             if (result.GitConflicts.Count > 0)
             {
                 parts.Add("Git冲突文件: " + string.Join(", ", result.GitConflicts.Take(8)));
@@ -2005,6 +2155,7 @@ SVN冲突/树冲突：
             try
             {
                 AiGlobalInstructionService.EnsureCodeGraphInstructions();
+                AiMemoryService.EnsureMemoryAvailable();
                 return string.Empty;
             }
             catch (Exception ex)
@@ -2141,6 +2292,8 @@ exit $LASTEXITCODE
 
             public bool HasConflicts { get; set; }
 
+            public int TotalSteps { get; set; }
+
             public string ErrorMessage { get; set; }
 
             public List<string> GitConflicts { get; } = new List<string>();
@@ -2148,6 +2301,72 @@ exit $LASTEXITCODE
             public List<string> SvnConflicts { get; } = new List<string>();
 
             public List<string> MarkerConflicts { get; } = new List<string>();
+
+            public List<PullStepResult> StepResults { get; } = new List<PullStepResult>();
+        }
+
+        private sealed class PullStep
+        {
+            public string DisplayName { get; set; }
+
+            public string ShortName { get; set; }
+
+            public string OperationLabel { get; set; }
+
+            public string WorkingDirectory { get; set; }
+
+            public string CommandFileName { get; set; }
+
+            public string CommandArguments { get; set; }
+
+            public VcsType VcsType { get; set; }
+        }
+
+        private sealed class PullProgressInfo
+        {
+            public PullProgressInfo(int currentStep, int totalSteps, string currentDisplayName)
+            {
+                CurrentStep = currentStep;
+                TotalSteps = totalSteps;
+                CurrentDisplayName = currentDisplayName;
+            }
+
+            public int CurrentStep { get; }
+
+            public int TotalSteps { get; }
+
+            public string CurrentDisplayName { get; }
+        }
+
+        private sealed class PullStepResult
+        {
+            public string DisplayName { get; set; }
+
+            public string ShortName { get; set; }
+
+            public VcsType VcsType { get; set; }
+
+            public bool Succeeded { get; set; }
+
+            public string OutputSummary { get; set; }
+
+            public string ErrorSummary { get; set; }
+
+            public string FailureMessage { get; set; }
+
+            public List<string> GitConflicts { get; } = new List<string>();
+
+            public List<string> SvnConflicts { get; } = new List<string>();
+
+            public List<string> MarkerConflicts { get; } = new List<string>();
+
+            public bool HasConflicts => GitConflicts.Count > 0 || SvnConflicts.Count > 0 || MarkerConflicts.Count > 0;
+
+            public bool IsConflict => HasConflicts;
+
+            public bool IsFailure => !Succeeded;
+
+            public bool IsCleanSuccess => Succeeded && !HasConflicts;
         }
 
         private class CommandResult

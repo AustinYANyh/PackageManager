@@ -16,6 +16,7 @@ namespace PackageManager.Services
 
         public static AiGlobalInstructionSyncResult EnsureCodeGraphInstructions()
         {
+            return new AiGlobalInstructionSyncResult("", "", false, false);
             lock (SyncRoot)
             {
                 var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);

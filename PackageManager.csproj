@@ -140,6 +140,7 @@
 
         <!-- Cross-cutting Services -->
         <Compile Include="Services\AiGlobalInstructionService.cs" />
+        <Compile Include="Services\AiMemoryService.cs" />
         <Compile Include="Services\AiPromptProtocolService.cs" />
         <Compile Include="Services\ApplicationFinderService.cs" />
         <Compile Include="Services\DataPersistenceService.cs" />

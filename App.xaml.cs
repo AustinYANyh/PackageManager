@@ -74,6 +74,7 @@ namespace PackageManager
                 {
                     AiGlobalInstructionService.EnsureCodeGraphInstructions();
                     new AiCommitSkillService().EnsureSkillAvailable(null);
+                    AiMemoryService.EnsureMemoryAvailable();
                 }
                 catch (Exception ex)
                 {
