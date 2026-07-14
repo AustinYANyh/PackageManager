@@ -302,6 +302,20 @@
         <Compile Include="Features\FileSearch\Services\FileSearchWindowManager.cs" />
         <Compile Include="Features\FileSearch\Services\IndexHostTaskService.cs" />
 
+        <!-- Features/CommandPalette -->
+        <Compile Include="Features\CommandPalette\Models\PaletteModels.cs" />
+        <Compile Include="Features\CommandPalette\Services\PaletteCandidateService.cs" />
+        <Compile Include="Features\CommandPalette\Services\CommandPaletteManager.cs" />
+        <Compile Include="Features\CommandPalette\Views\PaletteHtml.cs" />
+        <Page Include="Features\CommandPalette\Views\CommandPaletteWindow.xaml">
+          <Generator>MSBuild:Compile</Generator>
+          <SubType>Designer</SubType>
+        </Page>
+        <Compile Include="Features\CommandPalette\Views\CommandPaletteWindow.xaml.cs">
+          <DependentUpon>CommandPaletteWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+
         <!-- Features/RevitTools -->
         <Compile Include="Features\RevitTools\Models\PluginAddinInfo.cs" />
         <Compile Include="Features\RevitTools\Services\RevitProcessService.cs" />

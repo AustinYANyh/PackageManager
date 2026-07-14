@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows;
 using System.Windows.Interop;
+using PackageManager.Features.CommandPalette.Services;
 
 namespace PackageManager.Services
 {
@@ -16,21 +17,26 @@ namespace PackageManager.Services
         private const int WmHotkey = 0x0312;
         private const int HotkeyIdCtrlQ = 0x4001;
         private const int HotkeyIdCtrlE = 0x4002;
+        private const int HotkeyIdCtrlSpace = 0x4003;
         private const uint ModControl = 0x0002;
         private const uint ModNoRepeat = 0x4000;
         private const int VkQ = 0x51;
         private const int VkE = 0x45;
+        private const int VkSpace = 0x20;
 
         private readonly CommonStartupWindowManager _windowManager;
         private readonly FileSearchWindowManager _fileSearchWindowManager;
+        private readonly CommandPaletteManager _commandPaletteManager;
         private HwndSource _hwndSource;
         private bool _ctrlQRegistered;
         private bool _ctrlERegistered;
+        private bool _ctrlSpaceRegistered;
 
-        public SystemHotkeyService(CommonStartupWindowManager windowManager, FileSearchWindowManager fileSearchWindowManager)
+        public SystemHotkeyService(CommonStartupWindowManager windowManager, FileSearchWindowManager fileSearchManager, CommandPaletteManager commandPaletteManager)
         {
             _windowManager = windowManager ?? throw new ArgumentNullException(nameof(windowManager));
-            _fileSearchWindowManager = fileSearchWindowManager ?? throw new ArgumentNullException(nameof(fileSearchWindowManager));
+            _fileSearchWindowManager = fileSearchManager ?? throw new ArgumentNullException(nameof(fileSearchManager));
+            _commandPaletteManager = commandPaletteManager ?? throw new ArgumentNullException(nameof(commandPaletteManager));
         }
 
         public void Start()
@@ -97,6 +103,17 @@ namespace PackageManager.Services
             {
                 LoggingService.LogInfo("系统热键 Ctrl+E 注册成功");
             }
+
+            _ctrlSpaceRegistered = RegisterHotKey(_hwndSource.Handle, HotkeyIdCtrlSpace, ModControl | ModNoRepeat, (uint)VkSpace);
+            if (!_ctrlSpaceRegistered)
+            {
+                var err = Marshal.GetLastWin32Error();
+                LoggingService.LogWarning($"RegisterHotKey Ctrl+Space 失败，Win32Error={err}（可能被其他程序占用）");
+            }
+            else
+            {
+                LoggingService.LogInfo("系统热键 Ctrl+Space 注册成功");
+            }
         }
 
         private void UnregisterAndDestroy()
@@ -112,6 +129,11 @@ namespace PackageManager.Services
             {
                 UnregisterHotKey(_hwndSource.Handle, HotkeyIdCtrlE);
                 _ctrlERegistered = false;
+            }
+            if (_ctrlSpaceRegistered)
+            {
+                UnregisterHotKey(_hwndSource.Handle, HotkeyIdCtrlSpace);
+                _ctrlSpaceRegistered = false;
             }
 
             _hwndSource.RemoveHook(WndProc);
@@ -134,6 +156,12 @@ namespace PackageManager.Services
                 {
                     LoggingService.LogInfo("系统热键触发：Ctrl+E");
                     ThreadPool.QueueUserWorkItem(_ => _fileSearchWindowManager.ShowOrActivate());
+                    handled = true;
+                }
+                else if (id == HotkeyIdCtrlSpace)
+                {
+                    LoggingService.LogInfo("系统热键触发：Ctrl+Space");
+                    _commandPaletteManager.ShowOrActivate();
                     handled = true;
                 }
             }

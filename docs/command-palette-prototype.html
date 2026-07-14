@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PackageManager 统一命令面板 · 交互原型</title>
+<style>
+  :root{
+    --bg:#0f1012; --desk1:#1b1d22; --desk2:#111216;
+    --overlay:rgba(8,9,11,.55);
+    --card:#212327; --card-2:#1a1c1f; --line:#34373d;
+    --txt:#e7e9ee; --txt-dim:#9aa0aa; --txt-faint:#62666e;
+    --accent:#13b8a6; --accent-soft:rgba(19,184,166,.14);
+    --sel:#2b2f36;
+    --c-cmd:#4a9eff; --c-pkg:#13b8a6; --c-work:#a855f7; --c-file:#f59e0b;
+    --c-app:#34d399; --c-repo:#f472b6; --c-nav:#94a3b8;
+    --radius:14px;
+    --mono:"Cascadia Code","JetBrains Mono","Consolas",ui-monospace,monospace;
+    --sans:"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;font-family:var(--sans);color:var(--txt);overflow:hidden}
+  body{
+    background:
+      radial-gradient(1200px 700px at 18% -10%, #23262d 0%, transparent 60%),
+      radial-gradient(900px 600px at 100% 110%, #1a2230 0%, transparent 55%),
+      linear-gradient(160deg,var(--desk1),var(--desk2));
+  }
+
+  /* ===== 模拟桌面（让浮层感更强） ===== */
+  .desktop{position:fixed;inset:0;display:flex;flex-direction:column}
+  .fake-app{
+    flex:1;margin:26px 28px 0;border-radius:12px;border:1px solid var(--line);
+    background:linear-gradient(180deg,#1d1f23,#15171a);
+    box-shadow:0 30px 80px rgba(0,0,0,.5);opacity:.55;
+    display:flex;
+  }
+  .fake-app .side{width:190px;border-right:1px solid var(--line);padding:14px 12px}
+  .fake-app .side .logo{font-weight:700;font-size:13px;letter-spacing:.5px;opacity:.8}
+  .fake-app .side .nav{margin-top:16px;display:flex;flex-direction:column;gap:9px}
+  .fake-app .side .nav i{display:block;height:11px;border-radius:4px;background:#2c2f35}
+  .fake-app .side .nav i:nth-child(1){width:70%} .fake-app .side .nav i:nth-child(2){width:55%}
+  .fake-app .side .nav i:nth-child(3){width:80%} .fake-app .side .nav i:nth-child(4){width:48%}
+  .fake-app .side .nav i:nth-child(5){width:64%}
+  .fake-app .main{flex:1;padding:16px}
+  .fake-app .main .bar{height:30px;border-radius:8px;background:#26292e;margin-bottom:16px}
+  .fake-app .main .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+  .fake-app .main .grid b{height:78px;border-radius:10px;background:#22252a;border:1px solid var(--line);display:block}
+
+  /* ===== 顶部操作说明条 ===== */
+  .hint{
+    position:fixed;left:0;right:0;bottom:0;z-index:60;
+    display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+    padding:10px 16px;background:rgba(10,11,13,.82);backdrop-filter:blur(10px);
+    border-top:1px solid var(--line);font-size:12.5px;color:var(--txt-dim);
+  }
+  .hint b{color:var(--txt);font-weight:600}
+  .kbd{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;padding:0 6px;
+    border-radius:5px;background:#2a2d33;border:1px solid #40434a;color:var(--txt);font:600 11px var(--mono)}
+  .hint .sp{flex:1}
+  .demo-btn{cursor:pointer;border:1px solid #3a3d44;background:#26292f;color:var(--txt-dim);
+    padding:5px 10px;border-radius:7px;font-size:12px;transition:.15s}
+  .demo-btn:hover{border-color:var(--accent);color:var(--txt);background:var(--accent-soft)}
+
+  /* ===== 遮罩 + 面板 ===== */
+  .overlay{position:fixed;inset:0;z-index:50;background:var(--overlay);backdrop-filter:blur(6px);
+    display:flex;justify-content:center;align-items:flex-start;padding-top:11vh}
+  .palette{width:660px;max-width:94vw;background:var(--card);border:1px solid var(--line);
+    border-radius:var(--radius);box-shadow:0 40px 120px rgba(0,0,0,.6),0 0 0 1px rgba(255,255,255,.02);
+    overflow:hidden;display:flex;flex-direction:column;animation:pop .16s ease}
+  @keyframes pop{from{transform:translateY(-10px) scale(.99);opacity:0}to{transform:none;opacity:1}}
+
+  /* 输入栏 */
+  .input-row{display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid var(--line)}
+  .mode-badge{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;
+    padding:4px 9px;border-radius:7px;background:#2a2d33;color:var(--txt-dim);white-space:nowrap;transition:.15s}
+  .mode-badge .dot{width:7px;height:7px;border-radius:50%;background:var(--txt-faint)}
+  #q{flex:1;background:transparent;border:0;outline:0;color:var(--txt);font-size:17px;font-family:var(--sans)}
+  #q::placeholder{color:var(--txt-faint)}
+  .esc{font:600 11px var(--mono);color:var(--txt-faint);border:1px solid var(--line);border-radius:6px;padding:3px 7px;cursor:pointer}
+  .esc:hover{color:var(--txt)}
+
+  /* 结果区 */
+  .results{max-height:52vh;overflow-y:auto}
+  .results::-webkit-scrollbar{width:9px}
+  .results::-webkit-scrollbar-thumb{background:#3a3d44;border-radius:6px;border:2px solid var(--card)}
+  .group{padding:6px 0}
+  .group-head{display:flex;align-items:center;gap:8px;padding:9px 16px 5px;
+    font-size:11px;font-weight:700;letter-spacing:.6px;color:var(--txt-faint);text-transform:uppercase}
+  .group-head .cnt{color:var(--txt-faint);font-weight:600;background:#26292f;padding:1px 7px;border-radius:20px}
+  .group-head .gicon{width:15px;height:15px;opacity:.85}
+
+  .item{display:flex;align-items:center;gap:12px;padding:9px 16px;cursor:pointer;position:relative;
+    border-left:2px solid transparent}
+  .item.sel{background:var(--sel);border-left-color:var(--accent)}
+  .item.sel .title{color:#fff}
+  .item.multi{background:rgba(74,158,255,.10)}
+  .item.sel.multi{background:rgba(74,158,255,.18);border-left-color:#4a9eff}
+  .ic{width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .ic svg{width:16px;height:16px}
+  .body{flex:1;min-width:0}
+  .title{font-size:14px;color:var(--txt);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .title mark{background:transparent;color:var(--accent);font-weight:700}
+  .sub{font-size:12px;color:var(--txt-faint);font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+  .tags{display:flex;gap:6px;align-items:center;flex:0 0 auto}
+  .tag{font-size:10.5px;font-weight:600;padding:2px 7px;border-radius:20px;white-space:nowrap}
+  .badge-new{background:rgba(19,184,166,.16);color:#2dd4bf}
+  .badge-warn{background:rgba(245,158,11,.16);color:#fbbf24}
+  .badge-ahead{background:rgba(74,158,255,.16);color:#60a5fa}
+  .badge-st{font-size:10px;padding:2px 7px;border-radius:20px;background:#2a2d33;color:var(--txt-dim)}
+  .hk{font:600 11px var(--mono);color:var(--txt-faint)}
+  .check{width:16px;height:16px;border-radius:5px;border:1.5px solid #45484f;flex:0 0 auto;display:flex;align-items:center;justify-content:center}
+  .item.multi .check{background:#4a9eff;border-color:#4a9eff;color:#fff}
+
+  /* 空状态 / 加载 */
+  .empty{padding:42px 16px;text-align:center;color:var(--txt-faint)}
+  .empty .big{font-size:14px;color:var(--txt-dim);margin-bottom:5px}
+  .searching{padding:18px;text-align:center;color:var(--txt-faint);font-size:13px}
+  .searching .sp{display:inline-block;width:13px;height:13px;border:2px solid #3a3d44;border-top-color:var(--accent);border-radius:50%;animation:rot .7s linear infinite;vertical-align:-2px;margin-right:7px}
+  @keyframes rot{to{transform:rotate(360deg)}}
+
+  /* 底部状态栏 */
+  .footer{display:flex;align-items:center;gap:14px;padding:9px 16px;border-top:1px solid var(--line);
+    background:var(--card-2);font-size:11.5px;color:var(--txt-faint)}
+  .footer .seg{display:flex;align-items:center;gap:6px}
+  .footer .sp{flex:1}
+  .footer .accent{color:var(--accent);font-weight:600}
+
+  /* 执行反馈 */
+  .toast{position:fixed;left:50%;bottom:64px;transform:translateX(-50%) translateY(20px);
+    background:#10b15a;color:#fff;padding:11px 18px;border-radius:10px;font-size:13px;font-weight:600;
+    box-shadow:0 16px 40px rgba(0,0,0,.4);opacity:0;pointer-events:none;transition:.22s;z-index:80;display:flex;align-items:center;gap:9px}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  .toast .t-ic{width:18px;height:18px;border-radius:50%;background:rgba(255,255,255,.25);display:flex;align-items:center;justify-content:center;font-size:12px}
+
+  /* 类别色 */
+  .c-cmd{background:rgba(74,158,255,.14);color:#6cb0ff} .t-cmd{color:#6cb0ff}
+  .c-pkg{background:rgba(19,184,166,.14);color:#2dd4bf} .t-pkg{color:#2dd4bf}
+  .c-work{background:rgba(168,85,247,.14);color:#c084fc} .t-work{color:#c084fc}
+  .c-file{background:rgba(245,158,11,.14);color:#fbbf24} .t-file{color:#fbbf24}
+  .c-app{background:rgba(52,211,153,.14);color:#34d399} .t-app{color:#34d399}
+  .c-repo{background:rgba(244,114,182,.14);color:#f472b6} .t-repo{color:#f472b6}
+  .c-nav{background:rgba(148,163,184,.14);color:#aab6c5} .t-nav{color:#aab6c5}
+  .c-rec{background:rgba(255,255,255,.06);color:#cbd0d8} .t-rec{color:#cbd0d8}
+</style>
+</head>
+<body>
+<div class="desktop">
+  <!-- 模拟被遮住的桌面应用 -->
+  <div class="fake-app">
+    <div class="side">
+      <div class="logo">▦ PackageManager</div>
+      <div class="nav"><i></i><i></i><i></i><i></i><i></i></div>
+    </div>
+    <div class="main">
+      <div class="bar"></div>
+      <div class="grid"><b></b><b></b><b></b><b></b><b></b><b></b><b></b><b></b></div>
+    </div>
+  </div>
+</div>
+
+<!-- 顶部操作说明 / 演示按钮 -->
+<div class="hint">
+  <b>统一命令面板 · 原型</b>
+  <span><span class="kbd">↑</span><span class="kbd">↓</span> 选择</span>
+  <span><span class="kbd">Enter</span> 执行</span>
+  <span><span class="kbd">Space</span> 多选(包)</span>
+  <span><span class="kbd">Tab</span> 切模式</span>
+  <span><span class="kbd">Esc</span> 关闭</span>
+  <span class="sp"></span>
+  <span class="demo-btn" data-q="">全部</span>
+  <span class="demo-btn" data-q=">">▸ 命令</span>
+  <span class="demo-btn" data-q="#">▸ 产品包</span>
+  <span class="demo-btn" data-q="@">▸ 工作项</span>
+  <span class="demo-btn" data-q="/">▸ 文件</span>
+  <span class="demo-btn" data-q="dazzle">试搜 dazzle</span>
+  <span class="demo-btn" data-q="gxb">试搜拼音 gxb</span>
+</div>
+
+<div class="overlay">
+  <div class="palette">
+    <div class="input-row">
+      <span class="mode-badge" id="modeBadge"><span class="dot"></span><span id="modeText">全部</span></span>
+      <input id="q" autocomplete="off" spellcheck="false" placeholder="搜索 命令 / 包 / 工作项 / 文件 / 启动项…  （试试 > # @ / 前缀）" />
+      <span class="esc" id="escBtn">Esc</span>
+    </div>
+    <div class="results" id="results"></div>
+    <div class="footer">
+      <span class="seg"><span id="footCount">0</span> 项结果</span>
+      <span class="seg" id="footMulti" style="display:none">已选 <b class="accent" id="multiCount">0</b> · Enter 批量更新</span>
+      <span class="sp"></span>
+      <span class="seg" id="footHint">回车执行选中项</span>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"><span class="t-ic">✓</span><span id="toastTxt"></span></div>
+
+<script>
+/* ============ 图标 ============ */
+const I = {
+  cmd:`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>`,
+  pkg:`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>`,
+  work:`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>`,
+  file:`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>`,
+  app:`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>`,
+  repo:`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>`,
+  nav:`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>`,
+  rec:`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg>`
+};
+const IC={cmd:I.cmd,pkg:I.pkg,work:I.work,file:I.file,app:I.app,repo:I.repo,nav:I.nav,recent:I.rec};
+
+/* ============ 类别元信息 ============ */
+const CAT={
+  cmd :{name:'命令',  cls:'c-cmd', tcls:'t-cmd', order:2},
+  nav :{name:'导航',  cls:'c-nav', tcls:'t-nav', order:3},
+  pkg :{name:'产品包',cls:'c-pkg', tcls:'t-pkg', order:4},
+  work:{name:'工作项',cls:'c-work',tcls:'t-work',order:5},
+  repo:{name:'代码仓库',cls:'c-repo',tcls:'t-repo',order:6},
+  file:{name:'文件',  cls:'c-file',tcls:'t-file',order:7},
+  app :{name:'启动项',cls:'c-app', tcls:'t-app', order:8},
+};
+const PREFIX={'>':'cmd','#':'pkg','@':'work','/':'file'};
+
+/* ============ 数据 ============ */
+const DATA=[
+  // 命令
+  {t:'cmd',title:'更新所有包',sub:'检测到 2 个新版本',py:'gengxinsuoyoubao|gxsyb|更新',tags:['2 新版本','badge-new'],hk:'Ctrl+U'},
+  {t:'cmd',title:'开关 Git 代理',sub:'当前：127.0.0.1:7897（已开启）',py:'guanwangitdaili|kaiguandaili|代理',tags:['已开启','badge-warn']},
+  {t:'cmd',title:'一键环境体检',sub:'FTP / Jenkins / Git·SVN / 索引 / 网络',py:'huanjingtijian|yjtj|体检'},
+  {t:'cmd',title:'生成今日工作日报',sub:'汇总 Git·SVN 提交 + PingCode',py:'shengchengribao|gongzuoribao|日报',hk:'Ctrl+D'},
+  {t:'cmd',title:'重新加载 FTP 版本',sub:'强制刷新可见版本',py:'chongxinjiazaiftp|jiazaiversion'},
+  {t:'cmd',title:'清除缓存与状态',sub:'清空索引缓存 / 临时文件',py:'qingchuhuancun|clear'},
+  {t:'cmd',title:'打开软件设置',sub:'',py:'shezhi|settings'},
+  {t:'cmd',title:'解锁占用文件',sub:'Restart Manager 查询占用进程',py:'jiesuowenjian|unlock'},
+  {t:'cmd',title:'切换调试模式（当前包）',sub:'',py:'qiehongdiaoshimoshi|debug'},
+  // 导航
+  {t:'nav',title:'仪表盘',sub:'首页概览',py:'yibiaopan|home|dashboard'},
+  {t:'nav',title:'产品分类',sub:'包列表 · 版本管理',py:'chanpinfenlei|packages|baoguanli'},
+  {t:'nav',title:'代码工作区',sub:'Git / SVN 状态 · AI 提交',py:'daimagongzuoqu|codeworkspace|gongzuoqu'},
+  {t:'nav',title:'文件传输',sub:'局域网设备 · 密语',py:'wenjianchuanshu|lan|chuanshu'},
+  {t:'nav',title:'软件设置',sub:'',py:'ruanjianshezhi|settings'},
+  // 产品包
+  {t:'pkg',title:'Dazzle',sub:'v1.5.2 → v1.6.0',py:'dazzle',tags:['新版本','badge-new'],ver:'1.6.0'},
+  {t:'pkg',title:'MaxiBIM SH',sub:'v2.3.1（最新）',py:'maxibimsh|maxibim',ver:'2.3.1'},
+  {t:'pkg',title:'HongwaCore',sub:'v2.9.4 → v3.0.0',py:'hongwacore|core',tags:['新版本','badge-new'],ver:'3.0.0'},
+  {t:'pkg',title:'RevitToolkit',sub:'v1.2.0（最新）',py:'revittoolkit|toolkit',ver:'1.2.0'},
+  {t:'pkg',title:'Dazzle 资源库',sub:'v4.1.0（最新）',py:'dazzleziyuanku|ziyuan',ver:'4.1.0'},
+  // 工作项
+  {t:'work',title:'PINGCODE-1234  修复图纸导出崩溃',sub:'缺陷 · 严重 · 指派：我',py:'xiufutuzhidaochukui|bug|tukui',tags:['进行中']},
+  {t:'work',title:'PINGCODE-1198  实现批量清理功能',sub:'需求 · 5SP · 待开始',py:'shixianpiliangqingli|piLiangQingLi|plql',tags:['待开始']},
+  {t:'work',title:'PINGCODE-1210  优化版本比对性能',sub:'需求 · 3SP',py:'youhuabanbenbiduixingneng|banben|bijiao',tags:['已解决']},
+  // 仓库
+  {t:'repo',title:'Dazzle',sub:'Git · develop · 3 ahead, 1 behind',py:'dazzle|git',tags:['3 ahead','badge-ahead']},
+  {t:'repo',title:'MaxiBIM-SH',sub:'SVN · trunk',py:'maxibimsh|svn'},
+  {t:'repo',title:'PackageManager',sub:'Git · master · clean',py:'packagemanager|master'},
+  // 文件
+  {t:'file',title:'MainViewModel.cs',sub:'E:\\Work\\Dazzle\\src\\Core\\MainViewModel.cs',py:'mainviewmodel|dazzle|core'},
+  {t:'file',title:'app.config',sub:'E:\\Work\\MaxiBIM\\config\\app.config',py:'appconfig|maxibim'},
+  {t:'file',title:'需求文档-批量清理.docx',sub:'D:\\Docs\\需求文档-批量清理.docx',py:'xuqiawendeng|piLiang'},
+  {t:'file',title:'PackageManager.exe',sub:'D:\\Release\\PackageManager.exe',py:'packagemanager|release|exe'},
+  // 启动项
+  {t:'app',title:'Revit 2024',sub:'C:\\Program Files\\Autodesk\\Revit 2024\\Revit.exe',py:'revit|2024'},
+  {t:'app',title:'Visual Studio',sub:'devenv.exe',py:'visualstudio|vs|devenv'},
+  {t:'app',title:'PowerShell 7',sub:'pwsh.exe',py:'powershell|pwsh|ps7'},
+  {t:'app',title:'LogViewPro',sub:'日志查看器',py:'logviewpro|rizhi'},
+];
+
+/* 最近使用（混合，置顶） */
+const RECENT=new Set(['更新所有包','代码工作区','Dazzle','PINGCODE-1234  修复图纸导出崩溃','Revit 2024']);
+DATA.forEach(d=>{ if(RECENT.has(d.title)) d._recent=true; });
+
+/* ============ 状态 ============ */
+let q='', mode=null, flat=[], sel=-1, multiSel=new Set(), lastTimer=null;
+
+/* ============ Fuzzy 匹配（子序列 + 连续/首字母加分） ============ */
+function fuzzy(text,qstr){
+  if(!qstr) return {score:1,marks:[]};
+  text=text.toLowerCase(); qstr=qstr.toLowerCase();
+  let ti=0,score=0,prev=-1,marks=[],first=true;
+  for(let qi=0;qi<qstr.length;qi++){
+    const c=qstr[qi];
+    let found=-1;
+    for(;ti<text.length;ti++){ if(text[ti]===c){found=ti;break;} }
+    if(found<0) return null;
+    let s=1;
+    if(found===prev+1) s+=5;            // 连续
+    if(first && found===0) s+=8;        // 起首
+    if(found>0 && /[\s\-_\\/.]/.test(text[found-1])) s+=6; // 词首
+    score+=s; prev=found; ti=found+1; first=false; marks.push(found);
+  }
+  // 越靠前、越短，越优
+  score += (text.length>0? (1/(1+marks[0]))*4 :0);
+  return {score,marks};
+}
+function scoreOf(d,qstr){
+  // 主标题 + 拼音关键字，取最高分
+  const a=fuzzy(d.title,qstr);
+  const b=d.py? fuzzy(d.py,qstr):null;
+  let best=null,field='';
+  if(a&&(!best||a.score>best.score)){best=a;field='title';}
+  if(b&&(!best||b.score>best.score)){best=b;field='py';}
+  if(!best) return null;
+  return {score:best.score, field};
+}
+
+/* ============ 渲染 ============ */
+const $=id=>document.getElementById(id);
+const resultsEl=$('results');
+
+function highlight(title,qstr,field){
+  if(!qstr) return title;
+  if(field!=='title') return title; // 命中拼音时不强标，避免误标
+  const r=fuzzy(title,qstr); if(!r) return title;
+  const idx=r.marks; let out='',p=0;
+  for(const i of idx){ out+=esc(title.slice(p,i))+'<mark>'+esc(title[i])+'</mark>'; p=i+1; }
+  out+=esc(title.slice(p)); return out;
+}
+function esc(s){return s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
+
+function render(){
+  // 解析模式
+  const raw=q; mode=null; let term=raw;
+  if(raw.length && PREFIX[raw[0]]){ mode=PREFIX[raw[0]]; term=raw.slice(1).trimStart(); }
+  // 模式徽章
+  const mb=$('modeBadge'); const mt=$('modeText');
+  if(mode){ const c=CAT[mode]; mt.textContent=c.name; mb.style.color=colorOf(c.tcls); mb.style.background='rgba(255,255,255,.06)'; }
+  else { mt.textContent='全部'; mb.style.color=''; mb.style.background=''; }
+
+  // 过滤 + 评分
+  let pool=DATA.filter(d=> !mode || d.t===mode);
+  let scored=[];
+  if(term){
+    pool.forEach(d=>{ const s=scoreOf(d,term); if(s) scored.push({d,s}); });
+    scored.sort((a,b)=> b.s.score - a.s.score || CAT[a.d.t].order - CAT[b.d.t].order);
+  } else {
+    // 无输入：最近优先，再按类别
+    pool.forEach(d=> scored.push({d,s:{score:d._recent?100:10,field:'title'}}));
+    scored.sort((a,b)=> (b.d._recent?1:0)-(a.d._recent?1:0) || CAT[a.d.t].order-CAT[b.d.t].order);
+  }
+
+  // 分组（保留评分排序，但同类型聚合显示表头）
+  const groups={};
+  scored.forEach(({d,s})=>{
+    const key = (!term && d._recent) ? 'recent' : d.t;
+    (groups[key]=groups[key]||[]).push({d,s});
+  });
+  const order = !term ? ['recent','cmd','nav','pkg','work','repo','file','app']
+                      : ['cmd','nav','pkg','work','repo','file','app'];
+  // 搜索词命中时，按命中分数跨组排序组内；这里简单按 order 展示组
+  const keyOrder = Object.keys(groups).sort((a,b)=>{
+    const ia=order.indexOf(a),ib=order.indexOf(b);
+    return (ia<0?99:ia)-(ib<0?99:ib);
+  });
+
+  // 扁平化用于键盘导航
+  flat=[]; let html='';
+  keyOrder.forEach(k=>{
+    const meta = k==='recent' ? {name:'最近使用',cls:'c-rec',tcls:'t-rec'} : CAT[k];
+    const items=groups[k]; if(!items||!items.length) return;
+    html+=`<div class="group"><div class="group-head">${IC[k==='recent'?'rec':k]||''}<span>${meta.name}</span><span class="cnt">${items.length}</span></div>`;
+    items.forEach(({d,s})=>{
+      const idx=flat.length; flat.push(d);
+      const isSel = idx===sel;
+      const isMulti = multiSel.has(d.title);
+      const cls = ['item', isSel?'sel':'', isMulti?'multi':''].join(' ');
+      let tagsHtml='';
+      if(d.tags){
+        // 假定 d.tags = [文字, 样式] 或 [文字]
+        for(let i=0;i<d.tags.length;i++){
+          const tg=d.tags[i];
+          if(tg.indexOf('badge-')===0) continue;
+          const style = d.tags[i+1] && d.tags[i+1].indexOf('badge-')===0 ? d.tags[i+1] : 'badge-st';
+          const colorCls = style.indexOf('new')>=0?'badge-new':style.indexOf('warn')>=0?'badge-warn':style.indexOf('ahead')>=0?'badge-ahead':'badge-st';
+          tagsHtml+=`<span class="tag ${colorCls}">${esc(tg)}</span>`;
+        }
+      }
+      const showCheck = d.t==='pkg';
+      const icKey = k==='recent'? d.t : k;
+      html+=`<div class="${cls}" data-i="${idx}">
+        <div class="ic ${CAT[d.t].cls}">${IC[d.t]||''}</div>
+        <div class="body">
+          <div class="title">${highlight(d.title,term,s.field)}</div>
+          ${d.sub?`<div class="sub">${esc(d.sub)}</div>`:''}
+        </div>
+        <div class="tags">${tagsHtml}${d.hk?`<span class="hk">${d.hk}</span>`:''}</div>
+        ${showCheck?`<div class="check">${isMulti?'✓':''}</div>`:''}
+      </div>`;
+    });
+    html+=`</div>`;
+  });
+
+  if(scored.length===0){
+    html=`<div class="empty"><div class="big">未找到 “${esc(term)}”</div>按 Enter 在文件索引中全局搜索 · 或检查拼写 / 拼音首字母</div>`;
+  } else if(term && lastTimer===null){
+    // 模拟异步文件搜索的轻微加载（仅文件类）
+  }
+
+  resultsEl.innerHTML = html;
+  $('footCount').textContent = scored.length;
+
+  // 多选状态
+  const showMulti = multiSel.size>0;
+  $('footMulti').style.display = showMulti?'flex':'none';
+  $('multiCount').textContent = multiSel.size;
+  $('footHint').textContent = showMulti ? `Enter 批量更新 ${multiSel.size} 个包 · Esc 取消多选`
+    : (sel>=0 && flat[sel] ? actHint(flat[sel]) : '回车执行选中项');
+
+  // 绑定点击
+  resultsEl.querySelectorAll('.item').forEach(el=>{
+    const i=+el.dataset.i;
+    el.addEventListener('mouseenter',()=>{ sel=i; paint(); });
+    el.addEventListener('click',e=>{
+      const d=flat[i];
+      if(d.t==='pkg' && (e.ctrlKey||e.metaKey||e.shiftKey)){ toggleMulti(d); return; }
+      sel=i; paint(); execute(d);
+    });
+  });
+  paint();
+}
+function actHint(d){
+  const map={cmd:'执行命令',nav:'跳转页面',pkg:'更新 / 打开',work:'打开详情 / AI 实现',repo:'打开工作区',file:'打开文件',app:'启动'};
+  return map[d.t]||'执行';
+}
+function colorOf(tcls){ const m={t_cmd:'#6cb0ff',t_pkg:'#2dd4bf',t_work:'#c084fc',t_file:'#fbbf24',t_app:'#34d399',t_repo:'#f472b6',t_nav:'#aab6c5',t_rec:'#cbd0d8'}; return m[tcls]||''; }
+
+function paint(){
+  resultsEl.querySelectorAll('.item').forEach(el=>{
+    const i=+el.dataset.i;
+    el.classList.toggle('sel', i===sel);
+  });
+  // 滚动可视
+  const cur=resultsEl.querySelector('.item.sel');
+  if(cur){
+    const r=cur.getBoundingClientRect(),pr=resultsEl.getBoundingClientRect();
+    if(r.top<pr.top+4) resultsEl.scrollTop -= (pr.top-r.top+12);
+    else if(r.bottom>pr.bottom-4) resultsEl.scrollTop += (r.bottom-pr.bottom+12);
+  }
+}
+
+function toggleMulti(d){
+  if(d.t!=='pkg'){ execute(d); return; }
+  if(multiSel.has(d.title)) multiSel.delete(d.title); else multiSel.add(d.title);
+  render();
+}
+
+function execute(d){
+  if(!d) return;
+  if(multiSel.size>0 && d.t==='pkg'){
+    const list=[...multiSel];
+    toast(`批量更新 ${list.length} 个包：${list.join('、')}`);
+    multiSel.clear(); render(); return;
+  }
+  const act={cmd:'已执行命令',nav:'已跳转',pkg:'已更新',work:'已打开',repo:'已打开',file:'已打开',app:'已启动'}[d.t]||'已执行';
+  toast(`${act}：${d.title}`);
+}
+
+function toast(msg){
+  const t=$('toast'); $('toastTxt').textContent=msg;
+  t.classList.add('show'); clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove('show'),2200);
+}
+
+/* ============ 事件 ============ */
+const input=$('q');
+input.addEventListener('input',e=>{ q=e.target.value; sel=0; render(); input.focus(); });
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){
+    if(multiSel.size){ multiSel.clear(); render(); return; }
+    if(q){ q=''; input.value=''; sel=0; render(); return; }
+    return;
+  }
+  if(e.key==='ArrowDown'){ e.preventDefault(); sel=Math.min(sel+1,flat.length-1); paint(); updateHint(); }
+  else if(e.key==='ArrowUp'){ e.preventDefault(); sel=Math.max(sel-1,0); paint(); updateHint(); }
+  else if(e.key==='Enter'){ e.preventDefault(); if(flat[sel]) execute(flat[sel]); }
+  else if(e.key===' '){ if(flat[sel] && flat[sel].t==='pkg'){ e.preventDefault(); toggleMulti(flat[sel]); } }
+  else if(e.key==='Tab'){ e.preventDefault(); cycleMode(); }
+});
+function updateHint(){ $('footHint').textContent = flat[sel]? actHint(flat[sel]) : '回车执行选中项'; }
+
+function cycleMode(){
+  const keys=['', '>', '#', '@', '/'];
+  const cur = q && PREFIX[q[0]] ? q[0] : '';
+  const idx = keys.indexOf(cur);
+  const next = keys[(idx+1)%keys.length];
+  q = next + (PREFIX[next]?(q.replace(/^[>#@/]/,'')):'');
+  // 简化：切模式只保留前缀，清掉正文更直观
+  q = next;
+  input.value=q; sel=0; render();
+}
+
+// 演示按钮
+document.querySelectorAll('.demo-btn').forEach(b=>{
+  b.addEventListener('click',()=>{ q=b.dataset.q; input.value=q; input.focus(); sel=0; if(!q){} render(); });
+});
+$('escBtn').addEventListener('click',()=>{ q=''; input.value=''; sel=0; multiSel.clear(); render(); });
+
+// 初始
+render(); input.focus();
+</script>
+</body>
+</html>

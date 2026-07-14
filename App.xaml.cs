@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using PackageManager.Services;
 using PackageManager.Features.Notifications.Services;
 using PackageManager.Features.CodeWorkspace.Services;
+using PackageManager.Features.CommandPalette.Services;
 using System.Runtime.InteropServices;
 using System.IO;
 
@@ -20,6 +21,7 @@ namespace PackageManager
         private CommonStartupWindowManager _commonStartupWindowManager;
         private FileSearchWindowManager _fileSearchWindowManager;
         private SystemHotkeyService _systemHotkeyService;
+        private CommandPaletteManager _commandPaletteManager;
 
         internal CommonStartupWindowManager CommonStartupWindowManager => _commonStartupWindowManager;
         internal FileSearchWindowManager FileSearchWindowManager => _fileSearchWindowManager;
@@ -261,6 +263,7 @@ namespace PackageManager
                 ServiceLocator.Resolve<CodeWorkspaceVcsCacheService>()?.Cancel();
                 _commonStartupWindowManager?.Shutdown();
                 _fileSearchWindowManager?.Shutdown();
+                _commandPaletteManager?.Shutdown();
             }
             catch
             {
@@ -286,7 +289,8 @@ namespace PackageManager
 
                 _commonStartupWindowManager = new CommonStartupWindowManager();
                 _fileSearchWindowManager = new FileSearchWindowManager();
-                _systemHotkeyService = new SystemHotkeyService(_commonStartupWindowManager, _fileSearchWindowManager);
+                _commandPaletteManager = new CommandPaletteManager();
+                _systemHotkeyService = new SystemHotkeyService(_commonStartupWindowManager, _fileSearchWindowManager, _commandPaletteManager);
                 _systemHotkeyService.Start();
             }
             catch (Exception ex)
