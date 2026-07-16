@@ -504,7 +504,7 @@ namespace PackageManager.Features.CommandPalette.Services
                 foreach (var ec in execCands)
                 {
                     if (opc.Token == ec.Token) continue;
-                    combos.Add(("打开 Revit " + ec.Ver, "open-revit\x1fexecver:" + ec.Ver, opc.Score + ec.Score));
+                    combos.Add(("打开 Revit " + ec.Ver, "open-revit" + '\x1f' + "execver:" + ec.Ver, opc.Score + ec.Score));
                 }
             }
 
@@ -585,6 +585,7 @@ namespace PackageManager.Features.CommandPalette.Services
         /// <summary>参数项 Enter（默认补全执行）：unlock 补最新版+最新包，其他操作直接执行。</summary>
         public async Task<CollectResult> CollectParameterDefaultAsync(string executeKey)
         {
+            LoggingService.LogInfo("命令面板 CollectParameterDefault: key=" + executeKey);
             var parts = (executeKey ?? string.Empty).Split('\x1f');
             string op = parts.Length > 0 ? parts[0] : string.Empty;
             string pkg = null, ver = null, pkgfile = null;
@@ -737,15 +738,24 @@ namespace PackageManager.Features.CommandPalette.Services
 
         private async Task ExecuteOpenRevitVersionAsync(string execver)
         {
-            var ver = GetCachedRevitVersions().FirstOrDefault(v => (v.Version ?? string.Empty).Contains(execver) || (v.DisPlayName ?? string.Empty).Contains(execver));
+            var versions = GetCachedRevitVersions();
+            var ver = versions.FirstOrDefault(v => (v.Version ?? string.Empty).Contains(execver) || (v.DisPlayName ?? string.Empty).Contains(execver));
             if (ver == null || string.IsNullOrEmpty(ver.ExecutablePath) || !System.IO.File.Exists(ver.ExecutablePath))
             {
-                ToastService.ShowToast("命令面板", "未找到 Revit " + execver + "，请在设置里确认已安装", "Warning");
+                ToastService.ShowToast("命令面板", $"未找到 Revit {execver}，缓存版本数={versions.Count}", "Warning");
                 await Task.CompletedTask;
                 return;
             }
-            try { Process.Start(new ProcessStartInfo(ver.ExecutablePath) { UseShellExecute = true }); }
-            catch (Exception ex) { LoggingService.LogError(ex, "启动 Revit 失败：" + ver.ExecutablePath); }
+            try
+            {
+                ToastService.ShowToast("命令面板", "启动 Revit：" + ver.ExecutablePath, "Info");
+                Process.Start(new ProcessStartInfo(ver.ExecutablePath) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, "启动 Revit 失败：" + ver.ExecutablePath);
+                ToastService.ShowToast("命令面板", "启动失败：" + ex.Message, "Warning");
+            }
             await Task.CompletedTask;
         }
 

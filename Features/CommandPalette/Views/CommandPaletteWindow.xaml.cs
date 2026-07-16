@@ -150,10 +150,17 @@ namespace PackageManager.Features.CommandPalette.Views
                 else if (type == "execute-default")
                 {
                     var id = jo["id"]?.ToString();
+                    LoggingService.LogInfo($"命令面板 execute-default: id={id} byIdCount={_byId.Count}");
                     if (id != null && _byId.TryGetValue(id, out var item))
                     {
+                        LoggingService.LogInfo($"命令面板 execute-default 命中: type={item.Type} key={item.ExecuteKey}");
                         Hide();
-                        await _svc.CollectParameterDefaultAsync(item.ExecuteKey);
+                        try { await _svc.CollectParameterDefaultAsync(item.ExecuteKey); }
+                        catch (Exception ex) { LoggingService.LogError(ex, "CollectParameterDefaultAsync 异常: " + item.ExecuteKey); ToastService.ShowToast("命令面板", "执行异常：" + ex.Message, "Warning"); }
+                    }
+                    else
+                    {
+                        ToastService.ShowToast("命令面板", "未找到命令项 id=" + id, "Warning");
                     }
                 }
                 else if (type == "bridge")
