@@ -125,13 +125,15 @@ function render(){
     mt.textContent=sub.title||'操作';mb.style.color='';mb.style.background='rgba(255,255,255,.06)';
     term=q;
   }else{
-    var raw=q;mode=null;term=raw;
+    var raw=q;mode=null;
     if(raw.length&&PREFIX[raw[0]]){mode=PREFIX[raw[0]];term=raw.slice(1).trimStart();}
+    else{var __tp=raw.split(/\s+/);term=(__tp&&__tp[0])?__tp[0]:raw;}
     if(mode&&CAT[mode]){mt.textContent=CAT[mode].name;mb.style.color=colorOf('t_'+mode);mb.style.background='rgba(255,255,255,.06)';}
     else{mt.textContent='全部';mb.style.color='';mb.style.background='';}
   }
 
-  var src=sub?sub.items:((mode==='file')?(window.__pm._files||[]):((window.__pm._composed||[]).concat(window.__pm._static||[])));
+  var __comp=window.__pm._composed||[];
+  var src=sub?sub.items:((mode==='file')?(window.__pm._files||[]):((__comp.length>0)?__comp:(window.__pm._static||[])));
   var pool=[];
   for(var i=0;i<src.length;i++){var d=src[i];if(sub||!mode||mode==='file'||d.Type===mode) pool.push(d);}
 

@@ -463,9 +463,9 @@ namespace PackageManager.Features.CommandPalette.Services
             var mw = ServiceLocator.Resolve<MainWindow>();
             if (mw?.Packages == null) return r;
 
-            // 收集所有 (token→操作) 与 (token→包) 匹配
             var opCands = new List<(string Token, string Op, string OpName, int Score)>();
             var pkgCands = new List<(string Token, string Pkg, int Score)>();
+            var execCands = new List<(string Token, string Ver, int Score)>();
             foreach (var t in tokens)
             {
                 foreach (var o in PackageOps)
@@ -479,24 +479,51 @@ namespace PackageManager.Features.CommandPalette.Services
                     int s = FuzzyScore(p.ProductName, t);
                     if (s > 0) pkgCands.Add((t, p.ProductName, s));
                 }
+                // Revit 版本候选（系统已安装的 Revit，与包无关）
+                foreach (var v in GetCachedRevitVersions())
+                {
+                    string vs = v.Version ?? v.DisPlayName ?? string.Empty;
+                    if (string.IsNullOrEmpty(vs)) continue;
+                    int s = FuzzyScore(vs, t);
+                    if (s > 0) execCands.Add((t, vs, s));
+                }
             }
 
-            // 交叉组合（操作 token 与包 token 不同），按总分排序，去重取 top 6
-            var combos = new List<(string Op, string OpName, string Pkg, int Score)>();
+            var combos = new List<(string Title, string ExecuteKey, int Score)>();
+            // 操作 + 包
             foreach (var opc in opCands)
                 foreach (var pkgc in pkgCands)
                 {
                     if (opc.Token == pkgc.Token) continue;
-                    combos.Add((opc.Op, opc.OpName, pkgc.Pkg, opc.Score + pkgc.Score));
+                    combos.Add((opc.OpName + " · " + pkgc.Pkg, opc.Op + "\x1fpkg:" + pkgc.Pkg, opc.Score + pkgc.Score));
                 }
+            // 打开 Revit + Revit 版本（系统独立软件，与包无关）
+            foreach (var opc in opCands)
+            {
+                if (opc.Op != "open-revit") continue;
+                foreach (var ec in execCands)
+                {
+                    if (opc.Token == ec.Token) continue;
+                    combos.Add(("打开 Revit " + ec.Ver, "open-revit\x1fexecver:" + ec.Ver, opc.Score + ec.Score));
+                }
+            }
+
             var top = combos
-                .GroupBy(c => c.Op + "\x1f" + c.Pkg)
+                .GroupBy(c => c.ExecuteKey)
                 .Select(g => g.OrderByDescending(c => c.Score).First())
                 .OrderByDescending(c => c.Score)
                 .Take(6);
             foreach (var c in top)
-                r.Add(New("pkg-compose", c.OpName + " · " + c.Pkg, "回车用最新版/包，Tab 选版本/包", string.Empty, key: c.Op + "\x1fpkg:" + c.Pkg));
+                r.Add(New("pkg-compose", c.Title, "回车执行，Tab 选参数", string.Empty, key: c.ExecuteKey));
             return r;
+        }
+
+        private static List<ApplicationVersion> GetCachedRevitVersions()
+        {
+            // 直接读包缓存里的 AvailableExecutableVersions（系统级 Revit 版本，已由 settings 持久化），不重新扫描
+            var mw = ServiceLocator.Resolve<MainWindow>();
+            var pkg = mw?.Packages?.FirstOrDefault(p => p?.AvailableExecutableVersions != null && p.AvailableExecutableVersions.Count > 0);
+            return pkg?.AvailableExecutableVersions?.ToList() ?? new List<ApplicationVersion>();
         }
 
         private static int FuzzyScore(string text, string q)
@@ -567,6 +594,18 @@ namespace PackageManager.Features.CommandPalette.Services
                 else if (p.StartsWith("ver:")) ver = p.Substring(4);
                 else if (p.StartsWith("pkgfile:")) pkgfile = p.Substring(8);
             }
+            // 打开 Revit + Revit 版本（系统独立软件，不依赖包，需在 pkg 检查前处理）
+            if (op == "open-revit")
+            {
+                string execver = null;
+                foreach (var p in parts) if (p.StartsWith("execver:")) execver = p.Substring(8);
+                if (!string.IsNullOrEmpty(execver))
+                {
+                    await ExecuteOpenRevitVersionAsync(execver);
+                    return CollectResult.Done;
+                }
+            }
+
             if (string.IsNullOrEmpty(pkg)) return CollectResult.Done;
 
             if (op == "unlock")
@@ -694,6 +733,20 @@ namespace PackageManager.Features.CommandPalette.Services
             });
             ServiceLocator.Resolve<NavigationService>()?.NavigateTo("packages-home");
             ToastService.ShowToast("命令面板", "正在解锁更新 " + productName + " " + version, "Success");
+        }
+
+        private async Task ExecuteOpenRevitVersionAsync(string execver)
+        {
+            var ver = GetCachedRevitVersions().FirstOrDefault(v => (v.Version ?? string.Empty).Contains(execver) || (v.DisPlayName ?? string.Empty).Contains(execver));
+            if (ver == null || string.IsNullOrEmpty(ver.ExecutablePath) || !System.IO.File.Exists(ver.ExecutablePath))
+            {
+                ToastService.ShowToast("命令面板", "未找到 Revit " + execver + "，请在设置里确认已安装", "Warning");
+                await Task.CompletedTask;
+                return;
+            }
+            try { Process.Start(new ProcessStartInfo(ver.ExecutablePath) { UseShellExecute = true }); }
+            catch (Exception ex) { LoggingService.LogError(ex, "启动 Revit 失败：" + ver.ExecutablePath); }
+            await Task.CompletedTask;
         }
 
         private async Task ExecuteSimpleAsync(string op, string productName)

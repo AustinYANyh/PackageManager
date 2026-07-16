@@ -136,7 +136,9 @@ namespace PackageManager.Features.CommandPalette.Views
                     else
                     {
                         ExecJs("window.__pm&&window.__pm.clearFileResults();");
-                        var composed = _svc.BuildComposedCandidates(text);
+                        List<PaletteItem> composed;
+                        try { composed = _svc.BuildComposedCandidates(text); LoggingService.LogInfo($"命令面板组合查询: text=[{text}] count={composed.Count}"); }
+                        catch (Exception ex) { LoggingService.LogError(ex, "命令面板组合命令异常: " + text); composed = new List<PaletteItem>(); }
                         foreach (var it in composed) _byId[it.Id] = it;
                         ExecJs("window.__pm&&window.__pm.setComposed(" + JsonConvert.SerializeObject(composed) + ");");
                     }
