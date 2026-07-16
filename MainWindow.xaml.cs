@@ -1330,7 +1330,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         }
     }
 
-    private bool IsProductVisible(string name)
+    internal bool IsProductVisible(string name)
     {
         var vis = _dataPersistenceService.GetProductVisibility();
         if (vis == null || vis.Count == 0) return true;

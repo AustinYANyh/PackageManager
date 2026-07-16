@@ -110,7 +110,7 @@ namespace PackageManager.Features.CommandPalette.Views
                     if (id != null && _byId.TryGetValue(id, out var item))
                     {
                         // 包操作命令/参数项：走参数收集向导（缺包选包、缺版本选版本、缺包文件选包文件）
-                        if (item.Type == "pkg-cmd" || item.Type == "pkg-param")
+                        if (item.Type == "pkg-cmd" || item.Type == "pkg-param" || item.Type == "pkg-compose")
                         {
                             var result = await _svc.CollectParameterAsync(item.ExecuteKey);
                             if (result.Show)
@@ -130,9 +130,16 @@ namespace PackageManager.Features.CommandPalette.Views
                 {
                     var text = jo["text"]?.ToString() ?? string.Empty;
                     if (text.StartsWith("/"))
+                    {
                         await HandleFileQueryAsync(text.Substring(1).TrimStart());
+                    }
                     else
+                    {
                         ExecJs("window.__pm&&window.__pm.clearFileResults();");
+                        var composed = _svc.BuildComposedCandidates(text);
+                        foreach (var it in composed) _byId[it.Id] = it;
+                        ExecJs("window.__pm&&window.__pm.setComposed(" + JsonConvert.SerializeObject(composed) + ");");
+                    }
                 }
                 else if (type == "close")
                 {

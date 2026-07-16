@@ -442,6 +442,81 @@ namespace PackageManager.Features.CommandPalette.Services
         /// 包操作参数收集向导：按操作所需的参数（包/版本/包文件）逐级收集，缺什么返回什么子列表，齐全则执行。
         /// executeKey 编码：op[\x1fpkg:名][\x1fver:版本][\x1fpkgfile:包文件]
         /// </summary>
+        private static readonly (string Op, string Name, string Py)[] PackageOps = new (string, string, string)[]
+        {
+            ("unlock", "解锁更新", "jiesuogengxin|jsgx|gengxin|gx|update|jiesuo"),
+            ("open-revit", "打开 Revit", "dakairevit|dkrevit|dakai|dk|revit"),
+            ("open-folder", "打开本地目录", "dakaibendimulu|dkbml|mulu|folder|wenjianjia"),
+            ("open-config", "打开参数目录", "dakaicanshumulu|dkcsml|config|canshu"),
+            ("open-image", "打开图片目录", "dakaitupianmulu|dktpml|tupian|image"),
+            ("toggle-debug", "切换调试模式", "qiehongdiaoshimoshi|qhms|debug|tiaoshi|qiehuan"),
+            ("signature", "签名加密校验", "qianmijiamijiaoyan|qmjmjy|sign|qianming|qm"),
+            ("finalize", "定版", "dingban|finalize|db"),
+        };
+
+        /// <summary>多 token 组合命令：空格分词，匹配操作 token + 包 token，生成"操作·包"组合项。</summary>
+        public List<PaletteItem> BuildComposedCandidates(string query)
+        {
+            var r = new List<PaletteItem>();
+            var tokens = (query ?? string.Empty).Split(new[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            if (tokens.Length < 2) return r;
+            var mw = ServiceLocator.Resolve<MainWindow>();
+            if (mw?.Packages == null) return r;
+
+            // 收集所有 (token→操作) 与 (token→包) 匹配
+            var opCands = new List<(string Token, string Op, string OpName, int Score)>();
+            var pkgCands = new List<(string Token, string Pkg, int Score)>();
+            foreach (var t in tokens)
+            {
+                foreach (var o in PackageOps)
+                {
+                    int s = FuzzyScore(o.Py + "|" + o.Name, t);
+                    if (s > 0) opCands.Add((t, o.Op, o.Name, s));
+                }
+                foreach (var p in mw.Packages)
+                {
+                    if (p == null || string.IsNullOrEmpty(p.ProductName) || !mw.IsProductVisible(p.ProductName)) continue;
+                    int s = FuzzyScore(p.ProductName, t);
+                    if (s > 0) pkgCands.Add((t, p.ProductName, s));
+                }
+            }
+
+            // 交叉组合（操作 token 与包 token 不同），按总分排序，去重取 top 6
+            var combos = new List<(string Op, string OpName, string Pkg, int Score)>();
+            foreach (var opc in opCands)
+                foreach (var pkgc in pkgCands)
+                {
+                    if (opc.Token == pkgc.Token) continue;
+                    combos.Add((opc.Op, opc.OpName, pkgc.Pkg, opc.Score + pkgc.Score));
+                }
+            var top = combos
+                .GroupBy(c => c.Op + "\x1f" + c.Pkg)
+                .Select(g => g.OrderByDescending(c => c.Score).First())
+                .OrderByDescending(c => c.Score)
+                .Take(6);
+            foreach (var c in top)
+                r.Add(New("pkg-compose", c.OpName + " · " + c.Pkg, "回车用最新版/包，Tab 选版本/包", string.Empty, key: c.Op + "\x1fpkg:" + c.Pkg));
+            return r;
+        }
+
+        private static int FuzzyScore(string text, string q)
+        {
+            if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(q)) return 0;
+            text = text.ToLowerInvariant(); q = q.ToLowerInvariant();
+            int ti = 0, score = 0, prev = -1; bool first = true;
+            for (int qi = 0; qi < q.Length; qi++)
+            {
+                char c = q[qi];
+                int found = -1;
+                for (; ti < text.Length; ti++) { if (text[ti] == c) { found = ti; break; } }
+                if (found < 0) return 0;
+                int s = 1;
+                if (found == prev + 1) s += 5;
+                if (first && found == 0) s += 8;
+                score += s; prev = found; ti = found + 1; first = false;
+            }
+            return score;
+        }
         public async Task<CollectResult> CollectParameterAsync(string executeKey)
         {
             var parts = (executeKey ?? string.Empty).Split('\x1f');
