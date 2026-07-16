@@ -2156,7 +2156,7 @@ SVN冲突/树冲突：
             {
                 AiGlobalInstructionService.EnsureCodeGraphInstructions();
                 AiGlobalInstructionService.EnsureBehaviorRules();
-                AiMemoryService.EnsureMemoryAvailable();
+                AiGlobalBehaviorRuleService.EnsureGlobalBehaviorRules();
                 return string.Empty;
             }
             catch (Exception ex)

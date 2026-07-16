@@ -176,7 +176,7 @@ Write-Host '仓库：{TerminalHelper.EscapePowerShellSingleQuoted(repo.Name ?? r
             {
                 AiGlobalInstructionService.EnsureCodeGraphInstructions();
                 AiGlobalInstructionService.EnsureBehaviorRules();
-                AiMemoryService.EnsureMemoryAvailable();
+                AiGlobalBehaviorRuleService.EnsureGlobalBehaviorRules();
             }
             catch (Exception ex)
             {
