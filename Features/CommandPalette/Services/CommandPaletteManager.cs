@@ -22,6 +22,21 @@ namespace PackageManager.Features.CommandPalette.Services
                 dispatcher.Invoke(new Action(ShowCore));
         }
 
+        public void Preload()
+        {
+            var dispatcher = Application.Current?.Dispatcher;
+            if (dispatcher == null) return;
+            if (dispatcher.CheckAccess()) PreloadCore();
+            else dispatcher.Invoke(new Action(PreloadCore));
+        }
+
+        private void PreloadCore()
+        {
+            if (_window != null) return;
+            _window = new Views.CommandPaletteWindow();
+            _window.Preload();
+        }
+
         private void ShowCore()
         {
             if (_window == null)

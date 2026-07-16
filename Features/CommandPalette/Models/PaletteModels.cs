@@ -33,4 +33,13 @@ namespace PackageManager.Features.CommandPalette.Models
         public string Text { get; set; }
         public string Kind { get; set; }   // new | warn | ahead | st
     }
+
+    /// <summary>参数收集向导结果：Show=true 表示还需展示子列表让用户选，否则已执行完毕。</summary>
+    public sealed class CollectResult
+    {
+        public bool Show { get; set; }
+        public List<PaletteItem> Items { get; set; }
+        public string Title { get; set; }
+        public static CollectResult Done => new CollectResult { Show = false };
+    }
 }

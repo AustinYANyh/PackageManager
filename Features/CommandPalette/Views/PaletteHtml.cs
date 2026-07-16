@@ -89,10 +89,13 @@ var IC={
   pkg:'<svg viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'currentColor\' stroke-width=\'2\' stroke-linecap=\'round\' stroke-linejoin=\'round\'><path d=\'M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z\'/><polyline points=\'3.27 6.96 12 12.01 20.73 6.96\'/><line x1=\'12\' y1=\'22.08\' x2=\'12\' y2=\'12\'/></svg>',
   file:'<svg viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'currentColor\' stroke-width=\'2\' stroke-linecap=\'round\' stroke-linejoin=\'round\'><path d=\'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z\'/><polyline points=\'14 2 14 8 20 8\'/></svg>'
 };
+IC['pkg-cmd']=IC.pkg; IC['pkg-param']=IC.pkg;
 var CAT={
   cmd:{name:'命令',cls:'c-cmd',order:2},
+  'pkg-cmd':{name:'包操作',cls:'c-pkg',order:2},
   nav:{name:'导航',cls:'c-nav',order:3},
   pkg:{name:'产品包',cls:'c-pkg',order:4},
+  'pkg-param':{name:'选项',cls:'c-pkg',order:4},
   file:{name:'文件',cls:'c-file',order:7}
 };
 var PREFIX={'>':'cmd','#':'pkg','@':'work','/':'file'};
@@ -187,6 +190,7 @@ function paint(){
 }
 
 function execute(d){if(!d) return;pushRecent(d);window.__pm.post('execute',{id:d.Id});}
+function executeDefault(d){if(!d) return;pushRecent(d);window.__pm.post('execute-default',{id:d.Id});}
 
 window.__pm={
   _static:[],_files:[],_loading:false,
@@ -205,8 +209,8 @@ document.addEventListener('keydown',function(e){
   if(e.key==='Escape'){if(subStack.length){subStack.pop();input.value='';q='';sel=0;render();setTimeout(function(){input.focus();},0);e.preventDefault();return;}if(q){q='';input.value='';sel=0;window.__pm.post('query',{text:''});render();}else window.__pm.post('close');e.preventDefault();}
   else if(e.key==='ArrowDown'){e.preventDefault();sel=Math.min(sel+1,Math.max(flat.length-1,0));paint();updateHint();}
   else if(e.key==='ArrowUp'){e.preventDefault();sel=Math.max(sel-1,0);paint();updateHint();}
-  else if(e.key==='Enter'){e.preventDefault();if(flat[sel]) execute(flat[sel]);}
-  else if(e.key==='Tab'){e.preventDefault();if(topSub()){if(flat[sel]) execute(flat[sel]);}else if(flat[sel]){var d=flat[sel];if(d.Type==='pkg'){window.__pm.post('actions',{productName:d.Title});}else if(d.Type==='file'){var qq=(q&&q.charAt(0)==='/')?q.slice(1):q;window.__pm.post('bridge',{id:d.Id,q:qq||''});}}}
+  else if(e.key==='Enter'){e.preventDefault();if(flat[sel]){if(topSub()&&flat[sel].Type==='pkg-param') executeDefault(flat[sel]);else execute(flat[sel]);}}
+  else if(e.key==='Tab'){e.preventDefault();if(topSub()){if(flat[sel]) execute(flat[sel]);}else if(flat[sel]){var d=flat[sel];if(d.Type==='pkg'){window.__pm.post('bridge',{id:d.Id,q:''});}else if(d.Type==='file'){var qq=(q&&q.charAt(0)==='/')?q.slice(1):q;window.__pm.post('bridge',{id:d.Id,q:qq||''});}}}
 });
 function updateHint(){var sub=topSub();var base=sub?'Enter/Tab 执行 · Esc 返回上层':'↑↓ 选择 · Enter 执行 · Tab 打开详情 · Esc 关闭';document.getElementById('footHint').textContent=flat[sel]?('Enter 执行：'+flat[sel].Title):base;}
 render();input.focus();

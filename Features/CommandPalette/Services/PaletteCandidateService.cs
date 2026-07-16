@@ -60,6 +60,16 @@ namespace PackageManager.Features.CommandPalette.Services
             list.Add(New("cmd", "SLN 编译顺序更新", "", "sln|bianyishunxu", key: "sln-update"));
             list.Add(New("cmd", "刷新版本信息", "强制刷新 FTP 可见版本", "shuaxinbanben|shuaxin|refresh", key: "refresh-versions"));
             list.Add(New("cmd", "打开常用启动项", "同 Ctrl+Q", "changyongqidong|qidong|startup", key: "open-startup"));
+
+            // 包操作命令（扁平，参数按需收集：缺包选包、缺版本选版本、缺包文件选包文件）
+            list.Add(New("pkg-cmd", "解锁更新", "回车用最新版/包更新，Tab 选版本/包", "jiesuogengxin|jsgx|gengxin|gx|update|jiesuo", key: "unlock"));
+            list.Add(New("pkg-cmd", "打开 Revit", "启动选中包的 Revit", "dakairevit|dkrevit|revit|dakai|dk", key: "open-revit"));
+            list.Add(New("pkg-cmd", "打开本地目录", "资源管理器打开包目录", "dakaibendimulu|dkbml|open|wenjianjia", key: "open-folder"));
+            list.Add(New("pkg-cmd", "打开参数目录", "打开 config 目录", "dakaicanshumulu|dkcsml|config", key: "open-config"));
+            list.Add(New("pkg-cmd", "打开图片目录", "打开 Image 目录", "dakaitupianmulu|dktpml|image|tupian", key: "open-image"));
+            list.Add(New("pkg-cmd", "切换调试模式", "翻转调试/正式", "qiehongdiaoshimoshi|qhms|debug|tiaoshi|qiehuan", key: "toggle-debug"));
+            list.Add(New("pkg-cmd", "签名加密校验", "校验包签名/加密", "qianmijiamijiaoyan|qmjmjy|sign|qianming", key: "signature"));
+            list.Add(New("pkg-cmd", "定版", "上传到定版服务器", "dingban|finalize", key: "finalize"));
         }
 
         private void BuildNavigation(List<PaletteItem> list)
@@ -149,8 +159,7 @@ namespace PackageManager.Features.CommandPalette.Services
                 {
                     case "cmd": await ExecuteCommandAsync(item.ExecuteKey); break;
                     case "nav": ServiceLocator.Resolve<NavigationService>()?.NavigateTo(item.ExecuteKey); break;
-                    case "pkg": await UpdatePackageLatestAsync(item.ExecuteKey); break;
-                    case "pkg-action": await ExecutePackageActionAsync(item.ExecuteKey); break;
+                    case "pkg": NavigateToPackage(item.ExecuteKey); break;
                     case "file": OpenFile(item.ExecuteKey); break;
                 }
             }
@@ -427,6 +436,227 @@ namespace PackageManager.Features.CommandPalette.Services
                     Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
             }
             catch (Exception ex) { LoggingService.LogError(ex, "打开目录失败：" + path); }
+        }
+
+        /// <summary>
+        /// 包操作参数收集向导：按操作所需的参数（包/版本/包文件）逐级收集，缺什么返回什么子列表，齐全则执行。
+        /// executeKey 编码：op[\x1fpkg:名][\x1fver:版本][\x1fpkgfile:包文件]
+        /// </summary>
+        public async Task<CollectResult> CollectParameterAsync(string executeKey)
+        {
+            var parts = (executeKey ?? string.Empty).Split('\x1f');
+            string op = parts.Length > 0 ? parts[0] : string.Empty;
+            string pkg = null, ver = null, pkgfile = null;
+            foreach (var p in parts)
+            {
+                if (p.StartsWith("pkg:")) pkg = p.Substring(4);
+                else if (p.StartsWith("ver:")) ver = p.Substring(4);
+                else if (p.StartsWith("pkgfile:")) pkgfile = p.Substring(8);
+            }
+
+            // 缺包 → 选包
+            if (string.IsNullOrEmpty(pkg))
+                return ShowCollect(BuildAllPackages(executeKey), "选择产品包");
+
+            switch (op)
+            {
+                case "unlock":
+                    if (string.IsNullOrEmpty(ver))
+                        return ShowCollect(BuildVersionsForCollect(pkg, executeKey), "选择版本 · " + pkg);
+                    if (string.IsNullOrEmpty(pkgfile))
+                        return ShowCollect(await LoadNamesForCollect(pkg, ver, executeKey), "选择包 · " + pkg + " " + ver);
+                    await ExecuteUnlockAsync(pkg, ver, pkgfile);
+                    return CollectResult.Done;
+                case "open-revit":
+                case "open-folder":
+                case "open-config":
+                case "open-image":
+                case "toggle-debug":
+                case "signature":
+                case "finalize":
+                    await ExecuteSimpleAsync(op, pkg);
+                    return CollectResult.Done;
+            }
+            return CollectResult.Done;
+        }
+
+        /// <summary>参数项 Enter（默认补全执行）：unlock 补最新版+最新包，其他操作直接执行。</summary>
+        public async Task<CollectResult> CollectParameterDefaultAsync(string executeKey)
+        {
+            var parts = (executeKey ?? string.Empty).Split('\x1f');
+            string op = parts.Length > 0 ? parts[0] : string.Empty;
+            string pkg = null, ver = null, pkgfile = null;
+            foreach (var p in parts)
+            {
+                if (p.StartsWith("pkg:")) pkg = p.Substring(4);
+                else if (p.StartsWith("ver:")) ver = p.Substring(4);
+                else if (p.StartsWith("pkgfile:")) pkgfile = p.Substring(8);
+            }
+            if (string.IsNullOrEmpty(pkg)) return CollectResult.Done;
+
+            if (op == "unlock")
+            {
+                var mw = ServiceLocator.Resolve<MainWindow>();
+                if (mw == null) return CollectResult.Done;
+                string useVer = ver;
+                await mw.Dispatcher.InvokeAsync(() =>
+                {
+                    var p = mw.Packages?.FirstOrDefault(x => string.Equals(x.ProductName, pkg, StringComparison.OrdinalIgnoreCase));
+                    if (string.IsNullOrEmpty(useVer) && !string.IsNullOrEmpty(p?.LatestServerVersion))
+                        useVer = p.LatestServerVersion;
+                });
+                if (string.IsNullOrEmpty(pkgfile) && !string.IsNullOrEmpty(useVer))
+                {
+                    await mw.Dispatcher.InvokeAsync(() =>
+                    {
+                        var p = mw.Packages?.FirstOrDefault(x => string.Equals(x.ProductName, pkg, StringComparison.OrdinalIgnoreCase));
+                        if (p != null && p.Version != useVer) p.Version = useVer;
+                    });
+                    for (int i = 0; i < 30; i++)
+                    {
+                        await Task.Delay(100);
+                        bool ready = false;
+                        await mw.Dispatcher.InvokeAsync(() =>
+                        {
+                            var p = mw.Packages?.FirstOrDefault(x => string.Equals(x.ProductName, pkg, StringComparison.OrdinalIgnoreCase));
+                            ready = p?.AvailablePackages != null && p.AvailablePackages.Count > 0;
+                        });
+                        if (ready) break;
+                    }
+                    await mw.Dispatcher.InvokeAsync(() =>
+                    {
+                        var p = mw.Packages?.FirstOrDefault(x => string.Equals(x.ProductName, pkg, StringComparison.OrdinalIgnoreCase));
+                        if (p?.AvailablePackages != null && p.AvailablePackages.Count > 0)
+                            pkgfile = p.AvailablePackages[p.AvailablePackages.Count - 1];
+                    });
+                }
+                await ExecuteUnlockAsync(pkg, useVer, pkgfile);
+                return CollectResult.Done;
+            }
+
+            await ExecuteSimpleAsync(op, pkg);
+            return CollectResult.Done;
+        }
+
+        private static CollectResult ShowCollect(List<PaletteItem> items, string title)
+        {
+            return new CollectResult { Show = true, Items = items, Title = title };
+        }
+
+        private List<PaletteItem> BuildAllPackages(string executeKey)
+        {
+            var r = new List<PaletteItem>();
+            var mw = ServiceLocator.Resolve<MainWindow>();
+            if (mw?.Packages == null) return r;
+            foreach (var p in mw.Packages)
+            {
+                if (string.IsNullOrEmpty(p?.ProductName)) continue;
+                r.Add(New("pkg-param", p.ProductName, p.Version ?? string.Empty, string.Empty, key: executeKey + "\x1fpkg:" + p.ProductName));
+            }
+            return r;
+        }
+
+        private List<PaletteItem> BuildVersionsForCollect(string productName, string executeKey)
+        {
+            var r = new List<PaletteItem>();
+            var mw = ServiceLocator.Resolve<MainWindow>();
+            var pkg = mw?.Packages?.FirstOrDefault(p => string.Equals(p.ProductName, productName, StringComparison.OrdinalIgnoreCase));
+            if (pkg?.AvailableVersions == null) return r;
+            foreach (var v in pkg.AvailableVersions)
+            {
+                if (string.IsNullOrEmpty(v)) continue;
+                r.Add(New("pkg-param", v, productName, string.Empty, key: executeKey + "\x1fver:" + v));
+            }
+            return r;
+        }
+
+        private async Task<List<PaletteItem>> LoadNamesForCollect(string productName, string version, string executeKey)
+        {
+            var mw = ServiceLocator.Resolve<MainWindow>();
+            if (mw == null) return new List<PaletteItem>();
+            await mw.Dispatcher.InvokeAsync(() =>
+            {
+                var pkg = mw.Packages?.FirstOrDefault(p => string.Equals(p.ProductName, productName, StringComparison.OrdinalIgnoreCase));
+                if (pkg != null && pkg.Version != version) pkg.Version = version;
+            });
+            for (int i = 0; i < 30; i++)
+            {
+                await Task.Delay(100);
+                bool ready = false;
+                await mw.Dispatcher.InvokeAsync(() =>
+                {
+                    var pkg = mw.Packages?.FirstOrDefault(p => string.Equals(p.ProductName, productName, StringComparison.OrdinalIgnoreCase));
+                    ready = pkg?.AvailablePackages != null && pkg.AvailablePackages.Count > 0;
+                });
+                if (ready) break;
+            }
+            var r = new List<PaletteItem>();
+            await mw.Dispatcher.InvokeAsync(() =>
+            {
+                var pkg = mw.Packages?.FirstOrDefault(p => string.Equals(p.ProductName, productName, StringComparison.OrdinalIgnoreCase));
+                if (pkg?.AvailablePackages == null) return;
+                foreach (var name in pkg.AvailablePackages)
+                {
+                    if (string.IsNullOrEmpty(name)) continue;
+                    r.Add(New("pkg-param", name, productName + " " + version, string.Empty, key: executeKey + "\x1fpkgfile:" + name));
+                }
+            });
+            return r;
+        }
+
+        private async Task ExecuteUnlockAsync(string productName, string version, string pkgfile)
+        {
+            var mw = ServiceLocator.Resolve<MainWindow>();
+            if (mw == null) return;
+            await mw.Dispatcher.InvokeAsync(() =>
+            {
+                var pkg = mw.Packages?.FirstOrDefault(p => string.Equals(p.ProductName, productName, StringComparison.OrdinalIgnoreCase));
+                if (pkg == null || pkg.IsUpdatingRunning) return;
+                mw.LatestActivePackage = pkg;
+                pkg.Version = version;
+                pkg.UploadPackageName = pkgfile;
+                pkg.UnlockAndDownloadCommand?.Execute(null);
+            });
+            ServiceLocator.Resolve<NavigationService>()?.NavigateTo("packages-home");
+            ToastService.ShowToast("命令面板", "正在解锁更新 " + productName + " " + version, "Success");
+        }
+
+        private async Task ExecuteSimpleAsync(string op, string productName)
+        {
+            var mw = ServiceLocator.Resolve<MainWindow>();
+            if (mw == null) return;
+            bool viewProgress = false;
+            await mw.Dispatcher.InvokeAsync(() =>
+            {
+                var pkg = mw.Packages?.FirstOrDefault(p => string.Equals(p.ProductName, productName, StringComparison.OrdinalIgnoreCase));
+                if (pkg == null) return;
+                mw.LatestActivePackage = pkg;
+                switch (op)
+                {
+                    case "open-revit": pkg.OpenPathCommand?.Execute(null); break;
+                    case "open-folder": TryOpenFolder(pkg.EffectiveLocalPath ?? pkg.LocalPath); break;
+                    case "open-config": pkg.OpenParameterConfigCommand?.Execute(null); break;
+                    case "open-image": pkg.OpenImageConfigCommand?.Execute(null); break;
+                    case "toggle-debug": pkg.ChangeModeToDebugCommand?.Execute(null); break;
+                    case "signature": if (!pkg.IsSignatureEncryptionRunning) { pkg.RunEmbeddedToolCommand?.Execute(null); viewProgress = true; } break;
+                    case "finalize": viewProgress = true; break;
+                }
+            });
+            if (op == "finalize") { await mw.FinalizeSelectedPackageAsync(); viewProgress = true; }
+            if (viewProgress) ServiceLocator.Resolve<NavigationService>()?.NavigateTo("packages-home");
+        }
+
+        private void NavigateToPackage(string productName)
+        {
+            var mw = ServiceLocator.Resolve<MainWindow>();
+            if (mw == null) return;
+            mw.Dispatcher.InvokeAsync(() =>
+            {
+                var pkg = mw.Packages?.FirstOrDefault(p => string.Equals(p.ProductName, productName, StringComparison.OrdinalIgnoreCase));
+                if (pkg == null) return;
+                mw.LatestActivePackage = pkg;
+                ServiceLocator.Resolve<NavigationService>()?.NavigateTo("packages-home");
+            });
         }
 
         private static void OpenFile(string path)

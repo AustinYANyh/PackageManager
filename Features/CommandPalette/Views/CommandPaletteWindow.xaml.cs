@@ -21,12 +21,15 @@ namespace PackageManager.Features.CommandPalette.Views
     {
         private readonly PaletteCandidateService _svc = new PaletteCandidateService();
         private readonly Dictionary<string, PaletteItem> _byId = new Dictionary<string, PaletteItem>();
+        private bool _webReady;
+        private bool _preloading;
 
         public CommandPaletteWindow()
         {
             InitializeComponent();
             Loaded += OnLoaded;
             Deactivated += (s, e) => Hide();
+            Opacity = 0;
         }
 
         private async void OnLoaded(object sender, RoutedEventArgs e)
@@ -55,8 +58,24 @@ namespace PackageManager.Features.CommandPalette.Views
         {
             if (!e.IsSuccess) return;
             PushCandidates();
-            PaletteWeb.Focus();
-            ExecJs("try{var __i=document.getElementById('q');if(__i){__i.focus();__i.select&&__i.select();}}catch(e){}");
+            _webReady = true;
+            if (_preloading)
+            {
+                _preloading = false;
+                Hide();
+                return;
+            }
+            // 首次唤起（未预热）：等 WebView2 首帧渲染后再现形，避免深色背景一闪
+            if (IsVisible && Opacity == 0)
+            {
+                Dispatcher.BeginInvoke(new Action(() =>
+                {
+                    Opacity = 1;
+                    Activate();
+                    PaletteWeb.Focus();
+                    ExecJs("try{var __i=document.getElementById('q');if(__i){__i.focus();__i.select&&__i.select();}}catch(e){}");
+                }), System.Windows.Threading.DispatcherPriority.Loaded);
+            }
         }
 
         private void PushCandidates()
@@ -90,24 +109,18 @@ namespace PackageManager.Features.CommandPalette.Views
                     var id = jo["id"]?.ToString();
                     if (id != null && _byId.TryGetValue(id, out var item))
                     {
-                        // 包操作中“解锁更新”需选版本：进入版本子视图，不关闭面板
-                        if (item.Type == "pkg-action")
+                        // 包操作命令/参数项：走参数收集向导（缺包选包、缺版本选版本、缺包文件选包文件）
+                        if (item.Type == "pkg-cmd" || item.Type == "pkg-param")
                         {
-                            var ks = (item.ExecuteKey ?? string.Empty).Split('\x1f');
-                            if (ks.Length >= 2 && ks[1] == "unlock")
+                            var result = await _svc.CollectParameterAsync(item.ExecuteKey);
+                            if (result.Show)
                             {
-                                var versions = _svc.BuildPackageVersions(ks[0], "unlock-pkg");
-                                foreach (var v in versions) _byId[v.Id] = v;
-                                ExecJs("window.__pm&&window.__pm.showActions(" + JsonConvert.SerializeObject(versions) + ",'选择版本');");
+                                foreach (var it in result.Items) _byId[it.Id] = it;
+                                ExecJs("window.__pm&&window.__pm.showActions(" + JsonConvert.SerializeObject(result.Items) + ",'" + (result.Title ?? "操作").Replace("'", " ") + "');");
                                 return;
                             }
-                            if (ks.Length >= 3 && ks[1] == "unlock-pkg")
-                            {
-                                var packages = await _svc.SelectVersionForUnlockAsync(ks[0], ks[2]);
-                                foreach (var p in packages) _byId[p.Id] = p;
-                                ExecJs("window.__pm&&window.__pm.showActions(" + JsonConvert.SerializeObject(packages) + ",'选择包');");
-                                return;
-                            }
+                            Hide();
+                            return;
                         }
                         Hide();
                         await _svc.ExecuteAsync(item);
@@ -125,13 +138,14 @@ namespace PackageManager.Features.CommandPalette.Views
                 {
                     Hide();
                 }
-                else if (type == "actions")
+                else if (type == "execute-default")
                 {
-                    var productName = jo["productName"]?.ToString() ?? string.Empty;
-                    var acts = _svc.BuildPackageActions(productName);
-                    foreach (var it in acts) _byId[it.Id] = it;
-                    var json = JsonConvert.SerializeObject(acts);
-                    ExecJs("window.__pm&&window.__pm.showActions(" + json + ");");
+                    var id = jo["id"]?.ToString();
+                    if (id != null && _byId.TryGetValue(id, out var item))
+                    {
+                        Hide();
+                        await _svc.CollectParameterDefaultAsync(item.ExecuteKey);
+                    }
                 }
                 else if (type == "bridge")
                 {
@@ -176,13 +190,40 @@ namespace PackageManager.Features.CommandPalette.Views
             catch { return Task.CompletedTask; }
         }
 
+        public void Preload()
+        {
+            _preloading = true;
+            ShowActivated = false;
+            WindowStartupLocation = WindowStartupLocation.Manual;
+            // 屏外正坐标隐藏：WebView2 子 HWND 不受 Opacity 影响，靠屏外不可见；正坐标避免负坐标 DPI 模糊
+            Left = SystemParameters.VirtualScreenWidth + 100;
+            Top = 0;
+            Opacity = 0;
+            Show();
+        }
+
         public void ShowPalette()
         {
-            Show();
-            Activate();
-            PaletteWeb.Focus();
-            ExecJs("try{var __i=document.getElementById('q');if(__i){__i.value='';__i.focus();}}catch(e){}");
-            PushCandidates();
+            var wa = SystemParameters.WorkArea;
+            WindowStartupLocation = WindowStartupLocation.Manual;
+            Left = wa.Left + (wa.Width - Width) / 2;
+            Top = wa.Top + (wa.Height - Height) / 2;
+            if (_webReady)
+            {
+                Opacity = 1;
+                ShowActivated = true;
+                Show();
+                Activate();
+                PaletteWeb.Focus();
+                ExecJs("try{var __i=document.getElementById('q');if(__i){__i.value='';__i.focus();}}catch(e){}");
+                PushCandidates();
+            }
+            else
+            {
+                // 首次未预热：不可见加载（WebView2 冷启动），加载完后由 OnNavCompleted 现形
+                Opacity = 0;
+                Show();
+            }
         }
 
         private Task BridgeAsync(PaletteItem item, string query)

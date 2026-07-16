@@ -292,6 +292,13 @@ namespace PackageManager
                 _commandPaletteManager = new CommandPaletteManager();
                 _systemHotkeyService = new SystemHotkeyService(_commonStartupWindowManager, _fileSearchWindowManager, _commandPaletteManager);
                 _systemHotkeyService.Start();
+
+                // 延迟预热命令面板：后台完成 WebView2 初始化，消除首次 Ctrl+Space 的加载黑屏
+                Task.Run(async () =>
+                {
+                    await Task.Delay(3000).ConfigureAwait(false);
+                    Application.Current?.Dispatcher.Invoke(() => _commandPaletteManager?.Preload());
+                });
             }
             catch (Exception ex)
             {
