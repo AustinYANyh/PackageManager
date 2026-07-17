@@ -243,6 +243,14 @@ namespace PackageManager.Features.DevTools
                 Directory.CreateDirectory(targetDir);
                 try { Directory.CreateDirectory(Path.Combine(targetDir, "Logs")); } catch { }
 
+                var exeResourceName = names.FirstOrDefault(n =>
+                    n.EndsWith("AdskUAT.exe", StringComparison.OrdinalIgnoreCase) &&
+                    n.Contains("Assets.Tools.Autodesk.Universal.Activation.Tools"));
+                var versionMarker = exeResourceName ?? "unknown";
+                var markerFile = Path.Combine(targetDir, ".pm-tool-version");
+                bool needRefresh = !File.Exists(markerFile) ||
+                    !string.Equals(File.ReadAllText(markerFile).Trim(), versionMarker, StringComparison.Ordinal);
+
                 foreach (var suffix in suffixes)
                 {
                     var name = names.FirstOrDefault(n =>
@@ -252,14 +260,23 @@ namespace PackageManager.Features.DevTools
                         continue;
 
                     var path = Path.Combine(targetDir, suffix);
-                    if (!File.Exists(path))
+                    if (needRefresh || !File.Exists(path))
                     {
-                        using (var s = asm.GetManifestResourceStream(name))
-                        using (var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read))
+                        try
                         {
-                            s.CopyTo(fs);
+                            using (var s = asm.GetManifestResourceStream(name))
+                            using (var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.Read))
+                            {
+                                s.CopyTo(fs);
+                            }
                         }
+                        catch { }
                     }
+                }
+
+                if (needRefresh)
+                {
+                    try { File.WriteAllText(markerFile, versionMarker); } catch { }
                 }
 
                 var exePath = Path.Combine(targetDir, "AdskUAT.exe");
