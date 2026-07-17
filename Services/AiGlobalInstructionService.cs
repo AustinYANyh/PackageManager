@@ -30,28 +30,36 @@ namespace PackageManager.Services
                 Directory.CreateDirectory(Path.GetDirectoryName(agentsPath));
 
                 var existing = File.Exists(agentsPath) ? File.ReadAllText(agentsPath, Encoding.UTF8) : string.Empty;
-                if (existing.IndexOf(BehaviorBeginMarker, StringComparison.Ordinal) >= 0
-                    && existing.IndexOf(BehaviorEndMarker, StringComparison.Ordinal) >= 0)
+                var next = UpsertBehaviorRulesBlock(existing, BehaviorBeginMarker, BehaviorEndMarker, BuildBehaviorRulesBlock());
+                if (string.Equals(existing, next, StringComparison.Ordinal))
                 {
                     return;
                 }
 
-                var block = BuildBehaviorRulesBlock();
-                string next;
-                if (string.IsNullOrWhiteSpace(existing))
-                {
-                    next = block + Environment.NewLine;
-                }
-                else
-                {
-                    var separator = existing.EndsWith(Environment.NewLine, StringComparison.Ordinal)
-                        ? Environment.NewLine
-                        : Environment.NewLine + Environment.NewLine;
-                    next = existing + separator + block + Environment.NewLine;
-                }
-
                 WriteWithBackup(agentsPath, next, File.Exists(agentsPath));
             }
+        }
+
+        private static string UpsertBehaviorRulesBlock(string existing, string beginMarker, string endMarker, string blockContent)
+        {
+            var block = blockContent;
+            if (string.IsNullOrWhiteSpace(existing))
+            {
+                return block + Environment.NewLine;
+            }
+
+            var begin = existing.IndexOf(beginMarker, StringComparison.Ordinal);
+            var end = existing.IndexOf(endMarker, StringComparison.Ordinal);
+            if (begin >= 0 && end > begin)
+            {
+                end += endMarker.Length;
+                return existing.Substring(0, begin) + block + existing.Substring(end);
+            }
+
+            var separator = existing.EndsWith(Environment.NewLine, StringComparison.Ordinal)
+                ? Environment.NewLine
+                : Environment.NewLine + Environment.NewLine;
+            return existing + separator + block + Environment.NewLine;
         }
 
         private static string BuildBehaviorRulesBlock()
@@ -75,6 +83,16 @@ namespace PackageManager.Services
             sb.AppendLine("- 日志位置不明确时自行搜索探查（探查耗时且浪费 token）");
             sb.AppendLine();
             sb.AppendLine("当需要读取日志但位置不明确时，必须第一时间向用户给出选项让用户选择，而不是开放式提问让用户自己输入。给出两个选项：① 自行搜索（结合代码结构定位日志路径，而非暴力全盘搜索）② 用户输入（用户提供的路径或关键词，据此查找）。用户点击选项即可，不要让用户手动打字回复。");
+            sb.AppendLine();
+            sb.AppendLine("## 图片理解能力（无视觉模型兜底）");
+            sb.AppendLine();
+            sb.AppendLine("当执行需要读取或理解图片内容的功能（分析截图、UI 设计稿、架构图、图表、识别图中文字等）时，按以下顺序判断：");
+            sb.AppendLine();
+            sb.AppendLine("1. **优先判断自身是否具备原生图片理解能力** — 若为多模态模型、本身支持视觉输入，直接读取图片即可。");
+            sb.AppendLine("2. **模型本身无视觉能力时，优先调用已配置的 MCP 工具弥补** — 先确认当前环境是否配置了图片/视觉类 MCP（图片分析、OCR 文字识别、图表解析、UI 截图比对等 server）；若有，调用对应 MCP 工具完成识图。");
+            sb.AppendLine("3. **既无原生视觉能力，也没有任何可用的图片分析 MCP** — 明确告知用户「无法识图」，不得对图片内容进行臆测或编造；直接基于已有信息（文件名、上下文、用户已给出的文字等）继续完成任务，不再额外向用户索要图片描述。");
+            sb.AppendLine();
+            sb.AppendLine("能看图就直接看 → 看不了就用 MCP 看 → 两者都没有就如实告知无法识图、基于已有文字信息继续完成，绝不编造图片内容。");
             sb.AppendLine();
             sb.Append(BehaviorEndMarker);
             return sb.ToString();
