@@ -795,7 +795,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
                 skillInfo = await Task.Run(() =>
                 {
                     EnsureCommandExists(commandName);
-                    globalInstructionWarning = TryEnsureGlobalAiInstructions(engineName);
+                    globalInstructionWarning = TryEnsureGlobalAiInstructions(engineName, repo.Path);
                     return _aiCommitSkillService.EnsureSkillAvailable(repo.Path);
                 });
             }
@@ -941,7 +941,7 @@ Write-Host '仓库内 skill：' -ForegroundColor DarkCyan
 
         private void DoOpenClaudeCode(CodeRepository repo)
         {
-            var syncWarning = TryEnsureGlobalAiInstructions("Claude");
+            var syncWarning = TryEnsureGlobalAiInstructions("Claude", repo.Path);
             var command = $@"
 Set-Location -LiteralPath {PsQuote(repo.Path)}
 {AiCliLaunchService.ClaudeCliCommand}
@@ -953,7 +953,7 @@ Set-Location -LiteralPath {PsQuote(repo.Path)}
 
         private void DoOpenCodex(CodeRepository repo)
         {
-            var syncWarning = TryEnsureGlobalAiInstructions("Codex");
+            var syncWarning = TryEnsureGlobalAiInstructions("Codex", repo.Path);
             var command = $@"
 Set-Location -LiteralPath {PsQuote(repo.Path)}
 {AiCliLaunchService.CodexCliCommand}
@@ -2150,13 +2150,13 @@ SVN冲突/树冲突：
             return $"'{TerminalHelper.EscapePowerShellSingleQuoted(value)}'";
         }
 
-        private static string TryEnsureGlobalAiInstructions(string engineName)
+        private static string TryEnsureGlobalAiInstructions(string engineName, string projectRoot = null)
         {
             try
             {
                 AiGlobalInstructionService.EnsureCodeGraphInstructions();
                 AiGlobalInstructionService.EnsureBehaviorRules();
-                AiGlobalBehaviorRuleService.EnsureGlobalBehaviorRules();
+                AiProjectMemoryService.EnsureProjectMemory(projectRoot);
                 return string.Empty;
             }
             catch (Exception ex)

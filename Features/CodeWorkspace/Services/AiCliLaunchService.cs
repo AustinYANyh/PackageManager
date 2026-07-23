@@ -36,7 +36,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
             }
 
             EnsureCommandExists(commandName);
-            TryEnsureGlobalInstructions(engineName);
+            TryEnsureGlobalInstructions(engineName, repo.Path);
             var finalPrompt = CreatePromptFileArgument(repo.Path, prompt ?? string.Empty, "pingcode-ai", engineName);
             var command = $@"
 Set-Location -LiteralPath {PsQuote(repo.Path)}
@@ -170,13 +170,13 @@ Write-Host '仓库：{TerminalHelper.EscapePowerShellSingleQuoted(repo.Name ?? r
             throw new FileNotFoundException($"未在 PATH 中找到 {commandName}，请先安装或配置环境变量。");
         }
 
-        private static void TryEnsureGlobalInstructions(string engineName)
+        private static void TryEnsureGlobalInstructions(string engineName, string projectRoot)
         {
             try
             {
                 AiGlobalInstructionService.EnsureCodeGraphInstructions();
                 AiGlobalInstructionService.EnsureBehaviorRules();
-                AiGlobalBehaviorRuleService.EnsureGlobalBehaviorRules();
+                AiProjectMemoryService.EnsureProjectMemory(projectRoot);
             }
             catch (Exception ex)
             {
