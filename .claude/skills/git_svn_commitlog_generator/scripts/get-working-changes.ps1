@@ -1461,7 +1461,8 @@ function Is-TrackedPendingChange($item) {
 
 function Is-CommonAddCandidate($item) {
   if (-not $item -or -not $item.Path) { return $false }
-  return (Test-CommonAddCandidatePath $item.Path)
+  # return (Test-CommonAddCandidatePath $item.Path)  # 原扩展名白名单过滤，放开二进制文件限制
+  return $true
 }
 
 function Add-ToVersionControl($item, [string]$rootFull, [string]$gitRootFull) {

@@ -19,6 +19,8 @@ namespace PackageManager.Services
         private const string GlobalBlockEnd = "<!-- PackageManager Global Behavior Rules: End -->";
         private const string CodexAgentsBegin = "<!-- PackageManager Behavior Rules: Begin -->";
         private const string CodexAgentsEnd = "<!-- PackageManager Behavior Rules: End -->";
+        private const string MemoryBlockBegin = "<!-- PackageManager Memory: Begin -->";
+        private const string MemoryBlockEnd = "<!-- PackageManager Memory: End -->";
 
         /// <summary>
         /// 确保当前项目的 Claude Code 和 Codex 项目级记忆文件存在。
@@ -44,7 +46,7 @@ namespace PackageManager.Services
                 }
 
                 // E:\PackageManager → E--PackageManager
-                var projectSlug = projectRoot.Replace('\\', '-').Replace('/', '-').Replace(':', '-');
+                var projectSlug = projectRoot.Replace('\\', '-').Replace('/', '-').Replace(':', '-').Replace("_","-");
 
                 // Claude Code 项目级记忆：~/.claude/projects/{slug}/memory/
                 var memoryDir = Path.Combine(userProfile, ".claude", "projects", projectSlug, "memory");
@@ -140,18 +142,20 @@ namespace PackageManager.Services
 
         private static void EnsureMemoryFileCreated(string targetPath, Func<string> contentBuilder)
         {
-            if (File.Exists(targetPath))
-            {
-                return;
-            }
-
             var directory = Path.GetDirectoryName(targetPath);
             if (!string.IsNullOrWhiteSpace(directory))
             {
                 Directory.CreateDirectory(directory);
             }
 
-            File.WriteAllText(targetPath, contentBuilder(), Encoding.UTF8);
+            var existing = File.Exists(targetPath) ? File.ReadAllText(targetPath, Encoding.UTF8) : string.Empty;
+            var next = UpsertManagedBlock(existing, MemoryBlockBegin, MemoryBlockEnd, contentBuilder());
+            if (string.Equals(existing, next, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            WriteWithBackup(targetPath, next, File.Exists(targetPath));
         }
 
         private static void WriteWithBackup(string path, string content, bool createBackup)
@@ -239,6 +243,10 @@ namespace PackageManager.Services
             sb.AppendLine("**Why:** 用户精心编写的 skill 约束每一条都有原因，目的是确保流程可控、可审计、可复现。自行变通会破坏这些目标，也违背了用户编写 skill 的初衷。");
             sb.AppendLine();
             sb.AppendLine("**How to apply:** 遇到 skill/prompt 中的约束时，先逐条理解每条限制的含义，然后在约束范围内寻找解决方案。如果当前工具能力确实无法满足，应该向用户说明困难并请求指导，而不是自行绕过。永远不要\"我行我素\"。");
+            sb.AppendLine();
+            sb.AppendLine("**反复违反警告（2026-07-23）：** 已多次在以下场景违反\"禁止创建临时文件\"约束：");
+            sb.AppendLine("- SKILL 要求用 Python chr() 计算 Base64 时，被 Claude Code 分类器拦截后，自行创建 .py 文件绕过 → **绝对禁止**。分类器拦截时必须停下告知用户，由用户决定权限或替代方案，不得自行创建任何文件。");
+            sb.AppendLine("- 任何\"工具能力无法满足\"的场景都必须停下来问用户，不得自作主张找变通。");
             return sb.ToString().TrimEnd('\r', '\n');
         }
 

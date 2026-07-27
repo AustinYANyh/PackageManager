@@ -796,6 +796,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
                 {
                     EnsureCommandExists(commandName);
                     globalInstructionWarning = TryEnsureGlobalAiInstructions(engineName, repo.Path);
+                    AiProjectMemoryService.EnsureProjectMemory(repo.Path);
                     return _aiCommitSkillService.EnsureSkillAvailable(repo.Path);
                 });
             }
