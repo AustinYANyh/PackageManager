@@ -470,6 +470,27 @@
           <SubType>Code</SubType>
         </Compile>
 
+        <!-- Features/MimoUsage -->
+        <Compile Include="Features\MimoUsage\Dto\MimoUsageDto.cs" />
+        <Compile Include="Features\MimoUsage\Services\MimoCookieManager.cs" />
+        <Compile Include="Features\MimoUsage\Services\MimoApiService.cs" />
+        <Page Include="Features\MimoUsage\Views\MimoLoginWindow.xaml">
+          <Generator>MSBuild:Compile</Generator>
+          <SubType>Designer</SubType>
+        </Page>
+        <Compile Include="Features\MimoUsage\Views\MimoLoginWindow.xaml.cs">
+          <DependentUpon>MimoLoginWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+        <Page Include="Features\MimoUsage\Views\MimoUsagePage.xaml">
+          <Generator>MSBuild:Compile</Generator>
+          <SubType>Designer</SubType>
+        </Page>
+        <Compile Include="Features\MimoUsage\Views\MimoUsagePage.xaml.cs">
+          <DependentUpon>MimoUsagePage.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
+
         <!-- Features/Notifications -->
         <Compile Include="Features\Notifications\Models\NotificationItem.cs" />
         <Compile Include="Features\Notifications\Services\NotificationService.cs" />

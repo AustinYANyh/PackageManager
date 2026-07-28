@@ -1,0 +1,42 @@
+<Window x:Class="PackageManager.Features.MimoUsage.Views.MimoLoginWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
+        Title="登录小米平台" Height="650" Width="850"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="CanResize"
+        Background="#FFFFFF">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- 顶部提示栏 -->
+        <Border Grid.Row="0" Background="#F0F5FF" BorderBrush="#D6E4FF" BorderThickness="0,0,0,1" Padding="16,10">
+            <StackPanel Orientation="Horizontal">
+                <TextBlock Text="ℹ" FontSize="16" Foreground="#2B7FFF" VerticalAlignment="Center" Margin="0,0,8,0" />
+                <TextBlock x:Name="HintText"
+                           Text="请在下方登录小米 MiMo 平台，登录成功后将自动获取 Cookie"
+                           VerticalAlignment="Center" FontSize="13" Foreground="#374151" />
+            </StackPanel>
+        </Border>
+
+        <!-- WebView2 浏览器区域 -->
+        <wv2:WebView2 x:Name="LoginWeb" Grid.Row="1" />
+
+        <!-- 底部状态栏 -->
+        <Border Grid.Row="2" Background="#F8FAFC" BorderBrush="#E5E7EB" BorderThickness="0,1,0,0" Padding="12,8">
+            <Grid>
+                <TextBlock x:Name="StatusText" Text="正在初始化浏览器..." VerticalAlignment="Center"
+                           FontSize="12" Foreground="#6B7280" />
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                    <Button Content="取消" Width="80" Height="30" Click="Cancel_Click"
+                            Background="#F3F4F6" Foreground="#374151" BorderBrush="#D1D5DB"
+                            Cursor="Hand" FontSize="12" />
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

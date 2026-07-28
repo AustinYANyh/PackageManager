@@ -1,6 +1,7 @@
 using System.IO;
 using PackageManager.Features.CodeWorkspace.Views;
 using PackageManager.Features.DailyLog.Views;
+using PackageManager.Features.MimoUsage.Views;
 using PackageManager.Shell;
 using PackageManager.Views;
 using PackageManager.Views.KanBan;
@@ -97,6 +98,15 @@ namespace PackageManager.Services
                 Glyph = "",
                 Group = "包管理",
                 Factory = () => new PluginManagementPage(persistence, appFinder)
+            });
+
+            registry.Register(new ToolPageDescriptor
+            {
+                Key = "mimo-usage",
+                DisplayName = "MiMo用量",
+                Glyph = "",
+                Group = "开发工具",
+                Factory = () => new MimoUsagePage()
             });
 
             // --- 日志 ---
