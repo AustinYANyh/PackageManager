@@ -84,6 +84,15 @@ namespace PackageManager.Services
 
             registry.Register(new ToolPageDescriptor
             {
+                Key = "mimo-usage",
+                DisplayName = "MiMo用量",
+                Glyph = "",
+                Group = "项目与协作",
+                Factory = () => new MimoUsagePage()
+            });
+
+            registry.Register(new ToolPageDescriptor
+            {
                 Key = "code-repository-management",
                 DisplayName = "代码仓库管理",
                 Glyph = "",
@@ -98,15 +107,6 @@ namespace PackageManager.Services
                 Glyph = "",
                 Group = "包管理",
                 Factory = () => new PluginManagementPage(persistence, appFinder)
-            });
-
-            registry.Register(new ToolPageDescriptor
-            {
-                Key = "mimo-usage",
-                DisplayName = "MiMo用量",
-                Glyph = "",
-                Group = "开发工具",
-                Factory = () => new MimoUsagePage()
             });
 
             // --- 日志 ---

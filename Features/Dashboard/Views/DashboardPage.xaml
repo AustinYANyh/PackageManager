@@ -200,6 +200,13 @@
                         <controls:CTextBlock Text="仓库、IDE、AI 工具与提交入口" Foreground="#6B6B6B" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Left" TextAlignment="Left"/>
                     </StackPanel>
                 </Border>
+                <Border Style="{StaticResource DashboardCard}" Tag="mimo-usage" MouseLeftButtonUp="NavigationCard_Click">
+                    <StackPanel>
+                        <TextBlock Text="&#xE9D9;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#2B7FFF" Margin="0,0,0,8"/>
+                        <controls:CTextBlock Text="MiMo用量" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" TextAlignment="Left"/>
+                        <controls:CTextBlock Text="MiMo 平台 Token 用量统计" Foreground="#6B6B6B" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Left" TextAlignment="Left"/>
+                    </StackPanel>
+                </Border>
             </WrapPanel>
 
             <!-- 开发工具 -->
@@ -245,13 +252,6 @@
                         <TextBlock Text="&#xE8B3;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#107C10" Margin="0,0,0,8"/>
                         <controls:CTextBlock Text="VCS映射" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" TextAlignment="Left"/>
                         <controls:CTextBlock Text="扫描目录自动更新 VCS 映射" Foreground="#6B6B6B" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Left" TextAlignment="Left"/>
-                    </StackPanel>
-                </Border>
-                <Border Style="{StaticResource DashboardCard}" Tag="mimo-usage" MouseLeftButtonUp="NavigationCard_Click">
-                    <StackPanel>
-                        <TextBlock Text="&#xE9D9;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#2B7FFF" Margin="0,0,0,8"/>
-                        <controls:CTextBlock Text="MiMo用量" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" TextAlignment="Left"/>
-                        <controls:CTextBlock Text="MiMo 平台 Token 用量统计" Foreground="#6B6B6B" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Left" TextAlignment="Left"/>
                     </StackPanel>
                 </Border>
             </WrapPanel>

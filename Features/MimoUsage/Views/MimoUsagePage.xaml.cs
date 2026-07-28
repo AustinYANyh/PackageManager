@@ -184,6 +184,44 @@ namespace PackageManager.Features.MimoUsage.Views
             return dataToken.ToObject<T>();
         }
 
+        /// <summary>
+        /// 调用 API 并返回原始 data JToken（不反序列化）。
+        /// </summary>
+        private async Task<Newtonsoft.Json.Linq.JToken> CallApiViaWebViewRaw(string apiPath)
+        {
+            var script = $@"
+                (function() {{
+                    var xhr = new XMLHttpRequest();
+                    xhr.open('GET', '{apiPath}', false);
+                    xhr.send();
+                    return JSON.stringify({{status: xhr.status, body: xhr.responseText}});
+                }})();";
+
+            var rawResult = await ApiWeb.CoreWebView2.ExecuteScriptAsync(script);
+            var decoded = JsonConvert.DeserializeObject<string>(rawResult);
+            var outerObj = Newtonsoft.Json.Linq.JObject.Parse(decoded);
+            var statusCode = (int)outerObj["status"];
+            var bodyStr = (string)outerObj["body"];
+
+            if (statusCode != 200)
+            {
+                throw new InvalidOperationException($"API 请求失败 ({statusCode}): {bodyStr}");
+            }
+
+            var bodyToken = Newtonsoft.Json.Linq.JToken.Parse(bodyStr ?? "{}");
+            if (bodyToken is Newtonsoft.Json.Linq.JObject jObj && jObj.ContainsKey("code"))
+            {
+                var code = (int)jObj["code"];
+                if (code != 0)
+                {
+                    throw new InvalidOperationException($"API 返回错误 (code={code}): {jObj["message"]}");
+                }
+                return jObj["data"];
+            }
+
+            return bodyToken;
+        }
+
         // ===== 数据加载 =====
 
         private async Task LoadDataAsync()
@@ -208,19 +246,14 @@ namespace PackageManager.Features.MimoUsage.Views
                     new { year = _currentYear, month = _currentMonth },
                     usePost: true);
 
-                var monthlyTask = CallApiViaWebView<MimoMonthlyUsage>(
-                    $"/api/v1/tokenPlan/usage?{phParam}",
-                    usePost: false);
+                // usage 和 detail 返回的 data 结构不直接匹配 DTO，需要手动提取
+                var usageRaw = await CallApiViaWebViewRaw($"/api/v1/tokenPlan/usage?{phParam}");
+                var monthlyUsage = usageRaw?["monthUsage"]?.ToObject<MimoMonthlyUsage>();
 
-                var planTask = CallApiViaWebView<MimoPlanDetail>(
-                    $"/api/v1/tokenPlan/detail?{phParam}",
-                    usePost: false);
-
-                await Task.WhenAll(dailyTask, monthlyTask, planTask);
+                var detailRaw = await CallApiViaWebViewRaw($"/api/v1/tokenPlan/detail?{phParam}");
+                var planDetail = detailRaw?.ToObject<MimoPlanDetail>();
 
                 var dailyItems = await dailyTask;
-                var monthlyUsage = await monthlyTask;
-                var planDetail = await planTask;
 
                 LoggingService.LogInfo($"[MiMo] 数据加载成功: {dailyItems?.Count ?? 0} 条记录");
 
@@ -308,6 +341,7 @@ namespace PackageManager.Features.MimoUsage.Views
         {
             NotLoggedInPanel.Visibility = _isLoggedIn ? Visibility.Collapsed : Visibility.Visible;
             LoginBtn.Visibility = _isLoggedIn ? Visibility.Collapsed : Visibility.Visible;
+            ReLoginBtn.Visibility = _isLoggedIn ? Visibility.Visible : Visibility.Collapsed;
             if (!_isLoggedIn)
             {
                 NotLoggedInPanel.Background = new SolidColorBrush(Color.FromRgb(0xFF, 0xF7, 0xED));
@@ -318,6 +352,64 @@ namespace PackageManager.Features.MimoUsage.Views
         }
 
         private async void Refresh_Click(object sender, RoutedEventArgs e) { if (_isLoggedIn) await LoadDataAsync(); }
+
+        private async void ReLogin_Click(object sender, RoutedEventArgs e)
+        {
+            LoggingService.LogInfo("[MiMo] 用户点击切换账号");
+
+            // 清除本地 Cookie
+            _cookieManager.ClearCookies();
+            _isLoggedIn = false;
+            UpdateLoginState();
+
+            // 清除 WebView2 缓存
+            try
+            {
+                var dataService = new DataPersistenceService();
+                var cachePath = System.IO.Path.Combine(dataService.GetDataFolderPath(), "MimoWebView2Cache");
+                if (System.IO.Directory.Exists(cachePath))
+                {
+                    System.IO.Directory.Delete(cachePath, true);
+                    LoggingService.LogInfo("[MiMo] 已清除 WebView2 缓存目录");
+                }
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, "[MiMo] 清除 WebView2 缓存目录失败");
+            }
+
+            // 重新初始化 WebView2
+            try
+            {
+                var dataService = new DataPersistenceService();
+                var userDataFolder = System.IO.Path.Combine(dataService.GetDataFolderPath(), "MimoWebView2Cache");
+                System.IO.Directory.CreateDirectory(userDataFolder);
+                var env = await CoreWebView2Environment.CreateAsync(null, userDataFolder);
+                await ApiWeb.EnsureCoreWebView2Async(env);
+
+                // 清除 WebView2 中所有 cookie
+                ApiWeb.CoreWebView2.CookieManager.DeleteAllCookies();
+
+                // 先导航到小米退出登录页面，销毁服务端 session
+                LoggingService.LogInfo("[MiMo] 导航到退出登录页面");
+                ApiWeb.Source = new Uri("https://account.xiaomi.com/pass/serviceLogout");
+                await Task.Delay(2000);
+
+                // 再清除一次 cookie（退出登录可能设置了新的 cookie）
+                ApiWeb.CoreWebView2.CookieManager.DeleteAllCookies();
+                LoggingService.LogInfo("[MiMo] 已清除所有 Cookie，准备重新登录");
+
+                // 导航到登录页
+                ApiWeb.Source = new Uri("https://platform.xiaomimimo.com/console/plan-manage");
+                _webViewReady = true;
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, "[MiMo] 重新初始化 WebView2 失败");
+                ShowError($"初始化失败: {ex.Message}");
+            }
+        }
+
         private async void PrevMonth_Click(object sender, RoutedEventArgs e) { _currentMonth--; if (_currentMonth < 1) { _currentMonth = 12; _currentYear--; } UpdateMonthText(); if (_isLoggedIn) await LoadDataAsync(); }
         private async void NextMonth_Click(object sender, RoutedEventArgs e) { _currentMonth++; if (_currentMonth > 12) { _currentMonth = 1; _currentYear++; } UpdateMonthText(); if (_isLoggedIn) await LoadDataAsync(); }
 
@@ -332,8 +424,17 @@ namespace PackageManager.Features.MimoUsage.Views
             if (monthlyUsage?.Items != null && monthlyUsage.Items.Count > 0)
             {
                 var item = monthlyUsage.Items[0];
-                PlanUsageText.Text = $"{FormatChineseNumber(item.Used)} / {FormatChineseNumber(item.Limit)} ({monthlyUsage.Percent:P1})";
+                PlanUsedText.Text = FormatChineseNumber(item.Used);
+                PlanLimitText.Text = FormatChineseNumber(item.Limit);
+                var remain = item.Limit - item.Used;
+                PlanRemainText.Text = FormatChineseNumber(Math.Max(0, remain));
+                PlanUsageText.Text = $"{monthlyUsage.Percent:P1}";
                 PlanUsageBar.Width = Math.Min(300.0 * monthlyUsage.Percent, 300.0);
+                // 剩余不足20%时标红
+                if (monthlyUsage.Percent > 0.8)
+                {
+                    PlanRemainText.Foreground = new SolidColorBrush(Color.FromRgb(0x99, 0x1B, 0x1B));
+                }
             }
         }
 
@@ -379,13 +480,7 @@ namespace PackageManager.Features.MimoUsage.Views
             SummaryPanel.Visibility = Visibility.Visible;
         }
 
-        public static string FormatChineseNumber(long value)
-        {
-            if (value < 0) return $"-{FormatChineseNumber(-value)}";
-            if (value >= 100_000_000L) { var yi = value / 100_000_000L; var r = value % 100_000_000L; return $"{yi}亿{r / 10_000L:D4}万{r % 10_000L:D4}"; }
-            if (value >= 10_000L) return $"{value / 10_000L}万{value % 10_000L:D4}";
-            return value.ToString("N0");
-        }
+        public static string FormatChineseNumber(long value) => AiUsageHelper.FormatChineseNumber(value);
 
         private void RaisePropertyChanged([CallerMemberName] string name = null)
             => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));

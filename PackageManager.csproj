@@ -474,6 +474,7 @@
         <Compile Include="Features\MimoUsage\Dto\MimoUsageDto.cs" />
         <Compile Include="Features\MimoUsage\Services\MimoCookieManager.cs" />
         <Compile Include="Features\MimoUsage\Services\MimoApiService.cs" />
+        <Compile Include="Features\MimoUsage\Services\AiUsageHelper.cs" />
         <Page Include="Features\MimoUsage\Views\MimoLoginWindow.xaml">
           <Generator>MSBuild:Compile</Generator>
           <SubType>Designer</SubType>

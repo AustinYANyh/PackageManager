@@ -32,6 +32,7 @@
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
             <TextBlock Grid.Column="0" Text="MiMo Token 用量统计" FontSize="20" FontWeight="Bold" VerticalAlignment="Center" />
             <TextBlock Grid.Column="1" x:Name="StatusText" Text="" VerticalAlignment="Center" HorizontalAlignment="Right" Foreground="#6B7280" FontSize="12" Margin="0,0,16,0" />
@@ -42,7 +43,8 @@
                 <button:CButton x:Name="NextMonthBtn" Content="▶" Width="28" Height="28" Click="NextMonth_Click" FontSize="12" />
             </StackPanel>
             <button:CButton Grid.Column="3" x:Name="LoginBtn" Content="登录" Width="80" Height="32" Margin="8,0,0,0" Click="Login_Click" Background="#2B7FFF" Foreground="White" FontSize="12" />
-            <button:CButton Grid.Column="4" x:Name="RefreshBtn" Content="刷新" Width="80" Height="32" Click="Refresh_Click" Background="#10B981" Foreground="White" FontSize="12" />
+            <button:CButton Grid.Column="4" x:Name="ReLoginBtn" Content="切换账号" Width="80" Height="32" Margin="8,0,0,0" Click="ReLogin_Click" Background="#F59E0B" Foreground="White" FontSize="12" />
+            <button:CButton Grid.Column="5" x:Name="RefreshBtn" Content="刷新" Width="80" Height="32" Click="Refresh_Click" Background="#10B981" Foreground="White" FontSize="12" />
         </Grid>
 
         <!-- 未登录提示 -->
@@ -58,18 +60,40 @@
         <Border x:Name="PlanInfoPanel" Grid.Row="1" Background="#F0FDF4" BorderBrush="#BBF7D0"
                 BorderThickness="1" CornerRadius="8" Padding="16,12" Margin="0,0,0,12" Visibility="Collapsed">
             <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="Auto" />
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-                <TextBlock Grid.Column="0" x:Name="PlanNameText" Text="" VerticalAlignment="Center" FontWeight="SemiBold" FontSize="13" Foreground="#166534" />
-                <TextBlock Grid.Column="1" x:Name="PlanPeriodText" Text="" VerticalAlignment="Center" Margin="16,0,0,0" FontSize="12" Foreground="#166534" />
-                <TextBlock Grid.Column="3" x:Name="PlanUsageText" Text="" VerticalAlignment="Center" FontWeight="SemiBold" FontSize="13" Foreground="#166534" />
-                <Grid Grid.Column="2" Margin="16,0" VerticalAlignment="Center">
-                    <Border Height="8" CornerRadius="4" Background="#DCFCE7" />
-                    <Border x:Name="PlanUsageBar" Height="8" CornerRadius="4" Background="#22C55E" HorizontalAlignment="Left" Width="0" />
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+                <Grid Grid.Row="0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" x:Name="PlanNameText" Text="" VerticalAlignment="Center" FontWeight="SemiBold" FontSize="13" Foreground="#166534" />
+                    <TextBlock Grid.Column="1" x:Name="PlanPeriodText" Text="" VerticalAlignment="Center" Margin="16,0,0,0" FontSize="12" Foreground="#166534" />
+                    <TextBlock Grid.Column="3" x:Name="PlanUsageText" Text="" VerticalAlignment="Center" FontWeight="SemiBold" FontSize="13" Foreground="#166534" />
+                    <Grid Grid.Column="2" Margin="16,0" VerticalAlignment="Center">
+                        <Border Height="8" CornerRadius="4" Background="#DCFCE7" />
+                        <Border x:Name="PlanUsageBar" Height="8" CornerRadius="4" Background="#22C55E" HorizontalAlignment="Left" Width="0" />
+                    </Grid>
+                </Grid>
+                <Grid Grid.Row="1" Margin="0,8,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="已用:" Foreground="#6B7280" FontSize="12" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" x:Name="PlanUsedText" Text="" FontWeight="Bold" Foreground="#166534" FontSize="12" VerticalAlignment="Center" Margin="4,0,12,0" />
+                    <TextBlock Grid.Column="2" Text="总量:" Foreground="#6B7280" FontSize="12" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="3" x:Name="PlanLimitText" Text="" FontWeight="Bold" Foreground="#374151" FontSize="12" VerticalAlignment="Center" Margin="4,0,12,0" />
+                    <TextBlock Grid.Column="4" Text="剩余:" Foreground="#6B7280" FontSize="12" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="5" x:Name="PlanRemainText" Text="" FontWeight="Bold" Foreground="#166534" FontSize="12" VerticalAlignment="Center" Margin="4,0,0,0" />
                 </Grid>
             </Grid>
         </Border>
