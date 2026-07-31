@@ -2,8 +2,10 @@ using System;
 using System.Diagnostics;
 using System.Linq;
 using System.Security.Principal;
+using System.Threading;
 using System.Windows;
 using System.Threading.Tasks;
+using MftScanner;
 using PackageManager.Services;
 using PackageManager.Features.Notifications.Services;
 using PackageManager.Features.CodeWorkspace.Services;
@@ -22,6 +24,7 @@ namespace PackageManager
         private FileSearchWindowManager _fileSearchWindowManager;
         private SystemHotkeyService _systemHotkeyService;
         private CommandPaletteManager _commandPaletteManager;
+        private CancellationTokenSource _indexHostWatchdogCts;
 
         internal CommonStartupWindowManager CommonStartupWindowManager => _commonStartupWindowManager;
         internal FileSearchWindowManager FileSearchWindowManager => _fileSearchWindowManager;
@@ -259,6 +262,7 @@ namespace PackageManager
         {
             try
             {
+                _indexHostWatchdogCts?.Cancel();
                 _systemHotkeyService?.Dispose();
                 ServiceLocator.Resolve<CodeWorkspaceVcsCacheService>()?.Cancel();
                 _commonStartupWindowManager?.Shutdown();
@@ -293,6 +297,9 @@ namespace PackageManager
                 _systemHotkeyService = new SystemHotkeyService(_commonStartupWindowManager, _fileSearchWindowManager, _commandPaletteManager);
                 _systemHotkeyService.Start();
 
+                // 启动后台索引宿主看门狗：周期探活，宿主死亡/进程级假死时自动强杀重启，无需用户按键或重启软件。
+                StartIndexHostWatchdog();
+
                 // 延迟预热命令面板：后台完成 WebView2 初始化，消除首次 Ctrl+Space 的加载黑屏
                 Task.Run(async () =>
                 {
@@ -304,6 +311,58 @@ namespace PackageManager
             {
                 LoggingService.LogError(ex, "初始化全局热键失败");
             }
+        }
+
+        /// <summary>
+        /// 启动后台索引宿主看门狗：周期性探活（进程存活 + 心跳新鲜度），宿主死亡或进程级假死时自动强杀重启。
+        /// 节流：至少间隔 throttleMs 才重启一次，防抖动。线程池执行，不阻塞 UI。
+        /// 注意：抓不到“引擎线程卡死、心跳仍新鲜”的部分假死（Phase 2，需宿主侧看门狗）。
+        /// </summary>
+        private void StartIndexHostWatchdog()
+        {
+            _indexHostWatchdogCts = new CancellationTokenSource();
+            var ct = _indexHostWatchdogCts.Token;
+            const int intervalMs = 45000;   // 探活周期
+            const int throttleMs = 120000;  // 最快每 2 分钟重启一次
+
+            Task.Run(async () =>
+            {
+                var lastRestartTicks = 0L;
+                while (!ct.IsCancellationRequested)
+                {
+                    try
+                    {
+                        await Task.Delay(intervalMs, ct).ConfigureAwait(false);
+                        var health = SharedIndexServiceClient.TryReadHostHealth(null);
+                        if (health.State != HostHealth.Dead && health.State != HostHealth.Hung)
+                        {
+                            continue;
+                        }
+
+                        var nowTicks = DateTime.UtcNow.Ticks;
+                        if (nowTicks - lastRestartTicks < throttleMs * TimeSpan.TicksPerMillisecond)
+                        {
+                            LoggingService.LogDebug(
+                                $"[索引宿主看门狗] 检测到 {health.State}，但处于节流窗口，本次跳过。hostPid={health.HostProcessId}");
+                            continue;
+                        }
+
+                        lastRestartTicks = nowTicks;
+                        LoggingService.LogInfo(
+                            $"[索引宿主看门狗] 检测到 {health.State}（heartbeatAgeMs=" +
+                            $"{(health.HeartbeatAgeMs == long.MaxValue ? "n/a" : health.HeartbeatAgeMs.ToString())}），触发自愈。");
+                        IndexHostTaskService.EnsureHostHealthyOrRestart(8000);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        LoggingService.LogWarning($"[索引宿主看门狗] 异常：{ex.Message}");
+                    }
+                }
+            }, ct);
         }
 
         internal void ShowCommonStartupWindow()

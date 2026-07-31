@@ -3674,7 +3674,7 @@ public partial class CommonStartupWindow : Window
 
     private async Task<bool> WaitForIndexReadyAsync(bool forceRescan)
     {
-        try
+        async Task<bool> ConnectAsync()
         {
             var indexedCount = await EnsureIndexAsync(forceRescan).ConfigureAwait(true);
             _indexReady = true;
@@ -3685,6 +3685,11 @@ public partial class CommonStartupWindow : Window
 
             return true;
         }
+
+        try
+        {
+            return await ConnectAsync().ConfigureAwait(true);
+        }
         catch (OperationCanceledException)
         {
             StatusText.Text = forceRescan ? "共享索引重建已取消。" : "共享索引连接已取消。";
@@ -3693,6 +3698,27 @@ public partial class CommonStartupWindow : Window
         catch (Exception ex)
         {
             LoggingService.LogError(ex, "[StartupSearch] Initialize shared index failed");
+            // 宿主死亡/假死：自愈（强杀+重启，在线程池执行避免 UI 冻结）后重试一次，避免“共享索引不可用”死路。
+            var healed = await Task.Run(() => SharedIndexServiceClient.EnsureHostHealthyOrRestart(8000)).ConfigureAwait(true);
+            if (healed)
+            {
+                try
+                {
+                    return await ConnectAsync().ConfigureAwait(true);
+                }
+                catch (OperationCanceledException)
+                {
+                    StatusText.Text = forceRescan ? "共享索引重建已取消。" : "共享索引连接已取消。";
+                    return false;
+                }
+                catch (Exception ex2)
+                {
+                    LoggingService.LogError(ex2, "[StartupSearch] Initialize shared index failed after self-heal");
+                    StatusText.Text = $"共享索引不可用：{ex2.Message}";
+                    return false;
+                }
+            }
+
             StatusText.Text = $"共享索引不可用：{ex.Message}";
             return false;
         }
@@ -3773,7 +3799,31 @@ public partial class CommonStartupWindow : Window
             });
 
             stageStopwatch.Restart();
-            var searchResult = await SearchStartupResultsAsync(keyword, queryProgress, ct).ConfigureAwait(true);
+            StartupSearchResult searchResult;
+            try
+            {
+                searchResult = await SearchStartupResultsAsync(keyword, queryProgress, ct).ConfigureAwait(true);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // 搜索期宿主死亡/引擎卡死（P2 响应超时）：自愈（强杀+重启）后重试一次。
+                LoggingService.LogError(ex, $"[StartupSearch] search failed, attempting self-heal: {ex.Message}");
+                if (ct.IsCancellationRequested || currentVersion != _searchVersion)
+                {
+                    throw;
+                }
+
+                if (!await Task.Run(() => SharedIndexServiceClient.EnsureHostHealthyOrRestart(8000)).ConfigureAwait(true))
+                {
+                    throw;
+                }
+
+                searchResult = await SearchStartupResultsAsync(keyword, queryProgress, ct).ConfigureAwait(true);
+            }
             searchMs = stageStopwatch.ElapsedMilliseconds;
             if (ct.IsCancellationRequested || currentVersion != _searchVersion)
             {

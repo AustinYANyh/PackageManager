@@ -10,6 +10,43 @@ using Newtonsoft.Json;
 
 namespace MftScanner
 {
+    /// <summary>
+    /// 后台索引宿主健康状态。仅基于进程存活与心跳新鲜度判定，
+    /// 无法覆盖“搜索引擎线程卡死但心跳循环仍新鲜”的部分假死（该场景由客户端响应超时兜底）。
+    /// </summary>
+    public enum HostHealth
+    {
+        /// <summary>从未读到状态图，或读取异常：无法判定。</summary>
+        Unknown,
+
+        /// <summary>宿主进程已退出（或状态图里没有有效 PID）。</summary>
+        Dead,
+
+        /// <summary>进程仍在，但 HostHeartbeatTicks 超过阈值未刷新（进程级假死）。</summary>
+        Hung,
+
+        /// <summary>进程存活且心跳新鲜。</summary>
+        Healthy
+    }
+
+    /// <summary>
+    /// 宿主健康探活结果。供客户端自愈与 App 看门狗共用。
+    /// </summary>
+    public struct HostHealthSnapshot
+    {
+        /// <summary>健康判定。</summary>
+        public HostHealth State;
+
+        /// <summary>状态图里记录的宿主进程 PID（未读到为 0）。</summary>
+        public int HostProcessId;
+
+        /// <summary>距宿主最后一次心跳的毫秒数（未读到为 long.MaxValue）。</summary>
+        public long HeartbeatAgeMs;
+
+        /// <summary>状态图里记录的宿主指纹（可能为空）。</summary>
+        public string HostFingerprint;
+    }
+
     public sealed class SharedIndexServiceClient : ISharedIndexService, IDisposable
     {
         private const int DefaultHostStartupWaitMilliseconds = 15000;
@@ -18,6 +55,11 @@ namespace MftScanner
         private const int HostReadyPollIntervalMilliseconds = 200;
         private const int ShowSearchUiRequestTimeoutMilliseconds = 5000;
         private const int ShowSearchUiPipeConnectMilliseconds = 1200;
+        // 宿主 RunHeartbeatLoop 每 1s 刷新一次 HostHeartbeatTicks；超过该阈值未刷新视为进程级假死。
+        private const int HostHungHeartbeatStaleMilliseconds = 10000;
+        // 搜索/标记删除等快速命令的最大响应等待预算（健康查询 <50ms，永不逼近；仅用于把死/卡宿主转成快速失败）。
+        private const int DefaultSearchResponseTimeoutMilliseconds = 12000;
+        private const int MaxSearchResponseTimeoutMilliseconds = 60000;
 
         private readonly string _consumerName;
         private readonly SharedIndexClientSlotId _slotId;
@@ -220,6 +262,169 @@ namespace MftScanner
             }
             catch
             {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 读取后台索引宿主的健康状态（进程存活 + 心跳新鲜度）。
+        /// 零宿主改动：复用宿主 RunHeartbeatLoop 每 1s 写入状态图的 HostHeartbeatTicks。
+        /// 注意：抓不到“搜索引擎线程卡死、心跳循环仍新鲜”的部分假死。
+        /// </summary>
+        /// <param name="expectedHostFingerprint">若非空，指纹不匹配也视为不可用。</param>
+        public static HostHealthSnapshot TryReadHostHealth(string expectedHostFingerprint)
+        {
+            var snapshot = new HostHealthSnapshot
+            {
+                State = HostHealth.Unknown,
+                HostProcessId = 0,
+                HeartbeatAgeMs = long.MaxValue,
+                HostFingerprint = null
+            };
+
+            try
+            {
+                using (var stateMap = SharedIndexMemoryProtocol.OpenStateMapForRead())
+                {
+                    var state = SharedIndexMemoryProtocol.ReadState(stateMap);
+                    if (state == null || state.HostProcessId <= 0)
+                    {
+                        snapshot.State = HostHealth.Dead;
+                        return snapshot;
+                    }
+
+                    snapshot.HostProcessId = state.HostProcessId;
+                    snapshot.HostFingerprint = state.HostFingerprint;
+
+                    if (!IsProcessAlive(state.HostProcessId))
+                    {
+                        snapshot.State = HostHealth.Dead;
+                        return snapshot;
+                    }
+
+                    // 指纹不匹配视为不可用（旧版/异常宿主），归类为 Hung 以触发停旧拉新。
+                    if (!string.IsNullOrWhiteSpace(expectedHostFingerprint)
+                        && !string.Equals(state.HostFingerprint, expectedHostFingerprint, StringComparison.OrdinalIgnoreCase))
+                    {
+                        snapshot.State = HostHealth.Hung;
+                        snapshot.HeartbeatAgeMs = 0;
+                        return snapshot;
+                    }
+
+                    var ageMs = (DateTime.UtcNow.Ticks - state.HostHeartbeatTicks) / TimeSpan.TicksPerMillisecond;
+                    snapshot.HeartbeatAgeMs = ageMs;
+                    snapshot.State = ageMs > HostHungHeartbeatStaleMilliseconds ? HostHealth.Hung : HostHealth.Healthy;
+                    return snapshot;
+                }
+            }
+            catch
+            {
+                // 状态图不存在（宿主从未启动或已退出且内核对象已释放）→ 视为 Dead。
+                snapshot.State = HostHealth.Dead;
+                return snapshot;
+            }
+        }
+
+        /// <summary>
+        /// 搜索/标记删除命令的响应超时预算（毫秒）。可用环境变量 PM_MFT_INDEX_SEARCH_RESPONSE_TIMEOUT_MS 覆盖。
+        /// </summary>
+        private static int GetSearchResponseTimeoutMilliseconds()
+        {
+            var raw = Environment.GetEnvironmentVariable("PM_MFT_INDEX_SEARCH_RESPONSE_TIMEOUT_MS");
+            int value;
+            if (!string.IsNullOrWhiteSpace(raw)
+                && int.TryParse(raw, out value)
+                && value > 0)
+            {
+                return Math.Min(value, MaxSearchResponseTimeoutMilliseconds);
+            }
+
+            return DefaultSearchResponseTimeoutMilliseconds;
+        }
+
+        /// <summary>
+        /// 探活后台索引宿主；若死亡或进程级假死，则强杀状态图记录的 PID 后重启计划任务并等待就绪。
+        /// 放在共享层（MftScanner.Core）以便 PackageManager 与独立工具 CommonStartupTool 行为一致。
+        /// 强杀用 Process.Kill（绕开单实例互斥锁，能干掉假死实例）；重启用 schtasks /Run（无需 exe 路径）。
+        /// </summary>
+        /// <param name="waitMs">重启后等待宿主就绪的最长毫秒数。</param>
+        /// <param name="expectedFingerprint">期望指纹；非空时指纹不匹配也会触发停旧拉新，传 null 则不校验。</param>
+        /// <returns>探活/重启后宿主是否健康可用。</returns>
+        public static bool EnsureHostHealthyOrRestart(int waitMs, string expectedFingerprint = null)
+        {
+            try
+            {
+                var health = TryReadHostHealth(expectedFingerprint);
+                if (health.State == HostHealth.Healthy)
+                {
+                    return true;
+                }
+
+                IndexPerfLog.Write("HostSelfHeal",
+                    $"[索引宿主自愈] 触发：state={health.State} hostPid={health.HostProcessId} " +
+                    $"heartbeatAgeMs={(health.HeartbeatAgeMs == long.MaxValue ? "n/a" : health.HeartbeatAgeMs.ToString())} " +
+                    $"fingerprint={(expectedFingerprint ?? "(any)")}");
+
+                // 强杀状态图记录的宿主 PID（Process.Kill 绕开单实例互斥锁）。
+                if (health.HostProcessId > 0)
+                {
+                    TryForceKillProcess(health.HostProcessId);
+                }
+
+                var taskStarted = TryRunIndexHostTask();
+                if (!taskStarted)
+                {
+                    IndexPerfLog.Write("HostSelfHeal", "[索引宿主自愈] schtasks /Run 失败或任务不存在，仍尝试等待既有实例就绪。");
+                }
+
+                var ready = TryWaitForHostAvailability(waitMs, expectedFingerprint);
+                IndexPerfLog.Write("HostSelfHeal", $"[索引宿主自愈] 完成：taskStarted={taskStarted} ready={ready} waitMs={waitMs}");
+                return ready;
+            }
+            catch (Exception ex)
+            {
+                IndexPerfLog.Write("HostSelfHeal", $"[索引宿主自愈] 异常：{ex.GetType().Name}:{ex.Message}");
+                return false;
+            }
+        }
+
+        private static void TryForceKillProcess(int processId)
+        {
+            try
+            {
+                using (var process = Process.GetProcessById(processId))
+                {
+                    process.Kill();
+                    process.WaitForExit(5000);
+                }
+            }
+            catch (Exception ex)
+            {
+                IndexPerfLog.Write("HostSelfHeal", $"强杀宿主失败 PID={processId}：{ex.GetType().Name}:{ex.Message}");
+            }
+        }
+
+        private static bool TryRunIndexHostTask()
+        {
+            try
+            {
+                var startInfo = new ProcessStartInfo("schtasks.exe", "/Run /TN \"" + SharedIndexConstants.IndexHostTaskName + "\"")
+                {
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+
+                using (var process = Process.Start(startInfo))
+                {
+                    process?.WaitForExit(5000);
+                    return process != null && process.ExitCode == 0;
+                }
+            }
+            catch (Exception ex)
+            {
+                IndexPerfLog.Write("HostSelfHeal", $"schtasks /Run 异常：{ex.GetType().Name}:{ex.Message}");
                 return false;
             }
         }
@@ -653,6 +858,14 @@ namespace MftScanner
                 return;
             }
 
+            // 仅对快速命令（Search/MarkDeleted）施加响应超时预算：宿主死/卡时把无限转圈转成可捕获的快速失败。
+            // Build/Rebuild 可能长时间运行（冷构建/重建），保持无界，依赖 ct 取消与进度上报。
+            var bounded = commandType == SharedIndexCommandType.Search || commandType == SharedIndexCommandType.MarkDeleted;
+            var elapsedMs = 0L;
+            // 惰性：仅在超时检查首次到达（失败路径，响应已 pending >250ms）时才读环境变量，
+            // 健康搜索在循环首个 WaitAny 命中 waitIndex==0 即 return，永远不触发此处，零热路径开销。
+            var budgetMs = -1;
+
             try
             {
                 var waitHandles = new WaitHandle[]
@@ -691,6 +904,21 @@ namespace MftScanner
                     if (commandType == SharedIndexCommandType.Build || commandType == SharedIndexCommandType.Rebuild)
                     {
                         ApplyLatestState(raiseEvent: true);
+                    }
+
+                    // 快速命令超预算仍未响应：宿主死/卡，抛 IOException 让上层 ResetResources + 走自愈。
+                    if (bounded)
+                    {
+                        elapsedMs += 250;
+                        if (budgetMs < 0)
+                        {
+                            budgetMs = GetSearchResponseTimeoutMilliseconds();
+                        }
+
+                        if (elapsedMs > budgetMs)
+                        {
+                            throw new IOException("后台索引宿主响应超时（" + budgetMs + "ms）。");
+                        }
                     }
                 }
             }

@@ -20,6 +20,10 @@ namespace MftScanner
         private const int SearchUiRestartShownMilliseconds = 800;
         private const int SearchUiHeartbeatStaleMilliseconds = 5000;
         private const int SearchUiReadyPollMilliseconds = 50;
+        // 宿主侧搜索看门狗：单次搜索执行（EnsureBuilt 之后）超过该阈值未完成视为引擎 wedge。
+        // 健康查询 <50ms，30s 阈值零误判；触发后停止心跳，由客户端判 Hung 后杀进程重启。
+        private const int SearchExecutionHungThresholdMs = 30000;
+        private const int SearchWatchdogCheckIntervalMs = 5000;
         private readonly IndexService _indexService = new IndexService();
         private readonly Action _showSearchUi;
         private readonly string _hostFingerprint;
@@ -41,6 +45,8 @@ namespace MftScanner
         private SharedIndexBuildState _buildState = SharedIndexBuildState.Unknown;
         private bool _forceRebuildPending;
         private IndexBuildProgress _hostBuildProgressOverride;
+        // 引擎 wedge 标记（ latch ）：被搜索看门狗置位后，PublishState 停止心跳，等客户端杀进程重启。
+        private volatile bool _engineWedged;
 
         private sealed class SlotSearchState
         {
@@ -48,6 +54,8 @@ namespace MftScanner
             public long Generation;
             public long LatestRequestId;
             public CancellationTokenSource CurrentSearchCts;
+            // >0 表示有一次搜索在 ExecuteSearchAsync 执行中（EnsureBuilt 之后），供看门狗判定引擎卡死。
+            public long PendingSearchStartTicks;
         }
 
         public IndexHostAgent(Action showSearchUi)
@@ -67,6 +75,7 @@ namespace MftScanner
             InitializeSharedMemory();
             Task.Run(() => RunControlCommandServerLoop(_cts.Token));
             Task.Run(() => RunHeartbeatLoop(_cts.Token));
+            Task.Run(() => RunSearchWatchdogLoop(_cts.Token));
 
             foreach (var pair in _slotResources)
             {
@@ -312,6 +321,7 @@ namespace MftScanner
                 state.LatestRequestId = request?.RequestId ?? 0;
                 searchCts = CancellationTokenSource.CreateLinkedTokenSource(hostToken);
                 state.CurrentSearchCts = searchCts;
+                state.PendingSearchStartTicks = 0;
             }
 
             try
@@ -334,6 +344,14 @@ namespace MftScanner
                 {
                     var executeStopwatch = Stopwatch.StartNew();
                     await EnsureBuiltAsync(rebuild: false, searchCts.Token).ConfigureAwait(false);
+                    // 标记搜索执行开始计时（仅当前代；EnsureBuilt 已完成，此处度量纯搜索耗时），供看门狗判定引擎 wedge。
+                    lock (state.SyncRoot)
+                    {
+                        if (state.Generation == generation)
+                        {
+                            state.PendingSearchStartTicks = DateTime.UtcNow.Ticks;
+                        }
+                    }
                     response = await ExecuteSearchAsync(request, slotResources, searchCts.Token).ConfigureAwait(false);
                     response.Status = SharedIndexResponseStatus.Success;
                     executeStopwatch.Stop();
@@ -363,6 +381,7 @@ namespace MftScanner
                 cts = state.CurrentSearchCts;
                 state.CurrentSearchCts = null;
                 state.Generation++;
+                state.PendingSearchStartTicks = 0;
             }
 
             try
@@ -403,6 +422,7 @@ namespace MftScanner
                     }
 
                     state.CurrentSearchCts = null;
+                    state.PendingSearchStartTicks = 0;
                 }
             }
 
@@ -696,6 +716,12 @@ namespace MftScanner
 
         private void PublishState(bool signalClients)
         {
+            // 引擎 wedge：停止心跳/状态发布，让客户端 TryReadHostHealth 判 Hung 后杀进程重启。
+            if (_engineWedged)
+            {
+                return;
+            }
+
             if (_stateMap == null)
             {
                 return;
@@ -815,6 +841,59 @@ namespace MftScanner
                 }
                 catch
                 {
+                }
+            }
+        }
+
+        private void RunSearchWatchdogLoop(CancellationToken ct)
+        {
+            var hungThresholdTicks = (long)SearchExecutionHungThresholdMs * TimeSpan.TicksPerMillisecond;
+
+            while (!ct.IsCancellationRequested)
+            {
+                try
+                {
+                    if (ct.WaitHandle.WaitOne(SearchWatchdogCheckIntervalMs))
+                    {
+                        return;
+                    }
+
+                    if (_engineWedged)
+                    {
+                        return;
+                    }
+
+                    var now = DateTime.UtcNow.Ticks;
+                    foreach (var pair in _slotSearchStates)
+                    {
+                        long startTicks;
+                        long generation;
+                        long requestId;
+                        lock (pair.Value.SyncRoot)
+                        {
+                            startTicks = pair.Value.PendingSearchStartTicks;
+                            generation = pair.Value.Generation;
+                            requestId = pair.Value.LatestRequestId;
+                        }
+
+                        if (startTicks > 0 && now - startTicks > hungThresholdTicks)
+                        {
+                            var ageMs = (now - startTicks) / TimeSpan.TicksPerMillisecond;
+                            _engineWedged = true;
+                            LoggingService.LogIndexPerf("HostWatchdog",
+                                $"[索引宿主搜索看门狗] 检测到搜索执行卡死 ageMs={ageMs} thresholdMs={SearchExecutionHungThresholdMs} " +
+                                $"slot={pair.Key} requestId={requestId} generation={generation}；已标记引擎 wedge 并停止心跳，等待客户端判 Hung 后杀进程重启。");
+                            return;
+                        }
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    LoggingService.LogWarning($"[索引宿主搜索看门狗] 异常：{ex.Message}");
                 }
             }
         }

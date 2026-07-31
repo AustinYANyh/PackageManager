@@ -102,15 +102,33 @@ namespace PackageManager.Features.CommandPalette.Services
             }
         }
 
-        /// <summary>同步阻塞式文件搜索（应在后台线程调用）。</summary>
+        /// <summary>同步阻塞式文件搜索（应在后台线程调用）。失败时自愈宿主并重试一次。</summary>
         public List<PaletteItem> SearchFiles(string keyword)
         {
             var r = new List<PaletteItem>();
             if (string.IsNullOrWhiteSpace(keyword)) return r;
+
+            if (TrySearchOnce(keyword, r))
+            {
+                return r;
+            }
+
+            // 第一次失败：探活+自愈宿主（强杀假死/死亡实例并重启）后重试一次。
+            if (IndexHostTaskService.EnsureHostHealthyOrRestart(5000)
+                && TrySearchOnce(keyword, r))
+            {
+                return r;
+            }
+
+            return r;
+        }
+
+        private bool TrySearchOnce(string keyword, List<PaletteItem> r)
+        {
             try
             {
                 EnsureFileClient();
-                if (_fileClient == null) return r;
+                if (_fileClient == null) return false;
                 using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(3)))
                 {
                     var res = _fileClient.SearchAsync(keyword.Trim(), 40, 0, SearchTypeFilter.All, null, cts.Token)
@@ -123,13 +141,14 @@ namespace PackageManager.Features.CommandPalette.Services
                             r.Add(New("file", f.FileName ?? System.IO.Path.GetFileName(f.FullPath), f.FullPath, string.Empty, key: f.FullPath));
                         }
                     }
+                    return true;
                 }
             }
             catch (Exception ex)
             {
                 LoggingService.LogError(ex, "命令面板文件搜索失败");
+                return false;
             }
-            return r;
         }
 
         private void EnsureFileClient()

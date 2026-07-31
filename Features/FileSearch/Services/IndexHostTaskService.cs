@@ -83,6 +83,19 @@ namespace PackageManager.Services
             }
         }
 
+        /// <summary>
+        /// 探活后台索引宿主；若进程已退出或进程级假死（心跳陈旧/指纹不匹配），则强杀残留实例后重启计划任务并等待就绪。
+        /// 委托给共享层 <see cref="SharedIndexServiceClient.EnsureHostHealthyOrRestart"/>，
+        /// 保证 PackageManager 与独立工具 CommonStartupTool 行为一致（同一份 kill+restart 实现）。
+        /// </summary>
+        /// <param name="waitMs">重启后等待宿主就绪的最长毫秒数。</param>
+        /// <param name="expectedFingerprint">期望的宿主指纹；非空时指纹不匹配也会触发停旧拉新，传 null 则不校验指纹。</param>
+        /// <returns>探活/重启后宿主是否健康可用。</returns>
+        public static bool EnsureHostHealthyOrRestart(int waitMs, string expectedFingerprint = null)
+        {
+            return SharedIndexServiceClient.EnsureHostHealthyOrRestart(waitMs, expectedFingerprint);
+        }
+
         private static string EnsureHostToolCurrent()
         {
             var toolPath = AdminElevationService.GetExtractedToolPath("MftScanner.exe");
