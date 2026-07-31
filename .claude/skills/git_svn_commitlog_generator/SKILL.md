@@ -284,6 +284,7 @@ Step 1 wrapper 会自动把完整采集 JSON 保存到 `StateDir\last_changes.js
 `-CommitMessageBase64Utf8` 内容必须只包含最终提交日志标题+正文的 UTF-8 Base64，不得包含核对表、说明文字或占位符。模型不得使用 stdin、pipe、heredoc、重定向来传提交日志，不得为了传日志而单独创建或编辑提交日志/Base64 文件（包括 `commit_msg_b64.txt`、`final_commit_message.txt` 等），不得把提交日志作为 `-CommitMessageText` 长参数塞进 Bash/WSL 命令行，不得在 Bash 中执行 `python -c` / `node -e` / `powershell -Command` 等编码命令来处理中文，不得执行 `git add` / `git commit` / `git push` / `svn add` / `svn commit` 等会改变状态或提交推送的命令，不得创建临时 `.ps1` 提交脚本，也不得直接调用 `run-commit-push-choice.ps1`。
 
 不得因为“无法确信 Base64 与中文原文逐字一致”而跳过 Step 3；Step 3 窗口会显示脚本实际解码后的提交日志和 SHA256，并由用户按 `1` 提交或按 `2` 取消。模型应优先在自身推理中直接计算 UTF-8 Base64；若模型无法可靠计算含 CJK 字符的 Base64（常见情况），**允许使用 Python `chr(0xNNNN)` 兜底方案**（见下文），这是唯一许可的 shell 辅助 Base64 计算方式，其他 shell 编码命令仍在禁止之列。
+计算Base64不得创建任何临时文件。
 
 ### Bash 非 ASCII 兜底：Python chr() 计算 Base64
 
