@@ -33,6 +33,13 @@ namespace PackageManager.Features.MimoUsage.Views
         /// </summary>
         public bool LoginSucceeded { get; private set; }
 
+        /// <summary>
+        /// 是否强制使用干净的独立缓存环境（切换账号用）。
+        /// 为 true 时跳过 Edge profile 静默登录，改用独立的 MimoLoginFreshCache 目录，
+        /// 确保不复用任何已有 session，强制用户重新输入新账号。
+        /// </summary>
+        public bool ForceFreshProfile { get; set; }
+
         public MimoLoginWindow()
         {
             InitializeComponent();
@@ -48,25 +55,40 @@ namespace PackageManager.Features.MimoUsage.Views
         {
             try
             {
-                // 优先尝试使用 Edge 浏览器的 profile，共享其登录 session
-                var userDataFolder = GetEdgeUserDataFolder();
+                string userDataFolder;
                 var useEdgeProfile = false;
+                var useFreshProfile = ForceFreshProfile;
 
-                if (userDataFolder != null && Directory.Exists(userDataFolder))
+                if (useFreshProfile)
                 {
-                    // 检查 Edge 是否正在运行（profile 目录可能被锁）
-                    if (!IsEdgeRunning())
-                    {
-                        useEdgeProfile = true;
-                    }
-                }
-
-                // 若 Edge profile 不可用，使用独立的缓存目录
-                if (!useEdgeProfile)
-                {
+                    // 切换账号：全新的独立缓存目录，不复用 Edge/旧 session，强制重输新账号
                     var dataService = new DataPersistenceService();
-                    userDataFolder = Path.Combine(dataService.GetDataFolderPath(), "MimoWebView2Cache");
+                    userDataFolder = Path.Combine(dataService.GetDataFolderPath(), "MimoLoginFreshCache");
+                    TryPurgeDirectory(userDataFolder);
                     Directory.CreateDirectory(userDataFolder);
+                    LoggingService.LogInfo($"[MiMo 登录] 强制干净环境，独立缓存: {userDataFolder}");
+                }
+                else
+                {
+                    // 正常登录：优先尝试使用 Edge 浏览器的 profile，共享其登录 session
+                    userDataFolder = GetEdgeUserDataFolder();
+
+                    if (userDataFolder != null && Directory.Exists(userDataFolder))
+                    {
+                        // 检查 Edge 是否正在运行（profile 目录可能被锁）
+                        if (!IsEdgeRunning())
+                        {
+                            useEdgeProfile = true;
+                        }
+                    }
+
+                    // 若 Edge profile 不可用，使用独立的缓存目录
+                    if (!useEdgeProfile)
+                    {
+                        var dataService = new DataPersistenceService();
+                        userDataFolder = Path.Combine(dataService.GetDataFolderPath(), "MimoWebView2Cache");
+                        Directory.CreateDirectory(userDataFolder);
+                    }
                 }
 
                 var env = await CoreWebView2Environment.CreateAsync(null, userDataFolder);
@@ -78,9 +100,11 @@ namespace PackageManager.Features.MimoUsage.Views
                 // 设置用户代理（避免被识别为自动化浏览器）
                 core.Settings.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
 
-                StatusText.Text = useEdgeProfile
-                    ? "已关联 Edge 浏览器 session，尝试静默登录..."
-                    : "正在打开小米平台登录页...";
+                StatusText.Text = useFreshProfile
+                    ? "已使用干净环境，请输入新账号密码登录..."
+                    : useEdgeProfile
+                        ? "已关联 Edge 浏览器 session，尝试静默登录..."
+                        : "正在打开小米平台登录页...";
 
                 LoginWeb.Source = new Uri(MiMoPlatformUrl);
             }
@@ -290,6 +314,41 @@ namespace PackageManager.Features.MimoUsage.Views
             catch
             {
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// 清空指定目录下的所有内容（切换账号前清掉残留 session）。
+        /// 逐项容错：单个文件/子目录被占用不影响其余，整体失败只记日志不抛。
+        /// </summary>
+        private static void TryPurgeDirectory(string path)
+        {
+            try
+            {
+                if (!Directory.Exists(path))
+                {
+                    return;
+                }
+
+                foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
+                {
+                    try { File.Delete(file); }
+                    catch (IOException) { /* 可能被占用，跳过 */ }
+                    catch (UnauthorizedAccessException) { /* 跳过 */ }
+                }
+
+                // 按路径长度倒序，先删深层子目录再删浅层
+                foreach (var dir in Directory.EnumerateDirectories(path, "*", SearchOption.AllDirectories)
+                                        .OrderByDescending(d => d.Length))
+                {
+                    try { Directory.Delete(dir, true); }
+                    catch (IOException) { /* 跳过 */ }
+                    catch (UnauthorizedAccessException) { /* 跳过 */ }
+                }
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, "[MiMo 登录] 清空独立缓存目录失败（不影响登录）");
             }
         }
 
