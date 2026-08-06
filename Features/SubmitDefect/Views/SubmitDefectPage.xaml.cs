@@ -5,7 +5,6 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Net;
 using System.Runtime.CompilerServices;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
@@ -23,7 +22,7 @@ using PackageManager.Services.PingCode.Model;
 namespace PackageManager.Features.SubmitDefect.Views
 {
     /// <summary>
-    /// 提交工作项页面：粘贴群聊内容（文字+图片），程序自动提取文字→描述、图片→示意图、首句→标题，
+    /// 提交工作项页面：粘贴群聊内容（文字+图片+视频），程序自动提取文字→描述、图/动图→示意图、视频→附件，
     /// 一键提交到当前项目（建模组）的进行中迭代。
     /// </summary>
     public partial class SubmitDefectPage : Page, INotifyPropertyChanged
@@ -32,7 +31,6 @@ namespace PackageManager.Features.SubmitDefect.Views
 
         private readonly PingCodeApiService api = new PingCodeApiService();
         private readonly PingCodeWorkItemCreatorService creator;
-        private readonly ObservableCollection<PastedImage> images = new ObservableCollection<PastedImage>();
 
         private bool loading;
         private bool isSubmitting;
@@ -40,7 +38,7 @@ namespace PackageManager.Features.SubmitDefect.Views
         private Entity selectedIteration;
         private string selectedTypeName;
         private string descriptionText;
-        private string titlePreview;
+        private string titleText;
         private string statusText;
 
         /// <summary>
@@ -50,7 +48,6 @@ namespace PackageManager.Features.SubmitDefect.Views
         {
             InitializeComponent();
             creator = new PingCodeWorkItemCreatorService(api);
-            Images = images;
             TypeNames = new ObservableCollection<string> { "缺陷", "故事" };
             selectedTypeName = "缺陷";
             DataContext = this;
@@ -59,10 +56,13 @@ namespace PackageManager.Features.SubmitDefect.Views
         /// <summary>属性变更事件。</summary>
         public event PropertyChangedEventHandler PropertyChanged;
 
-        /// <summary>示意图图片列表。</summary>
-        public ObservableCollection<PastedImage> Images { get; }
+        /// <summary>示意图图片列表（图/动图）。</summary>
+        public ObservableCollection<PastedImage> Images { get; } = new ObservableCollection<PastedImage>();
 
-        /// <summary>可选迭代列表（进行中优先，其后未完成）。</summary>
+        /// <summary>视频附件列表。</summary>
+        public ObservableCollection<PastedImage> Videos { get; } = new ObservableCollection<PastedImage>();
+
+        /// <summary>可选迭代列表（进行中优先，其后未完成，组内按开始时间升序）。</summary>
         public ObservableCollection<Entity> Iterations { get; } = new ObservableCollection<Entity>();
 
         /// <summary>工作项类型可选项。</summary>
@@ -123,7 +123,7 @@ namespace PackageManager.Features.SubmitDefect.Views
         /// <summary>是否可提交（项目与迭代均已就绪）。</summary>
         public bool CanSubmit => (selectedProject != null) && (selectedIteration != null) && !isSubmitting;
 
-        /// <summary>描述文本（双向绑定到粘贴区 TextBox）。</summary>
+        /// <summary>描述文本（双向绑定到描述区 TextBox）。</summary>
         public string DescriptionText
         {
             get => descriptionText;
@@ -133,20 +133,24 @@ namespace PackageManager.Features.SubmitDefect.Views
                 {
                     descriptionText = value;
                     OnPropertyChanged();
-                    TitlePreview = ExtractTitle(descriptionText);
+                    // 标题为空时自动提取（用户改过则不覆盖）
+                    if (string.IsNullOrWhiteSpace(titleText))
+                    {
+                        TitleText = ExtractTitle(descriptionText);
+                    }
                 }
             }
         }
 
-        /// <summary>标题预览（首句自动提取，只读）。</summary>
-        public string TitlePreview
+        /// <summary>标题（可编辑；自动提取仅在标题为空时触发，改过不覆盖）。</summary>
+        public string TitleText
         {
-            get => titlePreview;
-            private set
+            get => titleText;
+            set
             {
-                if (!Equals(titlePreview, value))
+                if (!Equals(titleText, value))
                 {
-                    titlePreview = value;
+                    titleText = value;
                     OnPropertyChanged();
                 }
             }
@@ -188,7 +192,6 @@ namespace PackageManager.Features.SubmitDefect.Views
                     var ongoing = await api.GetOngoingIterationsByProjectAsync(project.Id);
                     var notCompleted = await api.GetNotCompletedIterationsByProjectAsync(project.Id);
                     var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    // 进行中优先、未开始其次；组内按开始时间升序（早的排前，无开始时间排末尾）
                     var ongoingSorted = (ongoing ?? Enumerable.Empty<Entity>()).OrderBy(x => x?.StartAt ?? long.MaxValue);
                     var notCompletedSorted = (notCompleted ?? Enumerable.Empty<Entity>()).OrderBy(x => x?.StartAt ?? long.MaxValue);
                     foreach (var it in ongoingSorted)
@@ -233,14 +236,6 @@ namespace PackageManager.Features.SubmitDefect.Views
             }
         }
 
-        private void PasteBox_TextChanged(object sender, TextChangedEventArgs e)
-        {
-            if (sender is TextBox tb)
-            {
-                TitlePreview = ExtractTitle(tb.Text);
-            }
-        }
-
         private void PasteBox_PreviewKeyDown(object sender, KeyEventArgs e)
         {
             if ((e.Key == Key.V) && ((Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control))
@@ -252,40 +247,45 @@ namespace PackageManager.Features.SubmitDefect.Views
             }
         }
 
+        /// <summary>
+        /// 处理剪贴板粘贴。优先级：文件路径（保留 GIF 动画、支持视频）&gt; HTML（base64）&gt; 纯位图（PNG 兜底）。
+        /// </summary>
+        /// <returns>是否处理了含图/视频/文字的内容。</returns>
         private bool TryHandleClipboard()
         {
-            var added = false;
             try
             {
+                // 1. 优先文件路径：读原始字节（GIF 动画保留）
+                if (Clipboard.ContainsFileDropList())
+                {
+                    var any = false;
+                    foreach (var path in Clipboard.GetFileDropList())
+                    {
+                        any |= AddFromFile(path);
+                    }
+                    if (any)
+                    {
+                        return true;
+                    }
+                }
+
+                // 2. HTML：抽 data:image base64（含 GIF）+ 文字
+                if (Clipboard.ContainsData(HtmlDataFormat))
+                {
+                    if (ExtractImagesAndTextFromHtml((string)Clipboard.GetData(HtmlDataFormat)))
+                    {
+                        return true;
+                    }
+                }
+
+                // 3. 兜底：纯位图（截图）→ PNG
                 if (Clipboard.ContainsImage())
                 {
                     var bytes = EncodeBitmapSource(Clipboard.GetImage());
                     if (bytes != null)
                     {
                         AddImage(PastedImage.FromBytes(bytes, $"clipboard_{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}.png", "image/png"));
-                        added = true;
-                    }
-                }
-                else if (Clipboard.ContainsData(HtmlDataFormat))
-                {
-                    added = ExtractImagesAndTextFromHtml((string)Clipboard.GetData(HtmlDataFormat));
-                }
-                else if (Clipboard.ContainsFileDropList())
-                {
-                    foreach (var path in Clipboard.GetFileDropList())
-                    {
-                        if (IsImageExt(Path.GetExtension(path)))
-                        {
-                            try
-                            {
-                                AddImage(PastedImage.FromBytes(File.ReadAllBytes(path), Path.GetFileName(path)));
-                                added = true;
-                            }
-                            catch (Exception ex)
-                            {
-                                StatusText = "读取图片失败：" + ex.Message;
-                            }
-                        }
+                        return true;
                     }
                 }
             }
@@ -294,7 +294,7 @@ namespace PackageManager.Features.SubmitDefect.Views
                 StatusText = "粘贴处理失败：" + ex.Message;
             }
 
-            return added;
+            return false;
         }
 
         private bool ExtractImagesAndTextFromHtml(string cfHtml)
@@ -327,7 +327,7 @@ namespace PackageManager.Features.SubmitDefect.Views
 
         private void DropZone_DragOver(object sender, DragEventArgs e)
         {
-            e.Effects = HasImageDrop(e.Data) ? DragDropEffects.Copy : DragDropEffects.None;
+            e.Effects = HasMediaDrop(e.Data) ? DragDropEffects.Copy : DragDropEffects.None;
             e.Handled = true;
         }
 
@@ -340,28 +340,54 @@ namespace PackageManager.Features.SubmitDefect.Views
 
             foreach (var path in (string[])e.Data.GetData(DataFormats.FileDrop))
             {
-                if (!IsImageExt(Path.GetExtension(path)))
-                {
-                    continue;
-                }
-
-                try
-                {
-                    AddImage(PastedImage.FromBytes(File.ReadAllBytes(path), Path.GetFileName(path)));
-                }
-                catch (Exception ex)
-                {
-                    StatusText = "读取图片失败：" + ex.Message;
-                }
+                AddFromFile(path);
             }
         }
 
-        private void PickImagesButton_Click(object sender, RoutedEventArgs e)
+        /// <summary>
+        /// 从文件路径分流添加：图片/动图→示意图，视频→视频附件。
+        /// </summary>
+        /// <param name="path">文件路径。</param>
+        /// <returns>是否成功识别并添加。</returns>
+        private bool AddFromFile(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return false;
+            }
+
+            var ext = Path.GetExtension(path);
+            try
+            {
+                var bytes = File.ReadAllBytes(path);
+                if (IsVideoExt(ext))
+                {
+                    AddVideo(PastedImage.FromBytes(bytes, Path.GetFileName(path), null, true));
+                    return true;
+                }
+
+                if (IsImageExt(ext))
+                {
+                    AddImage(PastedImage.FromBytes(bytes, Path.GetFileName(path)));
+                    return true;
+                }
+
+                StatusText = "不支持的文件类型：" + Path.GetFileName(path);
+            }
+            catch (Exception ex)
+            {
+                StatusText = "读取文件失败：" + ex.Message;
+            }
+
+            return false;
+        }
+
+        private void PickFilesButton_Click(object sender, RoutedEventArgs e)
         {
             var ofd = new OpenFileDialog
             {
                 Multiselect = true,
-                Filter = "图片|*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.webp"
+                Filter = "图片和视频|*.png;*.jpg;*.jpeg;*.gif;*.bmp;*.webp;*.svg;*.mp4;*.mov;*.avi;*.wmv;*.mkv;*.flv"
             };
             if (ofd.ShowDialog() != true)
             {
@@ -370,21 +396,17 @@ namespace PackageManager.Features.SubmitDefect.Views
 
             foreach (var file in ofd.FileNames)
             {
-                try
-                {
-                    AddImage(PastedImage.FromBytes(File.ReadAllBytes(file), Path.GetFileName(file)));
-                }
-                catch (Exception ex)
-                {
-                    StatusText = "读取图片失败：" + ex.Message;
-                }
+                AddFromFile(file);
             }
         }
 
-        private void ClearImagesButton_Click(object sender, RoutedEventArgs e)
+        private void ClearAllButton_Click(object sender, RoutedEventArgs e)
         {
+            DescriptionText = "";
+            TitleText = "";
             Images.Clear();
-            StatusText = "已清空图片";
+            Videos.Clear();
+            StatusText = "已清空，可重新粘贴";
         }
 
         private void RemoveImageButton_Click(object sender, RoutedEventArgs e)
@@ -392,6 +414,14 @@ namespace PackageManager.Features.SubmitDefect.Views
             if (sender is FrameworkElement fe && fe.Tag is PastedImage img)
             {
                 Images.Remove(img);
+            }
+        }
+
+        private void RemoveVideoButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is FrameworkElement fe && fe.Tag is PastedImage v)
+            {
+                Videos.Remove(v);
             }
         }
 
@@ -414,7 +444,7 @@ namespace PackageManager.Features.SubmitDefect.Views
                 return;
             }
 
-            if (string.IsNullOrWhiteSpace(descriptionText) && (Images.Count == 0))
+            if (string.IsNullOrWhiteSpace(descriptionText) && (Images.Count == 0) && (Videos.Count == 0))
             {
                 MessageBox.Show("内容为空，请先粘贴内容。", "提示");
                 return;
@@ -431,9 +461,10 @@ namespace PackageManager.Features.SubmitDefect.Views
                     ProjectId = selectedProject.Id,
                     IterationId = selectedIteration.Id,
                     WorkItemType = typeName,
-                    Title = ExtractTitle(descriptionText),
+                    Title = string.IsNullOrWhiteSpace(titleText) ? ExtractTitle(descriptionText) : titleText,
                     DescriptionHtml = PlainToHtml(descriptionText),
                     Images = Images.ToList(),
+                    Videos = Videos.ToList(),
                 };
 
                 var result = await creator.CreateAsync(options, new Progress<string>(m => StatusText = m));
@@ -459,7 +490,9 @@ namespace PackageManager.Features.SubmitDefect.Views
                     }
 
                     DescriptionText = "";
+                    TitleText = "";
                     Images.Clear();
+                    Videos.Clear();
                     StatusText = "已创建 " + result.Identifier + "，可继续提交下一条";
                 }
                 else
@@ -503,6 +536,29 @@ namespace PackageManager.Features.SubmitDefect.Views
 
             Images.Add(img);
             StatusText = "已添加 " + Images.Count + " 张图片";
+        }
+
+        private void AddVideo(PastedImage v)
+        {
+            if (v == null)
+            {
+                return;
+            }
+
+            if (!string.IsNullOrWhiteSpace(v.Hash))
+            {
+                foreach (var existing in Videos)
+                {
+                    if (!string.IsNullOrWhiteSpace(existing.Hash) && string.Equals(existing.Hash, v.Hash, StringComparison.OrdinalIgnoreCase))
+                    {
+                        StatusText = "视频已存在，已跳过：" + v.FileName;
+                        return;
+                    }
+                }
+            }
+
+            Videos.Add(v);
+            StatusText = "已添加 " + Videos.Count + " 个视频";
         }
 
         private void AppendToDescription(string text)
@@ -678,7 +734,7 @@ namespace PackageManager.Features.SubmitDefect.Views
             }
         }
 
-        private static bool HasImageDrop(IDataObject data)
+        private static bool HasMediaDrop(IDataObject data)
         {
             if ((data == null) || !data.GetDataPresent(DataFormats.FileDrop))
             {
@@ -687,7 +743,7 @@ namespace PackageManager.Features.SubmitDefect.Views
 
             try
             {
-                return ((string[])data.GetData(DataFormats.FileDrop)).Any(p => IsImageExt(Path.GetExtension(p)));
+                return ((string[])data.GetData(DataFormats.FileDrop)).Any(p => IsImageExt(Path.GetExtension(p)) || IsVideoExt(Path.GetExtension(p)));
             }
             catch
             {
@@ -699,6 +755,12 @@ namespace PackageManager.Features.SubmitDefect.Views
         {
             ext = (ext ?? string.Empty).ToLowerInvariant();
             return (ext == ".png") || (ext == ".jpg") || (ext == ".jpeg") || (ext == ".gif") || (ext == ".bmp") || (ext == ".webp") || (ext == ".svg");
+        }
+
+        private static bool IsVideoExt(string ext)
+        {
+            ext = (ext ?? string.Empty).ToLowerInvariant();
+            return (ext == ".mp4") || (ext == ".mov") || (ext == ".avi") || (ext == ".wmv") || (ext == ".mkv") || (ext == ".flv");
         }
 
         private static string ExtFromMime(string mime)

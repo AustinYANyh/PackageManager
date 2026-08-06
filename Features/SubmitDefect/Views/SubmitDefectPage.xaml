@@ -14,87 +14,125 @@
             <Grid Margin="20">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
-                    <RowDefinition Height="Auto" />
                     <RowDefinition Height="*" />
-                    <RowDefinition Height="Auto" />
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
-                <!-- 标题栏 -->
-                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,12">
-                    <TextBlock Text="提交工作项" FontSize="18" FontWeight="Bold" VerticalAlignment="Center" />
-                </StackPanel>
-
-                <!-- 元数据行：类型 + 项目（只读） + 迭代（只读） -->
-                <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,8">
-                    <controls:CTextBlock Text="类型" Width="40" VerticalAlignment="Center" />
-                    <controls:CComboBox Width="100" Height="32"
-                              ItemsSource="{Binding TypeNames}"
-                              SelectedItem="{Binding SelectedTypeName, Mode=TwoWay}" />
-                    <controls:CTextBlock Text="项目" Width="40" Margin="20,0,0,0" VerticalAlignment="Center" />
-                    <TextBlock Text="{Binding SelectedProjectName, TargetNullValue=加载中…}" Width="180"
-                               VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-                    <controls:CTextBlock Text="迭代" Width="40" Margin="20,0,0,0" VerticalAlignment="Center" />
-                    <controls:CComboBox Width="220" Height="32"
-                              ItemsSource="{Binding Iterations}"
-                              DisplayMemberPath="Name"
-                              SelectedItem="{Binding SelectedIteration, Mode=TwoWay}" />
-                </StackPanel>
-
-                <!-- 标题预览 -->
-                <StackPanel Grid.Row="2" Margin="0,0,0,6">
-                    <controls:CTextBlock Text="标题（自动提取首句）" Foreground="#888" />
-                    <TextBlock Text="{Binding TitlePreview}" FontSize="14" FontWeight="SemiBold"
-                               Margin="0,2,0,0" TextTrimming="CharacterEllipsis" />
-                </StackPanel>
-
-                <!-- 粘贴区 -->
-                <Border Grid.Row="3" BorderBrush="#CCC" BorderThickness="1" CornerRadius="6" Margin="0,0,0,8"
-                        AllowDrop="True" DragOver="DropZone_DragOver" Drop="DropZone_Drop">
-                    <TextBox AcceptsReturn="True" TextWrapping="Wrap"
-                             Text="{Binding DescriptionText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                             VerticalScrollBarVisibility="Auto" BorderThickness="0" FontSize="14" Padding="8"
-                             PreviewKeyDown="PasteBox_PreviewKeyDown" TextChanged="PasteBox_TextChanged" />
-                </Border>
-
-                <!-- 示意图缩略图 -->
-                <StackPanel Grid.Row="4" Margin="0,0,0,8">
+                <!-- Row0: 标题 + 元数据行 -->
+                <StackPanel Grid.Row="0" Margin="0,0,0,12">
+                    <TextBlock Text="提交工作项" FontSize="18" FontWeight="Bold" Margin="0,0,0,8" />
                     <StackPanel Orientation="Horizontal">
-                        <controls:CTextBlock Text="示意图（粘贴/拖拽图片自动归类）" Foreground="#888" VerticalAlignment="Center" />
-                        <button:CButton Content="选择图片" Width="80" Margin="12,0,0,0" Click="PickImagesButton_Click" />
-                        <button:CButton Content="清空图片" Width="80" Margin="8,0,0,0" Click="ClearImagesButton_Click" />
+                        <controls:CTextBlock Text="类型" Width="40" VerticalAlignment="Center" />
+                        <controls:CComboBox Width="100" Height="32"
+                                  ItemsSource="{Binding TypeNames}"
+                                  SelectedItem="{Binding SelectedTypeName, Mode=TwoWay}" />
+                        <controls:CTextBlock Text="项目" Width="40" Margin="20,0,0,0" VerticalAlignment="Center" />
+                        <TextBlock Text="{Binding SelectedProjectName, TargetNullValue=加载中…}" Width="160"
+                                   VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                        <controls:CTextBlock Text="迭代" Width="40" Margin="20,0,0,0" VerticalAlignment="Center" />
+                        <controls:CComboBox Width="200" Height="32"
+                                  ItemsSource="{Binding Iterations}"
+                                  DisplayMemberPath="Name"
+                                  SelectedItem="{Binding SelectedIteration, Mode=TwoWay}" />
+                        <button:CButton Content="清空重来" Width="90" Margin="20,0,0,0" Click="ClearAllButton_Click" />
                     </StackPanel>
-                    <ItemsControl ItemsSource="{Binding Images}" Margin="0,6,0,0">
-                        <ItemsControl.ItemsPanel>
-                            <ItemsPanelTemplate>
-                                <WrapPanel />
-                            </ItemsPanelTemplate>
-                        </ItemsControl.ItemsPanel>
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate>
-                                <Border Margin="0,0,8,8" BorderBrush="#DDD" BorderThickness="1" Padding="4">
-                                    <StackPanel Width="128">
-                                        <Image Source="{Binding Thumbnail}" Width="120" Height="120" Stretch="Uniform" />
-                                        <TextBlock Text="{Binding FileName}" FontSize="10" Foreground="#666"
-                                                   MaxWidth="120" TextTrimming="CharacterEllipsis" Margin="0,2,0,0" />
-                                        <DockPanel Margin="0,2,0,0">
-                                            <TextBlock Text="{Binding StatusText}" FontSize="10" Foreground="#2B7FFF"
-                                                       VerticalAlignment="Center" />
-                                            <button:CButton DockPanel.Dock="Right" Content="✕" Width="24" Height="20"
-                                                            HorizontalAlignment="Right" Click="RemoveImageButton_Click" Tag="{Binding}" />
-                                        </DockPanel>
-                                    </StackPanel>
-                                </Border>
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
                 </StackPanel>
 
-                <!-- 状态 + 提交按钮 -->
-                <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
+                <!-- Row1: 主内容横向两列 -->
+                <Grid Grid.Row="1" Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="440" />
+                    </Grid.ColumnDefinitions>
+
+                    <!-- 左列：描述（粘贴 + 编辑）-->
+                    <Border Grid.Column="0" BorderBrush="#CCC" BorderThickness="1" CornerRadius="6"
+                            AllowDrop="True" DragOver="DropZone_DragOver" Drop="DropZone_Drop">
+                        <DockPanel>
+                            <TextBlock DockPanel.Dock="Top" Foreground="#888" Margin="8,6,8,4"
+                                       Text="描述（在此粘贴 + 编辑：文字进这里，图/视频自动进右侧）" />
+                            <TextBox AcceptsReturn="True" TextWrapping="Wrap"
+                                     Text="{Binding DescriptionText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                     VerticalScrollBarVisibility="Auto" BorderThickness="0" FontSize="14" Padding="8"
+                                     PreviewKeyDown="PasteBox_PreviewKeyDown" />
+                        </DockPanel>
+                    </Border>
+
+                    <!-- 右列：标题 + 示意图 + 视频 + 选择文件 -->
+                    <StackPanel Grid.Column="1" Margin="12,0,0,0">
+                        <!-- 标题（可编辑，无提示标签）-->
+                        <TextBox Text="{Binding TitleText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                 Height="32" FontSize="14" Padding="6,4" VerticalContentAlignment="Center"
+                                 ToolTip="标题（自动提取，可修改）" />
+
+                        <!-- 示意图（图/动图）-->
+                        <StackPanel Margin="0,12,0,0">
+                            <controls:CTextBlock Text="示意图（图 / 动图）" Foreground="#888" />
+                            <ItemsControl ItemsSource="{Binding Images}" Margin="0,4,0,0">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <WrapPanel />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Margin="0,0,8,8" BorderBrush="#DDD" BorderThickness="1" Padding="4">
+                                            <StackPanel Width="128">
+                                                <Image Source="{Binding Thumbnail}" Width="120" Height="120" Stretch="Uniform" />
+                                                <TextBlock Text="{Binding FileName}" FontSize="10" Foreground="#666"
+                                                           MaxWidth="120" TextTrimming="CharacterEllipsis" Margin="0,2,0,0" />
+                                                <DockPanel Margin="0,2,0,0">
+                                                    <TextBlock Text="{Binding StatusText}" FontSize="10" Foreground="#2B7FFF"
+                                                               VerticalAlignment="Center" />
+                                                    <button:CButton DockPanel.Dock="Right" Content="✕" Width="24" Height="20"
+                                                                    HorizontalAlignment="Right" Click="RemoveImageButton_Click" Tag="{Binding}" />
+                                                </DockPanel>
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+
+                        <!-- 视频附件 -->
+                        <StackPanel Margin="0,12,0,0">
+                            <controls:CTextBlock Text="视频附件（作为附件上传）" Foreground="#888" />
+                            <ItemsControl ItemsSource="{Binding Videos}" Margin="0,4,0,0">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <WrapPanel />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Margin="0,0,8,8" BorderBrush="#DDD" BorderThickness="1" Padding="4">
+                                            <StackPanel Width="160">
+                                                <TextBlock Text="📹" FontSize="40" HorizontalAlignment="Center" Margin="0,8,0,8" />
+                                                <TextBlock Text="{Binding FileName}" FontSize="10" Foreground="#666"
+                                                           MaxWidth="152" TextTrimming="CharacterEllipsis" />
+                                                <DockPanel Margin="0,2,0,0">
+                                                    <TextBlock Text="{Binding StatusText}" FontSize="10" Foreground="#2B7FFF"
+                                                               VerticalAlignment="Center" />
+                                                    <button:CButton DockPanel.Dock="Right" Content="✕" Width="24" Height="20"
+                                                                    HorizontalAlignment="Right" Click="RemoveVideoButton_Click" Tag="{Binding}" />
+                                                </DockPanel>
+                                            </StackPanel>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+
+                        <!-- 选择文件（图/视频都可选）-->
+                        <button:CButton Content="选择文件（图片/视频）" Width="170" Margin="0,12,0,0" HorizontalAlignment="Left"
+                                        Click="PickFilesButton_Click" />
+                    </StackPanel>
+                </Grid>
+
+                <!-- Row2: 状态 + 提交 -->
+                <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
                     <TextBlock Text="{Binding StatusText}" VerticalAlignment="Center" Margin="0,0,12,0"
-                               Foreground="#666" TextTrimming="CharacterEllipsis" />
+                               Foreground="#666" TextTrimming="CharacterEllipsis" MaxWidth="600" />
                     <button:CButton Content="提交" Width="120" Click="SubmitButton_Click" />
                 </StackPanel>
             </Grid>

@@ -23,7 +23,10 @@ namespace PackageManager.Features.SubmitDefect.Services
         /// <summary>描述 HTML（仅文字，不含图）。</summary>
         public string DescriptionHtml { get; set; }
 
-        /// <summary>示意图图片列表。</summary>
+        /// <summary>示意图图片列表（含动图，写入 shiyitu 字段）。</summary>
         public List<PastedImage> Images { get; set; } = new List<PastedImage>();
+
+        /// <summary>视频附件列表（只作附件关联，不进示意图）。</summary>
+        public List<PastedImage> Videos { get; set; } = new List<PastedImage>();
     }
 }

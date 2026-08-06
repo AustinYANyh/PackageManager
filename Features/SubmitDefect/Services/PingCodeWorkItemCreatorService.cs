@@ -183,6 +183,35 @@ namespace PackageManager.Features.SubmitDefect.Services
                         : "示意图无需写入");
                 }
 
+                // 视频：只作附件关联，不进示意图（shiyitu 是 <img>，视频不能进）
+                var videos = options.Videos ?? new List<PastedImage>();
+                for (var i = 0; i < videos.Count; i++)
+                {
+                    var v = videos[i];
+                    v.UploadStatus = UploadStatus.Uploading;
+                    Report($"上传视频 {i + 1}/{videos.Count}…");
+                    try
+                    {
+                        var resp = await api.UploadAttachmentViaApiAsync(v.Data, v.FileName, v.ContentType, res.WorkItemId, null);
+                        if (resp == null)
+                        {
+                            v.UploadStatus = UploadStatus.Failed;
+                            v.Error = "上传请求失败";
+                            res.Steps.Add($"视频 {v.FileName} 上传失败");
+                        }
+                        else
+                        {
+                            v.UploadStatus = UploadStatus.Done;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        v.UploadStatus = UploadStatus.Failed;
+                        v.Error = ex.Message;
+                        res.Steps.Add($"视频 {v.FileName} 上传异常：{ex.Message}");
+                    }
+                }
+
                 res.Success = true;
                 Report($"完成：{res.Identifier}");
                 return res;

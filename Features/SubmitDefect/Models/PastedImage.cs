@@ -23,6 +23,11 @@ namespace PackageManager.Features.SubmitDefect.Models
         public event PropertyChangedEventHandler PropertyChanged;
 
         /// <summary>
+        /// 是否为视频（视频不作帧解码，UI 用图标占位；上传时只作附件关联，不进示意图）。
+        /// </summary>
+        public bool IsVideo { get; set; }
+
+        /// <summary>
         /// 原始图片字节（用于上传）。
         /// </summary>
         public byte[] Data { get; set; }
@@ -122,7 +127,7 @@ namespace PackageManager.Features.SubmitDefect.Models
         /// <param name="fileName">文件名；为空时按时间戳生成 png 名。</param>
         /// <param name="contentType">MIME 类型；为空时按扩展名推测。</param>
         /// <returns>构造好的实例；字节为空返回 null。</returns>
-        public static PastedImage FromBytes(byte[] data, string fileName, string contentType = null)
+        public static PastedImage FromBytes(byte[] data, string fileName, string contentType = null, bool isVideo = false)
         {
             if ((data == null) || (data.Length == 0))
             {
@@ -132,28 +137,33 @@ namespace PackageManager.Features.SubmitDefect.Models
             var img = new PastedImage
             {
                 Data = data,
+                IsVideo = isVideo,
                 FileName = string.IsNullOrWhiteSpace(fileName)
-                    ? $"image_{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}.png"
+                    ? $"{(isVideo ? "video" : "image")}_{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}.{(isVideo ? "mp4" : "png")}"
                     : fileName,
                 ContentType = string.IsNullOrWhiteSpace(contentType) ? GuessContentType(fileName) : contentType,
             };
 
             img.Hash = ComputeHash(data);
 
-            try
+            // 视频不作帧解码（WPF 原生不支持），缩略图留空，UI 用图标占位
+            if (!isVideo)
             {
-                var bmp = new BitmapImage();
-                bmp.BeginInit();
-                bmp.CacheOption = BitmapCacheOption.OnLoad;
-                bmp.DecodePixelWidth = 200;
-                bmp.StreamSource = new MemoryStream(data);
-                bmp.EndInit();
-                bmp.Freeze();
-                img.Thumbnail = bmp;
-            }
-            catch
-            {
-                img.Thumbnail = null;
+                try
+                {
+                    var bmp = new BitmapImage();
+                    bmp.BeginInit();
+                    bmp.CacheOption = BitmapCacheOption.OnLoad;
+                    bmp.DecodePixelWidth = 200;
+                    bmp.StreamSource = new MemoryStream(data);
+                    bmp.EndInit();
+                    bmp.Freeze();
+                    img.Thumbnail = bmp;
+                }
+                catch
+                {
+                    img.Thumbnail = null;
+                }
             }
 
             return img;
@@ -201,6 +211,12 @@ namespace PackageManager.Features.SubmitDefect.Models
                 case ".bmp": return "image/bmp";
                 case ".webp": return "image/webp";
                 case ".svg": return "image/svg+xml";
+                case ".mp4": return "video/mp4";
+                case ".mov": return "video/quicktime";
+                case ".avi": return "video/x-msvideo";
+                case ".wmv": return "video/x-ms-wmv";
+                case ".mkv": return "video/x-matroska";
+                case ".flv": return "video/x-flv";
                 default: return "image/png";
             }
         }
