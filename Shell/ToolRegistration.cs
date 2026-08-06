@@ -2,6 +2,7 @@ using System.IO;
 using PackageManager.Features.CodeWorkspace.Views;
 using PackageManager.Features.DailyLog.Views;
 using PackageManager.Features.MimoUsage.Views;
+using PackageManager.Features.SubmitDefect.Views;
 using PackageManager.Shell;
 using PackageManager.Views;
 using PackageManager.Views.KanBan;
@@ -60,6 +61,15 @@ namespace PackageManager.Services
                 Glyph = "",
                 Group = "项目与协作",
                 Factory = () => new KanbanStatsPage()
+            });
+
+            registry.Register(new ToolPageDescriptor
+            {
+                Key = "submit-defect",
+                DisplayName = "提交工作项",
+                Glyph = "",
+                Group = "项目与协作",
+                Factory = () => new SubmitDefectPage()
             });
 
             registry.Register(new ToolPageDescriptor

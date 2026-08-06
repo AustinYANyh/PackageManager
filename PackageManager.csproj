@@ -229,6 +229,11 @@
         <Compile Include="Features\PingCode\Views\KanbanColumn.cs" />
         <Page Include="Features\PingCode\Views\KanbanStatsPage.xaml" />
         <Compile Include="Features\PingCode\Views\KanbanStatsPage.xaml.cs" />
+        <Page Include="Features\SubmitDefect\Views\SubmitDefectPage.xaml" />
+        <Compile Include="Features\SubmitDefect\Views\SubmitDefectPage.xaml.cs" />
+        <Compile Include="Features\SubmitDefect\Models\PastedImage.cs" />
+        <Compile Include="Features\SubmitDefect\Services\SubmitDefectOptions.cs" />
+        <Compile Include="Features\SubmitDefect\Services\PingCodeWorkItemCreatorService.cs" />
         <Page Include="Features\PingCode\Views\PingCodeAiExecutionWindow.xaml">
           <Generator>MSBuild:Compile</Generator>
           <SubType>Designer</SubType>

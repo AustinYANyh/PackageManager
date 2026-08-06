@@ -123,7 +123,7 @@ public partial class PingCodeApiService
                 }
                 if (!string.IsNullOrWhiteSpace(id) && seen.Add(id))
                 {
-                    result.Add(new Entity { Id = id, Name = nm ?? id });
+                    result.Add(new Entity { Id = id, Name = nm ?? id, StartAt = v.Value<long?>("start_at") });
                 }
             }
 
@@ -166,7 +166,7 @@ public partial class PingCodeApiService
                 var nm = v.Value<string>("name");
                 if (!string.IsNullOrWhiteSpace(id) && seen.Add(id))
                 {
-                    result.Add(new Entity { Id = id, Name = nm ?? id });
+                    result.Add(new Entity { Id = id, Name = nm ?? id, StartAt = v.Value<long?>("start_at") });
                 }
             }
 
@@ -179,6 +179,32 @@ public partial class PingCodeApiService
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// 创建工作项（POST /v1/project/work_items）。type_id 必须使用系统类型标识（缺陷=bug、故事=story、任务=task），
+    /// 不能传中文名称；sprint_id 指定迭代；不传 assignee_id 表示处理人留空。
+    /// </summary>
+    /// <param name="body">工作项字段，至少包含 project_id/title/type_id。</param>
+    /// <returns>创建响应（含 id/identifier/html_url 等），失败抛异常。</returns>
+    public async Task<JObject> CreateWorkItemAsync(JObject body)
+    {
+        return await PostJsonAsync("https://open.pingcode.com/v1/project/work_items", body ?? new JObject());
+    }
+
+    /// <summary>
+    /// 更新工作项（PATCH /v1/project/work_items/{id}）。自定义字段写入 properties（实测 fields 不生效、properties 生效），
+    /// 例如写示意图：patch 的 properties.shiyitu 设为 HTML 片段。
+    /// </summary>
+    /// <param name="workItemId">工作项标识。</param>
+    /// <param name="patch">待更新字段，自定义字段放在 properties 下。</param>
+    /// <returns>更新成功返回 true；失败抛异常。</returns>
+    public async Task<bool> UpdateWorkItemAsync(string workItemId, JObject patch)
+    {
+        await PatchJsonAsync(
+            $"https://open.pingcode.com/v1/project/work_items/{Uri.EscapeDataString(workItemId ?? string.Empty)}",
+            patch ?? new JObject());
+        return true;
     }
 
     /// <summary>
@@ -210,7 +236,7 @@ public partial class PingCodeApiService
                 var nm = user?.Value<string>("display_name") ?? v.Value<string>("display_name");
                 if (!string.IsNullOrWhiteSpace(id) && seen.Add(id))
                 {
-                    result.Add(new Entity { Id = id, Name = nm ?? id });
+                    result.Add(new Entity { Id = id, Name = nm ?? id, StartAt = v.Value<long?>("start_at") });
                 }
             }
 

@@ -1,7 +1,10 @@
 namespace PackageManager.Services.PingCode;
 
 using System;
+using System.Collections.Generic;
 using System.Net;
+using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
@@ -227,6 +230,82 @@ public partial class PingCodeApiService
         catch
         {
             return false;
+        }
+    }
+
+    /// <summary>
+    /// 上传附件到 PingCode（POST /v1/attachments）。传入 <paramref name="workItemId"/> 时关联到工作项，
+    /// 便于后续在描述/示意图中引用其公开图片地址。
+    /// </summary>
+    /// <param name="data">文件二进制内容。</param>
+    /// <param name="fileName">文件名（含扩展名），为空时按时间戳生成 png 名。</param>
+    /// <param name="contentType">MIME 类型，如 image/png；为空则不设置 Content-Type。</param>
+    /// <param name="workItemId">关联的工作项标识，传入时附加 principal_type=work_item。</param>
+    /// <param name="commentId">关联的评论标识。</param>
+    /// <returns>上传响应 JSON（含图片公开地址等字段），失败或异常返回 null。</returns>
+    public async Task<JObject> UploadAttachmentViaApiAsync(byte[] data, string fileName, string contentType, string workItemId = null, string commentId = null)
+    {
+        try
+        {
+            if ((data == null) || (data.Length == 0))
+            {
+                return null;
+            }
+
+            await EnsureTokenAsync();
+            var url = "https://open.pingcode.com/v1/attachments";
+            var qs = new List<string>();
+            if (!string.IsNullOrWhiteSpace(workItemId))
+            {
+                qs.Add("principal_type=work_item");
+                qs.Add($"principal_id={Uri.EscapeDataString(workItemId)}");
+            }
+
+            if (!string.IsNullOrWhiteSpace(commentId))
+            {
+                qs.Add($"comment_id={Uri.EscapeDataString(commentId)}");
+            }
+
+            if (qs.Count > 0)
+            {
+                url = $"{url}?{string.Join("&", qs)}";
+            }
+
+            var req = new HttpRequestMessage(HttpMethod.Post, url);
+            var mp = new MultipartFormDataContent();
+            var fc = new ByteArrayContent(data);
+            if (!string.IsNullOrWhiteSpace(contentType))
+            {
+                fc.Headers.ContentType = new MediaTypeHeaderValue(contentType);
+            }
+
+            var name = string.IsNullOrWhiteSpace(fileName) ? $"image_{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}.png" : fileName;
+            mp.Add(fc, "file", name);
+            req.Content = mp;
+            if (!string.IsNullOrWhiteSpace(token))
+            {
+                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+            }
+
+            using var resp = await http.SendAsync(req);
+            var txt = await resp.Content.ReadAsStringAsync();
+            if (!resp.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            try
+            {
+                return string.IsNullOrWhiteSpace(txt) ? new JObject() : JObject.Parse(txt);
+            }
+            catch
+            {
+                return new JObject();
+            }
+        }
+        catch
+        {
+            return null;
         }
     }
 }

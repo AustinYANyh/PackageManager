@@ -186,6 +186,13 @@
                         <controls:CTextBlock Text="PingCode 看板数据统计" Foreground="#6B6B6B" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Left" TextAlignment="Left"/>
                     </StackPanel>
                 </Border>
+                <Border Style="{StaticResource DashboardCard}" Tag="submit-defect" MouseLeftButtonUp="NavigationCard_Click">
+                    <StackPanel>
+                        <TextBlock Text="&#xE74C;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#2B7FFF" Margin="0,0,0,8"/>
+                        <controls:CTextBlock Text="提交工作项" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" TextAlignment="Left"/>
+                        <controls:CTextBlock Text="粘贴群聊一键提工作项" Foreground="#6B6B6B" FontSize="12" Margin="0,4,0,0" HorizontalAlignment="Left" TextAlignment="Left"/>
+                    </StackPanel>
+                </Border>
                 <Border Style="{StaticResource DashboardCard}" Tag="lan-transfer" MouseLeftButtonUp="NavigationCard_Click">
                     <StackPanel>
                         <TextBlock Text="&#xEC51;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#2B7FFF" Margin="0,0,0,8"/>

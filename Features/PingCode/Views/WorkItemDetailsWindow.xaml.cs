@@ -1146,7 +1146,7 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                                 else if (ct.Contains("webp")) ext = "webp";
                                 else if (ct.Contains("svg")) ext = "svg";
                                 var name = $"image_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.{ext}";
-                                tasks.Add(UploadAttachmentViaApiAsync(bytes, name, mime, id, commentId));
+                                tasks.Add(api.UploadAttachmentViaApiAsync(bytes, name, mime, id, commentId));
                             }
                             var results = await Task.WhenAll(tasks);
                             foreach (var r in results)
@@ -2299,67 +2299,6 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         catch
         {
             return new ProcessedComment(html ?? "", new List<string>());
-        }
-    }
-
-    private async Task<Newtonsoft.Json.Linq.JObject> UploadAttachmentViaApiAsync(byte[] data, string fileName, string contentType, string workItemId = null, string commentId = null)
-    {
-        try
-        {
-            if ((data == null) || (data.Length == 0))
-            {
-                return null;
-            }
-            var tk = await api.GetAccessTokenAsync();
-            var url = "https://open.pingcode.com/v1/attachments";
-            var qs = new List<string>();
-            if (!string.IsNullOrWhiteSpace(workItemId))
-            {
-                qs.Add("principal_type=work_item");
-                qs.Add($"principal_id={Uri.EscapeDataString(workItemId)}");
-            }
-            if (!string.IsNullOrWhiteSpace(commentId))
-            {
-                qs.Add($"comment_id={Uri.EscapeDataString(commentId)}");
-            }
-            if (qs.Count > 0)
-            {
-                url = $"{url}?{string.Join("&", qs)}";
-            }
-            using var http = new System.Net.Http.HttpClient();
-            var req = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Post, url);
-            var mp = new System.Net.Http.MultipartFormDataContent();
-            var fc = new System.Net.Http.ByteArrayContent(data);
-            if (!string.IsNullOrWhiteSpace(contentType))
-            {
-                fc.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(contentType);
-            }
-            var name = string.IsNullOrWhiteSpace(fileName) ? $"image_{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}.png" : fileName;
-            mp.Add(fc, "file", name);
-            // parameters already in query; do not duplicate in form
-            req.Content = mp;
-            if (!string.IsNullOrWhiteSpace(tk))
-            {
-                req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", tk);
-            }
-            using var resp = await http.SendAsync(req);
-            var txt = await resp.Content.ReadAsStringAsync();
-            if (!resp.IsSuccessStatusCode)
-            {
-                return null;
-            }
-            try
-            {
-                return string.IsNullOrWhiteSpace(txt) ? new Newtonsoft.Json.Linq.JObject() : Newtonsoft.Json.Linq.JObject.Parse(txt);
-            }
-            catch
-            {
-                return new Newtonsoft.Json.Linq.JObject();
-            }
-        }
-        catch
-        {
-            return null;
         }
     }
 
