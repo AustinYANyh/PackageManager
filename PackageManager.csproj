@@ -234,6 +234,10 @@
         <Compile Include="Features\SubmitDefect\Models\PastedImage.cs" />
         <Compile Include="Features\SubmitDefect\Services\SubmitDefectOptions.cs" />
         <Compile Include="Features\SubmitDefect\Services\PingCodeWorkItemCreatorService.cs" />
+        <Compile Include="Features\SubmitDefect\Services\PingCodeCookieManager.cs" />
+        <Compile Include="Features\SubmitDefect\Services\PingCodeAtlasUploader.cs" />
+        <Page Include="Features\SubmitDefect\Views\PingCodeLoginWindow.xaml" />
+        <Compile Include="Features\SubmitDefect\Views\PingCodeLoginWindow.xaml.cs" />
         <Page Include="Features\PingCode\Views\PingCodeAiExecutionWindow.xaml">
           <Generator>MSBuild:Compile</Generator>
           <SubType>Designer</SubType>

@@ -26,7 +26,7 @@ namespace PackageManager.Features.SubmitDefect.Services
         /// <summary>示意图图片列表（含动图，写入 shiyitu 字段）。</summary>
         public List<PastedImage> Images { get; set; } = new List<PastedImage>();
 
-        /// <summary>视频附件列表（只作附件关联，不进示意图）。</summary>
-        public List<PastedImage> Videos { get; set; } = new List<PastedImage>();
+        /// <summary>附件列表（视频/文件，只作附件关联，不进示意图）。</summary>
+        public List<PastedImage> Attachments { get; set; } = new List<PastedImage>();
     }
 }

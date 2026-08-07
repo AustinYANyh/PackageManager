@@ -15,8 +15,8 @@ namespace PackageManager.Features.SubmitDefect.Services
     /// PingCode 工作项（缺陷/故事）创建编排服务：创建工作项 → 上传图片并关联 → 写入示意图字段。
     /// </summary>
     /// <remarks>
-    /// 写入示意图走 PATCH 的 properties.shiyitu（实测 fields.shiyitu 被静默忽略、properties.shiyitu 生效）；
-    /// 图片必须先有 work_item.id 才能关联上传，故采用「先创建→再传图→再 PATCH」三步时序。
+    /// 图片以 base64 编码嵌入 shiyitu（img 的 data URL），永久显示、不依赖外部 URL（实测 PingCode 网页端正常渲染）；
+    /// 视频/任意文件仍走 /v1/attachments 附件关联。流程：创建工作项 → 写 shiyitu（图片 base64）→ 上传附件（视频/文件）。
     /// </remarks>
     public class PingCodeWorkItemCreatorService
     {
@@ -104,54 +104,45 @@ namespace PackageManager.Features.SubmitDefect.Services
                 res.Steps.Add($"已创建 {res.Identifier}");
                 Report($"已创建 {res.Identifier}");
 
+                // 图片：优先走 atlas 内部链路（cookie→upload-token→file/upload→atlas URL，永久显示，无字段限制）
+                // 未登录（无 cookie）时 fallback base64 嵌入（字段大小受限）
                 var images = options.Images ?? new List<PastedImage>();
-                var uploaded = 0;
-                for (var i = 0; i < images.Count; i++)
+                var cookieManager = new PingCodeCookieManager();
+                var cookie = await cookieManager.LoadCookiesAsync();
+                var atlasUploader = new PingCodeAtlasUploader(cookie);
+
+                if (atlasUploader.IsReady)
                 {
-                    var img = images[i];
-                    img.UploadStatus = UploadStatus.Uploading;
-                    Report($"上传图片 {i + 1}/{images.Count}…");
-                    try
+                    for (var i = 0; i < images.Count; i++)
                     {
-                        var resp = await api.UploadAttachmentViaApiAsync(img.Data, img.FileName, img.ContentType, res.WorkItemId, null);
-                        if (resp == null)
+                        var img = images[i];
+                        img.UploadStatus = UploadStatus.Uploading;
+                        Report($"上传示意图 {i + 1}/{images.Count}…");
+                        try
                         {
-                            img.UploadStatus = UploadStatus.Failed;
-                            img.Error = "上传请求失败";
-                            res.Steps.Add($"图片 {img.FileName} 上传失败");
-                        }
-                        else
-                        {
-                            var url = ExtractPublicUrl(resp);
-                            if (!string.IsNullOrWhiteSpace(url))
+                            var atlasUrl = await atlasUploader.UploadAsync(img.Data, img.FileName, img.ContentType);
+                            if (!string.IsNullOrWhiteSpace(atlasUrl))
                             {
-                                img.PublicUrl = url;
+                                img.PublicUrl = atlasUrl;
                                 img.UploadStatus = UploadStatus.Done;
-                                uploaded++;
                             }
                             else
                             {
                                 img.UploadStatus = UploadStatus.Failed;
-                                img.Error = "未取到公开地址";
-                                var preview = resp.ToString();
-                                if (preview.Length > 220)
-                                {
-                                    preview = preview.Substring(0, 220) + "…";
-                                }
-                                res.Steps.Add($"图片 {img.FileName} 已上传但未取到公开地址（已作为附件关联），响应：{preview}");
+                                img.Error = "atlas 上传失败";
+                                res.Steps.Add($"图片 {img.FileName} atlas 上传失败（Cookie 可能过期，请在提交工作项页重新登录 PingCode）");
                             }
                         }
-                    }
-                    catch (Exception ex)
-                    {
-                        img.UploadStatus = UploadStatus.Failed;
-                        img.Error = ex.Message;
-                        res.Steps.Add($"图片 {img.FileName} 上传异常：{ex.Message}");
+                        catch (Exception ex)
+                        {
+                            img.UploadStatus = UploadStatus.Failed;
+                            img.Error = ex.Message;
+                            res.Steps.Add($"图片 {img.FileName} atlas 上传异常：{ex.Message}");
+                        }
                     }
                 }
 
-                var withUrl = images.Where(x => !string.IsNullOrWhiteSpace(x.PublicUrl)).ToList();
-                var shiyitu = BuildShiyituHtml(withUrl);
+                var shiyitu = BuildShiyituHtml(images);
                 if (!string.IsNullOrWhiteSpace(shiyitu))
                 {
                     Report("正在写入示意图…");
@@ -160,55 +151,43 @@ namespace PackageManager.Features.SubmitDefect.Services
                         await api.UpdateWorkItemAsync(res.WorkItemId,
                             new JObject { ["properties"] = new JObject { ["shiyitu"] = shiyitu } });
                         res.ShiyituWritten = true;
-                        res.Steps.Add("示意图已写入");
-                        if (withUrl.Any(i =>
-                        {
-                            var u = (i.PublicUrl ?? string.Empty).ToLowerInvariant();
-                            return u.Contains("q-sign-time") || u.Contains("cos.ap-") || u.Contains("response-content-disposition");
-                        }))
-                        {
-                            res.Steps.Add("提示：示意图图片为附件临时签名地址（非永久公开链接），在 PingCode 网页端示意图区的长期显示请验证；图片已永久关联到工作项附件区作为保底");
-                        }
+                        res.Steps.Add(atlasUploader.IsReady
+                            ? "示意图已写入（atlas 永久 URL）"
+                            : "示意图已写入（base64 内嵌，未登录 PingCode；大图可能超字段上限，请在提交工作项页登录 PingCode 走 atlas）");
                     }
                     catch (Exception ex)
                     {
                         res.ShiyituWritten = false;
-                        res.Steps.Add($"示意图写入失败（{uploaded} 张图已作为附件关联到工作项）：{ex.Message}");
+                        res.Steps.Add($"示意图写入失败：{ex.Message}");
                     }
                 }
-                else if (images.Count > 0)
-                {
-                    res.Steps.Add(uploaded == 0
-                        ? "无图片取到公开地址，示意图未写入（图片附件已关联）"
-                        : "示意图无需写入");
-                }
 
-                // 视频：只作附件关联，不进示意图（shiyitu 是 <img>，视频不能进）
-                var videos = options.Videos ?? new List<PastedImage>();
-                for (var i = 0; i < videos.Count; i++)
+                // 附件（视频/文件）：只作附件关联，不进示意图（shiyitu 是 <img>，视频/文件不能进）
+                var attachments = options.Attachments ?? new List<PastedImage>();
+                for (var i = 0; i < attachments.Count; i++)
                 {
-                    var v = videos[i];
-                    v.UploadStatus = UploadStatus.Uploading;
-                    Report($"上传视频 {i + 1}/{videos.Count}…");
+                    var a = attachments[i];
+                    a.UploadStatus = UploadStatus.Uploading;
+                    Report($"上传附件 {i + 1}/{attachments.Count}…");
                     try
                     {
-                        var resp = await api.UploadAttachmentViaApiAsync(v.Data, v.FileName, v.ContentType, res.WorkItemId, null);
+                        var resp = await api.UploadAttachmentViaApiAsync(a.Data, a.FileName, a.ContentType, res.WorkItemId, null);
                         if (resp == null)
                         {
-                            v.UploadStatus = UploadStatus.Failed;
-                            v.Error = "上传请求失败";
-                            res.Steps.Add($"视频 {v.FileName} 上传失败");
+                            a.UploadStatus = UploadStatus.Failed;
+                            a.Error = "上传请求失败";
+                            res.Steps.Add($"附件 {a.FileName} 上传失败");
                         }
                         else
                         {
-                            v.UploadStatus = UploadStatus.Done;
+                            a.UploadStatus = UploadStatus.Done;
                         }
                     }
                     catch (Exception ex)
                     {
-                        v.UploadStatus = UploadStatus.Failed;
-                        v.Error = ex.Message;
-                        res.Steps.Add($"视频 {v.FileName} 上传异常：{ex.Message}");
+                        a.UploadStatus = UploadStatus.Failed;
+                        a.Error = ex.Message;
+                        res.Steps.Add($"附件 {a.FileName} 上传异常：{ex.Message}");
                     }
                 }
 
@@ -225,43 +204,6 @@ namespace PackageManager.Features.SubmitDefect.Services
             }
         }
 
-        /// <summary>
-        /// 从附件上传响应中提取公开图片地址（多字段兜底，实际字段名待首次实测确认）。
-        /// </summary>
-        /// <param name="resp">上传响应。</param>
-        /// <returns>公开地址；取不到返回 null。</returns>
-        private static string ExtractPublicUrl(JObject resp)
-        {
-            if (resp == null)
-            {
-                return null;
-            }
-
-            var direct = FirstNonEmpty(
-                resp.Value<string>("public_url"),
-                resp.Value<string>("download_url"),
-                resp.Value<string>("url"),
-                resp.Value<string>("raw_url"),
-                resp.Value<string>("file_url"),
-                resp.Value<string>("permalink_url"));
-            if (!string.IsNullOrWhiteSpace(direct))
-            {
-                return direct;
-            }
-
-            var file = resp["file"];
-            if (file != null)
-            {
-                return FirstNonEmpty(
-                    file.Value<string>("public_url"),
-                    file.Value<string>("download_url"),
-                    file.Value<string>("url"),
-                    file.Value<string>("raw_url"));
-            }
-
-            return null;
-        }
-
         private static string BuildShiyituHtml(IList<PastedImage> images)
         {
             if ((images == null) || (images.Count == 0))
@@ -272,36 +214,29 @@ namespace PackageManager.Features.SubmitDefect.Services
             var sb = new StringBuilder();
             foreach (var img in images)
             {
-                var url = img.PublicUrl;
-                if (string.IsNullOrWhiteSpace(url))
+                if (img == null)
                 {
                     continue;
                 }
 
-                var encodedUrl = WebUtility.HtmlEncode(url);
                 var encodedAlt = WebUtility.HtmlEncode(string.IsNullOrWhiteSpace(img.FileName) ? "示意图" : img.FileName);
-                sb.Append($"<div class=\"sketch-image\"><img src=\"{encodedUrl}\" alt=\"{encodedAlt}\"/></div>");
+
+                // 只走 atlas URL（关掉 base64 fallback，让 atlas 失败直接暴露，不悄悄兜底）
+                if (!string.IsNullOrWhiteSpace(img.PublicUrl))
+                {
+                    var encodedUrl = WebUtility.HtmlEncode(img.PublicUrl);
+                    sb.Append($"<div class=\"sketch-image\"><img src=\"{encodedUrl}\" alt=\"{encodedAlt}\"/></div>");
+                }
+                // base64 fallback 暂时关闭（保留备用，以后可能重新启用兜底）
+                //else if ((img.Data != null) && (img.Data.Length > 0))
+                //{
+                //    var mime = string.IsNullOrWhiteSpace(img.ContentType) ? "image/png" : img.ContentType;
+                //    var b64 = Convert.ToBase64String(img.Data);
+                //    sb.Append($"<div class=\"sketch-image\"><img src=\"data:{mime};base64,{b64}\" alt=\"{encodedAlt}\""/></div>");
+                //}
             }
 
             return sb.Length == 0 ? null : sb.ToString();
-        }
-
-        private static string FirstNonEmpty(params string[] values)
-        {
-            if (values == null)
-            {
-                return null;
-            }
-
-            foreach (var v in values)
-            {
-                if (!string.IsNullOrWhiteSpace(v))
-                {
-                    return v;
-                }
-            }
-
-            return null;
         }
     }
 

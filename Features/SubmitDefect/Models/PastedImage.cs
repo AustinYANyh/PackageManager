@@ -23,9 +23,9 @@ namespace PackageManager.Features.SubmitDefect.Models
         public event PropertyChangedEventHandler PropertyChanged;
 
         /// <summary>
-        /// 是否为视频（视频不作帧解码，UI 用图标占位；上传时只作附件关联，不进示意图）。
+        /// 媒体类型（图/视频/文件）。视频与文件都不作帧解码、UI 用图标占位、上传时只作附件关联不进示意图。
         /// </summary>
-        public bool IsVideo { get; set; }
+        public MediaKind Kind { get; set; } = MediaKind.Image;
 
         /// <summary>
         /// 原始图片字节（用于上传）。
@@ -121,13 +121,14 @@ namespace PackageManager.Features.SubmitDefect.Models
         }
 
         /// <summary>
-        /// 从图片字节构造模型，生成缩略图与哈希。
+        /// 从字节构造模型，生成缩略图（仅图片）与哈希。
         /// </summary>
-        /// <param name="data">图片字节。</param>
-        /// <param name="fileName">文件名；为空时按时间戳生成 png 名。</param>
+        /// <param name="data">字节内容。</param>
+        /// <param name="fileName">文件名；为空时按类型生成默认名。</param>
         /// <param name="contentType">MIME 类型；为空时按扩展名推测。</param>
+        /// <param name="kind">媒体类型（图/视频/文件）。</param>
         /// <returns>构造好的实例；字节为空返回 null。</returns>
-        public static PastedImage FromBytes(byte[] data, string fileName, string contentType = null, bool isVideo = false)
+        public static PastedImage FromBytes(byte[] data, string fileName, string contentType = null, MediaKind kind = MediaKind.Image)
         {
             if ((data == null) || (data.Length == 0))
             {
@@ -137,17 +138,25 @@ namespace PackageManager.Features.SubmitDefect.Models
             var img = new PastedImage
             {
                 Data = data,
-                IsVideo = isVideo,
-                FileName = string.IsNullOrWhiteSpace(fileName)
-                    ? $"{(isVideo ? "video" : "image")}_{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}.{(isVideo ? "mp4" : "png")}"
-                    : fileName,
-                ContentType = string.IsNullOrWhiteSpace(contentType) ? GuessContentType(fileName) : contentType,
+                Kind = kind,
             };
 
+            if (string.IsNullOrWhiteSpace(fileName))
+            {
+                var prefix = (kind == MediaKind.Video) ? "video" : ((kind == MediaKind.File) ? "file" : "image");
+                var ext = (kind == MediaKind.Video) ? "mp4" : ((kind == MediaKind.File) ? "bin" : "png");
+                img.FileName = $"{prefix}_{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}.{ext}";
+            }
+            else
+            {
+                img.FileName = fileName;
+            }
+
+            img.ContentType = string.IsNullOrWhiteSpace(contentType) ? GuessContentType(fileName) : contentType;
             img.Hash = ComputeHash(data);
 
-            // 视频不作帧解码（WPF 原生不支持），缩略图留空，UI 用图标占位
-            if (!isVideo)
+            // 仅图片生成缩略图；视频/文件不作帧解码（WPF 原生不支持），缩略图留空，UI 用图标占位
+            if (kind == MediaKind.Image)
             {
                 try
                 {
@@ -217,7 +226,7 @@ namespace PackageManager.Features.SubmitDefect.Models
                 case ".wmv": return "video/x-ms-wmv";
                 case ".mkv": return "video/x-matroska";
                 case ".flv": return "video/x-flv";
-                default: return "image/png";
+                default: return "application/octet-stream";
             }
         }
     }
@@ -238,5 +247,20 @@ namespace PackageManager.Features.SubmitDefect.Models
 
         /// <summary>上传失败。</summary>
         Failed,
+    }
+
+    /// <summary>
+    /// 媒体类型。
+    /// </summary>
+    public enum MediaKind
+    {
+        /// <summary>图片/动图（写入示意图字段）。</summary>
+        Image,
+
+        /// <summary>视频（作附件，不进示意图）。</summary>
+        Video,
+
+        /// <summary>任意文件（作附件，不进示意图）。</summary>
+        File,
     }
 }

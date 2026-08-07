@@ -35,6 +35,8 @@
                                   DisplayMemberPath="Name"
                                   SelectedItem="{Binding SelectedIteration, Mode=TwoWay}" />
                         <button:CButton Content="清空重来" Width="90" Margin="20,0,0,0" Click="ClearAllButton_Click" />
+                        <button:CButton Content="{Binding LoginButtonText}" Width="110" Margin="8,0,0,0" Click="LoginPingCodeButton_Click"
+                                        ToolTip="登录后示意图走永久 atlas；已登录时点击切换账号" />
                     </StackPanel>
                 </StackPanel>
 
@@ -47,7 +49,7 @@
 
                     <!-- 左列：描述（粘贴 + 编辑）-->
                     <Border Grid.Column="0" BorderBrush="#CCC" BorderThickness="1" CornerRadius="6"
-                            AllowDrop="True" DragOver="DropZone_DragOver" Drop="DropZone_Drop">
+                            AllowDrop="True" PreviewDragOver="DropZone_PreviewDragOver" PreviewDrop="DropZone_PreviewDrop">
                         <DockPanel>
                             <TextBlock DockPanel.Dock="Top" Foreground="#888" Margin="8,6,8,4"
                                        Text="描述（在此粘贴 + 编辑：文字进这里，图/视频自动进右侧）" />
@@ -94,10 +96,10 @@
                             </ItemsControl>
                         </StackPanel>
 
-                        <!-- 视频附件 -->
+                        <!-- 附件（视频 / 文件）-->
                         <StackPanel Margin="0,12,0,0">
-                            <controls:CTextBlock Text="视频附件（作为附件上传）" Foreground="#888" />
-                            <ItemsControl ItemsSource="{Binding Videos}" Margin="0,4,0,0">
+                            <controls:CTextBlock Text="附件（视频 / 文件）" Foreground="#888" />
+                            <ItemsControl ItemsSource="{Binding Attachments}" Margin="0,4,0,0">
                                 <ItemsControl.ItemsPanel>
                                     <ItemsPanelTemplate>
                                         <WrapPanel />
@@ -107,14 +109,25 @@
                                     <DataTemplate>
                                         <Border Margin="0,0,8,8" BorderBrush="#DDD" BorderThickness="1" Padding="4">
                                             <StackPanel Width="160">
-                                                <TextBlock Text="📹" FontSize="40" HorizontalAlignment="Center" Margin="0,8,0,8" />
+                                                <TextBlock HorizontalAlignment="Center" Margin="0,8,0,8" FontSize="40">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock">
+                                                            <Setter Property="Text" Value="📄" />
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding Kind}" Value="Video">
+                                                                    <Setter Property="Text" Value="📹" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
                                                 <TextBlock Text="{Binding FileName}" FontSize="10" Foreground="#666"
                                                            MaxWidth="152" TextTrimming="CharacterEllipsis" />
                                                 <DockPanel Margin="0,2,0,0">
                                                     <TextBlock Text="{Binding StatusText}" FontSize="10" Foreground="#2B7FFF"
                                                                VerticalAlignment="Center" />
                                                     <button:CButton DockPanel.Dock="Right" Content="✕" Width="24" Height="20"
-                                                                    HorizontalAlignment="Right" Click="RemoveVideoButton_Click" Tag="{Binding}" />
+                                                                    HorizontalAlignment="Right" Click="RemoveAttachmentButton_Click" Tag="{Binding}" />
                                                 </DockPanel>
                                             </StackPanel>
                                         </Border>
