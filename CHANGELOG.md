@@ -2,6 +2,116 @@
 
 本文件基于仓库 `gitlog.md` 的提交历史按版本号归档,概述每个版本的主要改动与新增功能。
 
+## 4.3.0.0 — 2026-08-14
+
+- 「提交工作项」页：
+  - 新增「提交工作项」页，粘贴群聊自动拆出标题、描述与示意图，一键提交到当前项目进行中的迭代。
+  - 创建按「建项→传图→写示意图」三步执行，取不到永久图址时降级为附件关联并提示。
+  - 粘贴优先读取文件原始字节以保留 GIF 动画，视频自动作为附件上传，示意图仅支持图片。
+  - 页面改为左描述、右素材的双列布局，标题可编辑且不再被自动提取覆盖。
+  - 新增 PingCode 登录窗口与 Cookie 持久化，示意图走内部 atlas 永久 URL，附件扩展到任意文件。
+  - 子工作项列表按编号尾号重排，对齐网页端展示顺序。
+
+- MiMo 用量统计：
+  - 新增 MiMo 用量功能页，通过内嵌浏览器登录并持久化 Cookie，支持会话自动恢复。
+  - 拉取当月每日 Token 用量与套餐信息，按日期和模型维度汇总统计，支持按月切换。
+  - 套餐用量拆为已用、总量、剩余三栏，剩余不足两成时标红，数字格式化抽到公共工具类。
+  - 新增切换账号，清空登录态与缓存并登出服务端后回到登录页。
+  - 登录改用独立窗口并在成功后落盘 Cookie，修复登录态过期与切换账号无法重建缓存的问题。
+
+- 索引宿主自愈与搜索性能：
+  - 共享层新增宿主健康探活（进程存活 + 心跳鲜度）与强杀重启自愈，索引宿主死亡或假死时自动恢复。
+  - 宿主侧新增搜索执行看门狗，App 新增后台看门狗周期探活并节流自愈，补上引擎假死盲区。
+  - 搜索与标记删除命令新增响应超时预算，把死/卡宿主的无限等待转为可自愈的快速失败。
+  - 新增 prefix4 前缀索引加速 native v2 前缀查询，运行时快照升级并保持旧版兼容加载。
+  - overlay 压缩决策重构为三级决策（硬阈值、软阈值、时长老化），快照保存支持锁外构建与强制重试。
+  - 单卷 USN 失效时后台重建该卷快照并热切换，保留其他卷和 overlay 状态继续服务。
+  - 修复 overlay 快照基准失配后的重试恢复，以及修复窗口内删除变更被旧快照恢复丢失的问题。
+
+- AI 工作区与 CLI 体验：
+  - 代码工作区新增 MSBuild 构建入口，支持选择项目、配置和 Restore 策略并记忆上次选择。
+  - 拉取逻辑重构为 PullStep 步骤模型，支持实时进度显示与逐项结果汇总。
+  - PingCode 工作项详情新增 AI 拆解入口，拆解前并发获取子工作项并去重，子项描述结构化输出（受限功能，暂不开放）。
+  - 内网原型资源预下载并写入 Prompt；复制 Prompt 同样走完整资源准备链路。
+  - AI prompt 改为文件化管理并自动清理过期文件，工作项图片按工作项隔离保存。
+  - AI CLI 新增权限模式与终端启动模式配置，启动状态同步显示当前模式。
+  - AI 提交流程状态目录隔离，避免并发提交互相覆盖；启动前预热并串行仓库操作。
+  - CodeGraph 探索协议注入与 MCP 配置自动同步；全局行为规则改为项目级记忆管理，并新增图片理解兜底规则。
+
+- 工作日报（受限功能，暂不开放）：
+  - 新增工作日报页面，按日期采集 Git/SVN 提交并生成可编辑日报，提供复制到剪贴板流程。
+  - 合并 Git、SVN 和 PingCode 当天完成任务，支持混合仓库扫描与作者过滤。
+  - 明日计划对齐看板默认项目迭代，按优先级和故事点容量筛选。
+  - 日报正文为摘要编号格式，草稿独立持久化，支持 Ctrl+D 一键格式化与 Delete 清行。
+
+- Ctrl+Space 统一命令面板（受限功能，暂不开放）：
+  - 新增全局命令面板，聚合命令、页面导航、产品包与文件搜索，支持模糊匹配和拼音首拼。
+  - 产品包支持二级操作菜单，覆盖更新、解锁、打开 Revit/目录、调试、校验、定版。
+  - 文件搜索复用 MFT 共享索引实时返回结果，并可桥接到 Ctrl+E 完整界面。
+  - 命令面板启动后后台预热，消除首次唤起的加载黑屏。
+  - 支持操作与包名组合命令，按可见产品生成组合项，回车用最新版执行。
+  - 组合命令支持启动指定 Revit 版本，并修复版本号无法解析导致命令不启动的问题。
+  
+- 其他改进：
+  - 工作日报与 Ctrl+Space 命令面板为受限功能：入口照常注册，暂不开放，仪表盘卡片置灰禁用，热键触发不响应。
+  - 代码工作区整体对外可用，仅工作项详情中的 AI 实现/AI 修复与 AI 拆解按钮按特定账户隐藏。
+  - 升级 Revit 激活工具到 1.3.4.4，资源释放改为版本感知，修复升级后仍运行旧版的问题。
+  - 收紧 git-svn 提交日志 skill 的评分与条目长度规则，Base64 计算禁止创建临时文件。
+  - 清理无用的快照文件。
+
+- 提交参考：
+- 7de54748b8e50a71909ea29a26d6b18f91bf12cc — fix(PackageManager): 子工作项按编号尾号重排对齐网页端顺序，同步 MftScanner 工具产物
+- d2be74da4a6b42ba7e87acd0d284fccd096f3ef8 — feat(SubmitDefect): 示意图改走 PingCode 登录后的 atlas 永久链路，附件扩展到任意文件
+- 30830ada0fdcdac25ff2ebf3f05add9fd7db6606 — feat(SubmitDefect): 提交工作项页支持视频附件并改为双列布局
+- 26c9446f574cdaea396e6ea49e32eadf2a56af7e — feat(PackageManager): 新增「提交工作项」页，粘贴群聊一键提 PingCode 工作项
+- 84ccc10d18980652869add162c28cd8d6962edce — feat(PackageManager): MiMo 用量页改用独立登录窗口并修复会话相关缺陷
+- 45d647dd0ddaf57e39682feff727bdc7075857da — feat(MftScanner.Core、MftScanner、PackageManager): 索引宿主死亡或假死时强杀重启自愈，新增宿主侧与 App 双看门狗
+- dd91c782b8fb03ed0ae92b1ffd907844d1f2e5f0 — docs(git_svn_commitlog_generator): 明确 Base64 计算不得创建临时文件
+- c9afe5a5c95c3341bdfb809d9c22e801fe5a3f42 — feat(PackageManager): MiMo用量页新增切换账号与用量明细
+- 0bcbae3c8d779be2e22ef1c1096d4294cec81f53 — feat(PackageManager): 新增 MiMo 平台 Token 用量统计页面
+- 51fe81cf20638b6def3b83e70981d2c1e6300fa4 — feat(PackageManager): 放宽候选过滤与改进记忆文件管理
+- d60e256bc0eef4661e7342e17d5c592007b3ad48 — chore(PackageManager): 将全局 AI 行为规则同步改为项目级记忆
+- 96d96b3ec6c658378b9b42832b28e339572da1b9 — fix(PackageManager): 升级 Revit 激活工具到 1.3.4.4 并修复升级不生效
+- 5f7dedfe5649eaa21c673606dd8e6e54a099af48 — chore(PackageManager): 收紧提交日志长度规则并刷新 MftScanner 产物
+- 80588e15a949626d03c700d18ff6eea635f5ca28 — feat(PackageManager): AI 全局指令新增图片理解兜底规则并修正同步跳过
+- 06f549d16593931cc61ecc62306da8788ebb24cb — fix(PackageManager): 修复命令面板打开 Revit 版本无法启动的问题
+- 3877b4171f346a606783c79354db87a3ab384e27 — feat(PackageManager): 命令面板组合命令支持启动指定 Revit 版本
+- ef4c3b30bee8cce4560a21c0537464e7a1a36518 — feat(PackageManager): 命令面板支持操作与包名组合命令
+- d4f1acace093549eaf4d2e4dcb0dabf97e5b0a9d — docs(git_svn_commitlog_generator): 收紧条目长度评分规则
+- 2337f810be50aaead2b3a53d8a8e85b40c947c28 — feat(PackageManager): 命令面板增加包操作命令与冷启动预热
+- d2d1168e8498fb812ddd424c06c49171aeedee3d — refactor(PackageManager): 全局行为规则改写到 ~/.claude/CLAUDE.md 以真正生效
+- 9a02f7ce1a8038b4a727021d50f46613b0972bb1 — feat(PackageManager): 新增 Ctrl+Space 统一命令面板，聚合搜索与包级操作
+- 537126d49174aae3a32871be5e25b5695da9df9b — docs(SKILL.md、MftScanner.Core.dll、MftScanner.exe): 更新内嵌提交日志规则与构建产物
+- 804a3db6b9edef3f5df77919b11180f2cbd8c882 — feat(PackageManager): 同步 AI 全局行为规则与记忆初始化
+- 7ebdf24b9a0840b140e06db29f166eff27c0e02d — 删除无用的快照文件
+- 07c769860bd8d4d5b76631e74b9ad335695dc438 — feat(PackageManager): 新增 AiMemoryService 并重构代码拉取为步骤模型
+- b7572831984cdd78e14d55193de1a8899aece8f1 — feat(DailyLog): 明日计划按故事点容量筛选，日报编辑器支持 Delete 清行
+- aa22d2a75dc37b220eeef1534543088576fcf37b — feat(DailyLog): 完善工作日报采集与格式化
+- 8a7c60585cb4ec1bc153f7bf7458fd63cf2a6971 — feat(PackageManager): 完善工作日报采集与草稿恢复
+- 11367a48da13ac3ee2888d79e5b30ad1e2ab0195 — fix(PingCode): 复制 Prompt 也走完整资源准备链路
+- 560aaa8104e4190bea57e57344d7aa57e83e2bd6 — feat(PackageManager): 新增工作日报生成入口
+- 4c1a180bd5782b715c1acfbf7f2eebf509c66509 — fix(PackageManager): 修复 MftScanner overlay 快照基准失配后的重试恢复
+- d305f34926ca4324d008a5808d28031be088aaf1 — chore(PackageManager): 更新 MftScanner.Native.dll 并新增索引竞态查找测试
+- 2dde321725aef29292d1f73cba6576b2e4e80b53 — fix(PackageManager-MftScanner): 修复 native 修复窗口内删除变更被旧快照恢复的问题
+- 65181c7d9f438848830ed32f73807fb538667268 — feat(PackageManager): 预热 AI 提交环境并串行仓库操作
+- d21c841486f5359d90176a3b0b6cae034a7bdad0 — feat(PackageManager): 自动同步 CodeGraph MCP 配置并更新 MftScanner 工具
+- c06111f270b4b990790e54b61b2ee401bd8c7f00 — feat(PackageManager): 细化 CodeGraph 探索协议并更新 MftScanner 工具产物
+- 4893f1316476b230a7c3ac85b2a0f430777101f2 — fix(PackageManager): 稳定提交流程的路径选择
+- 94a989117f65c6fba2a12c142535a01fbb140fbc — feat(PackageManager): 同步 AI 全局 CodeGraph 规则并更新启动流程
+- 052b6096d89d5d54a2efc6ffcae526240976f7f1 — feat(PackageManager): 预下载 PingCode 内网原型资源并写入 AI Prompt
+- 9bfcb4a2989f08d538d713183342e2c41a8650ad — feat(PackageManager): 增加 MFT 单卷 USN 自动修复并隔离工作项图片
+- 9db8b5b947438f44c2e16a1cfbc33f2240aec003 — feat(PackageManager): 增加 AI CLI 权限模式配置并同步 MftScanner 工具
+- c3079ce59a6a72036aef26378db9558f30e479d9 — fix(PackageManager): 隔离 AI 提交流程状态目录，避免并发提交互相覆盖
+- 1a879d2fd7b1853ad85f77af4da5c2c8d149f236 — fix(PackageManager): 调整 AI CLI 默认权限，避免跳过审批
+- 26fa06761ed6a6f96e57487f75a785eb5d1a88cd — feat(PackageManager): 注入 CodeGraph prompt 协议
+- b1514fcf76a2e999ad48f086aff9aa81fc91e14b — perf(MftScanner.Native、PackageManager): 重构 overlay 压缩决策，支持快照锁外构建与强制重试
+- e247da2a6a192bfb1c51faf93e461742844e23db — feat(PackageManager): AI prompt 文件化管理与 PingCode 拆解去重增强
+- bbb799ef330324306e832251cd078d127f2c145d — Mft性能优化临时提交
+- 7cc2fd336235df96bef5bdbd74d0ce53a8cf7e16 — perf(PackageManager-MftScanner): 增加 prefix4 前缀索引，加速 native v2 前缀查询
+- f7c70228b51d5ff19c6ef2fbd2c716a2944cb419 — feat(PackageManager): 增加 PingCode AI 拆解和终端启动模式配置
+- 3346d691d25301ff3559513aeaf2e420806ebb67 — feat(PackageManager): 增加 CodeWorkspace MSBuild 构建入口
+- aad3c420ac2664ee1615322065090c15bc8326f7 — fix(PackageManager): 隐藏受限用户的 PingCode AI 操作入口并同步 MftScanner 工具产物
+
 ## 4.2.0.0 — 2026-06-02
 
 - 代码工作区 VCS 状态与差异查看：
@@ -29,6 +139,7 @@
   - 打开 IDE/Visual Studio 前异步选择并扫描项目文件，失败时保留明确状态提示。
 
 - PingCode AI 执行入口与内网资料访问：
+
   - 工作项详情页新增 AI 实现/AI 修复入口，按类型切换文案，并补拉详情后打开执行窗口。
   - 新增 Prompt 提炼和图片下载，汇总工作项描述、评论、扩展字段与参考链接。
   - 执行窗口支持选仓库、编辑与复制 Prompt，并启动 Claude 或 Codex。

@@ -20,6 +20,9 @@
                     <Setter Property="Background" Value="#0D000000"/>
                     <Setter Property="BorderBrush" Value="#22000000"/>
                 </Trigger>
+                <Trigger Property="IsEnabled" Value="False">
+                    <Setter Property="Opacity" Value="0.45"/>
+                </Trigger>
             </Style.Triggers>
         </Style>
 
@@ -266,7 +269,7 @@
             <!-- 日志 -->
             <controls:CTextBlock Text="日志" FontSize="13" FontWeight="SemiBold" Foreground="#99000000" Margin="0,0,0,8" HorizontalAlignment="Left"/>
             <WrapPanel Margin="0,0,0,20">
-                <Border Style="{StaticResource DashboardCard}" Tag="daily-log" MouseLeftButtonUp="NavigationCard_Click">
+                <Border x:Name="DailyLogCard" Style="{StaticResource DashboardCard}" Tag="daily-log" MouseLeftButtonUp="NavigationCard_Click">
                     <StackPanel>
                         <TextBlock Text="&#xE81D;" FontFamily="Segoe MDL2 Assets" FontSize="22" Foreground="#2B7FFF" Margin="0,0,0,8"/>
                         <controls:CTextBlock Text="工作日报" FontSize="14" FontWeight="SemiBold" HorizontalAlignment="Left" TextAlignment="Left"/>

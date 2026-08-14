@@ -16,6 +16,11 @@ namespace PackageManager.Views
         {
             InitializeComponent();
 
+            if (!UserFeatureAccessService.CanUseAustinOnlyFeatures)
+            {
+                DailyLogCard.IsEnabled = false;
+            }
+
             _viewModel = new DashboardViewModel();
             DataContext = _viewModel;
 

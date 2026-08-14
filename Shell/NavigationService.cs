@@ -74,6 +74,12 @@ namespace PackageManager.Shell
             var descriptor = _registry.FindByKey(key);
             if (descriptor == null) return false;
 
+            if (!descriptor.IsEnabled)
+            {
+                MessageBox.Show($"「{descriptor.DisplayName}」为受限功能，当前用户无权使用。", "PackageManager", MessageBoxButton.OK, MessageBoxImage.Information);
+                return false;
+            }
+
             try
             {
                 var page = descriptor.Factory();

@@ -127,6 +127,7 @@ namespace PackageManager.Services
                 DisplayName = "工作日报",
                 Glyph = "\uE81D",
                 Group = "日志",
+                IsEnabled = UserFeatureAccessService.CanUseAustinOnlyFeatures,
                 Factory = () => new DailyLogPage()
             });
 

@@ -160,6 +160,14 @@ namespace PackageManager.Services
                 }
                 else if (id == HotkeyIdCtrlSpace)
                 {
+                    if (!UserFeatureAccessService.CanUseAustinOnlyFeatures)
+                    {
+                        // 受限功能：热键保持注册但不响应，避免抢占后其他程序无法收到 Ctrl+Space。
+                        LoggingService.LogInfo("系统热键 Ctrl+Space 触发，但当前用户无权使用命令面板，已忽略。");
+                        handled = true;
+                        return IntPtr.Zero;
+                    }
+
                     LoggingService.LogInfo("系统热键触发：Ctrl+Space");
                     _commandPaletteManager.ShowOrActivate();
                     handled = true;
