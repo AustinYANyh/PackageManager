@@ -1130,6 +1130,9 @@ public partial class PingCodeApiService
 
                 if (result.Count > 0)
                 {
+                    // 开放 API 默认按内部 _id 排序，同一秒批量创建的子任务顺序会与网页端（position 顺序）交叉；
+                    // 未手动拖拽时编号尾号升序 == position 顺序，按尾号数字重排以对齐网页端展示。
+                    result = result.OrderBy(ExtractIdentifierSequenceNumber).ThenBy(c => c.Identifier ?? "", StringComparer.OrdinalIgnoreCase).ToList();
                     return result;
                 }
             }
@@ -1139,6 +1142,19 @@ public partial class PingCodeApiService
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// 提取工作项编号（如 JD_GROUP-7044）的尾号数字，用于子工作项按创建顺序排序。
+    /// </summary>
+    /// <param name="item">工作项摘要信息。</param>
+    /// <returns>尾号数字；无法解析时返回 long.MaxValue 使其排到末尾。</returns>
+    private static long ExtractIdentifierSequenceNumber(WorkItemInfo item)
+    {
+        var identifier = item?.Identifier ?? "";
+        var dashIndex = identifier.LastIndexOf('-');
+        var tail = dashIndex >= 0 ? identifier.Substring(dashIndex + 1) : identifier;
+        return long.TryParse(tail, out var number) ? number : long.MaxValue;
     }
 
     /// <summary>
