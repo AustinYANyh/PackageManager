@@ -277,18 +277,14 @@ public partial class PingCodeApiService
                 var pageSize = 100;
                 while (true)
                 {
+                    // 仅使用 sprint_id 过滤：开放 API 不识别 iteration_id 参数（会被静默忽略并返回全库工作项），
+                    // sprint_id 查询为空即表示该迭代没有工作项，直接结束分页。
                     var url = $"{baseUrl}?sprint_id={Uri.EscapeDataString(iterationOrSprintId)}&page_size={pageSize}&page_index={pageIndex}";
                     var json = await GetJsonAsync(url);
                     var values = GetValuesArray(json);
                     if ((values == null) || (values.Count == 0))
                     {
-                        url = $"{baseUrl}?iteration_id={Uri.EscapeDataString(iterationOrSprintId)}&page_size={pageSize}&page_index={pageIndex}";
-                        json = await GetJsonAsync(url);
-                        values = GetValuesArray(json);
-                        if ((values == null) || (values.Count == 0))
-                        {
-                            break;
-                        }
+                        break;
                     }
 
                     foreach (var v in values)
@@ -446,18 +442,14 @@ public partial class PingCodeApiService
                 var pageSize = 100;
                 while (true)
                 {
+                    // 仅使用 sprint_id 过滤：开放 API 不识别 iteration_id 参数（会被静默忽略并返回全库工作项），
+                    // sprint_id 查询为空即表示该迭代没有工作项，直接结束分页。
                     var url = $"{baseUrl}?sprint_id={Uri.EscapeDataString(iterationOrSprintId)}&page_size={pageSize}&page_index={pageIndex}";
                     var json = await GetJsonAsync(url);
                     var values = GetValuesArray(json);
                     if ((values == null) || (values.Count == 0))
                     {
-                        url = $"{baseUrl}?iteration_id={Uri.EscapeDataString(iterationOrSprintId)}&page_size={pageSize}&page_index={pageIndex}";
-                        json = await GetJsonAsync(url);
-                        values = GetValuesArray(json);
-                        if ((values == null) || (values.Count == 0))
-                        {
-                            break;
-                        }
+                        break;
                     }
 
                     var dtos = values.ToObject<List<WorkItemDto>>() ?? new List<WorkItemDto>();
@@ -1676,20 +1668,15 @@ public partial class PingCodeApiService
                 var pageSize = 100;
                 while (true)
                 {
+                    // 仅使用 sprint_id 过滤：开放 API 不识别 iteration_id 参数（会被静默忽略并返回全库工作项），
+                    // sprint_id 查询为空即表示该迭代没有工作项，直接结束分页。
                     var url =
                         $"{baseUrl}?sprint_id={Uri.EscapeDataString(iterationOrSprintId)}&assigned_to={Uri.EscapeDataString(userId)}&page_size={pageSize}&page_index={pageIndex}";
                     var json = await GetJsonAsync(url);
                     var values = GetValuesArray(json);
                     if ((values == null) || (values.Count == 0))
                     {
-                        url =
-                            $"{baseUrl}?iteration_id={Uri.EscapeDataString(iterationOrSprintId)}&assigned_to={Uri.EscapeDataString(userId)}&page_size={pageSize}&page_index={pageIndex}";
-                        json = await GetJsonAsync(url);
-                        values = GetValuesArray(json);
-                        if ((values == null) || (values.Count == 0))
-                        {
-                            break;
-                        }
+                        break;
                     }
 
                     foreach (var v in values)
