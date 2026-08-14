@@ -290,6 +290,57 @@ namespace PackageManager.Models
         }
 
         /// <summary>
+        /// 将版本路径配置归一化为「产品默认 + 版本例外」形态。
+        /// <para>
+        /// 非破坏性规则：若 <see cref="LocalPath"/> 已有值则保持不变；仅当其为空时才用版本路径中的众数补位。
+        /// 与产品默认路径相同的版本级条目会被移除（改由 <see cref="GetLocalPathForVersion"/> 的回退机制继承），
+        /// 路径不同的版本保留为例外。归一化前后任意已有版本的 <see cref="GetLocalPathForVersion"/> 结果保持一致，
+        /// 仅使未来新出现的版本能自动沿用产品默认路径。
+        /// </para>
+        /// </summary>
+        public void NormalizeVersionPaths()
+        {
+            var paths = VersionLocalPaths;
+            if (paths == null || paths.Count == 0)
+            {
+                return;
+            }
+
+            // 产品默认路径：已有 LocalPath 优先（不覆盖用户设置）；否则取版本路径中出现次数最多的非空值。
+            var defaultPath = localPath;
+            if (string.IsNullOrWhiteSpace(defaultPath))
+            {
+                defaultPath = paths.Values
+                    .Where(p => !string.IsNullOrWhiteSpace(p))
+                    .GroupBy(p => p.Trim(), StringComparer.OrdinalIgnoreCase)
+                    .OrderByDescending(g => g.Count())
+                    .Select(g => g.Key)
+                    .FirstOrDefault() ?? string.Empty;
+            }
+
+            if (string.IsNullOrWhiteSpace(defaultPath))
+            {
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(localPath))
+            {
+                LocalPath = defaultPath;
+            }
+
+            // 与默认路径相同的版本级条目改为继承，仅保留路径不同的例外。
+            var duplicates = paths
+                .Where(kv => !string.IsNullOrWhiteSpace(kv.Value) &&
+                             string.Equals(kv.Value.Trim(), defaultPath, StringComparison.OrdinalIgnoreCase))
+                .Select(kv => kv.Key)
+                .ToList();
+            foreach (var version in duplicates)
+            {
+                paths.Remove(version);
+            }
+        }
+
+        /// <summary>
         /// 获取当前版本的有效本地路径。
         /// </summary>
         public string EffectiveLocalPath => GetLocalPathForVersion(Version);

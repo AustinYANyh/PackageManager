@@ -8,10 +8,12 @@
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
+        Name="RootPage"
         Loaded="UserControl_Loaded">
     <Grid Margin="20">
         <Grid.Resources>
             <converters:LocalPathGroupSummaryConverter x:Key="LocalPathGroupSummaryConverter" />
+            <converters:GridWidthOffsetConverter x:Key="GridWidthOffsetConverter" />
             <CollectionViewSource x:Key="LocalPathItemsView" Source="{Binding LocalPathItems}">
                 <CollectionViewSource.GroupDescriptions>
                     <PropertyGroupDescription PropertyName="ProductName" />
@@ -38,7 +40,8 @@
                       TextAlignment="Left"
                       EnableAutoTemplateSelection="True"
                       ItemsSource="{Binding Source={StaticResource LocalPathItemsView}}"
-                      SizeChanged="LocalPathGrid_SizeChanged"
+                      VirtualizingPanel.IsVirtualizingWhenGrouping="True"
+                      VirtualizingPanel.VirtualizationMode="Recycling"
                       Margin="0,12,0,12">
             <C:CDataGrid.GroupStyle>
                 <GroupStyle HidesIfEmpty="True">
@@ -61,7 +64,9 @@
                                                         Background="#FAFAFA"
                                                         BorderBrush="#E6E6E6"
                                                         BorderThickness="1"
-                                                        CornerRadius="4">
+                                                        CornerRadius="4"
+                                                        Width="{Binding ActualWidth, ElementName=LocalPathGrid, Converter={StaticResource GridWidthOffsetConverter}, ConverterParameter=72}"
+                                                        HorizontalAlignment="Left">
                                                     <DockPanel LastChildFill="True">
                                                         <Grid DockPanel.Dock="Right"
                                                               VerticalAlignment="Center"

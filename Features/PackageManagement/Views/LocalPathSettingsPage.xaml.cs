@@ -132,16 +132,52 @@ namespace PackageManager.Views
 
         private void SaveButton_Click(object sender, RoutedEventArgs e)
         {
-            foreach (var item in LocalPathItems)
+            // 先把表格中的编辑结果按「全组众数」原则落回每个包（与 NormalizeVersionPaths 的选默认规则一致），
+            // 再调用 NormalizeVersionPaths 收敛为「产品默认 + 版本例外」，使 FTP 上新出现的版本自动沿用产品默认路径。
+            foreach (var group in LocalPathItems.GroupBy(item => item.ProductName, StringComparer.OrdinalIgnoreCase))
             {
-                var pkg = packages.FirstOrDefault(p => p.ProductName == item.ProductName);
-                if (pkg != null)
+                var pkg = packages.FirstOrDefault(p => string.Equals(p.ProductName, group.Key, StringComparison.OrdinalIgnoreCase));
+                if (pkg == null)
                 {
-                    if (!string.IsNullOrWhiteSpace(item.Version))
+                    continue;
+                }
+
+                var groupDefault = group.Select(item => item.LocalPath)
+                                        .Where(path => !string.IsNullOrWhiteSpace(path))
+                                        .GroupBy(path => path.Trim(), StringComparer.OrdinalIgnoreCase)
+                                        .OrderByDescending(pathGroup => pathGroup.Count())
+                                        .Select(pathGroup => pathGroup.Key)
+                                        .FirstOrDefault() ?? string.Empty;
+
+                pkg.LocalPath = groupDefault;
+
+                foreach (var item in group)
+                {
+                    if (string.IsNullOrWhiteSpace(item.Version))
                     {
-                        pkg.VersionLocalPaths[item.Version] = item.LocalPath;
+                        continue;
+                    }
+
+                    var effective = string.IsNullOrWhiteSpace(item.LocalPath) ? string.Empty : item.LocalPath.Trim();
+                    if (string.IsNullOrEmpty(effective) ||
+                        string.Equals(effective, groupDefault, StringComparison.OrdinalIgnoreCase))
+                    {
+                        pkg.VersionLocalPaths.Remove(item.Version);
+                    }
+                    else
+                    {
+                        pkg.VersionLocalPaths[item.Version] = effective;
                     }
                 }
+            }
+
+            foreach (var pkg in packages)
+            {
+                try
+                {
+                    pkg.NormalizeVersionPaths();
+                }
+                catch { }
             }
 
             dataPersistenceService.SaveMainWindowState(packages);
@@ -162,31 +198,8 @@ namespace PackageManager.Views
 
         private void UserControl_Loaded(object sender, RoutedEventArgs e)
         {
-            try
-            {
-                Dispatcher.BeginInvoke(new Action(() =>
-                {
-                    // var groups = FindVisualChildren<GroupItem>(LocalPathGrid).ToList();
-                    // for (int i = 0; i < groups.Count; i++)
-                    // {
-                    //     var expander = FindVisualChildren<Expander>(groups[i]).FirstOrDefault();
-                    //     if (expander != null)
-                    //     {
-                    //         expander.IsExpanded = (i == 0);
-                    //     }
-                    // }
-
-                    UpdateGroupExpandersLayout();
-                }), DispatcherPriority.Loaded);
-            }
-            catch
-            {
-            }
-        }
-
-        private void LocalPathGrid_SizeChanged(object sender, SizeChangedEventArgs e)
-        {
-            UpdateGroupExpandersLayout();
+            // 组头 Border 宽度已改为 XAML 绑定（GridWidthOffsetConverter，ActualWidth-72），
+            // 虚拟化按需生成的组头也能自动获得正确宽度，无需代码后置遍历视觉树。
         }
 
         private static System.Collections.Generic.IEnumerable<T> FindVisualChildren<T>(DependencyObject parent) where T : DependencyObject
@@ -205,33 +218,6 @@ namespace PackageManager.Views
             return LocalPathItems.Where(item => string.Equals(item.ProductName,
                                                                productName,
                                                                StringComparison.OrdinalIgnoreCase));
-        }
-
-        private void UpdateGroupExpandersLayout()
-        {
-            if (LocalPathGrid == null || LocalPathGrid.ActualWidth <= 0)
-            {
-                return;
-            }
-
-            var targetWidth = Math.Max(0, LocalPathGrid.ActualWidth - 72);
-
-            foreach (var expander in FindVisualChildren<Expander>(LocalPathGrid))
-            {
-                expander.HorizontalAlignment = HorizontalAlignment.Stretch;
-            }
-
-            foreach (var border in FindVisualChildren<Border>(LocalPathGrid))
-            {
-                var tag = border.Tag as string;
-                if (!string.Equals(tag, "GroupHeaderBorder", StringComparison.Ordinal))
-                {
-                    continue;
-                }
-
-                border.Width = targetWidth;
-                border.HorizontalAlignment = HorizontalAlignment.Left;
-            }
         }
     }
 }

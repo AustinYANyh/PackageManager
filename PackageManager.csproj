@@ -148,6 +148,7 @@
         <!-- Converters -->
         <Compile Include="Converters\StatusConverters.cs" />
         <Compile Include="Converters\LocalPathGroupSummaryConverter.cs" />
+        <Compile Include="Converters\GridWidthOffsetConverter.cs" />
         <Compile Include="Converters\PresetToIniConverter.cs" />
 
         <!-- Views (shell-level) -->

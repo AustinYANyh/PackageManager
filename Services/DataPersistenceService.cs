@@ -611,6 +611,15 @@ namespace PackageManager.Services
                 package.VersionLocalPaths = stateData.VersionLocalPaths ?? new Dictionary<string, string>();
             }
             catch { }
+
+            // 将存量数据归一化为「产品默认 + 版本例外」，使 FTP 上新出现的版本能自动沿用产品默认路径。
+            // 非破坏性：LocalPath 已有值时不会被覆盖。
+            try
+            {
+                package.NormalizeVersionPaths();
+            }
+            catch { }
+
             if (stateData.AvailableExecutableVersions?.Count > 0)
             {
                 package.AvailableExecutableVersions.Clear();

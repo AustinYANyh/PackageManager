@@ -69,16 +69,52 @@ namespace PackageManager.Function.Path
 
         private void SaveButton_Click(object sender, RoutedEventArgs e)
         {
-            foreach (var item in LocalPathItems)
+            // 先把表格中的编辑结果按「全组众数」原则落回每个包，再调用 NormalizeVersionPaths 收敛为「产品默认 + 版本例外」
+            // （与 LocalPathSettingsPage 保持一致）。
+            foreach (var group in LocalPathItems.GroupBy(item => item.ProductName, System.StringComparer.OrdinalIgnoreCase))
             {
-                var pkg = packages.FirstOrDefault(p => p.ProductName == item.ProductName);
-                if (pkg != null)
+                var pkg = packages.FirstOrDefault(p => System.String.Equals(p.ProductName, group.Key, System.StringComparison.OrdinalIgnoreCase));
+                if (pkg == null)
                 {
-                    if (!string.IsNullOrWhiteSpace(item.Version))
+                    continue;
+                }
+
+                var groupDefault = group.Select(item => item.LocalPath)
+                                        .Where(path => !string.IsNullOrWhiteSpace(path))
+                                        .GroupBy(path => path.Trim(), System.StringComparer.OrdinalIgnoreCase)
+                                        .OrderByDescending(pathGroup => pathGroup.Count())
+                                        .Select(pathGroup => pathGroup.Key)
+                                        .FirstOrDefault() ?? string.Empty;
+
+                pkg.LocalPath = groupDefault;
+
+                foreach (var item in group)
+                {
+                    if (string.IsNullOrWhiteSpace(item.Version))
                     {
-                        pkg.VersionLocalPaths[item.Version] = item.LocalPath;
+                        continue;
+                    }
+
+                    var effective = string.IsNullOrWhiteSpace(item.LocalPath) ? string.Empty : item.LocalPath.Trim();
+                    if (string.IsNullOrEmpty(effective) ||
+                        System.String.Equals(effective, groupDefault, System.StringComparison.OrdinalIgnoreCase))
+                    {
+                        pkg.VersionLocalPaths.Remove(item.Version);
+                    }
+                    else
+                    {
+                        pkg.VersionLocalPaths[item.Version] = effective;
                     }
                 }
+            }
+
+            foreach (var pkg in packages)
+            {
+                try
+                {
+                    pkg.NormalizeVersionPaths();
+                }
+                catch { }
             }
 
             // 保存主界面状态（包含LocalPath）
