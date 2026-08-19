@@ -673,6 +673,9 @@
         <EmbeddedResource Include=".claude\skills\git_svn_commitlog_generator\scripts\terminal-host.ps1">
           <LogicalName>PackageManager.AiCommitSkill.scripts.terminal-host.ps1</LogicalName>
         </EmbeddedResource>
+        <EmbeddedResource Include=".claude\skills\load_pua_skill\SKILL.md">
+          <LogicalName>PackageManager.LoadPuaSkill.SKILL.md</LogicalName>
+        </EmbeddedResource>
         <EmbeddedResource Include="Features\CodeWorkspace\Scripts\Invoke-MsBuildBuild.ps1">
           <LogicalName>PackageManager.CodeWorkspace.Scripts.Invoke-MsBuildBuild.ps1</LogicalName>
         </EmbeddedResource>

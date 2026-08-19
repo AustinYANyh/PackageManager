@@ -21,11 +21,21 @@ namespace PackageManager.Features.CodeWorkspace.Services
             { "PackageManager.AiCommitSkill.scripts.terminal-host.ps1", Path.Combine("scripts", "terminal-host.ps1") },
         };
 
+        private static readonly KeyValuePair<string, IDictionary<string, string>>[] AuxiliarySkills =
+        {
+            new KeyValuePair<string, IDictionary<string, string>>(
+                "load_pua_skill",
+                new Dictionary<string, string>
+                {
+                    { "PackageManager.LoadPuaSkill.SKILL.md", "SKILL.md" },
+                }),
+        };
+
         public AiCommitSkillInfo EnsureSkillAvailable(string repositoryPath)
         {
             lock (SkillSyncGate)
             {
-                var sourcePath = ExtractEmbeddedSkill();
+                var sourcePath = ExtractEmbeddedSkill(SkillDirectoryName, EmbeddedSkillFiles);
                 var skillMarkdownPath = Path.Combine(sourcePath, "SKILL.md");
                 var wrapperPath = Path.Combine(sourcePath, "scripts", "invoke-working-changes-interactive.ps1");
                 if (!File.Exists(skillMarkdownPath))
@@ -38,12 +48,17 @@ namespace PackageManager.Features.CodeWorkspace.Services
                     throw new FileNotFoundException($"找不到内嵌提交采集脚本：{wrapperPath}");
                 }
 
-                var userSkillTargets = GetUserSkillTargets().ToList();
+                var userSkillTargets = GetUserSkillTargets(SkillDirectoryName).ToList();
                 var syncedUserSkillPaths = new List<string>();
                 foreach (var target in userSkillTargets)
                 {
                     SyncSkillDirectory(sourcePath, target);
                     syncedUserSkillPaths.Add(target);
+                }
+
+                foreach (var auxiliarySkill in AuxiliarySkills)
+                {
+                    SyncAuxiliarySkill(auxiliarySkill.Key, auxiliarySkill.Value);
                 }
 
                 var repositorySkillPath = GetRepositorySkillTarget(repositoryPath);
@@ -52,6 +67,15 @@ namespace PackageManager.Features.CodeWorkspace.Services
                     : null;
 
                 return new AiCommitSkillInfo(sourcePath, sourcePath, skillMarkdownPath, wrapperPath, syncedUserSkillPaths, detectedRepositorySkillPath);
+            }
+        }
+
+        private static void SyncAuxiliarySkill(string skillDirectoryName, IDictionary<string, string> embeddedFiles)
+        {
+            var sourcePath = ExtractEmbeddedSkill(skillDirectoryName, embeddedFiles);
+            foreach (var target in GetUserSkillTargets(skillDirectoryName))
+            {
+                SyncSkillDirectory(sourcePath, target);
             }
         }
 
@@ -73,17 +97,17 @@ namespace PackageManager.Features.CodeWorkspace.Services
                 Path.Combine(stateDirectoryPath, "last_changes_model.json"));
         }
 
-        private static string ExtractEmbeddedSkill()
+        private static string ExtractEmbeddedSkill(string skillDirectoryName, IDictionary<string, string> embeddedFiles)
         {
             var cacheRoot = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "PackageManager",
                 "Skills",
-                SkillDirectoryName);
+                skillDirectoryName);
             Directory.CreateDirectory(cacheRoot);
 
             var assembly = Assembly.GetExecutingAssembly();
-            foreach (var resource in EmbeddedSkillFiles)
+            foreach (var resource in embeddedFiles)
             {
                 var destinationPath = Path.Combine(cacheRoot, resource.Value);
                 var destinationDirectory = Path.GetDirectoryName(destinationPath);
@@ -116,13 +140,13 @@ namespace PackageManager.Features.CodeWorkspace.Services
                 : Path.Combine(repositoryPath, ".claude", "skills", SkillDirectoryName);
         }
 
-        private static IEnumerable<string> GetUserSkillTargets()
+        private static IEnumerable<string> GetUserSkillTargets(string skillDirectoryName)
         {
             var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
             if (!string.IsNullOrWhiteSpace(userProfile))
             {
-                yield return Path.Combine(userProfile, ".claude", "skills", SkillDirectoryName);
-                yield return Path.Combine(userProfile, ".codex", "skills", SkillDirectoryName);
+                yield return Path.Combine(userProfile, ".claude", "skills", skillDirectoryName);
+                yield return Path.Combine(userProfile, ".codex", "skills", skillDirectoryName);
             }
         }
 
