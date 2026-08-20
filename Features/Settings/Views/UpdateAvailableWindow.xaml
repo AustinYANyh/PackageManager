@@ -80,16 +80,16 @@
 
                     <!-- 版本徽章行 -->
                     <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,16,0,0">
-                        <Border Background="#F3F4F6" BorderBrush="#E5E7EB" BorderThickness="1" CornerRadius="999"
-                                Padding="12,4">
+                        <Border Background="#F3F4F6" BorderBrush="#E5E7EB" BorderThickness="1" CornerRadius="13"
+                                Height="26" Padding="12,0">
                             <TextBlock x:Name="CurrentVersionText" FontSize="13" FontWeight="SemiBold"
-                                       Foreground="#6B7280" />
+                                       Foreground="#6B7280" VerticalAlignment="Center" />
                         </Border>
                         <TextBlock Text="→" FontSize="14" Foreground="#9CA3AF" VerticalAlignment="Center" Margin="10,0" />
-                        <Border Background="#EBF3FF" BorderBrush="#BFD7FF" BorderThickness="1" CornerRadius="999"
-                                Padding="12,4">
+                        <Border Background="#EBF3FF" BorderBrush="#BFD7FF" BorderThickness="1" CornerRadius="13"
+                                Height="26" Padding="12,0">
                             <TextBlock x:Name="LatestVersionText" FontSize="13" FontWeight="Bold"
-                                       Foreground="#2B7FFF" />
+                                       Foreground="#2B7FFF" VerticalAlignment="Center" />
                         </Border>
                         <TextBlock x:Name="ReleaseNoteText" FontSize="12" Foreground="#9CA3AF"
                                    VerticalAlignment="Center" Margin="12,0,0,0" />
