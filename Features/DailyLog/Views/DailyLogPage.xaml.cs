@@ -10,6 +10,7 @@ using PackageManager.Features.DailyLog.Models;
 using PackageManager.Features.DailyLog.Services;
 using PackageManager.Services;
 using PackageManager.Services.PingCode.Dto;
+using PackageManager.Services.PingCode.Model;
 
 namespace PackageManager.Features.DailyLog.Views
 {
@@ -27,8 +28,20 @@ namespace PackageManager.Features.DailyLog.Views
         private readonly DailyLogGeneratorService generator = new DailyLogGeneratorService();
         private readonly DailyLogFormatterService formatter = new DailyLogFormatterService();
         private readonly DailyLogDraftStore draftStore = new DailyLogDraftStore();
+        private readonly DailyLogIterationStore iterationStore = new DailyLogIterationStore();
 
         private bool suppressDraftSave;
+        private bool suppressIterationPersist;
+        private bool iterationsLoaded;
+        private Entity scopeProject;
+        private List<Entity> scopeIterations = new List<Entity>();
+
+        private sealed class IterationOption
+        {
+            public Entity Iteration { get; set; }
+
+            public string Display { get; set; }
+        }
 
         /// <summary>
         /// 初始化 <see cref="DailyLogPage"/>。
@@ -46,6 +59,8 @@ namespace PackageManager.Features.DailyLog.Views
         private async void Generate_Click(object sender, RoutedEventArgs e)
         {
             var date = DatePick.SelectedDate ?? DateTime.Today;
+            var iterationOption = IterationPick.SelectedItem as IterationOption;
+            var iterationId = iterationOption?.Iteration?.Id;
             StatusText.Text = "正在采集数据...";
 
             try
@@ -78,7 +93,7 @@ namespace PackageManager.Features.DailyLog.Views
                 List<WorkItemInfo> completedItems;
                 try
                 {
-                    todoItems = await pingCodeTodo.GetTodoItemsAsync();
+                    todoItems = await pingCodeTodo.GetTodoItemsAsync(iterationId);
                 }
                 catch
                 {
@@ -87,7 +102,7 @@ namespace PackageManager.Features.DailyLog.Views
 
                 try
                 {
-                    completedItems = await pingCodeTodo.GetCompletedItemsAsync(date);
+                    completedItems = await pingCodeTodo.GetCompletedItemsAsync(date, iterationId);
                 }
                 catch
                 {
@@ -96,7 +111,10 @@ namespace PackageManager.Features.DailyLog.Views
 
                 var logText = generator.Generate(date, allGit, allSvn, completedItems, todoItems);
                 SetLogText(formatter.Format(logText));
-                StatusText.Text = $"已生成日报 (Git: {allGit.Count}, SVN: {allSvn.Count}, PingCode完成: {completedItems?.Count ?? 0}, 明日计划: {todoItems?.Count ?? 0})";
+                var scopeLabel = iterationOption?.Iteration == null
+                    ? "数据源: 自动迭代"
+                    : $"数据源: {scopeProject?.Name ?? "?"}/{iterationOption.Iteration.Name}";
+                StatusText.Text = $"已生成日报 (Git: {allGit.Count}, SVN: {allSvn.Count}, PingCode完成: {completedItems?.Count ?? 0}, 明日计划: {todoItems?.Count ?? 0}, {scopeLabel})";
             }
             catch (Exception ex)
             {
@@ -205,6 +223,7 @@ namespace PackageManager.Features.DailyLog.Views
         private void Page_Loaded(object sender, RoutedEventArgs e)
         {
             DatePick.SelectedDate = DateTime.Today;
+            LoadIterationsAsync();
 
             if (!string.IsNullOrWhiteSpace(LogTextBox.Text))
             {
@@ -219,6 +238,119 @@ namespace PackageManager.Features.DailyLog.Views
 
             SetLogText(draft, updateDraft: false);
             StatusText.Text = "已恢复上次日报草稿。";
+        }
+
+        private async void LoadIterationsAsync()
+        {
+            if (iterationsLoaded)
+            {
+                return;
+            }
+
+            iterationsLoaded = true;
+            try
+            {
+                scopeProject = await pingCodeTodo.GetDefaultProjectAsync();
+                if (scopeProject == null || string.IsNullOrWhiteSpace(scopeProject.Id))
+                {
+                    StatusText.Text = "未找到可用 PingCode 项目，明日计划可能为空";
+                    return;
+                }
+
+                scopeIterations = await pingCodeTodo.GetProjectIterationsAsync(scopeProject.Id);
+                if (scopeIterations.Count == 0)
+                {
+                    StatusText.Text = $"项目「{scopeProject.Name}」没有未完成的迭代";
+                    return;
+                }
+
+                var stored = iterationStore.Load();
+                var recommended = PingCodeTodoService.SelectRecommendedIteration(scopeIterations, stored?.IterationId, DateTime.Today, out var storedMissing);
+
+                suppressIterationPersist = true;
+                try
+                {
+                    IterationPick.Items.Clear();
+                    foreach (var iteration in scopeIterations)
+                    {
+                        IterationPick.Items.Add(new IterationOption
+                        {
+                            Iteration = iteration,
+                            Display = FormatIterationDisplay(iteration),
+                        });
+                    }
+
+                    IterationPick.SelectedIndex = recommended == null
+                        ? -1
+                        : scopeIterations.FindIndex(iteration => string.Equals(iteration.Id, recommended.Id, StringComparison.OrdinalIgnoreCase));
+                }
+                finally
+                {
+                    suppressIterationPersist = false;
+                }
+
+                if (IterationPick.SelectedItem is IterationOption selected)
+                {
+                    PersistIteration(selected);
+                }
+
+                if (storedMissing && IterationPick.SelectedItem is IterationOption current)
+                {
+                    StatusText.Text = $"上次选择的迭代已结束，已切换为「{current.Iteration.Name}」";
+                }
+            }
+            catch (Exception ex)
+            {
+                StatusText.Text = "迭代加载失败，生成时将自动选择迭代: " + ex.Message;
+            }
+        }
+
+        private static string FormatIterationDisplay(Entity iteration)
+        {
+            var name = iteration?.Name ?? string.Empty;
+            var start = FromUnixSeconds(iteration?.StartAt);
+            var end = FromUnixSeconds(iteration?.EndAt);
+            if (start == null && end == null)
+            {
+                return name;
+            }
+
+            var startText = start?.ToString("MM-dd") ?? "?";
+            var endText = end?.ToString("MM-dd") ?? "?";
+            return $"{name}（{startText} ~ {endText}）";
+        }
+
+        private static DateTime? FromUnixSeconds(long? seconds)
+        {
+            return seconds.HasValue ? DateTimeOffset.FromUnixTimeSeconds(seconds.Value).LocalDateTime : (DateTime?)null;
+        }
+
+        private void IterationPick_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (suppressIterationPersist)
+            {
+                return;
+            }
+
+            if (IterationPick.SelectedItem is IterationOption option)
+            {
+                PersistIteration(option);
+            }
+        }
+
+        private void PersistIteration(IterationOption option)
+        {
+            if (option?.Iteration == null || string.IsNullOrWhiteSpace(option.Iteration.Id) || string.IsNullOrWhiteSpace(scopeProject?.Id))
+            {
+                return;
+            }
+
+            iterationStore.Save(new DailyLogIterationSelection
+            {
+                ProjectId = scopeProject.Id,
+                IterationId = option.Iteration.Id,
+                IterationName = option.Iteration.Name,
+            });
         }
 
         private void Page_Unloaded(object sender, RoutedEventArgs e)

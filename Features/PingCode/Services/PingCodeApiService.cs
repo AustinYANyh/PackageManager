@@ -123,7 +123,7 @@ public partial class PingCodeApiService
                 }
                 if (!string.IsNullOrWhiteSpace(id) && seen.Add(id))
                 {
-                    result.Add(new Entity { Id = id, Name = nm ?? id, StartAt = v.Value<long?>("start_at") });
+                    result.Add(new Entity { Id = id, Name = nm ?? id, StartAt = v.Value<long?>("start_at"), EndAt = v.Value<long?>("end_at") });
                 }
             }
 
@@ -166,7 +166,7 @@ public partial class PingCodeApiService
                 var nm = v.Value<string>("name");
                 if (!string.IsNullOrWhiteSpace(id) && seen.Add(id))
                 {
-                    result.Add(new Entity { Id = id, Name = nm ?? id, StartAt = v.Value<long?>("start_at") });
+                    result.Add(new Entity { Id = id, Name = nm ?? id, StartAt = v.Value<long?>("start_at"), EndAt = v.Value<long?>("end_at") });
                 }
             }
 

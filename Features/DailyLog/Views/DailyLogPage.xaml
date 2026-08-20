@@ -24,6 +24,8 @@
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
             </Grid.ColumnDefinitions>
 
@@ -31,15 +33,20 @@
             <controls:CCalendarBox Grid.Column="1" x:Name="DatePick" Width="160" Height="30"
                         VerticalAlignment="Center" />
 
-            <button:CButton Grid.Column="2" Content="生成日报" Width="100" Height="32"
-                                  Margin="16,0,0,0" Click="Generate_Click"
-                                  Background="#2B7FFF" Foreground="White" />
+            <TextBlock Grid.Column="2" Text="迭代:" VerticalAlignment="Center" Margin="16,0,8,0" />
+            <controls:CComboBox Grid.Column="3" x:Name="IterationPick" Width="280" Height="30" VerticalAlignment="Center"
+                                DisplayMemberPath="Display"
+                                SelectionChanged="IterationPick_SelectionChanged" />
 
-            <button:CButton Grid.Column="3" Content="复制到剪贴板" Width="120" Height="32"
+            <button:CButton Grid.Column="4" Content="生成日报" Width="100" Height="32"
+                                   Margin="16,0,0,0" Click="Generate_Click"
+                                   Background="#2B7FFF" Foreground="White" />
+
+            <button:CButton Grid.Column="5" Content="复制到剪贴板" Width="120" Height="32"
                             Margin="8,0,0,0" Click="Copy_Click"
                             Background="#10B981" Foreground="White" />
 
-            <TextBlock Grid.Column="4" x:Name="StatusText" Text="就绪"
+            <TextBlock Grid.Column="6" x:Name="StatusText" Text="就绪"
                        VerticalAlignment="Center" HorizontalAlignment="Right"
                        Foreground="#6B7280" FontSize="12" />
         </Grid>
