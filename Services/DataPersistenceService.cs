@@ -1223,6 +1223,11 @@ namespace PackageManager.Services
         /// 获取或设置密语已读后自毁时长（秒），仅允许 5/10/30，非法值回退为 5。
         /// </summary>
         public int LanTransferSecretDestroySeconds { get; set; } = 5;
+
+        /// <summary>
+        /// 获取或设置密语信箱后台检查频率（秒），可选 30/60/120，0 表示关闭；非法值回退为 60。
+        /// </summary>
+        public int LanTransferSecretMailboxPollSeconds { get; set; } = 60;
     }
 
     /// <summary>

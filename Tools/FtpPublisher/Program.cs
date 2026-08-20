@@ -111,9 +111,9 @@ namespace FtpPublisher
 
             var updateSummaryLocal = @"e:\PackageManager\UpdateSummary.txt";
             var updateSummaryDir = ftpBase + "UpdateSummary/";
-            Console.WriteLine("清理更新说明目录: " + updateSummaryDir);
-            await DeleteDirectoryAsync(updateSummaryDir, cred);
-            Console.WriteLine("重建更新说明目录");
+            Console.WriteLine("清理更新说明文件: " + updateSummaryDir + "UpdateSummary.txt");
+            // 只删除 UpdateSummary.txt 本身，保留目录内其他内容（密语信箱 SecretChat/ 子目录）
+            await DeleteFileAsync(updateSummaryDir + "UpdateSummary.txt", cred);
             await CreateRemoteDirectoryAsync(updateSummaryDir, cred);
 
             var updateSummaryDest = updateSummaryDir + "UpdateSummary.txt";
@@ -126,6 +126,28 @@ namespace FtpPublisher
             }
 
             Console.WriteLine("发布完成");
+        }
+
+        /// <summary>
+        /// 删除 FTP 服务器上的单个远程文件（不存在时忽略）。
+        /// </summary>
+        private static async Task DeleteFileAsync(string remoteFileUrl, NetworkCredential cred)
+        {
+            var req = (FtpWebRequest)WebRequest.Create(remoteFileUrl);
+            req.Credentials = cred;
+            req.Method = WebRequestMethods.Ftp.DeleteFile;
+            req.UseBinary = true;
+            req.KeepAlive = false;
+            try
+            {
+                using var resp = (FtpWebResponse)await req.GetResponseAsync();
+            }
+            catch (WebException ex)
+            {
+                var resp = ex.Response as FtpWebResponse;
+                if (resp == null) throw;
+                if (resp.StatusCode != FtpStatusCode.ActionNotTakenFileUnavailable) throw;
+            }
         }
 
         /// <summary>

@@ -28,6 +28,15 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
     private readonly ObservableCollection<LanTransferRecord> _transferHistory = new ObservableCollection<LanTransferRecord>();
     private readonly ObservableCollection<SecretChatSession> _secretChatSessions = new ObservableCollection<SecretChatSession>();
     private readonly Dictionary<SecretChatSession, SecretChatSession> _selfTestPairs = new Dictionary<SecretChatSession, SecretChatSession>();
+    private readonly SecretMailboxClient _secretMailbox = new SecretMailboxClient();
+    private readonly SecretContactStore _secretContactStore = new SecretContactStore(new DataPersistenceService());
+    private readonly List<SecretContact> _secretContacts = new List<SecretContact>();
+    private readonly object _secretContactSync = new object();
+    private readonly Timer _secretSaveTimer;
+    private readonly Timer _secretMailboxPollTimer;
+    private int _secretMailboxPollSeconds;
+    private int _secretSavePending;
+    private int _mailboxBusy;
     private readonly object _peerSync = new object();
     private readonly object _secretChatSync = new object();
     private readonly RSACryptoServiceProvider _secretChatRsa = new RSACryptoServiceProvider(2048);
@@ -56,6 +65,8 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
     {
         _dataPersistenceService = dataPersistenceService ?? throw new ArgumentNullException(nameof(dataPersistenceService));
         _peerCleanupTimer = new Timer(_ => RefreshPeerStates(), null, Timeout.Infinite, Timeout.Infinite);
+        _secretSaveTimer = new Timer(_ => SaveSecretSnapshot(), null, Timeout.Infinite, Timeout.Infinite);
+        _secretMailboxPollTimer = new Timer(_ => RunSecretMailboxPoll(), null, Timeout.Infinite, Timeout.Infinite);
         LoadSettingsAndInitialize();
         LoadHistory();
         EnsureRunningState();
@@ -596,6 +607,7 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         {
             MessageId = Guid.NewGuid().ToString("N"),
             Direction = SecretChatMessageDirection.Outgoing,
+            SenderDeviceId = DeviceId,
             Text = text,
             State = SecretChatMessageState.Sending,
         };
@@ -606,6 +618,13 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
             await DeliverSelfTestMessageAsync(session, message);
             message.State = SecretChatMessageState.Sent;
             session.StatusText = "密语已发送（自测线路），进入对方视线后开始计时";
+            return;
+        }
+
+        var livePeer = FindPeerForSession(session);
+        if (livePeer == null || !livePeer.IsOnline || string.IsNullOrWhiteSpace(session.PeerAddress))
+        {
+            await SendSecretMessageViaMailboxAsync(session, message, text);
             return;
         }
 
@@ -645,6 +664,7 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
 
             message.State = SecretChatMessageState.Sent;
             session.StatusText = "密语已发送，等待对方阅读";
+            ScheduleSecretSave();
         }
         catch
         {
@@ -652,6 +672,72 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
             message.State = SecretChatMessageState.Destroyed;
             throw;
         }
+    }
+
+    /// <summary>
+    /// 对方离线时的发送路径：用其公钥加密后投递到 FTP 密语信箱，消息进入「已投递」状态。
+    /// </summary>
+    private async Task SendSecretMessageViaMailboxAsync(SecretChatSession session, SecretChatMessage message, string text)
+    {
+        var publicKey = await ResolvePeerPublicKeyAsync(session);
+        if (string.IsNullOrWhiteSpace(publicKey))
+        {
+            message.Text = string.Empty;
+            message.State = SecretChatMessageState.Destroyed;
+            throw new InvalidOperationException("对方离线且公钥不可用，无法投递密语信箱。");
+        }
+
+        var protectedMessage = ProtectSecretText(text, publicKey);
+        var posted = await _secretMailbox.PostEnvelopeAsync(session.PeerDeviceId, new SecretMailboxEnvelope
+        {
+            Kind = "message",
+            MessageId = message.MessageId,
+            SessionId = session.SessionId,
+            FromDeviceId = DeviceId,
+            FromDisplayName = DisplayName,
+            FromMachineName = MachineName,
+            SenderPublicKey = _secretChatRsa.ToXmlString(false),
+            PostedAtUtc = DateTime.UtcNow,
+            CipherText = protectedMessage.CipherText,
+            EncryptedKey = protectedMessage.EncryptedKey,
+            Iv = protectedMessage.Iv,
+            Hmac = protectedMessage.Hmac,
+        });
+
+        if (!posted)
+        {
+            message.Text = string.Empty;
+            message.State = SecretChatMessageState.Destroyed;
+            throw new InvalidOperationException("密语信箱投递失败，请稍后重试。");
+        }
+
+        message.State = SecretChatMessageState.Posted;
+        session.StatusText = "对方离线，密语已投递信箱，对方上线后送达";
+        UpsertSecretContact(session.PeerDeviceId, session.PeerDisplayName, null, null);
+        ScheduleSecretSave();
+    }
+
+    /// <summary>
+    /// 解析对方公钥：会话缓存 → 本地联系人缓存 → 信箱公钥目录。
+    /// </summary>
+    private async Task<string> ResolvePeerPublicKeyAsync(SecretChatSession session)
+    {
+        var cached = GetPeerPublicKey(session);
+        if (!string.IsNullOrWhiteSpace(cached))
+        {
+            return cached;
+        }
+
+        lock (_secretContactSync)
+        {
+            var contact = _secretContacts.FirstOrDefault(item => string.Equals(item.DeviceId, session.PeerDeviceId, StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrWhiteSpace(contact?.PublicKeyXml))
+            {
+                return contact.PublicKeyXml;
+            }
+        }
+
+        return await _secretMailbox.GetPublicKeyAsync(session.PeerDeviceId);
     }
 
     /// <summary>
@@ -671,6 +757,7 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         message.ReadAtUtc = DateTime.UtcNow;
         DecrementSecretUnread(session);
         StartDestroyCountdown(session, message);
+        ScheduleSecretSave();
         await SendSecretReceiptAsync(session, message, "read", CancellationToken.None);
     }
 
@@ -844,6 +931,8 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         _discoveryService.AnnouncementReceived += HandlePeerAnnouncement;
         _discoveryService.Start();
 
+        _ = InitializeSecretChatAsync();
+
         _peerCleanupTimer.Change(TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(3));
         StatusText = $"文件传输已启动，监听端口 {ListenPort}";
         OnPropertyChanged(nameof(ListenPort));
@@ -904,6 +993,11 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
     {
         var peer = UpsertPeer(announcement, remoteEndPoint.Address.ToString(), false);
         peer.StatusText = peer.IsCompatible ? "在线" : "版本不兼容";
+        if (peer.IsCompatible && !string.IsNullOrWhiteSpace(peer.DeviceId))
+        {
+            UpsertSecretContact(peer.DeviceId, peer.DisplayName, peer.MachineName, peer.SecretChatPublicKey);
+        }
+
         OnPropertyChanged(nameof(OnlinePeerCount));
     }
 
@@ -1108,12 +1202,15 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         {
             MessageId = frame.MessageId,
             WireSessionId = frame.SessionId,
+            SenderDeviceId = frame.SenderDeviceId,
             Direction = SecretChatMessageDirection.Incoming,
             Text = UnprotectSecretText(frame),
             State = SecretChatMessageState.Unread,
         };
         session.Messages.Add(message);
         IncrementSecretUnread(session);
+        UpsertSecretContact(peerDeviceId, session.PeerDisplayName, frame.SenderMachineName, frame.SenderPublicKey);
+        ScheduleSecretSave();
 
         if (session.IsWindowActive)
         {
@@ -1281,6 +1378,13 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
             return;
         }
 
+        // 直连可达走 TCP；不可达或地址未知时改投对方信箱（对方上线后处理回执）
+        if (string.IsNullOrWhiteSpace(session.PeerAddress))
+        {
+            await PostReceiptViaMailboxAsync(session, message, receipt);
+            return;
+        }
+
         try
         {
             using (var client = new TcpClient())
@@ -1306,10 +1410,623 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         catch (Exception ex)
         {
             LanTransferLogger.LogError(ex, $"密语回执发送失败：{SafeSecretSessionId(session.SessionId)}");
+            await PostReceiptViaMailboxAsync(session, message, receipt);
         }
     }
 
-    private void StartDestroyCountdown(SecretChatSession session, SecretChatMessage message)
+    /// <summary>
+    /// 将回执以信封形式投递到原发送方的信箱（直连不可达时的兜底路径）。
+    /// 回执文件名按种类分离，避免 read/destroy/delivered 相互覆盖。
+    /// </summary>
+    private async Task PostReceiptViaMailboxAsync(SecretChatSession session, SecretChatMessage message, string receipt)
+    {
+        var targetDevice = message?.SenderDeviceId;
+        if (string.IsNullOrWhiteSpace(targetDevice) || string.Equals(targetDevice, DeviceId, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        await _secretMailbox.PostEnvelopeAsync(targetDevice, new SecretMailboxEnvelope
+        {
+            Kind = "receipt",
+            MessageId = message.MessageId,
+            FileName = Uri.EscapeDataString(message.MessageId) + "." + receipt + ".sec",
+            SessionId = string.IsNullOrWhiteSpace(message.WireSessionId) ? session?.SessionId : message.WireSessionId,
+            FromDeviceId = DeviceId,
+            Receipt = receipt,
+            PostedAtUtc = DateTime.UtcNow,
+            CountdownSeconds = string.Equals(receipt, "read", StringComparison.OrdinalIgnoreCase) && message.DestroyTotalSeconds > 0
+                ? message.DestroyTotalSeconds
+                : null,
+        });
+    }
+
+    /// <summary>
+    /// 拉取本机密语信箱并处理信封（消息入会话、回执更新状态）。服务启动与打开密语窗口时触发。
+    /// </summary>
+    public async Task PullSecretMailboxAsync()
+    {
+        if (Interlocked.Exchange(ref _mailboxBusy, 1) == 1)
+        {
+            return;
+        }
+
+        try
+        {
+            var envelopes = await _secretMailbox.PullEnvelopesAsync(DeviceId);
+            foreach (var envelope in envelopes)
+            {
+                var local = envelope;
+                await InvokeOnUiAsync(() =>
+                {
+                    if (string.Equals(local.Kind, "receipt", StringComparison.OrdinalIgnoreCase))
+                    {
+                        HandleMailboxReceipt(local);
+                    }
+                    else
+                    {
+                        HandleMailboxMessage(local);
+                    }
+                });
+
+                // 消息信封处理完毕后，向原发送方回投 delivered 回执（对方 📦 升级为已拉取）
+                if (string.Equals(local.Kind, "message", StringComparison.OrdinalIgnoreCase)
+                    && !string.IsNullOrWhiteSpace(local.FromDeviceId)
+                    && !string.Equals(local.FromDeviceId, DeviceId, StringComparison.OrdinalIgnoreCase))
+                {
+                    await PostReceiptViaMailboxAsync(null, new SecretChatMessage
+                    {
+                        MessageId = local.MessageId,
+                        WireSessionId = local.SessionId,
+                        SenderDeviceId = local.FromDeviceId,
+                    }, "delivered");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            LanTransferLogger.LogError(ex, "密语信箱处理失败");
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _mailboxBusy, 0);
+        }
+    }
+
+    private void HandleMailboxMessage(SecretMailboxEnvelope envelope)
+    {
+        if (envelope == null || string.IsNullOrWhiteSpace(envelope.MessageId) || string.IsNullOrWhiteSpace(envelope.FromDeviceId))
+        {
+            return;
+        }
+
+        var peerLabel = string.IsNullOrWhiteSpace(envelope.FromMachineName)
+            ? envelope.FromDisplayName
+            : $"{envelope.FromDisplayName} ({envelope.FromMachineName})";
+        var session = OpenSecretChatSession(
+            BuildSecretSessionKey(envelope.FromDeviceId, null, 0),
+            envelope.SessionId,
+            envelope.FromDeviceId,
+            peerLabel,
+            null,
+            0);
+        if (!string.IsNullOrWhiteSpace(envelope.SenderPublicKey))
+        {
+            SetPeerPublicKey(session, envelope.SenderPublicKey);
+        }
+
+        if (session.Messages.Any(message => string.Equals(message.MessageId, envelope.MessageId, StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        string text;
+        try
+        {
+            text = UnprotectSecretText(new LanSecretMessageFrame
+            {
+                CipherText = envelope.CipherText,
+                EncryptedKey = envelope.EncryptedKey,
+                Iv = envelope.Iv,
+                Hmac = envelope.Hmac,
+            });
+        }
+        catch (Exception ex)
+        {
+            LanTransferLogger.LogError(ex, "密语信箱信封解密失败，已丢弃");
+            return;
+        }
+
+        var mailboxMessage = new SecretChatMessage
+        {
+            MessageId = envelope.MessageId,
+            WireSessionId = envelope.SessionId,
+            SenderDeviceId = envelope.FromDeviceId,
+            Direction = SecretChatMessageDirection.Incoming,
+            Text = text,
+            State = SecretChatMessageState.Unread,
+            DestroyTotalSeconds = Math.Max(1, session.DestroyAfterReadSeconds),
+        };
+        session.Messages.Add(mailboxMessage);
+        IncrementSecretUnread(session);
+        UpsertSecretContact(envelope.FromDeviceId, session.PeerDisplayName, envelope.FromMachineName, envelope.SenderPublicKey);
+        session.StatusText = session.IsWindowActive
+            ? "收到离线密语（信箱），进入视线后开始计时"
+            : "收到离线密语，打开窗口阅读";
+        if (!session.IsWindowActive)
+        {
+            ToastService.ShowToast("收到密语", $"{session.PeerDisplayName} 的离线密语已从信箱送达", "Info");
+        }
+
+        ScheduleSecretSave();
+    }
+
+    private void HandleMailboxReceipt(SecretMailboxEnvelope envelope)
+    {
+        if (envelope == null || string.IsNullOrWhiteSpace(envelope.MessageId))
+        {
+            return;
+        }
+
+        SecretChatSession owner = null;
+        SecretChatMessage target = null;
+        lock (_secretChatSync)
+        {
+            foreach (var session in _secretChatSessions)
+            {
+                target = session.Messages.FirstOrDefault(message => string.Equals(message.MessageId, envelope.MessageId, StringComparison.OrdinalIgnoreCase));
+                if (target != null)
+                {
+                    owner = session;
+                    break;
+                }
+            }
+        }
+
+        if (owner == null || target == null)
+        {
+            return;
+        }
+
+        if (string.Equals(envelope.Receipt, "destroy", StringComparison.OrdinalIgnoreCase))
+        {
+            DestroySecretMessage(owner, target);
+            return;
+        }
+
+        if (string.Equals(envelope.Receipt, "delivered", StringComparison.OrdinalIgnoreCase))
+        {
+            if (target.State == SecretChatMessageState.Posted)
+            {
+                target.State = SecretChatMessageState.Sent;
+            }
+
+            target.MailboxPulled = true;
+            ScheduleSecretSave();
+            return;
+        }
+
+        MarkOutgoingSecretMessageReadFromMailbox(owner, target, envelope);
+    }
+
+    /// <summary>
+    /// 处理信箱送达的已读回执：按回执中的阅读时间与对方自毁时长计算剩余倒计时，与对方侧同步焚毁。
+    /// </summary>
+    private void MarkOutgoingSecretMessageReadFromMailbox(SecretChatSession session, SecretChatMessage message, SecretMailboxEnvelope envelope)
+    {
+        if (session == null || message == null || message.State == SecretChatMessageState.Destroyed)
+        {
+            return;
+        }
+
+        var theirTotal = envelope.CountdownSeconds.HasValue && envelope.CountdownSeconds.Value > 0
+            ? envelope.CountdownSeconds.Value
+            : Math.Max(1, session.DestroyAfterReadSeconds > 0 ? session.DestroyAfterReadSeconds : 5);
+        var readAtUtc = envelope.PostedAtUtc;
+
+        if (message.State != SecretChatMessageState.Read)
+        {
+            message.State = SecretChatMessageState.Read;
+            message.ReadAtUtc = readAtUtc;
+            message.DestroyTotalSeconds = theirTotal;
+        }
+
+        if (message.DestroyCountdownSeconds > 0)
+        {
+            // 已在倒计时（更早的回执已处理）
+            return;
+        }
+
+        var remaining = (int)Math.Floor(theirTotal - (DateTime.UtcNow - readAtUtc).TotalSeconds);
+        if (remaining <= 0)
+        {
+            // 对方倒计时已走完，本地立即焚毁
+            DestroySecretMessage(session, message);
+            return;
+        }
+
+        StartDestroyCountdown(session, message, remaining);
+    }
+
+    /// <summary>
+    /// 密语异步初始化：恢复本地会话与联系人，发布公钥到信箱目录，并拉取待收信封。
+    /// </summary>
+    private async Task InitializeSecretChatAsync()
+    {
+        try
+        {
+            foreach (var contact in _secretContactStore.LoadContacts())
+            {
+                if (contact != null && !string.IsNullOrWhiteSpace(contact.DeviceId))
+                {
+                    _secretContacts.Add(contact);
+                }
+            }
+        }
+        catch
+        {
+        }
+
+        RestoreSecretSessions();
+        await _secretMailbox.EnsureDirectoriesAsync();
+        await _secretMailbox.PublishPublicKeyAsync(DeviceId, _secretChatRsa.ToXmlString(false));
+        await PullSecretMailboxAsync();
+        StartSecretMailboxPolling();
+    }
+
+    /// <summary>
+    /// 启动信箱后台探测：按设置频率周期检查信箱（空箱仅一次目录列表，无下载）；有密语窗口打开或存在未读时加速到 20 秒。设置为 0 时不启动。
+    /// </summary>
+    private void StartSecretMailboxPolling()
+    {
+        _secretMailboxPollSeconds = LoadSecretMailboxPollSeconds();
+        if (_secretMailboxPollSeconds <= 0)
+        {
+            return;
+        }
+
+        try
+        {
+            _secretMailboxPollTimer.Change(ComputeMailboxPollDelay(), Timeout.InfiniteTimeSpan);
+        }
+        catch
+        {
+            // 计时器已释放时忽略
+        }
+    }
+
+    /// <summary>
+    /// 读取信箱检查频率设置：仅接受 0（关闭）/30/60/120，非法值回退为 60。
+    /// </summary>
+    /// <returns>检查频率（秒）。</returns>
+    private int LoadSecretMailboxPollSeconds()
+    {
+        try
+        {
+            var value = _dataPersistenceService.LoadSettings()?.LanTransferSecretMailboxPollSeconds ?? 60;
+            return value == 0 || value == 30 || value == 60 || value == 120 ? value : 60;
+        }
+        catch
+        {
+            return 60;
+        }
+    }
+
+    /// <summary>
+    /// 计算下一次探测延迟：有密语窗口打开或任意未读时 20 秒（加速触达回执与后续消息），否则取设置频率。
+    /// </summary>
+    /// <returns>下次探测延迟；关闭时为无限。</returns>
+    private TimeSpan ComputeMailboxPollDelay()
+    {
+        if (_secretMailboxPollSeconds <= 0)
+        {
+            return Timeout.InfiniteTimeSpan;
+        }
+
+        bool urgent;
+        lock (_secretChatSync)
+        {
+            urgent = _secretChatSessions.Any(session => session.IsWindowOpen || session.UnreadCount > 0);
+        }
+
+        return TimeSpan.FromSeconds(urgent ? 20 : _secretMailboxPollSeconds);
+    }
+
+    private async void RunSecretMailboxPoll()
+    {
+        try
+        {
+            await PullSecretMailboxAsync();
+        }
+        catch
+        {
+        }
+        finally
+        {
+            try
+            {
+                _secretMailboxPollTimer.Change(ComputeMailboxPollDelay(), Timeout.InfiniteTimeSpan);
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    /// <summary>
+    /// 从本地加密快照恢复密语会话：未销毁消息按原状态恢复，已读未焚完的继续倒计时。
+    /// </summary>
+    private void RestoreSecretSessions()
+    {
+        foreach (var snapshot in _secretContactStore.LoadSessions())
+        {
+            if (snapshot == null || string.IsNullOrWhiteSpace(snapshot.SessionId))
+            {
+                continue;
+            }
+
+            try
+            {
+                var session = new SecretChatSession
+                {
+                    SessionId = snapshot.SessionId,
+                    SessionKey = snapshot.SessionKey,
+                    PeerDeviceId = snapshot.PeerDeviceId,
+                    PeerDisplayName = string.IsNullOrWhiteSpace(snapshot.PeerDisplayName) ? "未知同事" : snapshot.PeerDisplayName,
+                    PeerAddress = snapshot.PeerAddress,
+                    StatusText = "会话已恢复",
+                    DestroyAfterReadSeconds = GetSecretDestroySeconds(),
+                };
+                foreach (var item in snapshot.Messages)
+                {
+                    if (item == null || string.IsNullOrWhiteSpace(item.MessageId))
+                    {
+                        continue;
+                    }
+
+                    var message = new SecretChatMessage
+                    {
+                        MessageId = item.MessageId,
+                        WireSessionId = item.WireSessionId,
+                        SenderDeviceId = item.SenderDeviceId,
+                        Direction = Enum.TryParse(item.Direction, out SecretChatMessageDirection direction) ? direction : SecretChatMessageDirection.Incoming,
+                        Text = item.Text,
+                        CreatedAtUtc = item.CreatedAtUtc == default ? DateTime.UtcNow : item.CreatedAtUtc,
+                        ReadAtUtc = item.ReadAtUtc,
+                        DestroyTotalSeconds = item.DestroyTotalSeconds > 0 ? item.DestroyTotalSeconds : 5,
+                        MailboxPulled = item.MailboxPulled,
+                    };
+                    if (Enum.TryParse(item.State, out SecretChatMessageState state))
+                    {
+                        message.State = state;
+                    }
+
+                    session.Messages.Add(message);
+                    if (message.Direction == SecretChatMessageDirection.Incoming && message.State == SecretChatMessageState.Unread)
+                    {
+                        session.UnreadCount++;
+                    }
+                }
+
+                lock (_secretChatSync)
+                {
+                    _secretChatSessions.Add(session);
+                }
+
+                if (!string.IsNullOrWhiteSpace(snapshot.PeerPublicKeyXml))
+                {
+                    SetPeerPublicKey(session, snapshot.PeerPublicKeyXml);
+                }
+
+                SyncPeerUnreadCount(FindPeerForSession(session));
+                foreach (var message in session.Messages.Where(item => item.State == SecretChatMessageState.Read).ToList())
+                {
+                    StartDestroyCountdown(session, message);
+                }
+            }
+            catch (Exception ex)
+            {
+                LanTransferLogger.LogError(ex, "密语会话恢复失败");
+            }
+        }
+    }
+
+    /// <summary>
+    /// 更新或新增密语联系人记录（设备号、名称、公钥缓存），随后统一随快照落盘。
+    /// </summary>
+    private void UpsertSecretContact(string deviceId, string displayName, string machineName, string publicKeyXml)
+    {
+        if (string.IsNullOrWhiteSpace(deviceId))
+        {
+            return;
+        }
+
+        lock (_secretContactSync)
+        {
+            var contact = _secretContacts.FirstOrDefault(item => string.Equals(item.DeviceId, deviceId, StringComparison.OrdinalIgnoreCase));
+            if (contact == null)
+            {
+                contact = new SecretContact { DeviceId = deviceId };
+                _secretContacts.Add(contact);
+            }
+
+            if (!string.IsNullOrWhiteSpace(displayName))
+            {
+                contact.DisplayName = displayName;
+            }
+
+            if (!string.IsNullOrWhiteSpace(machineName))
+            {
+                contact.MachineName = machineName;
+            }
+
+            if (!string.IsNullOrWhiteSpace(publicKeyXml))
+            {
+                contact.PublicKeyXml = publicKeyXml;
+            }
+
+            contact.LastSeenUtc = DateTime.UtcNow;
+        }
+
+        ScheduleSecretSave();
+    }
+
+    /// <summary>
+    /// 获取离线联系人（当前不在线的已通信联系人），供列表展示。
+    /// </summary>
+    /// <returns>离线联系人列表。</returns>
+    public List<SecretContact> GetOfflineSecretContacts()
+    {
+        lock (_secretContactSync)
+        {
+            return _secretContacts
+                .Where(contact => !_peers.Any(peer => peer.IsOnline && string.Equals(peer.DeviceId, contact.DeviceId, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+        }
+    }
+
+    /// <summary>
+    /// 获取指定设备的密语未读总数（含离线联系人的会话）。
+    /// </summary>
+    /// <param name="deviceId">设备标识。</param>
+    /// <returns>未读消息数。</returns>
+    public int GetSecretUnreadCountForDevice(string deviceId)
+    {
+        if (string.IsNullOrWhiteSpace(deviceId))
+        {
+            return 0;
+        }
+
+        lock (_secretChatSync)
+        {
+            return _secretChatSessions
+                .Where(session => string.Equals(session.PeerDeviceId, deviceId, StringComparison.OrdinalIgnoreCase))
+                .Sum(session => session.UnreadCount);
+        }
+    }
+
+    /// <summary>
+    /// 与联系人发起密语会话：在线走直连会话，离线建立信箱模式会话（发送时投递信箱）。
+    /// </summary>
+    /// <param name="contact">目标联系人。</param>
+    /// <returns>密语会话。</returns>
+    public Task<SecretChatSession> RequestSecretChatWithContactAsync(SecretContact contact)
+    {
+        if (contact == null || string.IsNullOrWhiteSpace(contact.DeviceId))
+        {
+            throw new InvalidOperationException("联系人不可用。");
+        }
+
+        var peer = _peers.FirstOrDefault(item => string.Equals(item.DeviceId, contact.DeviceId, StringComparison.OrdinalIgnoreCase));
+        if (peer != null && peer.IsOnline)
+        {
+            return RequestSecretChatAsync(peer);
+        }
+
+        var session = OpenSecretChatSession(
+            BuildSecretSessionKey(contact.DeviceId, null, 0),
+            null,
+            contact.DeviceId,
+            contact.DisplayLabel,
+            null,
+            0);
+        if (!string.IsNullOrWhiteSpace(contact.PublicKeyXml))
+        {
+            SetPeerPublicKey(session, contact.PublicKeyXml);
+        }
+
+        return Task.FromResult(session);
+    }
+
+    /// <summary>
+    /// 立即同步落盘密语联系人与会话快照，供应用退出前调用，防止防抖窗口内的最后变更丢失。
+    /// </summary>
+    public void FlushSecretData()
+    {
+        try
+        {
+            _secretSaveTimer?.Dispose();
+        }
+        catch
+        {
+        }
+
+        SaveSecretSnapshot();
+    }
+
+    /// <summary>
+    /// 安排一次防抖的密语快照落盘（2 秒内多次变更合并为一次）。
+    /// 已有挂起的保存时不重置倒计时，避免高频广播把保存无限推迟（饿死）。
+    /// </summary>
+    private void ScheduleSecretSave()
+    {
+        if (Interlocked.Exchange(ref _secretSavePending, 1) == 1)
+        {
+            return;
+        }
+
+        try
+        {
+            _secretSaveTimer.Change(TimeSpan.FromSeconds(2), Timeout.InfiniteTimeSpan);
+        }
+        catch
+        {
+            Interlocked.Exchange(ref _secretSavePending, 0);
+        }
+    }
+
+    /// <summary>
+    /// 将未销毁的密语会话与联系人加密落盘：消息内容整体 DPAPI 保护，已销毁消息只留空占位。
+    /// </summary>
+    private void SaveSecretSnapshot()
+    {
+        Interlocked.Exchange(ref _secretSavePending, 0);
+        try
+        {
+            List<SecretSessionSnapshot> snapshot;
+            lock (_secretChatSync)
+            {
+                snapshot = _secretChatSessions
+                    .Where(session => !session.IsSelfTest)
+                    .Select(session => new SecretSessionSnapshot
+                    {
+                        SessionId = session.SessionId,
+                        SessionKey = session.SessionKey,
+                        PeerDeviceId = session.PeerDeviceId,
+                        PeerDisplayName = session.PeerDisplayName,
+                        PeerAddress = session.PeerAddress,
+                        PeerPublicKeyXml = GetPeerPublicKey(session),
+                        IsSelfTest = false,
+                        Messages = session.Messages.Select(message => new SecretMessageSnapshot
+                        {
+                            MessageId = message.MessageId,
+                            WireSessionId = message.WireSessionId,
+                            SenderDeviceId = message.SenderDeviceId,
+                            Direction = message.Direction.ToString(),
+                            State = message.State.ToString(),
+                            Text = message.State == SecretChatMessageState.Destroyed ? string.Empty : message.Text,
+                            CreatedAtUtc = message.CreatedAtUtc,
+                            ReadAtUtc = message.ReadAtUtc,
+                            DestroyTotalSeconds = message.DestroyTotalSeconds,
+                            MailboxPulled = message.MailboxPulled,
+                        }).ToList(),
+                    })
+                    .ToList();
+            }
+
+            _secretContactStore.SaveSessions(snapshot);
+            lock (_secretContactSync)
+            {
+                _secretContactStore.SaveContacts(_secretContacts.ToList());
+            }
+        }
+        catch (Exception ex)
+        {
+            LanTransferLogger.LogError(ex, "密语快照保存失败");
+        }
+    }
+
+    private void StartDestroyCountdown(SecretChatSession session, SecretChatMessage message, int? remainingSeconds = null)
     {
         if (message == null || message.State == SecretChatMessageState.Destroyed || message.DestroyCountdownSeconds > 0)
         {
@@ -1317,8 +2034,11 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         }
 
         var total = Math.Max(1, session?.DestroyAfterReadSeconds > 0 ? session.DestroyAfterReadSeconds : 5);
+        var remaining = remainingSeconds.HasValue
+            ? Math.Min(total, Math.Max(1, remainingSeconds.Value))
+            : total;
         message.DestroyTotalSeconds = total;
-        message.DestroyCountdownSeconds = total;
+        message.DestroyCountdownSeconds = remaining;
         _ = Task.Run(async () =>
         {
             while (message.DestroyCountdownSeconds > 0 && message.State != SecretChatMessageState.Destroyed)
@@ -1352,6 +2072,7 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         message.Text = string.Empty;
         message.DestroyCountdownSeconds = 0;
         message.State = SecretChatMessageState.Destroyed;
+        ScheduleSecretSave();
     }
 
     private void MarkOutgoingSecretMessageRead(SecretChatSession session, SecretChatMessage message)
@@ -1459,12 +2180,13 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
 
     private static string BuildSecretSessionKey(string deviceId, string address, int port)
     {
-        var normalizedAddress = (address ?? string.Empty).Trim().ToLowerInvariant();
+        // 有设备标识时按设备收敛：同一同事在线直连与离线信箱共用一个会话
         if (!string.IsNullOrWhiteSpace(deviceId))
         {
-            return $"device:{deviceId.Trim().ToLowerInvariant()}|endpoint:{normalizedAddress}:{port}";
+            return "device:" + deviceId.Trim().ToLowerInvariant();
         }
 
+        var normalizedAddress = (address ?? string.Empty).Trim().ToLowerInvariant();
         return $"endpoint:{normalizedAddress}:{port}";
     }
 

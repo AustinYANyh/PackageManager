@@ -182,14 +182,26 @@
                                 <RowDefinition Height="*"/>
                             </Grid.RowDefinitions>
 
-                            <TextBlock Text="在线设备"
-                                       FontWeight="Bold"
-                                       Foreground="#5E6A63"/>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="同事"
+                                           FontWeight="Bold"
+                                           Foreground="#5E6A63"/>
+                                <TextBlock Grid.Column="2"
+                                           Text="{Binding PeerListSummaryText}"
+                                           Foreground="#8A948D"
+                                           FontSize="11"
+                                           VerticalAlignment="Center"/>
+                            </Grid>
 
                             <ListBox Grid.Row="1"
                                      Margin="0,8,0,0"
-                                     ItemsSource="{Binding Service.Peers}"
-                                     SelectedItem="{Binding SelectedPeer, Mode=TwoWay}"
+                                     ItemsSource="{Binding UnifiedPeers}"
+                                     SelectedItem="{Binding SelectedPeerItem, Mode=TwoWay}"
                                      Background="Transparent"
                                      BorderThickness="0"
                                      ItemContainerStyle="{StaticResource StretchListBoxItemStyle}"
@@ -205,6 +217,15 @@
                                                 BorderThickness="1"
                                                 CornerRadius="14"
                                                 HorizontalAlignment="Stretch">
+                                            <Border.Style>
+                                                <Style TargetType="Border">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding IsOffline}" Value="True">
+                                                            <Setter Property="Opacity" Value="0.68"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </Border.Style>
                                             <Grid>
                                                 <Grid.RowDefinitions>
                                                     <RowDefinition Height="Auto"/>
@@ -212,10 +233,37 @@
                                                     <RowDefinition Height="Auto"/>
                                                 </Grid.RowDefinitions>
 
-                                                <TextBlock Text="{Binding DisplayLabel}"
-                                                           FontSize="15"
-                                                           FontWeight="SemiBold"
-                                                           TextTrimming="CharacterEllipsis"/>
+                                                <Grid Grid.Row="0">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="Auto"/>
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Text="{Binding DisplayLabel}"
+                                                               FontSize="15"
+                                                               FontWeight="SemiBold"
+                                                               TextTrimming="CharacterEllipsis"/>
+                                                    <Border Grid.Column="1"
+                                                            Margin="10,0,0,0"
+                                                            Padding="7,2"
+                                                            CornerRadius="8"
+                                                            Background="#E2F3EE"
+                                                            Visibility="{Binding IsOnline, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                                        <TextBlock Text="● 在线"
+                                                                   FontSize="10.5"
+                                                                   FontWeight="SemiBold"
+                                                                   Foreground="#1A6A5F"/>
+                                                    </Border>
+                                                    <Border Grid.Column="1"
+                                                            Margin="10,0,0,0"
+                                                            Padding="7,2"
+                                                            CornerRadius="8"
+                                                            Background="#EEF0EC"
+                                                            Visibility="{Binding IsOffline, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                                        <TextBlock Text="◌ 离线 · 信箱可达"
+                                                                   FontSize="10.5"
+                                                                   Foreground="#8A948D"/>
+                                                    </Border>
+                                                </Grid>
 
                                                 <Grid Grid.Row="1" Margin="0,6,0,0">
                                                     <Grid.ColumnDefinitions>
@@ -223,23 +271,23 @@
                                                         <ColumnDefinition Width="Auto"/>
                                                     </Grid.ColumnDefinitions>
                                                     <TextBlock Grid.Column="0"
-                                                               Text="{Binding EndpointDisplay}"
-                                                               Foreground="#5E6A63"
-                                                               TextTrimming="CharacterEllipsis"/>
+                                                                Text="{Binding SubLineText}"
+                                                                Foreground="#5E6A63"
+                                                                TextTrimming="CharacterEllipsis"/>
                                                     <TextBlock Grid.Column="1"
-                                                               Margin="12,0,0,0"
-                                                               Text="{Binding StatusSummaryText}"
-                                                               Foreground="#1A6A5F"
-                                                               TextTrimming="CharacterEllipsis"/>
+                                                                Margin="12,0,0,0"
+                                                                Text="{Binding StatusLineText}"
+                                                                Foreground="#1A6A5F"
+                                                                TextTrimming="CharacterEllipsis"/>
                                                 </Grid>
                                                 <Grid Grid.Row="2" Margin="0,6,0,0">
                                                     <Grid.ColumnDefinitions>
                                                         <ColumnDefinition Width="*"/>
                                                         <ColumnDefinition Width="Auto"/>
                                                     </Grid.ColumnDefinitions>
-                                                    <TextBlock Text="{Binding SecretChatText}"
-                                                               Foreground="#7D6A1A"
-                                                               FontSize="12"/>
+                                                    <TextBlock Text="{Binding SecretStatusText}"
+                                                                Foreground="#7D6A1A"
+                                                                FontSize="12"/>
                                                     <Border Grid.Column="1"
                                                             MinWidth="22"
                                                             Height="20"
@@ -248,12 +296,12 @@
                                                             Background="#E64D3D"
                                                             CornerRadius="10"
                                                             Visibility="{Binding HasSecretUnread, Converter={StaticResource BooleanToVisibilityConverter}}">
-                                                        <TextBlock Text="{Binding SecretChatBadgeText}"
-                                                                   Foreground="White"
-                                                                   FontSize="11"
-                                                                   FontWeight="Bold"
-                                                                   HorizontalAlignment="Center"
-                                                                   VerticalAlignment="Center"/>
+                                                        <TextBlock Text="{Binding SecretBadgeText}"
+                                                                    Foreground="White"
+                                                                    FontSize="11"
+                                                                    FontWeight="Bold"
+                                                                    HorizontalAlignment="Center"
+                                                                    VerticalAlignment="Center"/>
                                                     </Border>
                                                 </Grid>
                                             </Grid>

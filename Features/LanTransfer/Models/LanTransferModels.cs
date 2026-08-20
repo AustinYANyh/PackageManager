@@ -141,7 +141,9 @@ public sealed class LanPeerInfo : LanTransferBindableBase
         {
             if (SetProperty(ref isOnline, value))
             {
+                OnPropertyChanged(nameof(IsOnline));
                 OnPropertyChanged(nameof(CanSend));
+                OnPropertyChanged(nameof(CanStartSecretChat));
                 OnPropertyChanged(nameof(OnlineText));
                 OnPropertyChanged(nameof(StatusSummaryText));
             }
@@ -313,6 +315,8 @@ public enum SecretChatMessageState
     Sending,
     /// <summary>已发送。</summary>
     Sent,
+    /// <summary>已投递信箱（对方离线）。</summary>
+    Posted,
     /// <summary>未读。</summary>
     Unread,
     /// <summary>已读。</summary>
@@ -336,6 +340,9 @@ public sealed class SecretChatMessage : LanTransferBindableBase
 
     /// <summary>线路层会话标识。</summary>
     public string WireSessionId { get; set; }
+
+    /// <summary>发送方设备标识，用于回执信箱路由。</summary>
+    public string SenderDeviceId { get; set; }
 
     /// <summary>消息方向。</summary>
     public SecretChatMessageDirection Direction { get; set; }
@@ -396,6 +403,21 @@ public sealed class SecretChatMessage : LanTransferBindableBase
         }
     }
 
+    private bool mailboxPulled;
+
+    /// <summary>信箱投递的消息是否已被对方拉取（收到 delivered 回执）。</summary>
+    public bool MailboxPulled
+    {
+        get => mailboxPulled;
+        set
+        {
+            if (SetProperty(ref mailboxPulled, value))
+            {
+                OnPropertyChanged(nameof(StateText));
+            }
+        }
+    }
+
     /// <summary>消息是否已销毁。</summary>
     public bool IsDestroyed => State == SecretChatMessageState.Destroyed;
 
@@ -436,12 +458,17 @@ public sealed class SecretChatMessage : LanTransferBindableBase
                     return "发送中";
                 }
 
+                if (State == SecretChatMessageState.Posted)
+                {
+                    return "📦 已投递 · 对方离线";
+                }
+
                 if (State == SecretChatMessageState.Read)
                 {
                     return DestroyCountdownSeconds > 0 ? $"✓✓ 已读 · {DestroyCountdownSeconds}s 后销毁" : "✓✓ 已读";
                 }
 
-                return "✓ 已送达";
+                return MailboxPulled ? "✓ 已送达 · 对方已拉取" : "✓ 已送达";
             }
 
             if (State == SecretChatMessageState.Read)

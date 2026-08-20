@@ -9,6 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Threading;
 using Microsoft.Win32;
 using PackageManager.Services;
 
@@ -21,7 +22,6 @@ public partial class LanTransferPage : Page, INotifyPropertyChanged, ICentralPag
 {
     private readonly LanTransferService _service;
     private CancellationTokenSource _sendCancellationTokenSource;
-    private LanPeerInfo _selectedPeer;
     private QueuedTransferSource _selectedQueuedItem;
     private LanTransferSession _selectedActiveTransfer;
     private readonly Dictionary<string, SecretChatWindow> _secretChatWindows = new Dictionary<string, SecretChatWindow>(StringComparer.OrdinalIgnoreCase);
@@ -38,7 +38,67 @@ public partial class LanTransferPage : Page, INotifyPropertyChanged, ICentralPag
         InitializeComponent();
         DataContext = this;
         HookServiceEvents();
+        Loaded += LanTransferPage_Loaded;
+        _peerListRefreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(20) };
+        _peerListRefreshTimer.Tick += (_, __) => RebuildPeerList();
+        _peerListRefreshTimer.Start();
+        RebuildPeerList();
     }
+
+    private async void LanTransferPage_Loaded(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            await Service.PullSecretMailboxAsync();
+        }
+        catch
+        {
+        }
+    }
+
+    private readonly DispatcherTimer _peerListRefreshTimer;
+    private PeerListItem _selectedPeerItem;
+    private readonly Dictionary<string, PeerListItem> _peerItemPool = new Dictionary<string, PeerListItem>(StringComparer.OrdinalIgnoreCase);
+    private bool _syncingPeerList;
+
+    /// <summary>
+    /// 获取统一同事列表（在线设备 + 离线联系人，徽标区分）。
+    /// </summary>
+    public ObservableCollection<PeerListItem> UnifiedPeers { get; } = new ObservableCollection<PeerListItem>();
+
+    /// <summary>
+    /// 获取或设置当前选中的同事条目（在线或离线）。
+    /// </summary>
+    public PeerListItem SelectedPeerItem
+    {
+        get => _selectedPeerItem;
+        set
+        {
+            var previous = _selectedPeerItem;
+            if (SetProperty(ref _selectedPeerItem, value))
+            {
+                if (previous != null)
+                {
+                    previous.PropertyChanged -= PeerItem_PropertyChanged;
+                }
+
+                if (_selectedPeerItem != null)
+                {
+                    _selectedPeerItem.PropertyChanged += PeerItem_PropertyChanged;
+                }
+
+                OnPropertyChanged(nameof(SelectedPeer));
+                OnPropertyChanged(nameof(SelectedPeerSummaryTitle));
+                OnPropertyChanged(nameof(SelectedPeerSummaryText));
+                OnPropertyChanged(nameof(SendTargetSummaryText));
+            }
+        }
+    }
+
+    /// <summary>
+    /// 获取当前选中条目对应的在线对端；离线联系人时为 null。
+    /// </summary>
+    public LanPeerInfo SelectedPeer => SelectedPeerItem?.Peer;
 
     /// <summary>
     /// 请求退出当前页面的导航事件。
@@ -57,34 +117,6 @@ public partial class LanTransferPage : Page, INotifyPropertyChanged, ICentralPag
     /// 获取待发送文件的队列集合。
     /// </summary>
     public ObservableCollection<QueuedTransferSource> QueuedItems { get; } = new ObservableCollection<QueuedTransferSource>();
-
-    /// <summary>
-    /// 获取或设置当前选中的远程对等端。
-    /// </summary>
-    public LanPeerInfo SelectedPeer
-    {
-        get => _selectedPeer;
-        set
-        {
-            var previous = _selectedPeer;
-            if (SetProperty(ref _selectedPeer, value))
-            {
-                if (previous != null)
-                {
-                    previous.PropertyChanged -= SelectedPeer_PropertyChanged;
-                }
-
-                if (_selectedPeer != null)
-                {
-                    _selectedPeer.PropertyChanged += SelectedPeer_PropertyChanged;
-                }
-
-                OnPropertyChanged(nameof(SelectedPeerSummaryTitle));
-                OnPropertyChanged(nameof(SelectedPeerSummaryText));
-                OnPropertyChanged(nameof(SendTargetSummaryText));
-            }
-        }
-    }
 
     /// <summary>
     /// 获取或设置当前选中的队列项。
@@ -121,25 +153,25 @@ public partial class LanTransferPage : Page, INotifyPropertyChanged, ICentralPag
     /// <summary>
     /// 获取选中接收方的摘要标题。
     /// </summary>
-    public string SelectedPeerSummaryTitle => SelectedPeer?.DisplayLabel ?? "未选择接收方";
+    public string SelectedPeerSummaryTitle => SelectedPeerItem?.DisplayLabel ?? "未选择接收方";
 
     /// <summary>
     /// 获取选中接收方的详细信息摘要。
     /// </summary>
-    public string SelectedPeerSummaryText => SelectedPeer == null
-        ? "先在左侧选择在线设备，或手动输入 IP / 主机名连接。"
-        : SelectedPeer.SecretUnreadCount > 0
-            ? $"{SelectedPeer.EndpointDisplay} · {SelectedPeer.StatusSummaryText} · 密语未读 {SelectedPeer.SecretUnreadCount} 条"
-            : $"{SelectedPeer.EndpointDisplay} · {SelectedPeer.StatusSummaryText}";
+    public string SelectedPeerSummaryText => SelectedPeerItem == null
+        ? "先在左侧选择在线同事，或手动输入 IP / 主机名连接。"
+        : SelectedPeerItem.IsOnline
+            ? $"{SelectedPeerItem.SubLineText} · {SelectedPeerItem.StatusLineText}"
+            : $"离线 · 密语走信箱投递 · {SelectedPeerItem.StatusLineText}";
 
     /// <summary>
     /// 获取发送目标摘要文本。
     /// </summary>
-    public string SendTargetSummaryText => SelectedPeer == null
-        ? "请选择左侧设备后再发送。"
-        : SelectedPeer.SecretUnreadCount > 0
-            ? $"将发送到：{SelectedPeer.DisplayLabel} · 密语未读 {SelectedPeer.SecretUnreadCount} 条"
-            : $"将发送到：{SelectedPeer.DisplayLabel}";
+    public string SendTargetSummaryText => SelectedPeerItem == null
+        ? "请选择左侧同事后再发送。"
+        : SelectedPeerItem.IsOnline
+            ? $"将发送到：{SelectedPeerItem.DisplayLabel}"
+            : $"将发送到：{SelectedPeerItem.DisplayLabel} · 离线，仅支持密语信箱";
 
     /// <summary>
     /// 获取待确认请求的摘要文本。
@@ -168,6 +200,19 @@ public partial class LanTransferPage : Page, INotifyPropertyChanged, ICentralPag
     public string LocalSummaryText => $"本机：{Service.DisplayName} · 机器名：{Service.MachineName} · 在线用户：{Service.OnlinePeerCount} · 监听端口：{Service.ListenPort}";
 
     /// <summary>
+    /// 获取同事列表的计数摘要（在线 x · 离线 y）。
+    /// </summary>
+    public string PeerListSummaryText
+    {
+        get
+        {
+            var online = UnifiedPeers.Count(item => item.IsOnline);
+            var offline = UnifiedPeers.Count - online;
+            return offline > 0 ? $"在线 {online} · 离线 {offline}" : $"在线 {online}";
+        }
+    }
+
+    /// <summary>
     /// 获取收件箱路径的摘要文本。
     /// </summary>
     public string InboxSummaryText => $"收件箱：{Service.InboxPath}";
@@ -190,27 +235,30 @@ public partial class LanTransferPage : Page, INotifyPropertyChanged, ICentralPag
     private void HookServiceEvents()
     {
         Service.PropertyChanged += Service_PropertyChanged;
-        Service.Peers.CollectionChanged += (_, __) => OnPropertyChanged(nameof(LocalSummaryText));
+        Service.Peers.CollectionChanged += (_, __) =>
+        {
+            OnPropertyChanged(nameof(LocalSummaryText));
+            OnPropertyChanged(nameof(PeerListSummaryText));
+            RebuildPeerList();
+        };
         Service.PendingRequests.CollectionChanged += (_, __) => OnPropertyChanged(nameof(PendingRequestSummaryText));
         Service.ActiveTransfers.CollectionChanged += (_, __) => OnPropertyChanged(nameof(ActiveTransferSummaryText));
         Service.TransferHistory.CollectionChanged += (_, __) => OnPropertyChanged(nameof(HistorySummaryText));
         QueuedItems.CollectionChanged += (_, __) => OnPropertyChanged(nameof(QueueSummaryText));
     }
 
-    private void SelectedPeer_PropertyChanged(object sender, PropertyChangedEventArgs e)
+    private void PeerItem_PropertyChanged(object sender, PropertyChangedEventArgs e)
     {
-        if ((e.PropertyName == nameof(LanPeerInfo.DisplayLabel))
-            || (e.PropertyName == nameof(LanPeerInfo.EndpointDisplay))
-            || (e.PropertyName == nameof(LanPeerInfo.StatusText))
-            || (e.PropertyName == nameof(LanPeerInfo.LastSeenText))
-            || (e.PropertyName == nameof(LanPeerInfo.StatusSummaryText))
-            || (e.PropertyName == nameof(LanPeerInfo.SupportsSecretChat))
-            || (e.PropertyName == nameof(LanPeerInfo.SecretUnreadCount)))
+        if (!_syncingPeerList && e.PropertyName == nameof(PeerListItem.IsOnline))
         {
-            OnPropertyChanged(nameof(SelectedPeerSummaryTitle));
-            OnPropertyChanged(nameof(SelectedPeerSummaryText));
-            OnPropertyChanged(nameof(SendTargetSummaryText));
+            // 在线/离线翻转：立即重排分组（Move 保持选中）
+            RebuildPeerList();
+            return;
         }
+
+        OnPropertyChanged(nameof(SelectedPeerSummaryTitle));
+        OnPropertyChanged(nameof(SelectedPeerSummaryText));
+        OnPropertyChanged(nameof(SendTargetSummaryText));
     }
 
     private void Service_PropertyChanged(object sender, PropertyChangedEventArgs e)
@@ -233,7 +281,10 @@ public partial class LanTransferPage : Page, INotifyPropertyChanged, ICentralPag
         try
         {
             var peer = await Service.ConnectManualPeerAsync(ManualAddress);
-            SelectedPeer = peer;
+            RebuildPeerList();
+            SelectedPeerItem = UnifiedPeers.FirstOrDefault(item => item.IsOnline
+                                                                   && string.Equals(item.DeviceId, peer.DeviceId, StringComparison.OrdinalIgnoreCase))
+                               ?? UnifiedPeers.FirstOrDefault(item => item.IsOnline);
             MessageBox.Show("手动连接成功。", "文件传输", MessageBoxButton.OK, MessageBoxImage.Information);
         }
         catch (Exception ex)
@@ -281,9 +332,15 @@ public partial class LanTransferPage : Page, INotifyPropertyChanged, ICentralPag
 
     private async void SendButton_Click(object sender, RoutedEventArgs e)
     {
-        if (SelectedPeer == null)
+        if (SelectedPeerItem == null)
         {
-            MessageBox.Show("请先选择一个在线设备。", "文件传输", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("请先选择一个同事。", "文件传输", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (!SelectedPeerItem.IsOnline)
+        {
+            MessageBox.Show("当前选中的是离线同事，仅支持密语；文件传输请选择在线设备。", "文件传输", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -311,23 +368,132 @@ public partial class LanTransferPage : Page, INotifyPropertyChanged, ICentralPag
         }
     }
 
+    /// <summary>
+    /// 同步统一同事列表：包装对象按设备号常驻复用，在线/离线翻转仅更新同一对象，
+    /// 选中状态因此跨状态切换存活；排序用 Move 保持选中不丢失。
+    /// </summary>
+    public void RebuildPeerList()
+    {
+        if (_syncingPeerList)
+        {
+            return;
+        }
+
+        _syncingPeerList = true;
+        try
+        {
+            var desired = new List<PeerListItem>();
+
+            // 全部已发现设备（在线与刚离线的），包装常驻
+            foreach (var peer in Service.Peers.Where(peer => peer != null && !string.IsNullOrWhiteSpace(peer.DeviceId)))
+            {
+                var wrapper = GetOrCreatePeerItem(peer.DeviceId);
+                wrapper.UpdatePeer(peer);
+                desired.Add(wrapper);
+            }
+
+            // 离线联系人：设备未出现在 Peers 中的才补（同设备已在 peer 包装里）
+            foreach (var contact in Service.GetOfflineSecretContacts())
+            {
+                if (desired.Any(item => string.Equals(item.DeviceId, contact.DeviceId, StringComparison.OrdinalIgnoreCase)))
+                {
+                    continue;
+                }
+
+                var wrapper = GetOrCreatePeerItem(contact.DeviceId);
+                wrapper.UpdateContact(contact, Service.GetSecretUnreadCountForDevice(contact.DeviceId));
+                desired.Add(wrapper);
+            }
+
+            // 在线在前、其余按最近活跃降序
+            desired = desired
+                .OrderByDescending(item => item.IsOnline)
+                .ThenByDescending(item => item.LastSeenUtc)
+                .ToList();
+
+            // 移除彻底消失的设备
+            foreach (var gone in UnifiedPeers.Except(desired).ToList())
+            {
+                UnifiedPeers.Remove(gone);
+                gone.Detach();
+                _peerItemPool.Remove(gone.DeviceId);
+            }
+
+            // Move/Insert 对齐目标顺序（Move 不打断选中）
+            for (var i = 0; i < desired.Count; i++)
+            {
+                var index = UnifiedPeers.IndexOf(desired[i]);
+                if (index < 0)
+                {
+                    UnifiedPeers.Insert(Math.Min(i, UnifiedPeers.Count), desired[i]);
+                }
+                else if (index != i)
+                {
+                    UnifiedPeers.Move(index, i);
+                }
+            }
+
+            OnPropertyChanged(nameof(PeerListSummaryText));
+        }
+        finally
+        {
+            _syncingPeerList = false;
+        }
+    }
+
+    private PeerListItem GetOrCreatePeerItem(string deviceId)
+    {
+        if (!_peerItemPool.TryGetValue(deviceId, out var wrapper))
+        {
+            wrapper = new PeerListItem(deviceId);
+            _peerItemPool[deviceId] = wrapper;
+        }
+
+        return wrapper;
+    }
+
     private async void SecretChatButton_Click(object sender, RoutedEventArgs e)
     {
-        if (SelectedPeer == null)
+        if (SelectedPeerItem == null)
         {
-            MessageBox.Show("请先选择一个在线同事。", "密语", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show("请先选择一个同事。", "密语", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
         try
         {
-            var session = await Service.RequestSecretChatAsync(SelectedPeer);
+            var session = SelectedPeerItem.IsOnline
+                ? await Service.RequestSecretChatAsync(SelectedPeer)
+                : await Service.RequestSecretChatWithContactAsync(ResolveContactForOfflineItem(SelectedPeerItem));
             OpenSecretChatWindow(session);
         }
         catch (Exception ex)
         {
             MessageBox.Show($"密语请求失败：{ex.Message}", "密语", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
+    }
+
+    /// <summary>
+    /// 解析离线条目对应的联系人：常规取 Contact；在线条目刚翻离线的中间态（Contact 为空）用 peer 信息现场补建，避免误报「联系人不可用」。
+    /// </summary>
+    /// <param name="item">选中的同事条目。</param>
+    /// <returns>用于信箱路径的联系人。</returns>
+    private static SecretContact ResolveContactForOfflineItem(PeerListItem item)
+    {
+        if (item.Contact != null)
+        {
+            return item.Contact;
+        }
+
+        var peer = item.Peer;
+        return new SecretContact
+        {
+            DeviceId = item.DeviceId,
+            DisplayName = peer?.DisplayName,
+            MachineName = peer?.MachineName,
+            LastSeenUtc = peer?.LastSeenUtc ?? DateTime.UtcNow,
+            PublicKeyXml = peer?.SecretChatPublicKey,
+        };
     }
 
     private void OpenSecretChatWindow(SecretChatSession session)
@@ -576,4 +742,173 @@ public sealed class QueuedTransferSource
     /// 获取或设置摘要描述文本。
     /// </summary>
     public string SummaryText { get; set; }
+}
+
+/// <summary>
+/// 统一同事列表条目：按设备号常驻，包装在线设备（LanPeerInfo）或离线联系人（SecretContact），
+/// 在线/离线翻转仅切换同一对象的数据源，徽标与选中状态因此平滑过渡。
+/// </summary>
+public sealed class PeerListItem : INotifyPropertyChanged
+{
+    /// <summary>在线对端属性变更时需要转发到本条目绑定属性的映射。</summary>
+    private static readonly Dictionary<string, string[]> ForwardMap = new Dictionary<string, string[]>
+    {
+        [nameof(LanPeerInfo.DisplayLabel)] = new[] { nameof(DisplayLabel) },
+        [nameof(LanPeerInfo.EndpointDisplay)] = new[] { nameof(SubLineText) },
+        [nameof(LanPeerInfo.StatusSummaryText)] = new[] { nameof(StatusLineText) },
+        [nameof(LanPeerInfo.SecretUnreadCount)] = new[] { nameof(SecretUnread), nameof(SecretStatusText), nameof(HasSecretUnread), nameof(SecretBadgeText) },
+        [nameof(LanPeerInfo.SupportsSecretChat)] = new[] { nameof(SecretStatusText) },
+        [nameof(LanPeerInfo.IsOnline)] = new[] { nameof(IsOnline), nameof(IsOffline), nameof(SubLineText), nameof(SecretStatusText) },
+        [nameof(LanPeerInfo.OnlineText)] = new[] { nameof(IsOnline), nameof(IsOffline) },
+        [nameof(LanPeerInfo.CanSend)] = new[] { nameof(IsOnline), nameof(IsOffline) },
+    };
+
+    private LanPeerInfo peer;
+    private SecretContact contact;
+    private int offlineUnread;
+
+    /// <summary>
+    /// 初始化指定设备的常驻条目（初始无数据源，随后经 UpdatePeer/UpdateContact 填充）。
+    /// </summary>
+    /// <param name="deviceId">设备标识。</param>
+    public PeerListItem(string deviceId)
+    {
+        DeviceId = deviceId;
+    }
+
+    /// <inheritdoc/>
+    public event PropertyChangedEventHandler PropertyChanged;
+
+    /// <summary>设备标识（常驻键）。</summary>
+    public string DeviceId { get; }
+
+    /// <summary>当前关联的在线对端；设备已从发现列表消失时为 null。</summary>
+    public LanPeerInfo Peer => peer;
+
+    /// <summary>当前关联的离线联系人；设备在线时为 null。</summary>
+    public SecretContact Contact => contact;
+
+    /// <summary>是否在线。</summary>
+    public bool IsOnline => peer != null && peer.IsOnline;
+
+    /// <summary>是否离线。</summary>
+    public bool IsOffline => !IsOnline;
+
+    /// <summary>最近活跃时间（UTC），在线取对端，离线取联系人。</summary>
+    public DateTime LastSeenUtc => peer?.LastSeenUtc ?? contact?.LastSeenUtc ?? DateTime.MinValue;
+
+    /// <summary>显示标签。</summary>
+    public string DisplayLabel => peer != null ? peer.DisplayLabel : (contact?.DisplayLabel ?? "未知同事");
+
+    /// <summary>副标题：在线显示端点，离线显示信箱提示。</summary>
+    public string SubLineText => IsOnline ? peer.EndpointDisplay : "离线 · 密语走信箱投递";
+
+    /// <summary>状态行：在线显示最近活跃，离线显示上次活跃时间。</summary>
+    public string StatusLineText
+    {
+        get
+        {
+            if (IsOnline)
+            {
+                return peer.StatusSummaryText;
+            }
+
+            var lastSeen = LastSeenUtc.ToLocalTime();
+            return lastSeen.Date == DateTime.Today
+                ? $"上次活跃 {lastSeen:HH:mm}"
+                : $"上次活跃 {lastSeen:MM-dd HH:mm}";
+        }
+    }
+
+    /// <summary>密语未读数。</summary>
+    public int SecretUnread => peer != null ? peer.SecretUnreadCount : offlineUnread;
+
+    /// <summary>是否存在密语未读。</summary>
+    public bool HasSecretUnread => SecretUnread > 0;
+
+    /// <summary>密语状态文本。</summary>
+    public string SecretStatusText => HasSecretUnread
+        ? $"密语未读 {SecretUnread} 条"
+        : (IsOnline ? peer.SecretChatText : "支持密语（信箱）");
+
+    /// <summary>未读角标文本。</summary>
+    public string SecretBadgeText => SecretUnread > 0 ? SecretUnread.ToString() : string.Empty;
+
+    /// <summary>
+    /// 绑定在线对端（切换数据源并刷新全部显示属性）。
+    /// </summary>
+    /// <param name="value">在线对端。</param>
+    public void UpdatePeer(LanPeerInfo value)
+    {
+        if (peer != null)
+        {
+            peer.PropertyChanged -= Peer_PropertyChanged;
+        }
+
+        peer = value;
+        if (peer != null)
+        {
+            peer.PropertyChanged += Peer_PropertyChanged;
+        }
+
+        RaiseAll();
+    }
+
+    /// <summary>
+    /// 绑定离线联系人（切换数据源并刷新全部显示属性）。
+    /// </summary>
+    /// <param name="value">离线联系人。</param>
+    /// <param name="unreadCount">该联系人的密语未读数。</param>
+    public void UpdateContact(SecretContact value, int unreadCount)
+    {
+        contact = value;
+        offlineUnread = unreadCount;
+        RaiseAll();
+    }
+
+    /// <summary>
+    /// 仅更新离线未读计数（设备仍在发现列表内的离线态）。
+    /// </summary>
+    /// <param name="unreadCount">密语未读数。</param>
+    public void UpdateOfflineUnread(int unreadCount)
+    {
+        offlineUnread = unreadCount;
+        RaiseAll();
+    }
+
+    private void RaiseAll()
+    {
+        foreach (var name in new[]
+        {
+            nameof(IsOnline), nameof(IsOffline), nameof(LastSeenUtc), nameof(DisplayLabel),
+            nameof(SubLineText), nameof(StatusLineText), nameof(SecretUnread), nameof(HasSecretUnread),
+            nameof(SecretStatusText), nameof(SecretBadgeText),
+        })
+        {
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        }
+    }
+
+    private void Peer_PropertyChanged(object sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName != null && ForwardMap.TryGetValue(e.PropertyName, out var targets))
+        {
+            foreach (var target in targets)
+            {
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(target));
+            }
+        }
+    }
+
+    /// <summary>
+    /// 解除对在线对端事件订阅，供设备消失时释放条目。
+    /// </summary>
+    public void Detach()
+    {
+        if (peer != null)
+        {
+            peer.PropertyChanged -= Peer_PropertyChanged;
+            peer = null;
+        }
+    }
 }

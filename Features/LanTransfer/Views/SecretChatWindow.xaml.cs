@@ -66,6 +66,7 @@ public partial class SecretChatWindow : Window
             visibilityTimer.Start();
         }
 
+        _ = _service.PullSecretMailboxAsync();
         ScrollToFirstUnreadOrEnd();
     }
 

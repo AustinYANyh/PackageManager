@@ -262,6 +262,14 @@ namespace PackageManager
         {
             try
             {
+                ServiceLocator.Resolve<LanTransferService>()?.FlushSecretData();
+            }
+            catch
+            {
+            }
+
+            try
+            {
                 _indexHostWatchdogCts?.Cancel();
                 _systemHotkeyService?.Dispose();
                 ServiceLocator.Resolve<CodeWorkspaceVcsCacheService>()?.Cancel();

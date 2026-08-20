@@ -266,6 +266,8 @@
         <!-- Features/LanTransfer -->
         <Compile Include="Features\LanTransfer\Models\LanTransferModels.cs" />
         <Compile Include="Features\LanTransfer\Services\LanTransferService.cs" />
+        <Compile Include="Features\LanTransfer\Services\SecretMailboxClient.cs" />
+        <Compile Include="Features\LanTransfer\Services\SecretContactStore.cs" />
         <Compile Include="Features\LanTransfer\Services\LanDiscoveryService.cs" />
         <Compile Include="Features\LanTransfer\Services\LanTransferHostService.cs" />
         <Compile Include="Features\LanTransfer\Services\LanTransferLogger.cs" />
