@@ -550,6 +550,14 @@
         </Compile>
         <Page Include="Features\Settings\Views\SettingsWindow.xaml" />
         <Compile Include="Features\Settings\Views\SettingsWindow.xaml.cs" />
+        <Page Include="Features\Settings\Views\UpdateAvailableWindow.xaml">
+          <Generator>MSBuild:Compile</Generator>
+          <SubType>Designer</SubType>
+        </Page>
+        <Compile Include="Features\Settings\Views\UpdateAvailableWindow.xaml.cs">
+          <DependentUpon>UpdateAvailableWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
 
         <!-- Tools (shared compile) -->
         <Compile Include="Tools\MftScanner.Core\IndexPerfLog.cs" />

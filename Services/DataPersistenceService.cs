@@ -1043,6 +1043,11 @@ namespace PackageManager.Services
         public string UpdateServerUrl { get; set; } = null;
 
         /// <summary>
+        /// 获取或设置用户选择跳过的应用更新版本号；该版本不再弹更新提示，更高版本恢复提醒。
+        /// </summary>
+        public string SkipUpdateVersion { get; set; } = null;
+
+        /// <summary>
         /// 获取或设置拉取包目录时是否过滤包含 'log' 的目录。
         /// </summary>
         public bool FilterLogDirectories { get; set; } = true;
