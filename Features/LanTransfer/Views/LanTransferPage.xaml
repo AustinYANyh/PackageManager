@@ -414,6 +414,13 @@
                                                     Margin="0,0,10,0"
                                                     Content="密语"
                                                     Click="SecretChatButton_Click"/>
+                                    <!-- 密语自测入口（需要单机验证密语链路时取消注释）
+                                    <button:CButton Width="92"
+                                                    Height="36"
+                                                    Margin="0,0,10,0"
+                                                    Content="密语自测"
+                                                    Click="SecretSelfTestButton_Click"/>
+                                    -->
                                     <button:CButton Width="142"
                                                     Height="36"
                                                     Content="发送到当前目标"

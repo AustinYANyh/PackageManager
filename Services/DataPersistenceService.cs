@@ -1218,6 +1218,11 @@ namespace PackageManager.Services
         /// 获取或设置文件传输是否自动接受传入请求。
         /// </summary>
         public bool LanTransferAutoAccept { get; set; } = false;
+
+        /// <summary>
+        /// 获取或设置密语已读后自毁时长（秒），仅允许 5/10/30，非法值回退为 5。
+        /// </summary>
+        public int LanTransferSecretDestroySeconds { get; set; } = 5;
     }
 
     /// <summary>

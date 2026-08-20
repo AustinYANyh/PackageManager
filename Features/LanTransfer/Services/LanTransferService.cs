@@ -27,6 +27,7 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
     private readonly ObservableCollection<LanTransferSession> _activeTransfers = new ObservableCollection<LanTransferSession>();
     private readonly ObservableCollection<LanTransferRecord> _transferHistory = new ObservableCollection<LanTransferRecord>();
     private readonly ObservableCollection<SecretChatSession> _secretChatSessions = new ObservableCollection<SecretChatSession>();
+    private readonly Dictionary<SecretChatSession, SecretChatSession> _selfTestPairs = new Dictionary<SecretChatSession, SecretChatSession>();
     private readonly object _peerSync = new object();
     private readonly object _secretChatSync = new object();
     private readonly RSACryptoServiceProvider _secretChatRsa = new RSACryptoServiceProvider(2048);
@@ -600,6 +601,14 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         };
         session.Messages.Add(message);
 
+        if (session.IsSelfTest)
+        {
+            await DeliverSelfTestMessageAsync(session, message);
+            message.State = SecretChatMessageState.Sent;
+            session.StatusText = "密语已发送（自测线路），进入对方视线后开始计时";
+            return;
+        }
+
         try
         {
             using (var client = new TcpClient())
@@ -646,7 +655,7 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
     }
 
     /// <summary>
-    /// 将指定的密语消息标记为已读，并启动自毁倒计时。
+    /// 将指定的密语消息标记为已读，并启动自毁倒计时。由窗口视口判定触发，表示消息真正进入视线。
     /// </summary>
     /// <param name="session">密语会话。</param>
     /// <param name="message">要标记已读的消息。</param>
@@ -657,6 +666,7 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
             return;
         }
 
+        message.DestroyTotalSeconds = Math.Max(1, session.DestroyAfterReadSeconds);
         message.State = SecretChatMessageState.Read;
         message.ReadAtUtc = DateTime.UtcNow;
         DecrementSecretUnread(session);
@@ -665,7 +675,50 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
     }
 
     /// <summary>
-    /// 设置密语聊天窗口的状态。
+    /// 批量将进入视口的未读密语消息标记为已读。
+    /// </summary>
+    /// <param name="session">密语会话。</param>
+    /// <param name="messages">窗口判定为已被看见的未读消息集合。</param>
+    public async Task MarkSecretMessagesReadAsync(SecretChatSession session, IEnumerable<SecretChatMessage> messages)
+    {
+        if (session == null || messages == null)
+        {
+            return;
+        }
+
+        foreach (var message in messages
+            .Where(message => message != null
+                              && message.Direction == SecretChatMessageDirection.Incoming
+                              && message.State == SecretChatMessageState.Unread)
+            .ToList())
+        {
+            await MarkSecretMessageReadAsync(session, message);
+        }
+    }
+
+    /// <summary>
+    /// 立即销毁会话中所有已读（处于倒计时或已读状态）的密语消息，并通知对端。用于失焦与关窗即焚。
+    /// </summary>
+    /// <param name="session">密语会话。</param>
+    public async Task DestroyReadSecretMessagesAsync(SecretChatSession session)
+    {
+        if (session == null)
+        {
+            return;
+        }
+
+        var read = session.Messages
+            .Where(message => message.State == SecretChatMessageState.Read)
+            .ToList();
+        foreach (var message in read)
+        {
+            DestroySecretMessage(session, message);
+            await SendSecretReceiptAsync(session, message, "destroy", CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// 设置密语聊天窗口的状态。失焦即焚已读消息；未读消息保留至真正阅读。
     /// </summary>
     /// <param name="session">密语会话。</param>
     /// <param name="isOpen">窗口是否打开。</param>
@@ -679,30 +732,9 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
 
         session.IsWindowOpen = isOpen;
         session.IsWindowActive = isActive;
-        if (isActive)
+        if (!isActive)
         {
-            _ = MarkUnreadSecretMessagesReadAsync(session);
-        }
-    }
-
-    /// <summary>
-    /// 将指定密语会话中所有未读消息标记为已读。
-    /// </summary>
-    /// <param name="session">密语会话。</param>
-    public async Task MarkUnreadSecretMessagesReadAsync(SecretChatSession session)
-    {
-        if (session == null)
-        {
-            return;
-        }
-
-        var unread = session.Messages
-            .Where(message => message.Direction == SecretChatMessageDirection.Incoming
-                              && message.State == SecretChatMessageState.Unread)
-            .ToList();
-        foreach (var message in unread)
-        {
-            await MarkSecretMessageReadAsync(session, message);
+            _ = DestroyReadSecretMessagesAsync(session);
         }
     }
 
@@ -736,6 +768,7 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         lock (_secretChatSync)
         {
             _secretChatSessions.Remove(session);
+            _selfTestPairs.Remove(session);
         }
     }
 
@@ -1014,11 +1047,13 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
                     PeerDisplayName = string.IsNullOrWhiteSpace(peerDisplayName) ? "未知同事" : peerDisplayName,
                     PeerAddress = peerAddress,
                     StatusText = "密语会话已建立",
+                    DestroyAfterReadSeconds = GetSecretDestroySeconds(),
                 };
                 _secretChatSessions.Add(session);
             }
             else
             {
+                session.DestroyAfterReadSeconds = GetSecretDestroySeconds();
                 if (!string.IsNullOrWhiteSpace(peerDeviceId))
                 {
                     session.PeerDeviceId = peerDeviceId;
@@ -1082,12 +1117,11 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
 
         if (session.IsWindowActive)
         {
-            _ = MarkSecretMessageReadAsync(session, message);
-            session.StatusText = "收到新的密语，已自动标记已读";
+            session.StatusText = "收到新的密语，进入视线后开始计时";
         }
         else
         {
-            session.StatusText = "收到新的密语，打开窗口后将自动已读";
+            session.StatusText = "收到新的密语，打开窗口阅读";
             ToastService.ShowToast("收到密语", $"{session.PeerDisplayName} 发来新的密语", "Info");
         }
     }
@@ -1134,10 +1168,116 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         MarkOutgoingSecretMessageRead(session, message);
     }
 
+    /// <summary>
+    /// 启动密语自测：在进程内创建一对互相配对的模拟会话（本机 与 影子同事），消息与回执直接路由到配对会话，不走真实网络。用于单机验证收发、已读判定与焚毁链路。
+    /// </summary>
+    /// <returns>二元组：本机会话与影子会话。</returns>
+    public Task<SecretChatSession[]> StartSecretSelfTestAsync()
+    {
+        var seed = Guid.NewGuid().ToString("N");
+        var self = new SecretChatSession
+        {
+            SessionId = "selftest-self-" + seed,
+            SessionKey = "selftest-self-" + seed,
+            PeerDisplayName = "自测·影子同事",
+            PeerAddress = "127.0.0.1",
+            StatusText = "密语自测已就绪",
+            DestroyAfterReadSeconds = GetSecretDestroySeconds(),
+            IsSelfTest = true,
+        };
+        var shadow = new SecretChatSession
+        {
+            SessionId = "selftest-shadow-" + seed,
+            SessionKey = "selftest-shadow-" + seed,
+            PeerDisplayName = "自测·本机",
+            PeerAddress = "127.0.0.1",
+            StatusText = "密语自测已就绪",
+            DestroyAfterReadSeconds = GetSecretDestroySeconds(),
+            IsSelfTest = true,
+        };
+
+        lock (_secretChatSync)
+        {
+            _secretChatSessions.Add(self);
+            _secretChatSessions.Add(shadow);
+            _selfTestPairs[self] = shadow;
+            _selfTestPairs[shadow] = self;
+        }
+
+        return Task.FromResult(new[] { self, shadow });
+    }
+
+    private SecretChatSession GetSelfTestCounterpart(SecretChatSession session)
+    {
+        lock (_secretChatSync)
+        {
+            return session != null && _selfTestPairs.TryGetValue(session, out var counterpart) ? counterpart : null;
+        }
+    }
+
+    private async Task DeliverSelfTestMessageAsync(SecretChatSession sender, SecretChatMessage outgoing)
+    {
+        var counterpart = GetSelfTestCounterpart(sender);
+        if (counterpart == null)
+        {
+            return;
+        }
+
+        var incoming = new SecretChatMessage
+        {
+            MessageId = outgoing.MessageId,
+            WireSessionId = sender.SessionId,
+            Direction = SecretChatMessageDirection.Incoming,
+            Text = outgoing.Text,
+            State = SecretChatMessageState.Unread,
+            DestroyTotalSeconds = Math.Max(1, counterpart.DestroyAfterReadSeconds),
+        };
+        await InvokeOnUiAsync(() =>
+        {
+            counterpart.Messages.Add(incoming);
+            IncrementSecretUnread(counterpart);
+            counterpart.StatusText = counterpart.IsWindowActive
+                ? "收到新的密语（自测），进入视线后开始计时"
+                : "收到新的密语（自测），打开窗口阅读";
+        });
+    }
+
+    private async Task DeliverSelfTestReceiptAsync(SecretChatSession sender, SecretChatMessage message, string receipt)
+    {
+        var counterpart = GetSelfTestCounterpart(sender);
+        if (counterpart == null)
+        {
+            return;
+        }
+
+        await InvokeOnUiAsync(() =>
+        {
+            var outgoing = counterpart.Messages.FirstOrDefault(item => string.Equals(item.MessageId, message.MessageId, StringComparison.OrdinalIgnoreCase));
+            if (outgoing == null)
+            {
+                return;
+            }
+
+            if (string.Equals(receipt, "destroy", StringComparison.OrdinalIgnoreCase))
+            {
+                DestroySecretMessage(counterpart, outgoing);
+                return;
+            }
+
+            MarkOutgoingSecretMessageRead(counterpart, outgoing);
+        });
+    }
+
     private async Task SendSecretReceiptAsync(SecretChatSession session, SecretChatMessage message, string receipt, CancellationToken cancellationToken)
     {
         if (session == null || message == null || string.IsNullOrWhiteSpace(message.MessageId))
         {
+            return;
+        }
+
+        if (session.IsSelfTest)
+        {
+            await DeliverSelfTestReceiptAsync(session, message, receipt);
             return;
         }
 
@@ -1176,13 +1316,20 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
             return;
         }
 
-        message.DestroyCountdownSeconds = 5;
+        var total = Math.Max(1, session?.DestroyAfterReadSeconds > 0 ? session.DestroyAfterReadSeconds : 5);
+        message.DestroyTotalSeconds = total;
+        message.DestroyCountdownSeconds = total;
         _ = Task.Run(async () =>
         {
             while (message.DestroyCountdownSeconds > 0 && message.State != SecretChatMessageState.Destroyed)
             {
                 await Task.Delay(1000);
                 await InvokeOnUiAsync(() => message.DestroyCountdownSeconds--);
+            }
+
+            if (message.State == SecretChatMessageState.Destroyed)
+            {
+                return;
             }
 
             await InvokeOnUiAsync(() => DestroySecretMessage(session, message));
@@ -1205,7 +1352,6 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         message.Text = string.Empty;
         message.DestroyCountdownSeconds = 0;
         message.State = SecretChatMessageState.Destroyed;
-        session?.Messages.Remove(message);
     }
 
     private void MarkOutgoingSecretMessageRead(SecretChatSession session, SecretChatMessage message)
@@ -1222,6 +1368,23 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         }
 
         StartDestroyCountdown(session, message);
+    }
+
+    /// <summary>
+    /// 读取密语自毁时长设置：仅接受 5/10/30 秒，非法值回退为 5。
+    /// </summary>
+    /// <returns>自毁时长（秒）。</returns>
+    private int GetSecretDestroySeconds()
+    {
+        try
+        {
+            var value = _dataPersistenceService.LoadSettings()?.LanTransferSecretDestroySeconds ?? 5;
+            return value == 5 || value == 10 || value == 30 ? value : 5;
+        }
+        catch
+        {
+            return 5;
+        }
     }
 
     private void IncrementSecretUnread(SecretChatSession session)

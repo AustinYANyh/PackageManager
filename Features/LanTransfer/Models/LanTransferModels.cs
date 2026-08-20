@@ -328,6 +328,7 @@ public sealed class SecretChatMessage : LanTransferBindableBase
 {
     private SecretChatMessageState state;
     private int destroyCountdownSeconds;
+    private int destroyTotalSeconds = 5;
     private string text;
 
     /// <summary>消息唯一标识。</summary>
@@ -362,6 +363,8 @@ public sealed class SecretChatMessage : LanTransferBindableBase
             {
                 OnPropertyChanged(nameof(StateText));
                 OnPropertyChanged(nameof(IsDestroyed));
+                OnPropertyChanged(nameof(IsIncomingUnread));
+                OnPropertyChanged(nameof(IsBurning));
             }
         }
     }
@@ -375,6 +378,20 @@ public sealed class SecretChatMessage : LanTransferBindableBase
             if (SetProperty(ref destroyCountdownSeconds, value))
             {
                 OnPropertyChanged(nameof(StateText));
+                OnPropertyChanged(nameof(FuseProgress));
+            }
+        }
+    }
+
+    /// <summary>自毁总时长（秒），作为引信进度的分母。</summary>
+    public int DestroyTotalSeconds
+    {
+        get => destroyTotalSeconds;
+        set
+        {
+            if (SetProperty(ref destroyTotalSeconds, Math.Max(1, value)))
+            {
+                OnPropertyChanged(nameof(FuseProgress));
             }
         }
     }
@@ -388,10 +405,21 @@ public sealed class SecretChatMessage : LanTransferBindableBase
     /// <summary>是否为收到的消息。</summary>
     public bool IsIncoming => Direction == SecretChatMessageDirection.Incoming;
 
-    /// <summary>创建时间的本地化显示文本。</summary>
-    public string CreatedAtText => CreatedAtUtc.ToLocalTime().ToString("HH:mm:ss");
+    /// <summary>是否为未读的收到消息（用于未读高亮样式）。</summary>
+    public bool IsIncomingUnread => IsIncoming && State == SecretChatMessageState.Unread;
 
-    /// <summary>状态显示文本。</summary>
+    /// <summary>是否处于已读倒计时中（用于引信进度条可见性）。</summary>
+    public bool IsBurning => State == SecretChatMessageState.Read && !IsDestroyed;
+
+    /// <summary>引信进度（0-1，随倒计时递减）。</summary>
+    public double FuseProgress => DestroyTotalSeconds <= 0
+        ? 0
+        : Math.Max(0, Math.Min(1, (double)DestroyCountdownSeconds / DestroyTotalSeconds));
+
+    /// <summary>创建时间的本地化显示文本。</summary>
+    public string CreatedAtText => CreatedAtUtc.ToLocalTime().ToString("HH:mm");
+
+    /// <summary>状态显示文本（按方向区分：发送方关注送达/已读，接收方关注未读/阅读计时）。</summary>
     public string StateText
     {
         get
@@ -401,24 +429,27 @@ public sealed class SecretChatMessage : LanTransferBindableBase
                 return "已销毁";
             }
 
-            if (DestroyCountdownSeconds > 0)
+            if (IsOutgoing)
             {
-                return $"已读 · {DestroyCountdownSeconds}s 后销毁";
+                if (State == SecretChatMessageState.Sending)
+                {
+                    return "发送中";
+                }
+
+                if (State == SecretChatMessageState.Read)
+                {
+                    return DestroyCountdownSeconds > 0 ? $"✓✓ 已读 · {DestroyCountdownSeconds}s 后销毁" : "✓✓ 已读";
+                }
+
+                return "✓ 已送达";
             }
 
-            switch (State)
+            if (State == SecretChatMessageState.Read)
             {
-                case SecretChatMessageState.Sending:
-                    return "发送中";
-                case SecretChatMessageState.Sent:
-                    return "未读";
-                case SecretChatMessageState.Unread:
-                    return "未读";
-                case SecretChatMessageState.Read:
-                    return "已读";
-                default:
-                    return string.Empty;
+                return DestroyCountdownSeconds > 0 ? $"阅读中 · {DestroyCountdownSeconds}s" : "已读";
             }
+
+            return "未读";
         }
     }
 }
@@ -495,6 +526,12 @@ public sealed class SecretChatSession : LanTransferBindableBase
         set => SetProperty(ref statusText, value);
     }
 
+    /// <summary>已读后自毁时长（秒），从应用设置加载；未读消息永不销毁。</summary>
+    public int DestroyAfterReadSeconds { get; set; } = 5;
+
+    /// <summary>是否为密语自测会话（单机模拟线路，不走真实 TCP）。</summary>
+    public bool IsSelfTest { get; set; }
+
     /// <summary>会话是否开启。</summary>
     public bool IsOpen
     {
@@ -541,6 +578,11 @@ public sealed class SecretChatSession : LanTransferBindableBase
         ? PeerDisplayName
         : $"{PeerDisplayName} · {PeerAddress}";
 
+    /// <summary>对方显示名首字符，用作头像占位文字。</summary>
+    public string PeerInitial => string.IsNullOrWhiteSpace(PeerDisplayName)
+        ? "?"
+        : PeerDisplayName.Trim().Substring(0, 1);
+
     /// <summary>截图保护状态显示文本。</summary>
     public string ProtectionText => IsProtected
         ? "系统截图/录屏将显示黑屏或排除该窗口"
@@ -552,6 +594,7 @@ public sealed class SecretChatSession : LanTransferBindableBase
     public void RefreshPeerTitle()
     {
         OnPropertyChanged(nameof(PeerTitle));
+        OnPropertyChanged(nameof(PeerInitial));
     }
 }
 

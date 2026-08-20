@@ -332,15 +332,20 @@ public partial class LanTransferPage : Page, INotifyPropertyChanged, ICentralPag
 
     private void OpenSecretChatWindow(SecretChatSession session)
     {
+        OpenSecretChatWindowInternal(session);
+    }
+
+    private Window OpenSecretChatWindowInternal(SecretChatSession session)
+    {
         if (session == null)
         {
-            return;
+            return null;
         }
 
         var key = string.IsNullOrWhiteSpace(session.SessionKey) ? session.SessionId : session.SessionKey;
         if (string.IsNullOrWhiteSpace(key))
         {
-            return;
+            return null;
         }
 
         _secretChatWindows.TryGetValue(key, out var existing);
@@ -354,7 +359,7 @@ public partial class LanTransferPage : Page, INotifyPropertyChanged, ICentralPag
             existing.Show();
             existing.Activate();
             existing.Focus();
-            return;
+            return existing;
         }
 
         var window = new SecretChatWindow(Service, session)
@@ -365,6 +370,26 @@ public partial class LanTransferPage : Page, INotifyPropertyChanged, ICentralPag
         window.Closed += (_, __) => _secretChatWindows.Remove(key);
         window.Show();
         window.Activate();
+        return window;
+    }
+
+    private async void SecretSelfTestButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var sessions = await Service.StartSecretSelfTestAsync();
+            var selfWindow = OpenSecretChatWindowInternal(sessions[0]);
+            var shadowWindow = OpenSecretChatWindowInternal(sessions[1]);
+            if (selfWindow != null && shadowWindow != null)
+            {
+                shadowWindow.Left = selfWindow.Left + selfWindow.ActualWidth + 16;
+                shadowWindow.Top = selfWindow.Top;
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"密语自测启动失败：{ex.Message}", "密语", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
 
     private void CancelTransferButton_Click(object sender, RoutedEventArgs e)
