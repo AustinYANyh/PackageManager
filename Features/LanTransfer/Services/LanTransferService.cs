@@ -36,7 +36,8 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
     private readonly Timer _secretMailboxPollTimer;
     private int _secretMailboxPollSeconds;
     private int _secretSavePending;
-    private int _mailboxBusy;
+    private readonly object _pullLock = new object();
+    private Task _pullInFlight;
     private readonly object _peerSync = new object();
     private readonly object _secretChatSync = new object();
     private readonly RSACryptoServiceProvider _secretChatRsa = LoadOrCreateSecretRsa();
@@ -1456,15 +1457,24 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
     }
 
     /// <summary>
-    /// 拉取本机密语信箱并处理信封（消息入会话、回执更新状态）。服务启动与打开密语窗口时触发。
+    /// 拉取本机密语信箱并处理信封（消息入会话、回执更新状态）。并发调用共享同一次在途拉取，
+    /// 后到者等待其完成而非直接返回——页面/窗口触发的拉取不再空手而归。
     /// </summary>
-    public async Task PullSecretMailboxAsync()
+    public Task PullSecretMailboxAsync()
     {
-        if (Interlocked.Exchange(ref _mailboxBusy, 1) == 1)
+        lock (_pullLock)
         {
-            return;
-        }
+            if (_pullInFlight == null || _pullInFlight.IsCompleted)
+            {
+                _pullInFlight = PullSecretMailboxCoreAsync();
+            }
 
+            return _pullInFlight;
+        }
+    }
+
+    private async Task PullSecretMailboxCoreAsync()
+    {
         try
         {
             var envelopes = await _secretMailbox.PullEnvelopesAsync(DeviceId);
@@ -1500,10 +1510,6 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         catch (Exception ex)
         {
             LanTransferLogger.LogError(ex, "密语信箱处理失败");
-        }
-        finally
-        {
-            Interlocked.Exchange(ref _mailboxBusy, 0);
         }
     }
 
@@ -1682,9 +1688,11 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         }
 
         RestoreSecretSessions();
+        // 拉取提前到目录建设与公钥发布之前：信箱列取不依赖目录存在（550 按空箱处理），
+        // 离线消息的可见时间不再被重型前置操作拖延
+        await PullSecretMailboxAsync();
         await _secretMailbox.EnsureDirectoriesAsync();
         await _secretMailbox.PublishPublicKeyAsync(DeviceId, _secretChatRsa.ToXmlString(false));
-        await PullSecretMailboxAsync();
         StartSecretMailboxPolling();
     }
 

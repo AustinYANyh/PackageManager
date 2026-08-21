@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 
@@ -95,16 +96,43 @@ namespace PackageManager.Services
         private static NetworkCredential ReadCredential => ServiceLocator.Resolve<CredentialStore>()?.GetFtpWriteCredential();
         private static NetworkCredential WriteCredential => ServiceLocator.Resolve<CredentialStore>()?.GetFtpWriteCredential();
 
+        private int _directoriesEnsured;
+
         private static string KeysDir => MailboxBaseUrl.TrimEnd('/') + "/keys/";
 
         private static string BoxDir(string deviceId) => MailboxBaseUrl.TrimEnd('/') + "/boxes/" + deviceId + "/";
 
         /// <summary>
-        /// 确保信箱目录结构存在（keys/ 与 boxes/）。
+        /// 创建统一配置的 FTP 请求：10 秒超时（默认 100 秒会在网络抖动时拖垮整条初始化链），
+        /// 保持控制连接复用（避免每个请求重新握手登录）。
+        /// </summary>
+        /// <param name="uri">目标地址。</param>
+        /// <param name="credential">登录凭据。</param>
+        /// <param name="method">FTP 方法。</param>
+        /// <returns>配置好的请求。</returns>
+        private static FtpWebRequest CreateRequest(Uri uri, NetworkCredential credential, string method)
+        {
+            var request = (FtpWebRequest)WebRequest.Create(uri);
+            request.Credentials = credential;
+            request.Method = method;
+            request.UseBinary = true;
+            request.KeepAlive = true;
+            request.Timeout = 10000;
+            request.ReadWriteTimeout = 10000;
+            return request;
+        }
+
+        /// <summary>
+        /// 确保信箱目录结构存在（keys/ 与 boxes/）。进程内幂等：仅在首次调用时发起网络请求。
         /// </summary>
         /// <returns>异步任务。</returns>
         public async Task EnsureDirectoriesAsync()
         {
+            if (Interlocked.Exchange(ref _directoriesEnsured, 1) == 1)
+            {
+                return;
+            }
+
             await MakeDirectoryAsync(MailboxBaseUrl);
             await MakeDirectoryAsync(KeysDir);
             await MakeDirectoryAsync(MailboxBaseUrl.TrimEnd('/') + "/boxes/");
@@ -198,7 +226,7 @@ namespace PackageManager.Services
         }
 
         /// <summary>
-        /// 拉取本设备信箱中的全部信封：下载后即删；超过 TTL 的信封直接清理不投递。
+        /// 拉取本设备信箱中的全部信封：各信封并行下载后即删；超过 TTL 的信封直接清理不投递。
         /// </summary>
         /// <param name="deviceId">本机设备标识。</param>
         /// <returns>拉取到的有效信封列表；信箱不可达时返回空列表。</returns>
@@ -212,32 +240,36 @@ namespace PackageManager.Services
 
             try
             {
-                var files = await ListFilesAsync(BoxDir(deviceId));
-                foreach (var file in files.Where(f => f.EndsWith(".sec", StringComparison.OrdinalIgnoreCase)))
+                var files = (await ListFilesAsync(BoxDir(deviceId)))
+                    .Where(f => f.EndsWith(".sec", StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+                if (files.Count == 0)
+                {
+                    return result;
+                }
+
+                var pulled = await Task.WhenAll(files.Select(async file =>
                 {
                     var uri = new Uri(BoxDir(deviceId) + file);
-                    SecretMailboxEnvelope envelope = null;
                     try
                     {
                         var bytes = await DownloadBytesAsync(uri);
-                        envelope = bytes == null
+                        return bytes == null
                             ? null
                             : JsonConvert.DeserializeObject<SecretMailboxEnvelope>(Encoding.UTF8.GetString(bytes));
                     }
                     catch
                     {
-                        envelope = null;
+                        return null;
                     }
                     finally
                     {
                         await TryDeleteAsync(uri);
                     }
+                }));
 
-                    if (envelope == null)
-                    {
-                        continue;
-                    }
-
+                foreach (var envelope in pulled.Where(e => e != null))
+                {
                     if (DateTime.UtcNow - envelope.PostedAtUtc > EnvelopeTtl)
                     {
                         continue;
@@ -297,11 +329,7 @@ namespace PackageManager.Services
             foreach (var segment in segments)
             {
                 current += segment + "/";
-                var req = (FtpWebRequest)WebRequest.Create(current);
-                req.Credentials = WriteCredential;
-                req.Method = WebRequestMethods.Ftp.MakeDirectory;
-                req.UseBinary = true;
-                req.KeepAlive = false;
+                var req = CreateRequest(new Uri(current), WriteCredential, WebRequestMethods.Ftp.MakeDirectory);
                 try
                 {
                     using var resp = (FtpWebResponse)await req.GetResponseAsync();
@@ -319,11 +347,7 @@ namespace PackageManager.Services
 
         private static async Task UploadBytesAsync(Uri uri, byte[] bytes)
         {
-            var req = (FtpWebRequest)WebRequest.Create(uri);
-            req.Credentials = WriteCredential;
-            req.Method = WebRequestMethods.Ftp.UploadFile;
-            req.UseBinary = true;
-            req.KeepAlive = false;
+            var req = CreateRequest(uri, WriteCredential, WebRequestMethods.Ftp.UploadFile);
             using (var stream = await req.GetRequestStreamAsync())
             {
                 await stream.WriteAsync(bytes, 0, bytes.Length);
@@ -336,11 +360,7 @@ namespace PackageManager.Services
 
         private static async Task<byte[]> DownloadBytesAsync(Uri uri)
         {
-            var req = (FtpWebRequest)WebRequest.Create(uri);
-            req.Credentials = ReadCredential;
-            req.Method = WebRequestMethods.Ftp.DownloadFile;
-            req.UseBinary = true;
-            req.KeepAlive = false;
+            var req = CreateRequest(uri, ReadCredential, WebRequestMethods.Ftp.DownloadFile);
             using var resp = (FtpWebResponse)await req.GetResponseAsync();
             using var stream = resp.GetResponseStream();
             using var memory = new MemoryStream();
@@ -353,11 +373,7 @@ namespace PackageManager.Services
             var files = new List<string>();
             try
             {
-                var req = (FtpWebRequest)WebRequest.Create(remoteDir);
-                req.Credentials = ReadCredential;
-                req.Method = WebRequestMethods.Ftp.ListDirectory;
-                req.UseBinary = true;
-                req.KeepAlive = false;
+                var req = CreateRequest(new Uri(remoteDir), ReadCredential, WebRequestMethods.Ftp.ListDirectory);
                 using var resp = (FtpWebResponse)await req.GetResponseAsync();
                 using var stream = resp.GetResponseStream();
                 using var reader = new StreamReader(stream);
@@ -389,11 +405,7 @@ namespace PackageManager.Services
         {
             try
             {
-                var req = (FtpWebRequest)WebRequest.Create(uri);
-                req.Credentials = WriteCredential;
-                req.Method = WebRequestMethods.Ftp.DeleteFile;
-                req.UseBinary = true;
-                req.KeepAlive = false;
+                var req = CreateRequest(uri, WriteCredential, WebRequestMethods.Ftp.DeleteFile);
                 using var resp = (FtpWebResponse)await req.GetResponseAsync();
             }
             catch
