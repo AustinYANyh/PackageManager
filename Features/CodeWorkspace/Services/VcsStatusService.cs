@@ -35,7 +35,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
 
             try
             {
-                var snapshot = await BuildSnapshotAsync(repo, cancellationToken, includeRemoteStatus);
+                var snapshot = await BuildSnapshotAsync(repo, cancellationToken, includeRemoteStatus, forceRefresh);
                 ApplySnapshot(repo, snapshot);
                 _lastRefreshTimes[repo.Path] = DateTime.Now;
             }
@@ -80,7 +80,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
                         await semaphore.WaitAsync(token);
                         try
                         {
-                            var snapshot = await BuildSnapshotAsync(repo, token, includeRemoteStatus);
+                            var snapshot = await BuildSnapshotAsync(repo, token, includeRemoteStatus, forceRefresh);
                             return new RepositoryRefreshResult(repo, snapshot);
                         }
                         catch (OperationCanceledException)
@@ -132,12 +132,99 @@ namespace PackageManager.Features.CodeWorkspace.Services
             repo.StagedCount = snapshot.StagedCount;
             repo.SvnRevision = snapshot.SvnRevision;
             repo.SvnRemoteUpdateCount = snapshot.SvnRemoteUpdateCount;
-            repo.GitChangedFiles = new ObservableCollection<VcsChangedFile>(snapshot.GitChangedFiles.Select(file => file.Clone()));
-            repo.RootSvnChangedFiles = new ObservableCollection<VcsChangedFile>(snapshot.RootSvnChangedFiles.Select(file => file.Clone()));
-            repo.SubRepositories = new ObservableCollection<SubRepository>(snapshot.SubRepositories);
+            ApplyChangedFiles(repo.GitChangedFiles, snapshot.GitChangedFiles, out var gitChanged);
+            repo.GitChangedFiles = gitChanged;
+            ApplyChangedFiles(repo.RootSvnChangedFiles, snapshot.RootSvnChangedFiles, out var svnChanged);
+            repo.RootSvnChangedFiles = svnChanged;
+            ApplySubRepositories(repo, snapshot.SubRepositories);
             repo.VcsType = snapshot.VcsType;
             repo.VcsStatus = snapshot.VcsStatus;
             repo.LastStatusRefresh = snapshot.LastStatusRefresh;
+        }
+
+        /// <summary>
+        /// 变更文件集合按签名（状态码+路径序列）对比后更新：内容未变时保留现有集合，
+        /// 避免 60 秒轮询对干净仓库反复触发集合 Reset 重绑。
+        /// </summary>
+        private static void ApplyChangedFiles(ObservableCollection<VcsChangedFile> current, IEnumerable<VcsChangedFile> fresh, out ObservableCollection<VcsChangedFile> applied)
+        {
+            var freshList = fresh?.ToList() ?? new List<VcsChangedFile>();
+            applied = ComputeChangedFilesSignature(current) == ComputeChangedFilesSignature(freshList)
+                ? current
+                : new ObservableCollection<VcsChangedFile>(freshList.Select(file => file.Clone()));
+        }
+
+        private static string ComputeChangedFilesSignature(IEnumerable<VcsChangedFile> files)
+        {
+            if (files == null)
+            {
+                return string.Empty;
+            }
+
+            var builder = new System.Text.StringBuilder();
+            foreach (var file in files)
+            {
+                builder.Append(file?.StatusCode ?? '\0').Append('|').Append(file?.RelativePath ?? string.Empty).Append(';');
+            }
+
+            return builder.ToString();
+        }
+
+        /// <summary>
+        /// 子仓库列表差分更新：布局（数量与顺序）一致时原地更新现有实例的字段，
+        /// 保留列表容器与 UI 虚拟化状态；布局变化时整体替换。
+        /// </summary>
+        private static void ApplySubRepositories(CodeRepository repo, List<SubRepository> fresh)
+        {
+            var freshList = fresh ?? new List<SubRepository>();
+            var current = repo.SubRepositories;
+            if (current == null || current.Count == 0)
+            {
+                repo.SubRepositories = new ObservableCollection<SubRepository>(freshList);
+                return;
+            }
+
+            var sameLayout = current.Count == freshList.Count;
+            if (sameLayout)
+            {
+                for (var i = 0; i < freshList.Count; i++)
+                {
+                    if (current[i].VcsType != freshList[i].VcsType ||
+                        !string.Equals(current[i].RelativePath, freshList[i].RelativePath, StringComparison.OrdinalIgnoreCase))
+                    {
+                        sameLayout = false;
+                        break;
+                    }
+                }
+            }
+
+            if (!sameLayout)
+            {
+                repo.SubRepositories = new ObservableCollection<SubRepository>(freshList);
+                return;
+            }
+
+            for (var i = 0; i < freshList.Count; i++)
+            {
+                UpdateSubRepository(current[i], freshList[i]);
+            }
+
+            // 差分路径无集合 setter，显式触发派生属性重算（脏检查基于新字段值放行）
+            repo.RaiseVcsSummaryChanged();
+        }
+
+        private static void UpdateSubRepository(SubRepository target, SubRepository source)
+        {
+            target.Branch = source.Branch;
+            target.Revision = source.Revision;
+            target.Status = source.Status;
+            target.ChangedFileCount = source.ChangedFileCount;
+            target.GitAheadCount = source.GitAheadCount;
+            target.GitBehindCount = source.GitBehindCount;
+            target.SvnRemoteUpdateCount = source.SvnRemoteUpdateCount;
+            target.StagedCount = source.StagedCount;
+            target.StatusSummary = source.StatusSummary;
+            target.ChangedFiles = source.ChangedFiles;
         }
 
         private bool ShouldSkipRefresh(CodeRepository repo, bool forceRefresh)
@@ -149,7 +236,120 @@ namespace PackageManager.Features.CodeWorkspace.Services
                    DateTime.Now - lastTime < MinRefreshInterval;
         }
 
-        private static async Task<RepositoryVcsSnapshot> BuildSnapshotAsync(CodeRepository repo, CancellationToken cancellationToken, bool includeRemoteStatus)
+        /// <summary>子仓库目录扫描缓存条目：一趟遍历的结果与时间戳。</summary>
+        private sealed class SubRepoScanCache
+        {
+            public DateTime Timestamp { get; set; }
+
+            public List<string> GitDirs { get; set; }
+
+            public List<string> SvnDirs { get; set; }
+        }
+
+        private static readonly TimeSpan SubRepoScanCacheTtl = TimeSpan.FromMinutes(1);
+
+        /// <summary>跨仓库共享的子仓库进程限流：避免根仓库 4 并发 × 子仓库并发造成进程风暴。</summary>
+        private static readonly SemaphoreSlim SubRepoProcessGate = new SemaphoreSlim(8);
+
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SubRepoScanCache> _subRepoScanCache =
+            new System.Collections.Concurrent.ConcurrentDictionary<string, SubRepoScanCache>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// 获取子仓库目录列表：优先读缓存（1 分钟 TTL），过期或强制刷新时重扫。
+        /// </summary>
+        /// <param name="repoPath">仓库根路径。</param>
+        /// <param name="forceRefresh">是否强制绕过缓存。</param>
+        /// <returns>Git 与 SVN 子仓库目录。</returns>
+        private (List<string> GitDirs, List<string> SvnDirs) GetSubRepositories(string repoPath, bool forceRefresh)
+        {
+            var normalized = repoPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (!forceRefresh &&
+                _subRepoScanCache.TryGetValue(normalized, out var cached) &&
+                DateTime.Now - cached.Timestamp < SubRepoScanCacheTtl)
+            {
+                return (cached.GitDirs, cached.SvnDirs);
+            }
+
+            var (gitDirs, svnDirs) = DiscoverSubRepositories(repoPath);
+            _subRepoScanCache[normalized] = new SubRepoScanCache
+            {
+                Timestamp = DateTime.Now,
+                GitDirs = gitDirs,
+                SvnDirs = svnDirs,
+            };
+            return (gitDirs, svnDirs);
+        }
+
+        /// <summary>
+        /// 单趟 2 层目录遍历同时发现 Git 与 SVN 子仓库（原先两趟独立遍历，IO 直接减半）。
+        /// </summary>
+        /// <param name="rootPath">仓库根路径。</param>
+        /// <returns>Git 与 SVN 子仓库目录列表。</returns>
+        private static (List<string> GitDirs, List<string> SvnDirs) DiscoverSubRepositories(string rootPath)
+        {
+            var gitDirs = new List<string>();
+            var svnDirs = new List<string>();
+            try
+            {
+                foreach (var dir in Directory.GetDirectories(rootPath))
+                {
+                    var dirName = Path.GetFileName(dir);
+                    if (ShouldSkipDirectory(dirName))
+                    {
+                        continue;
+                    }
+
+                    if (HasGitMetadata(dir))
+                    {
+                        gitDirs.Add(dir);
+                        continue;
+                    }
+
+                    if (Directory.Exists(Path.Combine(dir, ".svn")))
+                    {
+                        svnDirs.Add(dir);
+                        continue;
+                    }
+
+                    try
+                    {
+                        foreach (var subDir in Directory.GetDirectories(dir))
+                        {
+                            var subDirName = Path.GetFileName(subDir);
+                            if (ShouldSkipDirectory(subDirName))
+                            {
+                                continue;
+                            }
+
+                            if (HasGitMetadata(subDir))
+                            {
+                                gitDirs.Add(subDir);
+                            }
+                            else if (Directory.Exists(Path.Combine(subDir, ".svn")))
+                            {
+                                svnDirs.Add(subDir);
+                            }
+                        }
+                    }
+                    catch (UnauthorizedAccessException)
+                    {
+                    }
+                    catch (IOException)
+                    {
+                    }
+                }
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+            catch (IOException)
+            {
+            }
+
+            return (gitDirs, svnDirs);
+        }
+
+        private async Task<RepositoryVcsSnapshot> BuildSnapshotAsync(CodeRepository repo, CancellationToken cancellationToken, bool includeRemoteStatus, bool forceRefresh)
         {
             var snapshot = new RepositoryVcsSnapshot
             {
@@ -159,8 +359,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
             };
             var hasGit = Directory.Exists(Path.Combine(repo.Path, ".git")) || File.Exists(Path.Combine(repo.Path, ".git"));
             var hasSvn = Directory.Exists(Path.Combine(repo.Path, ".svn"));
-            var gitSubDirs = await Task.Run(() => FindGitSubDirectories(repo.Path), cancellationToken);
-            var svnSubDirs = await Task.Run(() => FindSvnSubDirectories(repo.Path), cancellationToken);
+            var (gitSubDirs, svnSubDirs) = await Task.Run(() => GetSubRepositories(repo.Path, forceRefresh), cancellationToken);
             var hasAnyGit = hasGit || gitSubDirs.Count > 0;
             var hasAnySvn = hasSvn || svnSubDirs.Count > 0;
 
@@ -389,112 +588,6 @@ namespace PackageManager.Features.CodeWorkspace.Services
             snapshot.HasConflict = hasConflict;
         }
 
-        private static List<string> FindSvnSubDirectories(string rootPath)
-        {
-            var result = new List<string>();
-            try
-            {
-                foreach (var dir in Directory.GetDirectories(rootPath))
-                {
-                    var dirName = Path.GetFileName(dir);
-                    if (ShouldSkipDirectory(dirName))
-                    {
-                        continue;
-                    }
-
-                    if (Directory.Exists(Path.Combine(dir, ".svn")))
-                    {
-                        result.Add(dir);
-                        continue;
-                    }
-
-                    try
-                    {
-                        foreach (var subDir in Directory.GetDirectories(dir))
-                        {
-                            var subDirName = Path.GetFileName(subDir);
-                            if (ShouldSkipDirectory(subDirName))
-                            {
-                                continue;
-                            }
-
-                            if (Directory.Exists(Path.Combine(subDir, ".svn")))
-                            {
-                                result.Add(subDir);
-                            }
-                        }
-                    }
-                    catch (UnauthorizedAccessException)
-                    {
-                    }
-                    catch (IOException)
-                    {
-                    }
-                }
-            }
-            catch (UnauthorizedAccessException)
-            {
-            }
-            catch (IOException)
-            {
-            }
-
-            return result;
-        }
-
-        private static List<string> FindGitSubDirectories(string rootPath)
-        {
-            var result = new List<string>();
-            try
-            {
-                foreach (var dir in Directory.GetDirectories(rootPath))
-                {
-                    var dirName = Path.GetFileName(dir);
-                    if (ShouldSkipDirectory(dirName))
-                    {
-                        continue;
-                    }
-
-                    if (HasGitMetadata(dir))
-                    {
-                        result.Add(dir);
-                        continue;
-                    }
-
-                    try
-                    {
-                        foreach (var subDir in Directory.GetDirectories(dir))
-                        {
-                            var subDirName = Path.GetFileName(subDir);
-                            if (ShouldSkipDirectory(subDirName))
-                            {
-                                continue;
-                            }
-
-                            if (HasGitMetadata(subDir))
-                            {
-                                result.Add(subDir);
-                            }
-                        }
-                    }
-                    catch (UnauthorizedAccessException)
-                    {
-                    }
-                    catch (IOException)
-                    {
-                    }
-                }
-            }
-            catch (UnauthorizedAccessException)
-            {
-            }
-            catch (IOException)
-            {
-            }
-
-            return result;
-        }
-
         private static bool HasGitMetadata(string path)
         {
             return Directory.Exists(Path.Combine(path, ".git")) || File.Exists(Path.Combine(path, ".git"));
@@ -514,89 +607,120 @@ namespace PackageManager.Features.CodeWorkspace.Services
                 .GroupBy(sub => $"{sub.VcsType}:{sub.RelativePath}", StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
 
-            foreach (var gitDir in (gitDirs ?? Enumerable.Empty<string>()).OrderBy(path => GetRelativePath(repoPath, path), StringComparer.OrdinalIgnoreCase))
+            // Git 子仓库并行采集（共享限流 8，避免根仓库并发 × 子仓库并发叠加成进程风暴）
+            var orderedGitDirs = (gitDirs ?? Enumerable.Empty<string>())
+                .OrderBy(path => GetRelativePath(repoPath, path), StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var gitResults = await Task.WhenAll(orderedGitDirs.Select(async gitDir =>
             {
                 ct.ThrowIfCancellationRequested();
 
-                var relativePath = GetRelativePath(repoPath, gitDir);
-                var cachedSubRepository = FindCachedSubRepository(cachedSubRepositoryMap, VcsType.Git, relativePath);
-                var subRepo = new SubRepository
+                await SubRepoProcessGate.WaitAsync(ct);
+                try
                 {
-                    RelativePath = relativePath,
-                    VcsType = VcsType.Git,
-                    Status = VcsStatus.Unknown,
-                    GitAheadCount = cachedSubRepository?.GitAheadCount ?? 0,
-                    GitBehindCount = cachedSubRepository?.GitBehindCount ?? 0,
-                };
+                    var relativePath = GetRelativePath(repoPath, gitDir);
+                    var cachedSubRepository = FindCachedSubRepository(cachedSubRepositoryMap, VcsType.Git, relativePath);
+                    var subRepo = new SubRepository
+                    {
+                        RelativePath = relativePath,
+                        VcsType = VcsType.Git,
+                        Status = VcsStatus.Unknown,
+                        GitAheadCount = cachedSubRepository?.GitAheadCount ?? 0,
+                        GitBehindCount = cachedSubRepository?.GitBehindCount ?? 0,
+                    };
 
-                var gitStatus = await ReadGitStatusAsync(gitDir, $"Git 子仓库/{relativePath}", ct, includeRemoteStatus);
-                subRepo.Branch = gitStatus.Branch;
-                subRepo.GitAheadCount = gitStatus.AheadCount;
-                subRepo.GitBehindCount = gitStatus.BehindCount;
-                subRepo.StagedCount = gitStatus.StagedCount;
-                subRepo.ChangedFiles = new ObservableCollection<VcsChangedFile>(gitStatus.ChangedFiles);
-                subRepo.ChangedFileCount = gitStatus.ChangedFiles.Count;
-                subRepo.Status = gitStatus.HasError
-                    ? VcsStatus.Error
-                    : gitStatus.HasConflict
-                        ? VcsStatus.Conflict
-                        : gitStatus.ChangedFiles.Count == 0
-                            ? VcsStatus.Clean
-                            : VcsStatus.Modified;
-                subRepo.StatusSummary = gitStatus.HasError ? "检测失败" : gitStatus.ChangedFiles.Count == 0 ? "干净" : $"{gitStatus.ChangedFiles.Count}项变更";
+                    var gitStatus = await ReadGitStatusAsync(gitDir, $"Git 子仓库/{relativePath}", ct, includeRemoteStatus);
+                    subRepo.Branch = gitStatus.Branch;
+                    subRepo.GitAheadCount = gitStatus.AheadCount;
+                    subRepo.GitBehindCount = gitStatus.BehindCount;
+                    subRepo.StagedCount = gitStatus.StagedCount;
+                    subRepo.ChangedFiles = new ObservableCollection<VcsChangedFile>(gitStatus.ChangedFiles);
+                    subRepo.ChangedFileCount = gitStatus.ChangedFiles.Count;
+                    subRepo.Status = gitStatus.HasError
+                        ? VcsStatus.Error
+                        : gitStatus.HasConflict
+                            ? VcsStatus.Conflict
+                            : gitStatus.ChangedFiles.Count == 0
+                                ? VcsStatus.Clean
+                                : VcsStatus.Modified;
+                    subRepo.StatusSummary = gitStatus.HasError ? "检测失败" : gitStatus.ChangedFiles.Count == 0 ? "干净" : $"{gitStatus.ChangedFiles.Count}项变更";
+                    return subRepo;
+                }
+                finally
+                {
+                    SubRepoProcessGate.Release();
+                }
+            }));
+
+            foreach (var subRepo in gitResults.Where(sub => sub != null))
+            {
                 snapshot.SubRepositories.Add(subRepo);
             }
 
-            foreach (var svnDir in svnDirs)
+            // SVN 子仓库并行采集
+            var svnResults = await Task.WhenAll((svnDirs ?? Enumerable.Empty<string>()).Select(async svnDir =>
             {
                 ct.ThrowIfCancellationRequested();
 
-                var subRepo = new SubRepository
+                await SubRepoProcessGate.WaitAsync(ct);
+                try
                 {
-                    RelativePath = GetRelativePath(repoPath, svnDir),
-                    VcsType = VcsType.Svn,
-                    Status = VcsStatus.Unknown,
-                };
-                var cachedSubRepository = FindCachedSubRepository(cachedSubRepositoryMap, VcsType.Svn, subRepo.RelativePath);
-                subRepo.SvnRemoteUpdateCount = cachedSubRepository?.SvnRemoteUpdateCount ?? 0;
+                    var subRepo = new SubRepository
+                    {
+                        RelativePath = GetRelativePath(repoPath, svnDir),
+                        VcsType = VcsType.Svn,
+                        Status = VcsStatus.Unknown,
+                    };
+                    var cachedSubRepository = FindCachedSubRepository(cachedSubRepositoryMap, VcsType.Svn, subRepo.RelativePath);
+                    subRepo.SvnRemoteUpdateCount = cachedSubRepository?.SvnRemoteUpdateCount ?? 0;
 
-                var infoResult = await RunCommandAsync("svn", "info --show-item revision", svnDir, ct);
-                if (infoResult.ExitCode == 0 && int.TryParse(infoResult.Output.Trim(), out var rev))
-                {
-                    subRepo.Revision = rev;
-                }
+                    var infoResult = await RunCommandAsync("svn", "info --show-item revision", svnDir, ct);
+                    if (infoResult.ExitCode == 0 && int.TryParse(infoResult.Output.Trim(), out var rev))
+                    {
+                        subRepo.Revision = rev;
+                    }
 
-                if (includeRemoteStatus)
-                {
-                    subRepo.SvnRemoteUpdateCount = await ReadSvnRemoteUpdateCountAsync(svnDir, ct);
-                }
+                    if (includeRemoteStatus)
+                    {
+                        subRepo.SvnRemoteUpdateCount = await ReadSvnRemoteUpdateCountAsync(svnDir, ct);
+                    }
 
-                var statusResult = await RunCommandAsync("svn", "status", svnDir, ct);
-                if (statusResult.ExitCode == 0)
-                {
-                    var lines = SplitLines(statusResult.Output)
-                        .Where(line => line.Length > 0 && IsValidSvnChangeStatus(line[0]))
-                        .ToList();
-                    subRepo.ChangedFiles = new ObservableCollection<VcsChangedFile>(
-                        lines.Select(line =>
-                            TryCreateSvnChangedFile(repoPath, svnDir, $"SVN 子仓库/{subRepo.RelativePath}", line, out var changedFile)
-                                ? changedFile
-                                : null)
+                    var statusResult = await RunCommandAsync("svn", "status", svnDir, ct);
+                    if (statusResult.ExitCode == 0)
+                    {
+                        var lines = SplitLines(statusResult.Output)
+                            .Where(line => line.Length > 0 && IsValidSvnChangeStatus(line[0]))
+                            .ToList();
+                        subRepo.ChangedFiles = new ObservableCollection<VcsChangedFile>(
+                            lines.Select(line =>
+                                TryCreateSvnChangedFile(repoPath, svnDir, $"SVN 子仓库/{subRepo.RelativePath}", line, out var changedFile)
+                                    ? changedFile
+                                    : null)
                             .Where(file => file != null));
-                    subRepo.ChangedFileCount = lines.Count;
-                    subRepo.Status = lines.Count == 0
-                        ? VcsStatus.Clean
-                        : lines.Any(line => line.Length > 0 && line[0] == 'C')
-                            ? VcsStatus.Conflict
-                            : VcsStatus.Modified;
-                    subRepo.StatusSummary = lines.Count == 0 ? "干净" : $"{lines.Count}项变更";
-                }
-                else
-                {
-                    subRepo.Status = VcsStatus.Error;
-                    subRepo.StatusSummary = "检测失败";
-                }
+                        subRepo.ChangedFileCount = lines.Count;
+                        subRepo.Status = lines.Count == 0
+                            ? VcsStatus.Clean
+                            : lines.Any(line => line.Length > 0 && line[0] == 'C')
+                                ? VcsStatus.Conflict
+                                : VcsStatus.Modified;
+                        subRepo.StatusSummary = lines.Count == 0 ? "干净" : $"{lines.Count}项变更";
+                    }
+                    else
+                    {
+                        subRepo.Status = VcsStatus.Error;
+                        subRepo.StatusSummary = "检测失败";
+                    }
 
+                    return subRepo;
+                }
+                finally
+                {
+                    SubRepoProcessGate.Release();
+                }
+            }));
+
+            foreach (var subRepo in svnResults.Where(sub => sub != null))
+            {
                 snapshot.SubRepositories.Add(subRepo);
             }
         }
@@ -667,8 +791,9 @@ namespace PackageManager.Features.CodeWorkspace.Services
 
             var hasGit = Directory.Exists(Path.Combine(repoPath, ".git")) || File.Exists(Path.Combine(repoPath, ".git"));
             var hasSvn = Directory.Exists(Path.Combine(repoPath, ".svn"));
-            var hasGitSubDirs = FindGitSubDirectories(repoPath).Count > 0;
-            var hasSvnSubDirs = FindSvnSubDirectories(repoPath).Count > 0;
+            var (gitSubDirs, svnSubDirs) = DiscoverSubRepositories(repoPath);
+            var hasGitSubDirs = gitSubDirs.Count > 0;
+            var hasSvnSubDirs = svnSubDirs.Count > 0;
             if ((hasGit || hasGitSubDirs) && (hasSvn || hasSvnSubDirs))
             {
                 return VcsType.Mixed;

@@ -1044,8 +1044,49 @@ namespace PackageManager.Features.CodeWorkspace.Models
             OnPropertyChanged(nameof(SubRepositoryDetail));
         }
 
+        private string _vcsSummaryCacheKey;
+
+        /// <summary>
+        /// 供差分更新（子仓库原地刷新）后显式触发 VCS 摘要派生属性重算；输入未变化时被脏检查拦截。
+        /// </summary>
+        internal void RaiseVcsSummaryChanged()
+        {
+            OnVcsSummaryChanged();
+        }
+
         private void OnVcsSummaryChanged()
         {
+            // 脏检查：VCS 摘要输入未变化时跳过 29 个派生属性通知，消除轮询刷新的无效 UI 重算
+            long subRepoAggregate = 0;
+            if (SubRepositories != null)
+            {
+                foreach (var sub in SubRepositories)
+                {
+                    if (sub == null)
+                    {
+                        continue;
+                    }
+
+                    subRepoAggregate = subRepoAggregate * 31 + sub.ChangedFileCount * 1013 + sub.SvnRemoteUpdateCount * 109 + sub.GitAheadCount * 7 + sub.GitBehindCount;
+                }
+            }
+
+            var cacheKey = string.Join("|",
+                (int)VcsType, (int)VcsStatus,
+                GitAheadCount, GitBehindCount, AddedCount, ModifiedCount, DeletedCount, StagedCount,
+                SvnRevision, SvnRemoteUpdateCount,
+                GitBranch ?? string.Empty,
+                SubRepositories?.Count ?? 0,
+                subRepoAggregate,
+                GitChangedFiles?.Count ?? 0,
+                RootSvnChangedFiles?.Count ?? 0,
+                HasConflict);
+            if (string.Equals(cacheKey, _vcsSummaryCacheKey, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _vcsSummaryCacheKey = cacheKey;
             OnPropertyChanged(nameof(VcsIndicator));
             OnPropertyChanged(nameof(BranchDisplay));
             OnPropertyChanged(nameof(ChangesSummary));

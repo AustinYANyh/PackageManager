@@ -470,23 +470,57 @@ namespace PackageManager.Features.CodeWorkspace.Views
             return Math.Max(maxWidth, fallbackWidth) + 24;
         }
 
-        private static double MeasureRunWidth(IEnumerable<DiffTextRun> runs, Typeface typeface)
+        // 等宽字符宽度缓存：Consolas 的 ASCII 全同宽，CJK/全角各自测一次后复用，
+        // 将 FormattedText 排版次数从 O(行数) 降到 O(不同字符数)（一次性几十次）
+        private static readonly object CharWidthSync = new object();
+        private static readonly Dictionary<char, double> CharWidthCache = new Dictionary<char, double>();
+
+        private static double GetCharWidth(char c, Typeface typeface)
         {
-            var text = string.Concat((runs ?? Enumerable.Empty<DiffTextRun>()).Select(run => run?.Text ?? string.Empty));
-            if (text.Length == 0)
+            lock (CharWidthSync)
             {
-                return 0;
+                if (CharWidthCache.TryGetValue(c, out var cached))
+                {
+                    return cached;
+                }
             }
 
             var formattedText = new FormattedText(
-                text,
+                c.ToString(),
                 CultureInfo.CurrentUICulture,
                 FlowDirection.LeftToRight,
                 typeface,
                 13,
                 Brushes.Black,
                 1.0);
-            return formattedText.WidthIncludingTrailingWhitespace;
+            var width = formattedText.WidthIncludingTrailingWhitespace;
+
+            lock (CharWidthSync)
+            {
+                CharWidthCache[c] = width;
+            }
+
+            return width;
+        }
+
+        private static double MeasureRunWidth(IEnumerable<DiffTextRun> runs, Typeface typeface)
+        {
+            double total = 0;
+            foreach (var run in runs ?? Enumerable.Empty<DiffTextRun>())
+            {
+                var text = run?.Text;
+                if (string.IsNullOrEmpty(text))
+                {
+                    continue;
+                }
+
+                foreach (var c in text)
+                {
+                    total += GetCharWidth(c, typeface);
+                }
+            }
+
+            return total;
         }
 
         private static T FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
