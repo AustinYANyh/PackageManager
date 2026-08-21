@@ -400,7 +400,7 @@ public partial class KanbanStatsPage : Page, ICentralPage, INotifyPropertyChange
                 return;
             }
 
-            var win = new WorkItemKanbanWindow(iter.Id, Users.ToList(), SelectedUser);
+            var win = new WorkItemKanbanWebViewWindow(iter.Id, Users.ToList(), SelectedUser);
             // win.Owner = Application.Current?.MainWindow;
             win.Show();
         }

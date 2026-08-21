@@ -1,10 +1,11 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -421,6 +422,12 @@ public partial class PingCodeApiService
         return result;
     }
 
+    /// <summary>已拉取过成员映射的项目集合（实例级缓存，跨周期刷新保留，避免每 5 秒重复请求）。</summary>
+    private readonly HashSet<string> _iterationLoadedProjects = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>成员 ID→名称映射（实例级缓存，跨周期刷新累积复用）。</summary>
+    private readonly Dictionary<string, string> _iterationIdNameMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>
     /// 获取迭代内工作项列表（补充参与者与成员映射、状态/优先级/故事点等信息）。
     /// </summary>
@@ -429,8 +436,8 @@ public partial class PingCodeApiService
     public async Task<List<WorkItemInfo>> GetIterationWorkItemsAsync(string iterationOrSprintId)
     {
         var result = new List<WorkItemInfo>();
-        var idNameMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var loadedProjects = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var idNameMap = _iterationIdNameMap;
+        var loadedProjects = _iterationLoadedProjects;
         if (string.IsNullOrWhiteSpace(iterationOrSprintId))
         {
             return result;
@@ -445,329 +452,93 @@ public partial class PingCodeApiService
         {
             try
             {
-                var pageIndex = 0;
-                var pageSize = 100;
-                while (true)
+                const int pageSize = 100;
+
+                string PageUrl(int index) =>
+                    $"{baseUrl}?sprint_id={Uri.EscapeDataString(iterationOrSprintId)}&page_size={pageSize}&page_index={index}";
+
+                // 首页探测端点并取 total（仅 sprint_id 过滤：开放 API 不识别 iteration_id，
+                // 会被静默忽略返回全库工作项；sprint_id 查询为空即该迭代无工作项）
+                var firstJson = await GetJsonAsync(PageUrl(0));
+                var firstValues = GetValuesArray(firstJson);
+                if ((firstValues == null) || (firstValues.Count == 0))
                 {
-                    // 仅使用 sprint_id 过滤：开放 API 不识别 iteration_id 参数（会被静默忽略并返回全库工作项），
-                    // sprint_id 查询为空即表示该迭代没有工作项，直接结束分页。
-                    var url = $"{baseUrl}?sprint_id={Uri.EscapeDataString(iterationOrSprintId)}&page_size={pageSize}&page_index={pageIndex}";
-                    var json = await GetJsonAsync(url);
-                    var values = GetValuesArray(json);
+                    break;
+                }
+
+                var total = firstJson.Value<int?>("total") ?? firstValues.Count;
+                var pageCount = Math.Max(1, (int)Math.Ceiling(total / (double)pageSize));
+
+                // 剩余页并行拉取（限流 4，失败页按空处理），消除串行分页的叠加耗时
+                var pageValues = new JArray[pageCount];
+                pageValues[0] = firstValues;
+                using (var pageGate = new SemaphoreSlim(4))
+                {
+                    // 数组只含剩余页任务（WhenAll 不接受 null 元素；单页时为空数组同样安全）
+                    var fetchTasks = new Task[pageCount - 1];
+                    for (var index = 1; index < pageCount; index++)
+                    {
+                        var pageIndex = index;
+                        fetchTasks[pageIndex - 1] = Task.Run(async () =>
+                        {
+                            await pageGate.WaitAsync();
+                            try
+                            {
+                                var json = await GetJsonAsync(PageUrl(pageIndex));
+                                pageValues[pageIndex] = GetValuesArray(json);
+                            }
+                            catch
+                            {
+                                // 单页失败按空页处理，不影响其余页
+                            }
+                            finally
+                            {
+                                pageGate.Release();
+                            }
+                        });
+                    }
+
+                    await Task.WhenAll(fetchTasks);
+                }
+
+                for (var pageIndex = 0; pageIndex < pageCount; pageIndex++)
+                {
+                    var values = pageValues[pageIndex];
                     if ((values == null) || (values.Count == 0))
                     {
-                        break;
+                        continue;
                     }
 
-                    var dtos = values.ToObject<List<WorkItemDto>>() ?? new List<WorkItemDto>();
-                    foreach (var d in dtos)
+                    var dtos = await Task.Run(() => values.ToObject<List<WorkItemDto>>() ?? new List<WorkItemDto>());
+
+                    // 阶段1（轻量 IO）：本页涉及的新项目先加载成员映射
+                    foreach (var projId in dtos.Select(d => d.Project?.Id)
+                                                .Where(id => !string.IsNullOrWhiteSpace(id))
+                                                .Distinct()
+                                                .Where(id => !loadedProjects.Contains(id)))
                     {
-                        var projId = d.Project?.Id;
-                        if (!string.IsNullOrWhiteSpace(projId) && !loadedProjects.Contains(projId))
+                        try
                         {
-                            try
+                            var members = await GetProjectMembersAsync(projId);
+                            foreach (var m in members ?? new List<Entity>())
                             {
-                                var members = await GetProjectMembersAsync(projId);
-                                foreach (var m in members ?? new List<Entity>())
+                                var mid = (m?.Id ?? "").Trim();
+                                var mname = (m?.Name ?? "").Trim();
+                                if (!string.IsNullOrWhiteSpace(mid) && !string.IsNullOrWhiteSpace(mname))
                                 {
-                                    var mid = (m?.Id ?? "").Trim();
-                                    var mname = (m?.Name ?? "").Trim();
-                                    if (!string.IsNullOrWhiteSpace(mid) && !string.IsNullOrWhiteSpace(mname))
-                                    {
-                                        idNameMap[mid] = mname;
-                                    }
-                                }
-
-                                loadedProjects.Add(projId);
-                            }
-                            catch
-                            {
-                            }
-                        }
-
-                        var status = d.State?.Name;
-                        var stateId = d.State?.Id;
-                        var assigneeId = d.Assignee?.Id;
-                        var assigneeName = !string.IsNullOrWhiteSpace(d.Assignee?.DisplayName) ? d.Assignee.DisplayName : d.Assignee?.Name;
-                        var assigneeAvatar = d.Assignee?.Avatar;
-                        if (!string.IsNullOrWhiteSpace(assigneeId) && !string.IsNullOrWhiteSpace(assigneeName))
-                        {
-                            idNameMap[assigneeId] = assigneeName;
-                        }
-
-                        var prio = d.Priority?.Name;
-                        var sp = d.StoryPoints ?? 0;
-                        var severity = "";
-                        object sv;
-                        if (d.Properties != null)
-                        {
-                            if (d.Properties.TryGetValue("severity", out sv) && (sv != null))
-                            {
-                                severity = sv.ToString();
-                            }
-                            else if (d.Properties.TryGetValue("严重程度", out sv) && (sv != null))
-                            {
-                                severity = sv.ToString();
-                            }
-                            else if (d.Properties.TryGetValue("严重", out sv) && (sv != null))
-                            {
-                                severity = sv.ToString();
-                            }
-                        }
-
-                        var endAt = FromUnixSeconds(d.EndAt);
-                        var startAt = FromUnixSeconds(d.StartAt);
-                        var completedAt = FromUnixSeconds(d.CompletedAt);
-                        var updatedAt = FromUnixSeconds(d.UpdatedAt);
-                        var commentCount = 0;
-                        object cc;
-                        if (d.Properties != null)
-                        {
-                            if (d.Properties.TryGetValue("comment_count", out cc) && (cc != null))
-                            {
-                                commentCount = ReadInt(cc);
-                            }
-                            else if (d.Properties.TryGetValue("comments_count", out cc) && (cc != null))
-                            {
-                                commentCount = ReadInt(cc);
-                            }
-                            else if (d.Properties.TryGetValue("评论数", out cc) && (cc != null))
-                            {
-                                commentCount = ReadInt(cc);
-                            }
-                        }
-
-                        var type = d.Type;
-                        var htmlUrl = d.HtmlUrl;
-                        var tagNames = (d.Tags ?? new List<TagDto>()).Select(t => t?.Name).Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
-                        var partIds = (d.Participants ?? new List<ParticipantDto>())
-                                      .Select(p => FirstNonEmpty(p?.User?.Id, p?.Id))
-                                      .Where(s => !string.IsNullOrWhiteSpace(s))
-                                      .Distinct(StringComparer.OrdinalIgnoreCase)
-                                      .ToList();
-                        var partNames = (d.Participants ?? new List<ParticipantDto>())
-                                        .Select(p => FirstNonEmpty(p?.User?.DisplayName, p?.User?.Name))
-                                        .Where(s => !string.IsNullOrWhiteSpace(s))
-                                        .Distinct(StringComparer.OrdinalIgnoreCase)
-                                        .ToList();
-                        foreach (var p in d.Participants ?? new List<ParticipantDto>())
-                        {
-                            var uid = p?.User?.Id;
-                            var pid = p?.Id;
-                            var pnm = FirstNonEmpty(p?.User?.DisplayName, p?.User?.Name);
-                            if (!string.IsNullOrWhiteSpace(pnm))
-                            {
-                                if (!string.IsNullOrWhiteSpace(uid))
-                                {
-                                    idNameMap[uid] = pnm;
-                                }
-
-                                if (!string.IsNullOrWhiteSpace(pid))
-                                {
-                                    idNameMap[pid] = pnm;
+                                    idNameMap[mid] = mname;
                                 }
                             }
+
+                            loadedProjects.Add(projId);
                         }
-
-                        if (!string.IsNullOrWhiteSpace(d.CreatedBy?.Id))
+                        catch
                         {
-                            var nm = FirstNonEmpty(d.CreatedBy?.DisplayName, d.CreatedBy?.Name);
-                            if (!string.IsNullOrWhiteSpace(nm))
-                            {
-                                idNameMap[d.CreatedBy.Id] = nm;
-                            }
                         }
-
-                        if (!string.IsNullOrWhiteSpace(d.UpdatedBy?.Id))
-                        {
-                            var nm = FirstNonEmpty(d.UpdatedBy?.DisplayName, d.UpdatedBy?.Name);
-                            if (!string.IsNullOrWhiteSpace(nm))
-                            {
-                                idNameMap[d.UpdatedBy.Id] = nm;
-                            }
-                        }
-
-                        var watcherIds = (d.Participants ?? new List<ParticipantDto>())
-                                         .Where(p => !string.IsNullOrWhiteSpace(p?.Type) && (
-                                                                                                string.Equals(p.Type,
-                                                                                                              "watcher",
-                                                                                                              StringComparison.OrdinalIgnoreCase) ||
-                                                                                                string.Equals(p.Type,
-                                                                                                              "关注者",
-                                                                                                              StringComparison.OrdinalIgnoreCase) ||
-                                                                                                (p.Type.IndexOf("watch",
-                                                                                                                StringComparison.OrdinalIgnoreCase) >=
-                                                                                                 0)))
-                                         .Select(p => FirstNonEmpty(p?.User?.Id, p?.Id))
-                                         .Where(s => !string.IsNullOrWhiteSpace(s))
-                                         .Distinct(StringComparer.OrdinalIgnoreCase)
-                                         .ToList();
-                        var watcherNames = watcherIds.Select(id =>
-                        {
-                            string nm;
-                            return idNameMap.TryGetValue(id, out nm) ? nm : id;
-                        }).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-                        var propPartIds = new List<string>();
-                        var propPartNames = new List<string>();
-                        if ((d.Properties != null) && d.Properties.TryGetValue("canyuzhe", out var pv) && (pv != null))
-                        {
-                            try
-                            {
-                                if (pv is JArray ja)
-                                {
-                                    foreach (var x in ja)
-                                    {
-                                        var id = ExtractId(x);
-                                        var name = ExtractName(x);
-                                        if (!string.IsNullOrWhiteSpace(id))
-                                        {
-                                            propPartIds.Add(id);
-                                            string nm;
-                                            if (idNameMap.TryGetValue(id, out nm))
-                                            {
-                                                propPartNames.Add(nm);
-                                            }
-                                        }
-                                        else if (!string.IsNullOrWhiteSpace(name))
-                                        {
-                                            propPartNames.Add(name);
-                                        }
-                                    }
-                                }
-                                else
-                                {
-                                    var txt = pv.ToString();
-                                    JArray parsed = null;
-                                    try
-                                    {
-                                        parsed = JArray.Parse(txt);
-                                    }
-                                    catch
-                                    {
-                                    }
-
-                                    if (parsed != null)
-                                    {
-                                        foreach (var x in parsed)
-                                        {
-                                            var id = ExtractId(x);
-                                            var name = ExtractName(x);
-                                            if (!string.IsNullOrWhiteSpace(id))
-                                            {
-                                                propPartIds.Add(id);
-                                                string nm;
-                                                if (!string.IsNullOrWhiteSpace(name))
-                                                {
-                                                    propPartNames.Add(name);
-                                                }
-                                                else if (idNameMap.TryGetValue(id, out nm))
-                                                {
-                                                    propPartNames.Add(nm);
-                                                }
-                                            }
-                                            else if (!string.IsNullOrWhiteSpace(name))
-                                            {
-                                                propPartNames.Add(name);
-                                            }
-                                        }
-                                    }
-                                    else
-                                    {
-                                        var parts = txt.Split(new[] { ',', ';', '|', '\n', '\r', '\t', ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                                        foreach (var s in parts.Select(x => x.Trim()).Where(x => !string.IsNullOrWhiteSpace(x)))
-                                        {
-                                            string nm;
-                                            if (idNameMap.TryGetValue(s, out nm))
-                                            {
-                                                propPartIds.Add(s);
-                                                propPartNames.Add(nm);
-                                            }
-                                            else
-                                            {
-                                                if (s.Length >= 20)
-                                                {
-                                                    propPartIds.Add(s);
-                                                    if (idNameMap.TryGetValue(s, out nm))
-                                                    {
-                                                        propPartNames.Add(nm);
-                                                    }
-                                                }
-                                                else
-                                                {
-                                                    propPartNames.Add(s);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            catch
-                            {
-                            }
-                        }
-
-                        foreach (var id in propPartIds)
-                        {
-                            string nm;
-                            if (!string.IsNullOrWhiteSpace(id) && idNameMap.TryGetValue(id, out nm))
-                            {
-                                if (!partNames.Contains(nm, StringComparer.OrdinalIgnoreCase))
-                                {
-                                    partNames.Add(nm);
-                                }
-
-                                if (!partIds.Contains(id))
-                                {
-                                    partIds.Add(id);
-                                }
-                            }
-                        }
-
-                        foreach (var nm in propPartNames.Where(x => !string.IsNullOrWhiteSpace(x)))
-                        {
-                            if (!partNames.Contains(nm, StringComparer.OrdinalIgnoreCase))
-                            {
-                                partNames.Add(nm);
-                            }
-                        }
-
-                        var wi = new WorkItemInfo
-                        {
-                            Id = d.Id ?? d.ShortId,
-                            StateId = stateId,
-                            ProjectId = d.Project?.Id,
-                            Identifier = d.Identifier ?? d.ShortId ?? d.Id,
-                            Title = d.Title ?? d.Identifier ?? d.Id,
-                            Status = status,
-                            StateCategory = CategorizeState(status),
-                            AssigneeId = assigneeId,
-                            AssigneeName = assigneeName,
-                            AssigneeAvatar = assigneeAvatar,
-                            StoryPoints = sp,
-                            Priority = prio,
-                            Severity = severity,
-                            Type = type,
-                            HtmlUrl = htmlUrl,
-                            StartAt = startAt,
-                            EndAt = endAt,
-                            CompletedAt = completedAt,
-                            UpdatedAt = updatedAt,
-                            CommentCount = commentCount,
-                            Tags = tagNames,
-                            ParticipantIds = partIds,
-                            ParticipantNames = partNames,
-                            WatcherIds = watcherIds,
-                            WatcherNames = watcherNames,
-                        };
-                        result.Add(wi);
                     }
 
-                    var totalCount = json.Value<int?>("total") ?? 0;
-                    pageIndex++;
-                    if ((pageIndex * pageSize) >= totalCount)
-                    {
-                        break;
-                    }
+                    // 阶段2（CPU）：整页映射移出 UI 线程，消除周期刷新时的界面卡顿
+                    result.AddRange(await Task.Run(() => MapWorkItemDtos(dtos, idNameMap)));
                 }
 
                 return result;
@@ -779,6 +550,298 @@ public partial class PingCodeApiService
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// 将一页工作项 DTO 映射为看板信息（含参与者/关注者/严重程度/评论数等解析）。
+    /// 纯 CPU 计算并更新 <paramref name="idNameMap"/>，供后台线程执行。
+    /// </summary>
+    /// <param name="dtos">单页工作项 DTO。</param>
+    /// <param name="idNameMap">成员 ID 到名称的映射（跨页共享）。</param>
+    /// <returns>该页的工作项信息列表。</returns>
+    private static List<WorkItemInfo> MapWorkItemDtos(List<WorkItemDto> dtos, Dictionary<string, string> idNameMap)
+    {
+        var page = new List<WorkItemInfo>();
+        foreach (var d in dtos)
+        {
+            var status = d.State?.Name;
+            var stateId = d.State?.Id;
+            var assigneeId = d.Assignee?.Id;
+            var assigneeName = !string.IsNullOrWhiteSpace(d.Assignee?.DisplayName) ? d.Assignee.DisplayName : d.Assignee?.Name;
+            var assigneeAvatar = d.Assignee?.Avatar;
+            if (!string.IsNullOrWhiteSpace(assigneeId) && !string.IsNullOrWhiteSpace(assigneeName))
+            {
+                idNameMap[assigneeId] = assigneeName;
+            }
+
+            var prio = d.Priority?.Name;
+            var sp = d.StoryPoints ?? 0;
+            var severity = "";
+            object sv;
+            if (d.Properties != null)
+            {
+                if (d.Properties.TryGetValue("severity", out sv) && (sv != null))
+                {
+                    severity = sv.ToString();
+                }
+                else if (d.Properties.TryGetValue("严重程度", out sv) && (sv != null))
+                {
+                    severity = sv.ToString();
+                }
+                else if (d.Properties.TryGetValue("严重", out sv) && (sv != null))
+                {
+                    severity = sv.ToString();
+                }
+            }
+
+            var endAt = FromUnixSeconds(d.EndAt);
+            var startAt = FromUnixSeconds(d.StartAt);
+            var completedAt = FromUnixSeconds(d.CompletedAt);
+            var updatedAt = FromUnixSeconds(d.UpdatedAt);
+            var commentCount = 0;
+            object cc;
+            if (d.Properties != null)
+            {
+                if (d.Properties.TryGetValue("comment_count", out cc) && (cc != null))
+                {
+                    commentCount = ReadInt(cc);
+                }
+                else if (d.Properties.TryGetValue("comments_count", out cc) && (cc != null))
+                {
+                    commentCount = ReadInt(cc);
+                }
+                else if (d.Properties.TryGetValue("评论数", out cc) && (cc != null))
+                {
+                    commentCount = ReadInt(cc);
+                }
+            }
+
+            var type = d.Type;
+            var htmlUrl = d.HtmlUrl;
+            var tagNames = (d.Tags ?? new List<TagDto>()).Select(t => t?.Name).Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
+            var partIds = (d.Participants ?? new List<ParticipantDto>())
+                          .Select(p => FirstNonEmpty(p?.User?.Id, p?.Id))
+                          .Where(s => !string.IsNullOrWhiteSpace(s))
+                          .Distinct(StringComparer.OrdinalIgnoreCase)
+                          .ToList();
+            var partNames = (d.Participants ?? new List<ParticipantDto>())
+                            .Select(p => FirstNonEmpty(p?.User?.DisplayName, p?.User?.Name))
+                            .Where(s => !string.IsNullOrWhiteSpace(s))
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .ToList();
+            foreach (var p in d.Participants ?? new List<ParticipantDto>())
+            {
+                var uid = p?.User?.Id;
+                var pid = p?.Id;
+                var pnm = FirstNonEmpty(p?.User?.DisplayName, p?.User?.Name);
+                if (!string.IsNullOrWhiteSpace(pnm))
+                {
+                    if (!string.IsNullOrWhiteSpace(uid))
+                    {
+                        idNameMap[uid] = pnm;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(pid))
+                    {
+                        idNameMap[pid] = pnm;
+                    }
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(d.CreatedBy?.Id))
+            {
+                var nm = FirstNonEmpty(d.CreatedBy?.DisplayName, d.CreatedBy?.Name);
+                if (!string.IsNullOrWhiteSpace(nm))
+                {
+                    idNameMap[d.CreatedBy.Id] = nm;
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(d.UpdatedBy?.Id))
+            {
+                var nm = FirstNonEmpty(d.UpdatedBy?.DisplayName, d.UpdatedBy?.Name);
+                if (!string.IsNullOrWhiteSpace(nm))
+                {
+                    idNameMap[d.UpdatedBy.Id] = nm;
+                }
+            }
+
+            var watcherIds = (d.Participants ?? new List<ParticipantDto>())
+                             .Where(p => !string.IsNullOrWhiteSpace(p?.Type) && (
+                                                                                    string.Equals(p.Type,
+                                                                                                  "watcher",
+                                                                                                  StringComparison.OrdinalIgnoreCase) ||
+                                                                                    string.Equals(p.Type,
+                                                                                                  "关注者",
+                                                                                                  StringComparison.OrdinalIgnoreCase) ||
+                                                                                    (p.Type.IndexOf("watch",
+                                                                                                    StringComparison.OrdinalIgnoreCase) >=
+                                                                                     0)))
+                             .Select(p => FirstNonEmpty(p?.User?.Id, p?.Id))
+                             .Where(s => !string.IsNullOrWhiteSpace(s))
+                             .Distinct(StringComparer.OrdinalIgnoreCase)
+                             .ToList();
+            var watcherNames = watcherIds.Select(id =>
+            {
+                string nm;
+                return idNameMap.TryGetValue(id, out nm) ? nm : id;
+            }).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            var propPartIds = new List<string>();
+            var propPartNames = new List<string>();
+            if ((d.Properties != null) && d.Properties.TryGetValue("canyuzhe", out var pv) && (pv != null))
+            {
+                try
+                {
+                    if (pv is JArray ja)
+                    {
+                        foreach (var x in ja)
+                        {
+                            var id = ExtractId(x);
+                            var name = ExtractName(x);
+                            if (!string.IsNullOrWhiteSpace(id))
+                            {
+                                propPartIds.Add(id);
+                                string nm;
+                                if (idNameMap.TryGetValue(id, out nm))
+                                {
+                                    propPartNames.Add(nm);
+                                }
+                            }
+                            else if (!string.IsNullOrWhiteSpace(name))
+                            {
+                                propPartNames.Add(name);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        var txt = pv.ToString();
+                        JArray parsed = null;
+                        try
+                        {
+                            parsed = JArray.Parse(txt);
+                        }
+                        catch
+                        {
+                        }
+
+                        if (parsed != null)
+                        {
+                            foreach (var x in parsed)
+                            {
+                                var id = ExtractId(x);
+                                var name = ExtractName(x);
+                                if (!string.IsNullOrWhiteSpace(id))
+                                {
+                                    propPartIds.Add(id);
+                                    string nm;
+                                    if (!string.IsNullOrWhiteSpace(name))
+                                    {
+                                        propPartNames.Add(name);
+                                    }
+                                    else if (idNameMap.TryGetValue(id, out nm))
+                                    {
+                                        propPartNames.Add(nm);
+                                    }
+                                }
+                                else if (!string.IsNullOrWhiteSpace(name))
+                                {
+                                    propPartNames.Add(name);
+                                }
+                            }
+                        }
+                        else
+                        {
+                            var parts = txt.Split(new[] { ',', ';', '|', '\n', '\r', '\t', ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                            foreach (var s in parts.Select(x => x.Trim()).Where(x => !string.IsNullOrWhiteSpace(x)))
+                            {
+                                string nm;
+                                if (idNameMap.TryGetValue(s, out nm))
+                                {
+                                    propPartIds.Add(s);
+                                    propPartNames.Add(nm);
+                                }
+                                else
+                                {
+                                    if (s.Length >= 20)
+                                    {
+                                        propPartIds.Add(s);
+                                        if (idNameMap.TryGetValue(s, out nm))
+                                        {
+                                            propPartNames.Add(nm);
+                                        }
+                                    }
+                                    else
+                                    {
+                                        propPartNames.Add(s);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                catch
+                {
+                }
+            }
+
+            foreach (var id in propPartIds)
+            {
+                string nm;
+                if (!string.IsNullOrWhiteSpace(id) && idNameMap.TryGetValue(id, out nm))
+                {
+                    if (!partNames.Contains(nm, StringComparer.OrdinalIgnoreCase))
+                    {
+                        partNames.Add(nm);
+                    }
+
+                    if (!partIds.Contains(id))
+                    {
+                        partIds.Add(id);
+                    }
+                }
+            }
+
+            foreach (var nm in propPartNames.Where(x => !string.IsNullOrWhiteSpace(x)))
+            {
+                if (!partNames.Contains(nm, StringComparer.OrdinalIgnoreCase))
+                {
+                    partNames.Add(nm);
+                }
+            }
+
+            var wi = new WorkItemInfo
+            {
+                Id = d.Id ?? d.ShortId,
+                StateId = stateId,
+                ProjectId = d.Project?.Id,
+                Identifier = d.Identifier ?? d.ShortId ?? d.Id,
+                Title = d.Title ?? d.Identifier ?? d.Id,
+                Status = status,
+                StateCategory = CategorizeState(status),
+                AssigneeId = assigneeId,
+                AssigneeName = assigneeName,
+                AssigneeAvatar = assigneeAvatar,
+                StoryPoints = sp,
+                Priority = prio,
+                Severity = severity,
+                Type = type,
+                HtmlUrl = htmlUrl,
+                StartAt = startAt,
+                EndAt = endAt,
+                CompletedAt = completedAt,
+                UpdatedAt = updatedAt,
+                CommentCount = commentCount,
+                Tags = tagNames,
+                ParticipantIds = partIds,
+                ParticipantNames = partNames,
+                WatcherIds = watcherIds,
+                WatcherNames = watcherNames,
+            };
+            page.Add(wi);
+        }
+
+        return page;
     }
 
     /// <summary>
@@ -821,6 +884,7 @@ public partial class PingCodeApiService
     /// <summary>
     /// 拉取指定项目全部自定义字段属性与枚举选项字典并入缓存。同一会话内只拉一次；
     /// 翻译未命中新枚举值时由调用方以 force=true 强制重拉实现自愈。
+    /// 各工作项类型的属性页并行拉取（限流 4），单类型失败跳过不影响其余类型。
     /// </summary>
     /// <param name="projectId">项目唯一标识。</param>
     /// <param name="force">是否强制重拉（忽略会话内已拉取标记）。</param>
@@ -834,52 +898,83 @@ public partial class PingCodeApiService
         try
         {
             var typeIds = await GetProjectWorkItemTypeIdsAsync(projectId);
-            var merged = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
-            var failedTypeIds = new List<string>();
-            foreach (var typeId in typeIds)
+            Dictionary<string, Dictionary<string, string>>[] typeResults;
+            using (var gate = new SemaphoreSlim(4))
             {
-                // 单类型容错：列表端点可能返回不属于该项目的类型（实测 1003104），跳过并记录，不影响其余类型收割
-                try
+                // 每类型独立拉取+解析，互不拖累；失败类型返回 null（跳过）
+                typeResults = await Task.WhenAll(typeIds.Select(async typeId =>
                 {
-                    var url = $"https://open.pingcode.com/v1/pjm/work_item/properties?project_id={Uri.EscapeDataString(projectId)}&work_item_type_id={Uri.EscapeDataString(typeId)}";
-                    var json = await GetJsonAsync(url);
-                    var values = json?["values"] as JArray;
-                    if (values == null)
+                    await gate.WaitAsync();
+                    try
                     {
+                        var url = $"https://open.pingcode.com/v1/pjm/work_item/properties?project_id={Uri.EscapeDataString(projectId)}&work_item_type_id={Uri.EscapeDataString(typeId)}";
+                        var json = await GetJsonAsync(url);
+                        var values = json?["values"] as JArray;
+                        if (values == null || values.Count == 0)
+                        {
+                            return null;
+                        }
+
+                        var parsed = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var property in values.OfType<JObject>())
+                        {
+                            var key = property.Value<string>("id");
+                            var optionArray = property["options"] as JArray;
+                            if (string.IsNullOrWhiteSpace(key) || optionArray == null || optionArray.Count == 0)
+                            {
+                                continue;
+                            }
+
+                            var options = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                            foreach (var option in optionArray.OfType<JObject>())
+                            {
+                                var optionId = option.Value<string>("_id");
+                                var optionText = option.Value<string>("text");
+                                if (!string.IsNullOrWhiteSpace(optionId) && !string.IsNullOrWhiteSpace(optionText) && !options.ContainsKey(optionId))
+                                {
+                                    options[optionId] = optionText;
+                                }
+                            }
+
+                            if (options.Count > 0)
+                            {
+                                parsed[key] = options;
+                            }
+                        }
+
+                        return parsed;
+                    }
+                    catch (System.Exception typeEx)
+                    {
+                        LoggingService.LogWarning($"拉取工作项类型 {typeId} 的属性字典失败（跳过）：{typeEx.Message}");
+                        return null;
+                    }
+                    finally
+                    {
+                        gate.Release();
+                    }
+                }));
+            }
+
+            // 合并：同字段多类型重复返回时选项取首次出现（正常完全一致）
+            var merged = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var parsed in typeResults.Where(r => r != null))
+            {
+                foreach (var kv in parsed)
+                {
+                    if (!merged.TryGetValue(kv.Key, out var options))
+                    {
+                        merged[kv.Key] = kv.Value;
                         continue;
                     }
 
-                    foreach (var property in values.OfType<JObject>())
+                    foreach (var opt in kv.Value)
                     {
-                        var key = property.Value<string>("id");
-                        var optionArray = property["options"] as JArray;
-                        if (string.IsNullOrWhiteSpace(key) || optionArray == null || optionArray.Count == 0)
+                        if (!options.ContainsKey(opt.Key))
                         {
-                            continue;
-                        }
-
-                        // 同字段多类型重复返回时合并（选项以首次出现为准，正常完全一致）
-                        if (!merged.TryGetValue(key, out var options))
-                        {
-                            options = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                            merged[key] = options;
-                        }
-
-                        foreach (var option in optionArray.OfType<JObject>())
-                        {
-                            var optionId = option.Value<string>("_id");
-                            var optionText = option.Value<string>("text");
-                            if (!string.IsNullOrWhiteSpace(optionId) && !string.IsNullOrWhiteSpace(optionText) && !options.ContainsKey(optionId))
-                            {
-                                options[optionId] = optionText;
-                            }
+                            options[opt.Key] = opt.Value;
                         }
                     }
-                }
-                catch (System.Exception typeEx)
-                {
-                    failedTypeIds.Add(typeId);
-                    LoggingService.LogWarning($"拉取工作项类型 {typeId} 的属性字典失败（跳过）：{typeEx.Message}");
                 }
             }
 
@@ -889,11 +984,6 @@ public partial class PingCodeApiService
             }
 
             customFieldOptionLoadedProjects.Add(projectId);
-            if (failedTypeIds.Count > 0)
-            {
-                LoggingService.LogWarning($"项目 {projectId} 属性字典部分类型拉取失败（{failedTypeIds.Count}/{typeIds.Count}）：{string.Join(",", failedTypeIds)}");
-            }
-
             if (merged.Count == 0 && typeIds.Count > 0)
             {
                 LoggingService.LogWarning($"项目 {projectId} 属性字典加载结果为空，所属产品等自定义字段将显示原始 ID");
@@ -903,6 +993,17 @@ public partial class PingCodeApiService
         {
             LoggingService.LogWarning($"项目 {projectId} 属性字典加载失败，自定义字段将显示原始 ID：{ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// 预取指定项目的自定义字段枚举字典（如所属产品），供看板加载完成后在 UI 上下文后台调用，
+    /// 使首次打开工作项详情时命中缓存无需等待网络。
+    /// </summary>
+    /// <param name="projectId">项目唯一标识。</param>
+    /// <returns>异步任务。</returns>
+    public Task PrefetchCustomFieldOptionsAsync(string projectId)
+    {
+        return string.IsNullOrWhiteSpace(projectId) ? Task.CompletedTask : LoadCustomFieldOptionsAsync(projectId, force: false);
     }
 
     /// <summary>
@@ -977,6 +1078,8 @@ public partial class PingCodeApiService
                     continue;
                 }
 
+                // 评论与详情字段解析并行发起，省一次串行网络往返
+                var commentsTask = GetWorkItemCommentsAsync(dto.Id ?? workItemId);
                 var d = new WorkItemDetails();
                 d.Id = dto.Id ?? workItemId;
                 d.Identifier = dto.Identifier;
@@ -1052,7 +1155,7 @@ public partial class PingCodeApiService
                                                    json["fields"]?.Value<string>("public_image_token"),
                                                    json["work_item"]?.Value<string>("public_image_token"));
                 d.Tags = (dto.Tags ?? new List<TagDto>()).Select(t => t?.Name).Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
-                d.Comments = await GetWorkItemCommentsAsync(d.Id) ?? new List<WorkItemComment>();
+                d.Comments = await commentsTask ?? new List<WorkItemComment>();
                 return d;
             }
             catch

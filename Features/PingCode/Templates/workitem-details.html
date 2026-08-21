@@ -3,102 +3,115 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <meta name="workitem-details-template-version" content="1.3.3"/>
+  <meta name="workitem-details-template-version" content="1.4.1"/>
   <style>
-    html,body{height:100%}
-    body{margin:0;background:#fff;font-family:'Segoe UI','Microsoft YaHei',Arial,sans-serif;color:#111827;height:100%}
+        html,body{height:100%}
+    body{margin:0;background:#F1F5F9;font-family:'Segoe UI','Microsoft YaHei',Arial,sans-serif;color:#0F172A;height:100%}
     .wrap{padding:0;height:100%}
-    .drawer{width:100%;max-width:100%;margin:0;border-radius:0;box-shadow:none;height:100%}
-    .crumb{padding:8px 24px;border-bottom:1px solid #f0f0f0;background:#fff;display:flex;align-items:center;gap:8px}
+    .drawer{width:100%;max-width:100%;margin:0;border-radius:0;box-shadow:none;height:100%;background:#F1F5F9}
+    .crumb{padding:10px 28px;border-bottom:1px solid #E2E8F0;background:#FFFFFF;display:flex;align-items:center;gap:8px}
     .crumb-link{color:#2563EB;text-decoration:none}
     .crumb-link:hover{text-decoration:underline}
-    .crumb-current{color:#111827;font-weight:600}
-    .crumb-sep{color:#6B7280}
-    .header{padding:16px 24px;border-bottom:1px solid #f0f0f0;background:#fff;display:flex;align-items:center;gap:10px}
-    .id{color:#6B7280;font-weight:600}
-    .title{font-size:18px;font-weight:700}
-    .quick{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;padding:8px 24px;border-bottom:1px solid #f0f0f0;background:#fff}
+    .crumb-current{color:#0F172A;font-weight:600}
+    .crumb-sep{color:#64748B}
+    .header{padding:18px 28px;border-bottom:1px solid #E2E8F0;background:#FFFFFF;display:flex;align-items:center;gap:10px}
+    .id{color:#64748B;font-weight:600;letter-spacing:.3px}
+    .title{font-size:18px;font-weight:700;color:#0F172A}
+    .header .ai-group{margin-left:auto;display:flex;gap:8px}
+    .ai-btn{padding:7px 16px;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;border:1px solid transparent;color:#fff}
+    .ai-btn-primary{background:#2563EB;border-color:#1D4ED8}
+    .ai-btn-primary:hover{background:#1D4ED8}
+    .ai-btn-purple{background:#7C3AED;border-color:#6D28D9}
+    .ai-btn-purple:hover{background:#6D28D9}
+    .quick{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;padding:12px 28px;border-bottom:1px solid #E2E8F0;background:#FFFFFF}
     .quick .item{display:flex;flex-direction:column;gap:6px}
-    .quick .label{color:#6B7280}
-    .quick .value{font-weight:600}
+    .quick .label{color:#64748B;font-size:12px}
+    .quick .value{font-weight:600;color:#1E293B}
     .base-info{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;padding-top:4px}
     .base-info .item{display:flex;flex-direction:column;gap:6px}
-    .base-info .label{color:#6B7280}
-    .base-info .value{font-weight:600}
-    .layout{display:grid;grid-template-columns:1fr;gap:16px;padding:16px 24px;background:#fff}
-    .tabs{display:flex;gap:8px;border-bottom:1px solid #f0f0f0;margin:0 24px;padding:0 0 8px 0}
-    .tab{padding:6px 12px;border:1px solid #D1D5DB;border-bottom:none;border-radius:6px 6px 0 0;background:#F9FAFB;cursor:pointer;color:#374151}
-    .tab.active{background:#fff;color:#111827;border-color:#D1D5DB}
-    .tab-panel{display:none;padding:16px 24px}
+    .base-info .label{color:#64748B;font-size:12px}
+    .base-info .value{font-weight:600;color:#1E293B}
+    .state-select{width:fit-content;padding:4px 10px;border:1px solid #CBD5E1;border-radius:8px;background:#FFFFFF;font-weight:600;font-size:12.5px;color:#1E293B;outline:none}
+    .sp-input{width:72px;padding:4px 10px;border:1px solid #CBD5E1;border-radius:8px;font-weight:600;font-size:13px;color:#1E293B;outline:none}
+    .sp-input:focus{border-color:#2563EB;box-shadow:0 0 0 3px rgba(37,99,235,.12)}
+    .layout{display:grid;grid-template-columns:1fr;gap:16px;padding:16px 28px;background:#F1F5F9}
+    .tabs{display:flex;gap:6px;padding:10px 28px;background:#FFFFFF;border-bottom:1px solid #E2E8F0}
+    .tab{padding:7px 16px;border-radius:8px;cursor:pointer;color:#475569;background:transparent;border:1px solid transparent;font-size:13px}
+    .tab:hover{background:#F1F5F9}
+    .tab .cnt{margin-left:4px;background:#E2E8F0;border-radius:8px;padding:1px 7px;font-size:11px;color:#475569}
+    .tab.active{background:#F1F5F9;border-color:#E2E8F0;font-weight:700;color:#0F172A}
+    .tab-panel{display:none;padding:0}
     .tab-panel.active{display:block}
-    .section-title{font-size:16px;font-weight:700;margin:12px 0 8px}
-    .desc-card,.sketch-card,.comments-card{border:1px solid #f0f0f0;border-radius:8px;padding:12px;background:#fff}
-    .ant-descriptions-item-label{color:#6B7280}
+    .panel-card{background:#FFFFFF;border-top:1px solid #E2E8F0;padding:16px 26px}
+    .panel-card:last-child{border-bottom:1px solid #E2E8F0}
+    .section-title{display:flex;align-items:center;gap:8px;font-size:14px;font-weight:700;margin:0 0 14px;color:#0F172A}
+    .sec-dot{width:8px;height:8px;border-radius:50%;flex:none}
+    .sec-extra{margin-left:auto;font-size:12px;font-weight:400;color:#94A3B8}
+    .desc-card,.sketch-card,.comments-card{padding:0;background:transparent}
+    .ant-descriptions-item-label{color:#64748B}
     .tag{display:inline-block;margin:0 8px 8px 0}
-    .ant-tag{display:inline-block;border:1px solid #D1D5DB;border-radius:999px;padding:2px 8px;background:#F9FAFB;color:#374151;font-size:12px}
-    .ant-tag-pink{border-color:#FDA4AF;background:#FFE4E6;color:#9D174D}
-    .comment-item{border-bottom:1px solid #f0f0f0;padding:12px 0}
+    .ant-tag{display:inline-block;border:1px solid #CBD5E1;border-radius:6px;padding:3px 9px;background:#F8FAFC;color:#334155;font-size:12px}
+    .ant-tag-pink{border-color:#FECDD3;background:#FFF1F2;color:#9F1239}
+    .comment-item{border-bottom:1px solid #F1F5F9;padding:12px 0}
     .comment-item:last-child{border-bottom:none}
     .comment-row{display:flex;align-items:flex-start;gap:10px}
     .comment-avatar{flex:0 0 24px}
     .comment-main{flex:1 1 auto}
-    .comment-meta{color:#6B7280;margin-bottom:6px;font-size:12px}
-    .comment-time{background:#F3F4F6;border:1px solid #E5E7EB;border-radius:999px;padding:2px 8px}
+    .comment-meta{color:#64748B;margin-bottom:6px;font-size:12px}
+    .comment-time{background:#F1F5F9;border:1px solid #E2E8F0;border-radius:6px;padding:2px 8px}
     .comment-avatar .ant-avatar{width:24px;height:24px;line-height:24px}
     .comment-avatar img{width:24px;height:24px;border-radius:50%;object-fit:cover}
-    .comment-body img{max-width:300px;height:auto}
-    .comment-attachment img{max-width:100%;height:auto}
-    .comment-body .mention{display:inline-block;border:1px solid #E5E7EB;border-radius:999px;padding:0 6px;margin:0 2px;background:#F3F4F6;color:#374151}
-    .mention-panel{position:absolute;display:none;z-index:9999;max-height:220px;overflow:auto;background:#fff;border:1px solid #D1D5DB;border-radius:6px;box-shadow:0 8px 24px rgba(0,0,0,0.12)}
+    .comment-body img{max-width:300px;height:auto;border-radius:8px;border:1px solid #E2E8F0}
+    .comment-attachment img{max-width:100%;height:auto;border-radius:8px;border:1px solid #E2E8F0}
+    .comment-body .mention{display:inline-block;border:1px solid #E2E8F0;border-radius:6px;padding:0 6px;margin:0 2px;background:#F1F5F9;color:#334155}
+    .mention-panel{position:absolute;display:none;z-index:9999;max-height:220px;overflow:auto;background:#fff;border:1px solid #CBD5E1;border-radius:8px;box-shadow:0 8px 24px rgba(15,23,42,.14)}
     .mention-panel ul{list-style:none;margin:0;padding:6px 0;min-width:220px}
-    .mention-panel li{padding:6px 12px;cursor:pointer}
-    .mention-panel li:hover,.mention-panel li.active{background:#F3F4F6}
+    .mention-panel li{padding:7px 12px;cursor:pointer;color:#1E293B}
+    .mention-panel li:hover,.mention-panel li.active{background:#F1F5F9}
     .mention{color:#2563EB;background:#EFF6FF;border-radius:4px;padding:0 4px;margin:0 2px;display:inline-block}
-    .badge{display:inline-block;border:1px solid #D1D5DB;border-radius:999px;padding:2px 8px;background:#F3F4F6;color:#374151}
-    .state-badge{min-width:70px;display:inline-block;text-align:center}
+    .badge{display:inline-block;border:1px solid #CBD5E1;border-radius:6px;padding:3px 9px;background:#F8FAFC;color:#334155}
+    .state-badge{min-width:70px;display:inline-block;text-align:center;border-radius:6px;padding:3px 10px;font-size:11.5px;font-weight:600}
     .state-badge.state-inprogress{background:#F59E0B;color:#fff;border-color:#FDBA74}
     .state-badge.state-testable{background:#3B82F6;color:#fff;border-color:#93C5FD}
-    .state-badge.state-testing{background:#A855F7;color:#fff;border-color:#C4B5FD}
+    .state-badge.state-testing{background:#8B5CF6;color:#fff;border-color:#C4B5FD}
     .state-badge.state-done{background:#10B981;color:#fff;border-color:#6EE7B7}
-    .state-badge.state-closed{background:#9CA3AF;color:#fff;border-color:#D1D5DB}
-    .state-badge.state-pending{background:#E5E7EB;color:#374151;border-color:#D1D5DB}
+    .state-badge.state-closed{background:#94A3B8;color:#fff;border-color:#D1D5DB}
+    .state-badge.state-pending{background:#F1F5F9;color:#334155;border-color:#CBD5E1}
     .ant-comment-avatar .ant-avatar{width:24px;height:24px;line-height:24px}
     .ant-comment-avatar img{width:24px;height:24px;border-radius:50%}
-    .ant-comment-content-detail img,.desc-card img,.sketch-card img{max-width:100%;border-radius:8px;border:1px solid #E5E7EB}
-    .ant-comment-content-detail pre, .ant-comment-content-detail code{background:#F7F7F9;border:1px solid #E5E7EB;border-radius:6px}
+    .ant-comment-content-detail img,.desc-card img,.sketch-card img{max-width:100%;border-radius:8px;border:1px solid #E2E8F0}
+    .ant-comment-content-detail pre, .ant-comment-content-detail code{background:#F8FAFC;border:1px solid #E2E8F0;border-radius:6px}
     .ant-comment-content-detail pre{padding:10px;overflow:auto}
     .ant-comment-content-detail code{padding:2px 4px}
-    .comment-editor{border:1px solid #E5E7EB;border-radius:8px;padding:8px;margin-bottom:12px;background:#FAFAFA}
+    .comment-editor{border:1px solid #E2E8F0;border-radius:10px;padding:10px;margin-top:14px;background:#FFFFFF}
     .comment-collapsed{display:flex;align-items:center;gap:8px}
-    .comment-collapsed input{flex:1 1 auto;padding:8px 10px;border:1px solid #D1D5DB;border-radius:6px}
+    .comment-collapsed input{flex:1 1 auto;padding:8px 10px;border:1px solid #CBD5E1;border-radius:6px}
     .comment-expanded{display:none}
-    .edit-area{min-height:180px;border:1px solid #D1D5DB;border-radius:6px;padding:8px;background:#fff;overflow:auto}
+    .edit-area{min-height:180px;border:1px solid #CBD5E1;border-radius:6px;padding:8px;background:#fff;overflow:auto}
     .toolbar{display:flex;align-items:center;justify-content:space-between;margin-top:8px}
-    .toolbar .tips{color:#6B7280;font-size:12px}
+    .toolbar .tips{color:#64748B;font-size:12px}
     .actions{display:flex;gap:8px;margin-top:8px}
-    .actions button{padding:6px 12px;border:1px solid #D1D5DB;border-radius:6px;background:#fff;cursor:pointer}
-    .actions button:hover{background:#F3F4F6}
-    .children-list{padding:0 24px}
-    .children-summary{display:flex;align-items:center;gap:10px;margin:8px 0}
-    .children-summary .count{font-weight:600;color:#111827}
-    .children-progress{flex:0 0 160px;height:8px;background:#E5E7EB;border-radius:4px;overflow:hidden}
-    .children-progress .bar{height:100%;background:#10B981;width:0}
-    .children-rows{border:1px solid #E5E7EB;border-radius:10px;overflow:hidden;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,0.04)}
-    .children-row{display:grid;grid-template-columns:140px 1fr 120px 140px 140px 160px;align-items:center;gap:8px;padding:10px 14px;border-bottom:1px solid #F3F4F6}
-    .children-row:last-child{border-bottom:none}
-    .children-row .id a,.children-row .title a{color:#2563EB;text-decoration:none}
-    .children-row .id a:hover,.children-row .title a:hover{text-decoration:underline}
-    .children-row .id{font-size:12px;color:#374151}
-    .children-row .title a{font-size:14px;color:#111827}
-    .children-row .assignee,.children-row .start,.children-row .end{font-size:12px;color:#374151}
-    .children-row .status .state-badge{min-width:auto}
-    .state-badge{border:1px solid #E5E7EB;border-radius:999px;padding:2px 10px;display:inline-block;text-align:center;font-size:12px;line-height:1}
-    .state-badge.state-inprogress{border-color:#FDBA74}
-    .state-badge.state-testable{border-color:#93C5FD}
-    .state-badge.state-testing{border-color:#C4B5FD}
-    .state-badge.state-done{border-color:#6EE7B7}
-    .state-badge.state-closed{border-color:#D1D5DB}
-    .state-badge.state-pending{border-color:#D1D5DB}
+    .actions button{padding:6px 12px;border:1px solid #CBD5E1;border-radius:6px;background:#fff;cursor:pointer;color:#1E293B}
+    .actions button:hover{background:#F1F5F9}
+    .children-toolbar{display:flex;align-items:center;gap:14px;padding:12px 26px;background:#FFFFFF;border-top:1px solid #E2E8F0;border-bottom:1px solid #E2E8F0}
+    .child-stat{font-size:12.5px;color:#64748B}
+    .child-stat b{color:#0F172A;font-size:13.5px}
+    .child-bar-track{flex:1;height:6px;background:#F1F5F9;border-radius:3px;overflow:hidden;display:flex}
+    .child-bar-done{background:#10B981}
+    .child-bar-inprogress{background:#F59E0B}
+    .child-bar-todo{background:#CBD5E1}
+    .children-table{width:100%;border-collapse:collapse}
+    .children-table th{text-align:left;font-size:12px;font-weight:600;color:#64748B;padding:10px 26px;background:#F8FAFC;border-bottom:1px solid #E2E8F0;letter-spacing:.4px}
+    .children-table td{padding:11px 26px;border-bottom:1px solid #F1F5F9;font-size:13px;color:#1E293B;vertical-align:middle}
+    .children-table tr:last-child td{border-bottom:none}
+    .children-table tbody tr:hover{background:#F8FAFC}
+    .child-id{color:#2563EB;font-weight:600;white-space:nowrap;text-decoration:none}
+    .child-id:hover{text-decoration:underline}
+    .child-title{font-weight:600;text-decoration:none;color:#1E293B}
+    .child-title:hover{text-decoration:underline}
+    .child-sub{display:block;color:#94A3B8;font-weight:400;font-size:11.5px;margin-top:2px}
+    .child-points{font-weight:600;color:#3730A3;font-variant-numeric:tabular-nums}
+    .children-empty{padding:32px 26px;text-align:center;color:#94A3B8;font-size:13px}
   </style>
   <title>工作项详情</title>
   </head>
@@ -110,10 +123,10 @@
           <div class="ant-drawer-wrapper-body">
             <div class="ant-drawer-body" style="padding:0;height:100%;overflow:auto">
               <div class="crumb">{{ParentCrumbHtml}}</div>
-              <div class="header"><span class="id">{{Identifier}}</span><span class="title">{{Title}}</span></div>
+              <div class="header"><span class="id">{{Identifier}}</span><span class="title">{{Title}}</span><span class="ai-group">{{AiButtonsHtml}}</span></div>
               <div class="quick">
                 <div class="item"><div class="label">负责人</div><div class="value">{{AssigneeName}}</div></div>
-                <div class="item"><div class="label">状态</div><div class="value"><select id="stateSelect" style="width:160px;padding:4px;border:1px solid #D1D5DB;border-radius:6px"><option selected>{{StateName}}</option></select></div></div>
+                    <div class="item"><div class="label">状态</div><div class="value"><select id="stateSelect" class="state-select"><option selected>{{StateName}}</option></select></div></div>
                 <div class="item"><div class="label">开始时间</div><div class="value">{{StartAt}}</div></div>
                 <div class="item"><div class="label">结束时间</div><div class="value">{{EndAt}}</div></div>
               </div>
@@ -122,49 +135,57 @@
                 <button id="tabChildren" class="tab" data-tab="children" style="{{ChildrenTabStyle}}">{{ChildrenTabText}}</button>
               </div>
               <div id="tab-base" class="tab-panel active">
-                <div class="section-title">基本信息</div>
-                <div class="base-info">
-                  <div class="item"><div class="label">优先级</div><div class="value"><span class="badge">{{PriorityName}}</span></div></div>
-                  <div class="item"><div class="label">严重程度</div><div class="value">{{SeverityText}}</div></div>
-                  <div class="item"><div class="label">故事点</div><div class="value">
-                    <input id="spInput" type="number" min="0" step="0.01" style="width:120px;padding:4px;border:1px solid #D1D5DB;border-radius:6px" value="{{StoryPointsInput}}">
-                  </div></div>
-                  <div class="item"><div class="label">所属产品</div><div class="value">{{ProductName}}</div></div>
-                  <div class="item"><div class="label">缺陷类别</div><div class="value">{{DefectCategory}}</div></div>
-                  <div class="item"><div class="label">复现版本号</div><div class="value">{{ReproduceVersion}}</div></div>
-                  <div class="item"><div class="label">复现概率</div><div class="value">{{ReproduceProbability}}</div></div>
-                  <div class="item"><div class="label">故事点汇总</div><div class="value">{{StoryPointsSum}}</div></div>
-                </div>
-                <div class="section-title">标签</div>
-                <div>{{TagsHtml}}</div>
-                <div class="section-title">描述</div>
-                <div class="desc-card">{{DescriptionHtml}}</div>
-                <div class="section-title">示意图</div>
-                <div class="sketch-card">{{SketchHtml}}</div>
-                <div class="section-title">评论</div>
-                <div class="comments-card">{{CommentsHtml}}</div>
-                <div class="comment-editor" id="commentEditor">
-                  <div id="commentCollapsed" class="comment-collapsed">
-                    <input id="commentCollapsedInput" type="text" placeholder="添加评论..."/>
+                <div class="panel-card">
+                  <div class="base-info">
+                    <div class="item"><div class="label">优先级</div><div class="value"><span class="badge">{{PriorityName}}</span></div></div>
+                    <div class="item"><div class="label">严重程度</div><div class="value">{{SeverityText}}</div></div>
+                    <div class="item"><div class="label">故事点</div><div class="value">
+                      <input id="spInput" class="sp-input" type="number" min="0" step="0.01" value="{{StoryPointsInput}}">
+                    </div></div>
+                    <div class="item"><div class="label">所属产品</div><div class="value">{{ProductName}}</div></div>
+                    <div class="item"><div class="label">缺陷类别</div><div class="value">{{DefectCategory}}</div></div>
+                    <div class="item"><div class="label">复现版本号</div><div class="value">{{ReproduceVersion}}</div></div>
+                    <div class="item"><div class="label">复现概率</div><div class="value">{{ReproduceProbability}}</div></div>
+                    <div class="item"><div class="label">故事点汇总</div><div class="value">{{StoryPointsSum}}</div></div>
                   </div>
-                  <div id="commentExpanded" class="comment-expanded">
-                    <div id="commentEdit" class="edit-area" contenteditable="true"></div>
-                    <div class="toolbar">
-                      <span class="tips">Ctrl+Enter 提交</span>
+                </div>
+                <div class="panel-card">
+                  <div class="section-title"><span class="sec-dot" style="background:#F43F5E"></span>标签</div>
+                  <div>{{TagsHtml}}</div>
+                </div>
+                <div class="panel-card">
+                  <div class="section-title"><span class="sec-dot" style="background:#10B981"></span>描述</div>
+                  <div class="desc-card">{{DescriptionHtml}}</div>
+                </div>
+                <div class="panel-card">
+                  <div class="section-title"><span class="sec-dot" style="background:#8B5CF6"></span>示意图</div>
+                  <div class="sketch-card">{{SketchHtml}}</div>
+                </div>
+                <div class="panel-card">
+                  <div class="section-title"><span class="sec-dot" style="background:#F59E0B"></span>评论</div>
+                  <div class="comments-card">{{CommentsHtml}}</div>
+                  <div class="comment-editor" id="commentEditor">
+                    <div id="commentCollapsed" class="comment-collapsed">
+                      <input id="commentCollapsedInput" type="text" placeholder="添加评论..."/>
                     </div>
-                    <div id="attachmentsPreview" class="attachments-preview" style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 6px 0;"></div>
-                    <div id="mentionPanel" class="mention-panel">
-                      <ul id="mentionList"></ul>
-                    </div>
-                    <div class="actions">
-                      <button id="commentSubmitBtn" type="button">提交</button>
-                      <button id="commentCancelBtn" type="button">取消</button>
+                    <div id="commentExpanded" class="comment-expanded">
+                      <div id="commentEdit" class="edit-area" contenteditable="true"></div>
+                      <div class="toolbar">
+                        <span class="tips">Ctrl+Enter 提交</span>
+                      </div>
+                      <div id="attachmentsPreview" class="attachments-preview" style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 6px 0;"></div>
+                      <div id="mentionPanel" class="mention-panel">
+                        <ul id="mentionList"></ul>
+                      </div>
+                      <div class="actions">
+                        <button id="commentSubmitBtn" type="button">提交</button>
+                        <button id="commentCancelBtn" type="button">取消</button>
+                      </div>
                     </div>
                   </div>
                 </div>
               </div>
               <div id="tab-children" class="tab-panel">
-                <div class="section-title">子工作项</div>
                 <div id="childrenList" class="children-list"></div>
               </div>
             </div>
@@ -207,6 +228,18 @@
             }
           }catch(ex){}
         });
+      }
+      var aiButtons = document.querySelectorAll('.ai-btn');
+      for(var k=0;k<aiButtons.length;k++){
+        (function(btn){
+          btn.addEventListener('click', function(){
+            try{
+              if(window.chrome && window.chrome.webview){
+                window.chrome.webview.postMessage({type: btn.getAttribute('data-ai')==='decompose' ? 'aiDecompose' : 'aiAction', id:'{{WorkItemId}}'});
+              }
+            }catch(ex){}
+          });
+        })(aiButtons[k]);
       }
       activateTab('base');
     }catch(e){}

@@ -257,6 +257,14 @@
           <DependentUpon>WorkItemKanbanWindow.xaml</DependentUpon>
           <SubType>Code</SubType>
         </Compile>
+        <Page Include="Features\PingCode\Views\WorkItemKanbanWebViewWindow.xaml">
+          <Generator>MSBuild:Compile</Generator>
+          <SubType>Designer</SubType>
+        </Page>
+        <Compile Include="Features\PingCode\Views\WorkItemKanbanWebViewWindow.xaml.cs">
+          <DependentUpon>WorkItemKanbanWebViewWindow.xaml</DependentUpon>
+          <SubType>Code</SubType>
+        </Compile>
         <Page Include="Features\PingCode\Views\WorkItemCard.xaml" />
         <Compile Include="Features\PingCode\Views\WorkItemCard.xaml.cs">
           <DependentUpon>WorkItemCard.xaml</DependentUpon>
@@ -666,6 +674,7 @@
       <EmbeddedResource Include="Assets\Tools\Autodesk.Universal.Activation.Tools_1.3.4.4_x64_CHS\**\*" />
       <EmbeddedResource Include="CHANGELOG.md" />
         <EmbeddedResource Include="Features\PingCode\Templates\workitem-details.html" />
+        <EmbeddedResource Include="Features\PingCode\Templates\kanban-board.html" />
         <EmbeddedResource Include=".claude\skills\git_svn_commitlog_generator\SKILL.md">
           <LogicalName>PackageManager.AiCommitSkill.SKILL.md</LogicalName>
         </EmbeddedResource>

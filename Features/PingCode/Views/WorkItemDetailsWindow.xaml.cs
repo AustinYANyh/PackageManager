@@ -51,15 +51,6 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         this.api = api ?? new PingCodeApiService();
         InitializeComponent();
         DataContext = this;
-        if (!UserFeatureAccessService.CanUseAustinOnlyFeatures)
-        {
-            AiActionButton.Visibility = Visibility.Collapsed;
-            AiDecomposeButton.Visibility = Visibility.Collapsed;
-        }
-        else if (IsTaskType(Details.Type))
-        {
-            AiDecomposeButton.Visibility = Visibility.Collapsed;
-        }
 
         Loaded += async (s, e) =>
         {
@@ -146,7 +137,10 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         }
     }
 
-    private async void AiActionButton_Click(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// 执行 AI 实现/AI 修复动作：拉最新详情构建 Prompt 并打开 AI 执行窗口。
+    /// </summary>
+    private async Task RunAiActionAsync()
     {
         try
         {
@@ -174,7 +168,10 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         }
     }
 
-    private async void AiDecomposeButton_Click(object sender, RoutedEventArgs e)
+    /// <summary>
+    /// 执行 AI 拆解动作：拉最新详情与既有子项构建 Prompt 并打开 AI 执行窗口。
+    /// </summary>
+    private async Task RunAiDecomposeAsync()
     {
         try
         {
@@ -818,6 +815,31 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                 try
                 {
                     var token = Newtonsoft.Json.Linq.JToken.Parse(msg);
+
+                    // AI 按钮动作统一拦截（JObject 或字符串包装均适配），复用原 WPF 按钮逻辑
+                    var aiSource = token as Newtonsoft.Json.Linq.JObject;
+                    if (aiSource == null && token is Newtonsoft.Json.Linq.JValue jvStr && jvStr.Type == Newtonsoft.Json.Linq.JTokenType.String)
+                    {
+                        var innerParsed = Newtonsoft.Json.Linq.JToken.Parse(jvStr.ToString() ?? "");
+                        aiSource = innerParsed as Newtonsoft.Json.Linq.JObject;
+                    }
+
+                    if (aiSource != null)
+                    {
+                        var earlyType = aiSource.Value<string>("type");
+                        if (string.Equals(earlyType, "aiAction", StringComparison.OrdinalIgnoreCase))
+                        {
+                            await RunAiActionAsync();
+                            return;
+                        }
+
+                        if (string.Equals(earlyType, "aiDecompose", StringComparison.OrdinalIgnoreCase))
+                        {
+                            await RunAiDecomposeAsync();
+                            return;
+                        }
+                    }
+
                     if (token is Newtonsoft.Json.Linq.JObject obj)
                     {
                         type = obj.Value<string>("type");
@@ -1431,11 +1453,42 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         var items = list ?? new List<WorkItemInfo>();
         if (items.Count == 0)
         {
-            return "<div>无子工作项</div>";
+            return "<div class=\"children-empty\">无子工作项</div>";
         }
 
+        // 统计条：数量 / 已完成 / 故事点合计 + 三色进度（绿=已完成 橙=进行中 灰=未开始）
+        var total = items.Count;
+        var done = items.Count(c =>
+        {
+            var s = (c?.Status ?? "").Trim();
+            return s.Contains("完成") || s.Contains("关闭");
+        });
+        var inProgress = items.Count(c =>
+        {
+            var s = (c?.Status ?? "").Trim();
+            return s.Contains("进行中") || s.Contains("开发中") || s.Contains("处理中") || s.Contains("测试中") || s.Contains("可测试");
+        });
+        var pointsSum = items.Sum(c => c?.StoryPoints ?? 0);
+        var donePct = Math.Round(done * 100.0 / Math.Max(1, total));
+        var inProgPct = Math.Round(inProgress * 100.0 / Math.Max(1, total));
+
         var sb = new StringBuilder();
-        sb.Append("<div class=\"children-rows\">");
+        sb.Append("<div class=\"children-toolbar\">");
+        sb.Append($"<span class=\"child-stat\">共 <b>{total}</b> 项</span>");
+        sb.Append($"<span class=\"child-stat\">已完成 <b>{done}</b></span>");
+        sb.Append($"<span class=\"child-stat\">故事点合计 <b>{pointsSum:0.##}</b></span>");
+        sb.Append("<div class=\"child-bar-track\">");
+        sb.Append($"<div class=\"child-bar-done\" style=\"width:{donePct:0.##}%\"></div>");
+        sb.Append($"<div class=\"child-bar-inprogress\" style=\"width:{inProgPct:0.##}%\"></div>");
+        sb.Append("</div></div>");
+
+        sb.Append("<table class=\"children-table\"><thead><tr>");
+        sb.Append("<th style=\"width:110px\">编号</th>");
+        sb.Append("<th>标题</th>");
+        sb.Append("<th style=\"width:100px\">状态</th>");
+        sb.Append("<th style=\"width:80px\">负责人</th>");
+        sb.Append("<th style=\"width:70px\">故事点</th>");
+        sb.Append("</tr></thead><tbody>");
         foreach (var c in items)
         {
             var id = c?.Id ?? "";
@@ -1445,6 +1498,8 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
             var assignee = DashText(c?.AssigneeName);
             var sa = FormatDate(c?.StartAt);
             var ea = FormatDate(c?.EndAt);
+            var range = (sa == "-" && ea == "-") ? "" : ((sa == "-" ? "" : sa) + (ea == "-" ? "" : " ~ " + ea)).TrimStart(' ', '~');
+            var points = (c?.StoryPoints ?? 0) == 0 ? "-" : c.StoryPoints.ToString("0.##");
             var linkId = System.Net.WebUtility.HtmlEncode(id);
             var s = (c?.Status ?? "").Trim().ToLowerInvariant();
             var cls = "state-pending";
@@ -1453,16 +1508,16 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
             else if (s.Contains("测试中")) { cls = "state-testing"; }
             else if (s.Contains("可测试")) { cls = "state-testable"; }
             else if (s.Contains("进行中") || s.Contains("开发中") || s.Contains("处理中") || s.Contains("progress") || s.Contains("in_progress")) { cls = "state-inprogress"; }
-            sb.Append("<div class=\"children-row\">");
-            sb.Append("<div class=\"id\"><a href=\"pm://workitem/" + linkId + "\">" + identifier + "</a></div>");
-            sb.Append("<div class=\"title\"><a href=\"pm://workitem/" + linkId + "\">" + title + "</a></div>");
-            sb.Append("<div class=\"status\"><span class=\"state-badge " + cls + "\">" + statusText + "</span></div>");
-            sb.Append("<div class=\"assignee\">" + assignee + "</div>");
-            sb.Append("<div class=\"start\">" + sa + "</div>");
-            sb.Append("<div class=\"end\">" + ea + "</div>");
-            sb.Append("</div>");
+            var sub = string.IsNullOrWhiteSpace(range) ? "" : $"<span class=\"child-sub\">{range}</span>";
+            sb.Append("<tr>");
+            sb.Append($"<td><a class=\"child-id\" href=\"pm://workitem/{linkId}\">{identifier}</a></td>");
+            sb.Append($"<td><a class=\"child-title\" href=\"pm://workitem/{linkId}\">{title}</a>{sub}</td>");
+            sb.Append($"<td><span class=\"state-badge {cls}\">{statusText}</span></td>");
+            sb.Append($"<td>{assignee}</td>");
+            sb.Append($"<td><span class=\"child-points\">{points}</span></td>");
+            sb.Append("</tr>");
         }
-        sb.Append("</div>");
+        sb.Append("</tbody></table>");
         return sb.ToString();
     }
 
@@ -1801,8 +1856,27 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
             ["{{PropertiesHtml}}"] = propertiesHtml,
             ["{{ChildrenTabStyle}}"] = (Details.ChildrenCount > 0) ? "" : "display:none",
             ["{{ChildrenTabText}}"] = (Details.ChildrenCount > 0) ? ("子工作项 " + Details.ChildrenCount) : "子工作项",
+            ["{{AiButtonsHtml}}"] = BuildAiButtonsHtml(),
         };
         return ReplaceTokens(tpl, dict);
+    }
+
+    /// <summary>
+    /// 生成 HTML 头部的 AI 操作按钮（与原 WPF 工具栏同源逻辑：特定账户 + 任务类型隐藏拆解按钮）。
+    /// </summary>
+    /// <returns>按钮 HTML；无权限时为空串。</returns>
+    private string BuildAiButtonsHtml()
+    {
+        if (!UserFeatureAccessService.CanUseAustinOnlyFeatures)
+        {
+            return string.Empty;
+        }
+
+        var actionText = AiActionButtonText;
+        var decomposeButton = IsTaskType(Details?.Type)
+            ? "<button class=\"ai-btn ai-btn-purple\" data-ai=\"decompose\">AI 拆解</button>"
+            : string.Empty;
+        return $"<button class=\"ai-btn ai-btn-primary\" data-ai=\"action\">{HtmlEscape(actionText)}</button>{decomposeButton}";
     }
 
     private string BuildCrumbHtml()
