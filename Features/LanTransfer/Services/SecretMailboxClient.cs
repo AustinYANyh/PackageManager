@@ -90,7 +90,9 @@ namespace PackageManager.Services
             }
         }
 
-        private static NetworkCredential ReadCredential => ServiceLocator.Resolve<CredentialStore>()?.GetFtpReadCredential();
+        // 信箱读操作复用写凭据：默认读账号（hwclient）已被服务器停用（530 未登录），
+        // 写账号（hwuser）实测可列可读可写，且信箱目录本就由写账号创建。
+        private static NetworkCredential ReadCredential => ServiceLocator.Resolve<CredentialStore>()?.GetFtpWriteCredential();
         private static NetworkCredential WriteCredential => ServiceLocator.Resolve<CredentialStore>()?.GetFtpWriteCredential();
 
         private static string KeysDir => MailboxBaseUrl.TrimEnd('/') + "/keys/";
@@ -136,7 +138,7 @@ namespace PackageManager.Services
         }
 
         /// <summary>
-        /// 获取指定设备的公钥：优先本地缓存，其次公钥目录。
+        /// 获取指定设备的公钥：优先公钥目录（对方最近启动时发布，最新鲜），目录不可达时回退本地缓存。
         /// </summary>
         /// <param name="deviceId">设备标识。</param>
         /// <returns>RSA 公钥（XML）；取不到返回 null。</returns>
@@ -147,12 +149,6 @@ namespace PackageManager.Services
                 return null;
             }
 
-            var cached = LoadCachedKey(deviceId);
-            if (!string.IsNullOrWhiteSpace(cached))
-            {
-                return cached;
-            }
-
             try
             {
                 var bytes = await DownloadBytesAsync(new Uri(KeysDir + deviceId + ".pub"));
@@ -160,14 +156,15 @@ namespace PackageManager.Services
                 if (!string.IsNullOrWhiteSpace(key))
                 {
                     CacheKey(deviceId, key);
+                    return key;
                 }
-
-                return key;
             }
             catch
             {
-                return null;
+                // 目录不可达：回退本地缓存
             }
+
+            return LoadCachedKey(deviceId);
         }
 
         /// <summary>

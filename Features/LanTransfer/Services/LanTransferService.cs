@@ -39,7 +39,7 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
     private int _mailboxBusy;
     private readonly object _peerSync = new object();
     private readonly object _secretChatSync = new object();
-    private readonly RSACryptoServiceProvider _secretChatRsa = new RSACryptoServiceProvider(2048);
+    private readonly RSACryptoServiceProvider _secretChatRsa = LoadOrCreateSecretRsa();
     private readonly Timer _peerCleanupTimer;
     private static readonly Dictionary<string, int> sessionPeerPorts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
     private static readonly Dictionary<string, string> sessionPeerPublicKeys = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -632,7 +632,16 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         {
             using (var client = new TcpClient())
             {
-                await client.ConnectAsync(session.PeerAddress, GetPeerPort(session));
+                // 连接限时 2 秒：内网握手正常为个位毫秒，仅在对方刚下线（IP 不可达/丢包）时挂住；
+                // 超时后立即降级信箱投递，等待无意义
+                var connectTask = client.ConnectAsync(session.PeerAddress, GetPeerPort(session));
+                var timeoutTask = Task.Delay(TimeSpan.FromSeconds(2));
+                if (await Task.WhenAny(connectTask, timeoutTask) == timeoutTask)
+                {
+                    throw new TimeoutException("连接对方超时。");
+                }
+
+                await connectTask;
                 using (var stream = client.GetStream())
                 {
                     await LanTransferWireProtocol.WriteFrameAsync(stream, CreateHelloFrame(), cancellationToken);
@@ -668,9 +677,10 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         }
         catch
         {
-            message.Text = string.Empty;
-            message.State = SecretChatMessageState.Destroyed;
-            throw;
+            // 直连失败（刚下线盲区/超时/链路断开）：降级改投信箱，消息不再直接销毁。
+            // 对端若已收到直连消息，信箱副本会按 MessageId 幂等去重，不会重复显示。
+            LanTransferLogger.LogWarning($"密语直连失败，降级信箱投递：{SafeSecretSessionId(session.SessionId)}");
+            await SendSecretMessageViaMailboxAsync(session, message, text);
         }
     }
 
@@ -718,7 +728,7 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
     }
 
     /// <summary>
-    /// 解析对方公钥：会话缓存 → 本地联系人缓存 → 信箱公钥目录。
+    /// 解析对方公钥：会话缓存（最近直连握手）→ 信箱公钥目录（对方最近启动发布）→ 本地联系人缓存。
     /// </summary>
     private async Task<string> ResolvePeerPublicKeyAsync(SecretChatSession session)
     {
@@ -728,16 +738,20 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
             return cached;
         }
 
-        lock (_secretContactSync)
+        if (!string.IsNullOrWhiteSpace(session?.PeerDeviceId))
         {
-            var contact = _secretContacts.FirstOrDefault(item => string.Equals(item.DeviceId, session.PeerDeviceId, StringComparison.OrdinalIgnoreCase));
-            if (!string.IsNullOrWhiteSpace(contact?.PublicKeyXml))
+            var published = await _secretMailbox.GetPublicKeyAsync(session.PeerDeviceId);
+            if (!string.IsNullOrWhiteSpace(published))
             {
-                return contact.PublicKeyXml;
+                return published;
             }
         }
 
-        return await _secretMailbox.GetPublicKeyAsync(session.PeerDeviceId);
+        lock (_secretContactSync)
+        {
+            var contact = _secretContacts.FirstOrDefault(item => string.Equals(item.DeviceId, session?.PeerDeviceId, StringComparison.OrdinalIgnoreCase));
+            return contact?.PublicKeyXml;
+        }
     }
 
     /// <summary>
@@ -2333,6 +2347,51 @@ public sealed class LanTransferService : LanTransferBindableBase, IDisposable
         {
             LanTransferLogger.LogError(ex, "保存局域网传输历史失败");
         }
+    }
+
+    /// <summary>
+    /// 加载或创建密语 RSA 密钥对：密钥对 DPAPI 加密落盘，跨重启保持稳定，
+    /// 保证历史信箱信封与已发布公钥始终可解可验；仅在文件缺失或损坏时重新生成。
+    /// </summary>
+    /// <returns>RSA 密钥对。</returns>
+    private static RSACryptoServiceProvider LoadOrCreateSecretRsa()
+    {
+        try
+        {
+            var keyPath = Path.Combine(
+                new DataPersistenceService().GetDataFolderPath(),
+                "secret-chat",
+                "rsa-key.dat");
+            if (File.Exists(keyPath))
+            {
+                var xml = CredentialProtectionService.Unprotect(File.ReadAllText(keyPath));
+                if (!string.IsNullOrWhiteSpace(xml))
+                {
+                    var rsa = new RSACryptoServiceProvider();
+                    rsa.FromXmlString(xml);
+                    return rsa;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            LanTransferLogger.LogError(ex, "加载密语 RSA 密钥失败，将重新生成");
+        }
+
+        var fresh = new RSACryptoServiceProvider(2048);
+        try
+        {
+            var folder = Path.Combine(new DataPersistenceService().GetDataFolderPath(), "secret-chat");
+            Directory.CreateDirectory(folder);
+            File.WriteAllText(Path.Combine(folder, "rsa-key.dat"), CredentialProtectionService.Protect(fresh.ToXmlString(true)));
+        }
+        catch (Exception ex)
+        {
+            // 落盘失败不阻断当次会话，仅下次启动会重新生成
+            LanTransferLogger.LogError(ex, "保存密语 RSA 密钥失败");
+        }
+
+        return fresh;
     }
 
     private void RefreshPeerStates()
