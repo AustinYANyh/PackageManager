@@ -27,6 +27,13 @@ public partial class PingCodeApiService
 
     private DateTime tokenExpiresAt;
 
+    /// <summary>自定义字段枚举字典缓存：项目 ID → 字段 key → 选项 ID → 显示文本。会话级缓存，新枚举值未命中时自动刷新。</summary>
+    private readonly Dictionary<string, Dictionary<string, Dictionary<string, string>>> customFieldOptionCache =
+        new Dictionary<string, Dictionary<string, Dictionary<string, string>>>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>已拉取过字典的项目集合，避免对同项目重复请求属性端点。</summary>
+    private readonly HashSet<string> customFieldOptionLoadedProjects = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>
     /// 初始化服务实例，创建 HTTP 客户端并载入持久化服务。
     /// </summary>
@@ -775,7 +782,168 @@ public partial class PingCodeApiService
     }
 
     /// <summary>
-    /// 获取工作项的详细信息（含描述、评论、子工作项统计等）。
+    /// 将自定义字段（如所属产品 suoshuchanpin）的选项 ID 翻译为显示文本。
+    /// 字典来自开放 API 属性列表端点，按项目会话级缓存；未知选项 ID（PingCode 新增枚举）触发一次重新拉取后自愈。
+    /// </summary>
+    /// <param name="projectId">项目唯一标识。</param>
+    /// <param name="fieldKey">自定义字段 key。</param>
+    /// <param name="optionId">选项 ID 原始值。</param>
+    /// <returns>选项显示文本；无法翻译时返回 null（调用方回退显示原 ID）。</returns>
+    private async Task<string> TranslateCustomFieldOptionAsync(string projectId, string fieldKey, string optionId)
+    {
+        if (string.IsNullOrWhiteSpace(projectId) || string.IsNullOrWhiteSpace(fieldKey) || string.IsNullOrWhiteSpace(optionId))
+        {
+            return null;
+        }
+
+        // 命中缓存直接翻译
+        if (TryLookupCustomFieldOption(projectId, fieldKey, optionId, out var cachedText))
+        {
+            return cachedText;
+        }
+
+        // 未缓存（首次）或缓存里没有该选项 ID（PingCode 新增枚举）：拉取/重拉字典一次后重查
+        var firstLoad = !customFieldOptionLoadedProjects.Contains(projectId);
+        await LoadCustomFieldOptionsAsync(projectId, force: firstLoad);
+        return TryLookupCustomFieldOption(projectId, fieldKey, optionId, out var reloadedText)
+            ? reloadedText
+            : null;
+    }
+
+    private bool TryLookupCustomFieldOption(string projectId, string fieldKey, string optionId, out string text)
+    {
+        text = null;
+        return customFieldOptionCache.TryGetValue(projectId, out var fields)
+               && fields.TryGetValue(fieldKey, out var options)
+               && options.TryGetValue(optionId, out text);
+    }
+
+    /// <summary>
+    /// 拉取指定项目全部自定义字段属性与枚举选项字典并入缓存。同一会话内只拉一次；
+    /// 翻译未命中新枚举值时由调用方以 force=true 强制重拉实现自愈。
+    /// </summary>
+    /// <param name="projectId">项目唯一标识。</param>
+    /// <param name="force">是否强制重拉（忽略会话内已拉取标记）。</param>
+    private async Task LoadCustomFieldOptionsAsync(string projectId, bool force)
+    {
+        if (!force && customFieldOptionLoadedProjects.Contains(projectId))
+        {
+            return;
+        }
+
+        try
+        {
+            var typeIds = await GetProjectWorkItemTypeIdsAsync(projectId);
+            var merged = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+            var failedTypeIds = new List<string>();
+            foreach (var typeId in typeIds)
+            {
+                // 单类型容错：列表端点可能返回不属于该项目的类型（实测 1003104），跳过并记录，不影响其余类型收割
+                try
+                {
+                    var url = $"https://open.pingcode.com/v1/pjm/work_item/properties?project_id={Uri.EscapeDataString(projectId)}&work_item_type_id={Uri.EscapeDataString(typeId)}";
+                    var json = await GetJsonAsync(url);
+                    var values = json?["values"] as JArray;
+                    if (values == null)
+                    {
+                        continue;
+                    }
+
+                    foreach (var property in values.OfType<JObject>())
+                    {
+                        var key = property.Value<string>("id");
+                        var optionArray = property["options"] as JArray;
+                        if (string.IsNullOrWhiteSpace(key) || optionArray == null || optionArray.Count == 0)
+                        {
+                            continue;
+                        }
+
+                        // 同字段多类型重复返回时合并（选项以首次出现为准，正常完全一致）
+                        if (!merged.TryGetValue(key, out var options))
+                        {
+                            options = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                            merged[key] = options;
+                        }
+
+                        foreach (var option in optionArray.OfType<JObject>())
+                        {
+                            var optionId = option.Value<string>("_id");
+                            var optionText = option.Value<string>("text");
+                            if (!string.IsNullOrWhiteSpace(optionId) && !string.IsNullOrWhiteSpace(optionText) && !options.ContainsKey(optionId))
+                            {
+                                options[optionId] = optionText;
+                            }
+                        }
+                    }
+                }
+                catch (System.Exception typeEx)
+                {
+                    failedTypeIds.Add(typeId);
+                    LoggingService.LogWarning($"拉取工作项类型 {typeId} 的属性字典失败（跳过）：{typeEx.Message}");
+                }
+            }
+
+            if (merged.Count > 0)
+            {
+                customFieldOptionCache[projectId] = merged;
+            }
+
+            customFieldOptionLoadedProjects.Add(projectId);
+            if (failedTypeIds.Count > 0)
+            {
+                LoggingService.LogWarning($"项目 {projectId} 属性字典部分类型拉取失败（{failedTypeIds.Count}/{typeIds.Count}）：{string.Join(",", failedTypeIds)}");
+            }
+
+            if (merged.Count == 0 && typeIds.Count > 0)
+            {
+                LoggingService.LogWarning($"项目 {projectId} 属性字典加载结果为空，所属产品等自定义字段将显示原始 ID");
+            }
+        }
+        catch (System.Exception ex)
+        {
+            LoggingService.LogWarning($"项目 {projectId} 属性字典加载失败，自定义字段将显示原始 ID：{ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 获取项目内全部工作项类型 ID（属性端点要求传项目内真实类型 ID，不接受全局 key）。
+    /// </summary>
+    /// <param name="projectId">项目唯一标识。</param>
+    /// <returns>类型 ID 列表。</returns>
+    private async Task<List<string>> GetProjectWorkItemTypeIdsAsync(string projectId)
+    {
+        var result = new List<string>();
+        var pageIndex = 0;
+        while (true)
+        {
+            var url = $"https://open.pingcode.com/v1/project/work_item_types?project_id={Uri.EscapeDataString(projectId)}&page_size=100&page_index={pageIndex}";
+            var json = await GetJsonAsync(url);
+            var values = json?["values"] as JArray;
+            if (values != null)
+            {
+                foreach (var item in values.OfType<JObject>())
+                {
+                    var id = item.Value<string>("id");
+                    if (!string.IsNullOrWhiteSpace(id))
+                    {
+                        result.Add(id);
+                    }
+                }
+            }
+
+            var total = json?.Value<int?>("total") ?? 0;
+            pageIndex++;
+            if ((pageIndex * 100) >= total || values == null)
+            {
+                break;
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// 获取工作项的完整详细信息（兼容多个端点，包含评论与图片令牌）。
     /// </summary>
     /// <param name="workItemId">工作项的唯一标识。</param>
     /// <returns>工作项详细信息；若未找到则返回 <c>null</c>。</returns>
@@ -864,6 +1032,16 @@ public partial class PingCodeApiService
                                                DictGet(d.Properties, "严重程度"),
                                                DictGet(d.Properties, "严重"));
                 d.ProductName = DictGet(d.Properties, "suoshuchanpin");
+                // 所属产品为自定义枚举字段，开放 API 返回选项 ID；经属性字典翻译为显示文本，失败回退原 ID
+                var rawProductId = d.ProductName;
+                if (!string.IsNullOrWhiteSpace(rawProductId))
+                {
+                    var translated = await TranslateCustomFieldOptionAsync(d.ProjectId, "suoshuchanpin", rawProductId);
+                    if (!string.IsNullOrWhiteSpace(translated))
+                    {
+                        d.ProductName = translated;
+                    }
+                }
                 d.ReproduceVersion = DictGet(d.Properties, "复现版本号");
                 d.ReproduceProbability = DictGet(d.Properties, "复现概率");
                 d.DefectCategory = DictGet(d.Properties, "缺陷类别");
