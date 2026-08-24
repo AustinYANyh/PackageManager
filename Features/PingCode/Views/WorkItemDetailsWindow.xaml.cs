@@ -162,18 +162,11 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         pendingWorkItemId = workItemId;
         fetchDetailsAsync = fetcher;
 
-        // 遮罩先行：不透明白遮住旧内容，杜绝"旧内容→loading→新内容"三段感
-        ShowLoading(true);
+        // 上下文遮罩先行 + 收起 WebView：WebView2 是 HWND 空域控件，WPF 遮罩无法覆盖其上，
+        // 必须先隐藏控件让空域洞消失，白遮罩（带目标编号/标题）才真正可见，旧内容零泄漏
+        ShowContextLoading(Details.Identifier, Details.Title);
+        DetailsWeb.Visibility = Visibility.Collapsed;
         awaitFinalNavigation = false;
-
-        // 切换第一拍清空旧内容：导航到轻量加载页，旧工作项内容零泄漏
-        try
-        {
-            DetailsWeb.CoreWebView2?.NavigateToString(BuildLoadingHtml());
-        }
-        catch
-        {
-        }
 
         // 无条件手动居中：预热窗口可能仍处于 Visible 且停在屏幕外，显式计算目标矩形
         CenterOverOwnerOrScreen();
@@ -190,6 +183,12 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         }
 
         Activate();
+
+        // 遮罩真实上屏：等待渲染帧。缓存全命中时后续内容链路可能在同一 UI 帧内完成并撤除遮罩，
+        // 遮罩从未被渲染（表现为"旧内容直接被替换"）。此处强制让出一帧给渲染器。
+        await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Render);
+        await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Background);
+
         await InitializeContentAsync(sequence);
     }
 
@@ -414,7 +413,6 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         var totalWatch = System.Diagnostics.Stopwatch.StartNew();
         try
         {
-            ShowLoading(true);
             var childCountTask = CountChildrenSafeAsync(Details?.Id);
 
             if (!string.IsNullOrWhiteSpace(pendingWorkItemId))
@@ -1656,6 +1654,7 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                 {
                     awaitFinalNavigation = false;
                     navigationCompletedTcs.TrySetResult(true);
+                    DetailsWeb.Visibility = Visibility.Visible;
                     ShowLoading(false);
                 }
 
@@ -1810,8 +1809,6 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
     private async Task NavigateAndInitAsync(int sequence, Task<int?> childCountTask = null)
     {
         var watch = System.Diagnostics.Stopwatch.StartNew();
-        var loadingHtml = BuildLoadingHtml();
-        DetailsWeb.CoreWebView2.NavigateToString(loadingHtml);
         accessToken = await api.GetAccessTokenAsync();
         watch.Stop();
         LoggingService.LogInfo($"[详情桥接] token 就绪 {watch.ElapsedMilliseconds}ms");
@@ -1850,8 +1847,9 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         await Task.WhenAll(InitializeStateDropdownAsync(sequence), InitializeProjectMembersAsync(sequence));
         initWatch.Stop();
         LoggingService.LogInfo($"[详情桥接] 状态/成员并行就绪 {initWatch.ElapsedMilliseconds}ms");
-        // 保险带：最终导航若未按预期完成（异常态），此处确保遮罩撤除
+        // 保险带：最终导航若未按预期完成（异常态），此处确保遮罩撤除与 WebView 复位
         awaitFinalNavigation = false;
+        DetailsWeb.Visibility = Visibility.Visible;
         ShowLoading(false);
     }
 
@@ -2653,6 +2651,15 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         catch
         {
         }
+    }
+
+    /// <summary>
+    /// 显示加载遮罩（与 ShowLoading(true) 等价，保留语义化调用点）：配合后台代码先行收起 WebView，
+    /// CLoadingOverlay 上屏呈现统一的"正在加载…"。
+    /// </summary>
+    private void ShowContextLoading(string identifier, string title)
+    {
+        ShowLoading(true);
     }
 
     private void InferPublicImageToken()

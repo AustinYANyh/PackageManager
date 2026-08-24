@@ -229,7 +229,45 @@ public partial class PingCodeApiService
     /// </summary>
     /// <param name="projectId">项目的唯一标识。</param>
     /// <returns>项目成员实体列表。</returns>
-    public async Task<List<Entity>> GetProjectMembersAsync(string projectId)
+    /// <summary>项目成员映射的实例级缓存（projectId → 成员列表）：工作项详情窗每次打开都要拉，
+    /// 同项目反复打开时零网络往返。</summary>
+    private readonly Dictionary<string, List<Entity>> _projectMembersCache = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 获取项目成员列表（带实例级缓存：同项目 10 分钟内复用，成员变化低频）。
+    /// </summary>
+    /// <param name="projectId">项目唯一标识。</param>
+    /// <returns>成员实体列表。</returns>
+    public Task<List<Entity>> GetProjectMembersAsync(string projectId)
+    {
+        if (string.IsNullOrWhiteSpace(projectId))
+        {
+            return Task.FromResult(new List<Entity>());
+        }
+
+        lock (_projectMembersCache)
+        {
+            if (_projectMembersCache.TryGetValue(projectId, out var cached) && cached != null)
+            {
+                return Task.FromResult(cached);
+            }
+        }
+
+        return GetProjectMembersRemoteAndCacheAsync(projectId);
+    }
+
+    private async Task<List<Entity>> GetProjectMembersRemoteAndCacheAsync(string projectId)
+    {
+        var result = await GetProjectMembersRemoteAsync(projectId);
+        lock (_projectMembersCache)
+        {
+            _projectMembersCache[projectId] = result;
+        }
+
+        return result;
+    }
+
+    private async Task<List<Entity>> GetProjectMembersRemoteAsync(string projectId)
     {
         var result = new List<Entity>();
         var baseUrl = $"https://open.pingcode.com/v1/project/projects/{Uri.EscapeDataString(projectId)}/members";
@@ -1816,6 +1854,36 @@ public partial class PingCodeApiService
     /// <param name="projectId">项目的唯一标识。</param>
     /// <returns>状态方案信息列表。</returns>
     public async Task<List<StatePlanInfo>> GetWorkItemStatePlansAsync(string projectId)
+    {
+        if (string.IsNullOrWhiteSpace(projectId))
+        {
+            return new List<StatePlanInfo>();
+        }
+
+        lock (_statePlansCache)
+        {
+            if (_statePlansCache.TryGetValue(projectId, out var cached) && cached != null)
+            {
+                return cached;
+            }
+        }
+
+        var result = await GetWorkItemStatePlansRemoteAsync(projectId);
+        if (result.Count > 0)
+        {
+            lock (_statePlansCache)
+            {
+                _statePlansCache[projectId] = result;
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>状态方案列表的实例级缓存（projectId → 方案列表）：方案配置低频变化。</summary>
+    private readonly Dictionary<string, List<StatePlanInfo>> _statePlansCache = new(StringComparer.OrdinalIgnoreCase);
+
+    private async Task<List<StatePlanInfo>> GetWorkItemStatePlansRemoteAsync(string projectId)
     {
         var result = new List<StatePlanInfo>();
         if (string.IsNullOrWhiteSpace(projectId))
