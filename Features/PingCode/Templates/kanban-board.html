@@ -235,7 +235,7 @@
         if (prefetched[item.id]) return;
         prefetched[item.id] = true;
         post({ type: 'prefetchDetail', id: item.id });
-      }, 350);
+      }, 150);
     });
     card.addEventListener('mouseleave', function () {
       if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }

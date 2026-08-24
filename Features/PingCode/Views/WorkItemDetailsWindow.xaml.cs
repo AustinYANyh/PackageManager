@@ -63,6 +63,12 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
     /// <summary>切换序列号：每次 ShowWorkItemAsync 自增，旧一轮的异步注入回调据此丢弃，防数据串扰。</summary>
     private int contentSequence;
 
+    /// <summary>本轮状态方案数据预取任务（详情返回后即发起，与构建/导航并行）。</summary>
+    private Task<List<StateDto>> statesPrefetchTask;
+
+    /// <summary>本轮成员数据预取任务（详情返回后即发起，与构建/导航并行）。</summary>
+    private Task<List<Entity>> membersPrefetchTask;
+
     private bool forReuse;
 
     private bool webViewInitSucceeded;
@@ -432,6 +438,11 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                     if (fetched != null)
                     {
                         Details = fetched;
+
+                        // 状态方案与成员数据在此刻即有全部依赖（projectId/type）：
+                        // 提前发起，与 HTML 构建/导航并行，渲染完成后仅剩注入（毫秒级）
+                        statesPrefetchTask = FetchAvailableStatesAsync();
+                        membersPrefetchTask = FetchProjectMembersDataAsync();
                     }
                 }
                 catch (Exception fetchEx)
@@ -442,7 +453,7 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
             }
 
             InferPublicImageToken();
-            await NavigateAndInitAsync(sequence, childCountTask);
+            await NavigateAndInitAsync(sequence, childCountTask, statesPrefetchTask, membersPrefetchTask);
             LoggingService.LogInfo($"[详情桥接] 内容就绪（累计 {totalWatch.ElapsedMilliseconds}ms）");
         }
         catch (Exception ex)
@@ -1806,7 +1817,7 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         };
     }
 
-    private async Task NavigateAndInitAsync(int sequence, Task<int?> childCountTask = null)
+    private async Task NavigateAndInitAsync(int sequence, Task<int?> childCountTask = null, Task<List<StateDto>> statesTask = null, Task<List<Entity>> membersTask = null)
     {
         var watch = System.Diagnostics.Stopwatch.StartNew();
         accessToken = await api.GetAccessTokenAsync();
@@ -1844,32 +1855,58 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         {
         }
 
-        await Task.WhenAll(InitializeStateDropdownAsync(sequence), InitializeProjectMembersAsync(sequence));
+        // 状态与成员的数据请求在拉取返回后即并行发起（与 HTML 构建/导航重叠），
+        // 此处仅等待数据完成并注入页面——不再串行等待网络
+        await Task.WhenAll(
+            InjectStateDropdownAsync(sequence, statesTask ?? FetchAvailableStatesAsync()),
+            InjectProjectMembersAsync(sequence, membersTask ?? FetchProjectMembersDataAsync()));
         initWatch.Stop();
-        LoggingService.LogInfo($"[详情桥接] 状态/成员并行就绪 {initWatch.ElapsedMilliseconds}ms");
+        LoggingService.LogInfo($"[详情桥接] 状态/成员注入就绪 {initWatch.ElapsedMilliseconds}ms");
         // 保险带：最终导航若未按预期完成（异常态），此处确保遮罩撤除与 WebView 复位
         awaitFinalNavigation = false;
         DetailsWeb.Visibility = Visibility.Visible;
         ShowLoading(false);
     }
 
-    private async Task InitializeProjectMembersAsync(int sequence)
+    /// <summary>
+    /// 拉取项目成员数据（数据阶段）：详情返回后即可发起，与 HTML 构建/导航并行。
+    /// </summary>
+    /// <returns>成员实体列表；无项目返回 null。</returns>
+    private async Task<List<Entity>> FetchProjectMembersDataAsync()
+    {
+        var projectId = (Details?.ProjectId ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(projectId))
+        {
+            return null;
+        }
+
+        try
+        {
+            return await api.GetProjectMembersAsync(projectId);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 注入成员数据到已渲染页面（注入阶段）：等待数据任务完成后一次脚本注入。
+    /// </summary>
+    /// <param name="sequence">本轮序列号。</param>
+    /// <param name="membersTask">成员数据任务。</param>
+    private async Task InjectProjectMembersAsync(int sequence, Task<List<Entity>> membersTask)
     {
         try
         {
-            var projectId = (Details?.ProjectId ?? "").Trim();
-            if (string.IsNullOrWhiteSpace(projectId))
-            {
-                return;
-            }
-            var members = await api.GetProjectMembersAsync(projectId);
+            var members = await (membersTask ?? FetchProjectMembersDataAsync());
             if (sequence != contentSequence)
             {
                 return;
             }
 
             var arr = new Newtonsoft.Json.Linq.JArray();
-            foreach (var m in members ?? new List<PackageManager.Services.PingCode.Model.Entity>())
+            foreach (var m in members ?? new List<Entity>())
             {
                 var id = (m?.Id ?? "").Trim();
                 var nm = (m?.Name ?? "").Trim();
@@ -2170,7 +2207,11 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         return sb.ToString();
     }
 
-    private async Task InitializeStateDropdownAsync(int sequence)
+    /// <summary>
+    /// 拉取可选状态流转数据（数据阶段）：详情返回后即可发起，与 HTML 构建/导航并行。
+    /// </summary>
+    /// <returns>可选状态列表；不可用返回 null。</returns>
+    private async Task<List<StateDto>> FetchAvailableStatesAsync()
     {
         try
         {
@@ -2178,17 +2219,34 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
             var type = (Details?.Type ?? "").Trim();
             if (string.IsNullOrWhiteSpace(projectId) || string.IsNullOrWhiteSpace(type))
             {
-                return;
+                return null;
             }
 
             var plans = await api.GetWorkItemStatePlansAsync(projectId);
             var plan = plans.FirstOrDefault(p => string.Equals((p?.WorkItemType ?? "").Trim(), type, StringComparison.OrdinalIgnoreCase));
             if ((plan == null) || string.IsNullOrWhiteSpace(plan.Id))
             {
-                return;
+                return null;
             }
 
-            var flows = await api.GetWorkItemStateFlowsAsync(plan.Id, Details.StateId);
+            return await api.GetWorkItemStateFlowsAsync(plan.Id, Details.StateId);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 注入状态下拉选项到已渲染页面（注入阶段）：等待数据任务完成后重建 select。
+    /// </summary>
+    /// <param name="sequence">本轮序列号。</param>
+    /// <param name="statesTask">状态数据任务。</param>
+    private async Task InjectStateDropdownAsync(int sequence, Task<List<StateDto>> statesTask)
+    {
+        try
+        {
+            var flows = await (statesTask ?? FetchAvailableStatesAsync());
             if (sequence != contentSequence)
             {
                 return;
@@ -2647,6 +2705,35 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         try
         {
             LoadingOverlay.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+            if (on)
+            {
+                StartSpinner();
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    /// <summary>转圈动画实例（代码驱动：XAML Loaded 触发器在共享窗隐藏/复用周期中不会重新触发，导致静止）。</summary>
+    private System.Windows.Media.Animation.DoubleAnimation spinnerAnimation;
+
+    private void StartSpinner()
+    {
+        try
+        {
+            if (spinnerAnimation == null)
+            {
+                spinnerAnimation = new System.Windows.Media.Animation.DoubleAnimation(0, 360, System.TimeSpan.FromMilliseconds(900))
+                {
+                    RepeatBehavior = System.Windows.Media.Animation.RepeatBehavior.Forever,
+                };
+            }
+
+            if (SpinnerRing.RenderTransform is System.Windows.Media.RotateTransform rotate)
+            {
+                rotate.BeginAnimation(System.Windows.Media.RotateTransform.AngleProperty, spinnerAnimation);
+            }
         }
         catch
         {

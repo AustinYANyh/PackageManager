@@ -22,17 +22,6 @@
                     <Ellipse.RenderTransform>
                         <RotateTransform Angle="0" />
                     </Ellipse.RenderTransform>
-                    <Ellipse.Triggers>
-                        <EventTrigger RoutedEvent="Loaded">
-                            <BeginStoryboard>
-                                <Storyboard>
-                                    <DoubleAnimation Storyboard.TargetName="SpinnerRing"
-                                                     Storyboard.TargetProperty="(UIElement.RenderTransform).(RotateTransform.Angle)"
-                                                     From="0" To="360" Duration="0:0:0.9" RepeatBehavior="Forever" />
-                                </Storyboard>
-                            </BeginStoryboard>
-                        </EventTrigger>
-                    </Ellipse.Triggers>
                 </Ellipse>
                 <TextBlock Text="正在加载…" FontSize="14" Foreground="#64748B" HorizontalAlignment="Center" Margin="0,12,0,0" />
             </StackPanel>
