@@ -36,6 +36,15 @@ public partial class PingCodeApiService
     private readonly HashSet<string> customFieldOptionLoadedProjects = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
+    /// 静态构造：提高对 PingCode 主机的并发连接上限（.NET Framework 默认 2），
+    /// 避免悬停预取请求占满通道导致主请求（详情/看板）排队变慢。
+    /// </summary>
+    static PingCodeApiService()
+    {
+        System.Net.ServicePointManager.DefaultConnectionLimit = 16;
+    }
+
+    /// <summary>
     /// 初始化服务实例，创建 HTTP 客户端并载入持久化服务。
     /// </summary>
     public PingCodeApiService()

@@ -120,6 +120,7 @@
         <Compile Include="Infrastructure\AdminElevationService.cs" />
         <Compile Include="Infrastructure\CredentialProtectionService.cs" />
         <Compile Include="Infrastructure\CredentialStore.cs" />
+        <Compile Include="Infrastructure\WebView2EnvironmentService.cs" />
         <Compile Include="Infrastructure\FolderPickerService.cs" />
         <Compile Include="Infrastructure\LoggingService.cs" />
         <Compile Include="Infrastructure\RelayCommand.cs" />

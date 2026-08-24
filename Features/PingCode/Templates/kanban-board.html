@@ -5,6 +5,7 @@
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { height: 100%; }
+  html { scrollbar-gutter: stable; }  /* 滚动条空间常驻：内容高度变化时布局零横移 */
   body {
     font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
     background: #F1F5F9;
@@ -27,7 +28,6 @@
     border-top: none;
     border-radius: 0 0 12px 12px;
     min-width: 0;
-    transition: background .15s, border-color .15s;
   }
   /* 列头：sticky 常驻视口；每列带状态色点 */
   .col-head {
@@ -129,6 +129,9 @@
   var boardEl = document.getElementById('board');
   var state = { columns: [], byId: {} };
   var suppressClick = false;
+  var prefetched = {};
+  var dragInProgress = false;
+  var pendingRenderPayload = null;
 
   var CATEGORY_ORDER = ['未开始', '进行中', '可测试', '测试中', '已完成', '已关闭'];
   var SEVERITY_COLORS = { '致命': '#DC2626', '严重': '#DC2626', '主要': '#F59E0B', '一般': '#F59E0B', '次要': '#10B981', '轻微': '#10B981' };
@@ -156,6 +159,7 @@
     var card = el('div', 'card');
     card.draggable = true;
     card.dataset.id = item.id;
+    var hoverTimer = null;
 
     var bar = el('div', 'bar bar-' + cls);
     card.appendChild(bar);
@@ -165,7 +169,7 @@
     if (item.avatar) {
       var img = document.createElement('img');
       img.className = 'avatar';
-      img.src = item.avatar;
+      img.src = avatarKey(item.avatar);  // 规范化地址：浏览器 HTTP 缓存跨刷新命中
       img.onerror = function () { img.remove(); };
       head.appendChild(img);
     } else if (item.assignee) {
@@ -206,13 +210,35 @@
 
     card.addEventListener('dragstart', function (e) {
       suppressClick = true;
+      dragInProgress = true;
       e.dataTransfer.setData('text/plain', item.id);
       e.dataTransfer.effectAllowed = 'move';
       card.classList.add('dragging');
     });
     card.addEventListener('dragend', function () {
       card.classList.remove('dragging');
+      dragInProgress = false;
       setTimeout(function () { suppressClick = false; }, 50);
+      // 拖拽期间挂起的刷新在松手后应用，避免渲染移动节点打断进行中的拖拽
+      if (pendingRenderPayload) {
+        var pending = pendingRenderPayload;
+        pendingRenderPayload = null;
+        render(pending);
+      }
+    });
+    card.addEventListener('mouseenter', function () {
+      // 悬停 350ms 才预取：鼠标扫过不触发，砍掉无效请求洪峰
+      if (prefetched[item.id]) return;
+      if (hoverTimer) clearTimeout(hoverTimer);
+      hoverTimer = setTimeout(function () {
+        hoverTimer = null;
+        if (prefetched[item.id]) return;
+        prefetched[item.id] = true;
+        post({ type: 'prefetchDetail', id: item.id });
+      }, 350);
+    });
+    card.addEventListener('mouseleave', function () {
+      if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
     });
     card.addEventListener('click', function () {
       if (suppressClick) return;
@@ -242,6 +268,7 @@
     var body = el('div', 'col-body');
     col.items.forEach(function (item) {
       var card = buildCard(item);
+      card.dataset.sig = itemSig(item);
       state.byId[item.id] = { card: card, category: col.title, item: item };
       body.appendChild(card);
     });
@@ -268,18 +295,166 @@
     return wrap;
   }
 
-  function render(payload) {
+  // 头像地址规范化（去查询参数）：URL 携带动态签名/时间戳参数时，
+  // 签名与移植比较仍稳定，避免周期性整板卡片重建闪烁
+  function avatarKey(url) {
+    if (!url) return '';
+    var q = url.indexOf('?');
+    return q >= 0 ? url.substring(0, q) : url;
+  }
+
+  // 卡片显示签名：字段变化才重建该卡片。刻意不含 category——跨列移动时卡片内容
+  // 并未变化，位置由列归属决定，增量渲染直接搬运原节点（零重绘零闪烁）
+  function itemSig(it) {
+    return [it.id, it.identifier, it.title, it.status, it.assignee, avatarKey(it.avatar),
+            it.priority, it.severity, it.isDefect, it.points, it.startText, it.endText,
+            it.commentCount, (it.tags || []).join(',')].join('~');
+  }
+
+  function columnTitlesSig(cols) {
+    // 排序后比较：列集合相同即视为结构未变，杜绝额外类别列出现顺序抖动引发的误判全量重建
+    return (cols || []).map(function (c) { return c.title; }).slice().sort().join('|');
+  }
+
+  function fullRender(cols) {
     var scrollY = window.scrollY;
-    state = { columns: payload.columns || [], byId: {} };
-    boardEl.innerHTML = '';
+    state.columns = cols || [];
+    state.byId = {};
     document.getElementById('loading').style.display = 'none';
+    // 原子替换：先在离屏 fragment 构建全部列，再一次 replaceChildren——
+    // 浏览器只见一帧，彻底消灭逐列 append 的中间态白屏
+    var fragment = document.createDocumentFragment();
     var total = 0;
     state.columns.forEach(function (col) {
       total += (col.items || []).length;
-      boardEl.appendChild(buildColumn(col));
+      fragment.appendChild(buildColumn(col));
     });
+    boardEl.replaceChildren(fragment);
     document.getElementById('empty').style.display = total === 0 ? 'block' : 'none';
     window.scrollTo(0, scrollY);
+  }
+
+  // 增量渲染：列结构与卡片节点常驻，仅增/删/移动/就地更新——5 秒刷新小变化零闪烁
+  function incrementalRender(cols) {
+    var newById = {};
+    // 跨列全局索引：卡片搬运原节点（保留解码位图与事件监听），不做销毁重建
+    var prevById = state.byId || {};
+    state.byId = newById;
+    state.columns = cols || [];
+
+    // 列按 dataset.category 匹配（不按索引）：列 DOM 顺序与数据顺序的任何历史不一致
+    // 都不会导致卡片错位搬运（整屏闪的根源之一）
+    var colElByCategory = {};
+    Array.prototype.forEach.call(boardEl.children, function (colEl) {
+      var cat = colEl.dataset && colEl.dataset.category;
+      if (cat) colElByCategory[cat] = colEl;
+    });
+
+    var rebuiltCount = 0, movedCount = 0;
+    state.columns.forEach(function (col) {
+      var colEl = colElByCategory[col.title];
+      if (!colEl) return; // 数据中有而 DOM 没有 → 下轮签名判定会走全量原子替换
+      var body = colEl.querySelector('.col-body');
+      var desired = col.items || [];
+
+      // 列头计数就地刷新
+      var count = desired.length;
+      var points = desired.reduce(function (s, it) { return s + (it.points || 0); }, 0);
+      var pointsText = (Math.round(points * 10) / 10).toString();
+      var meta = colEl.querySelector('.col-meta');
+      if (meta) meta.textContent = '数量 · ' + count + '  ·  故事点 · ' + pointsText;
+
+      // 本列处理前的卡片快照（供收尾清理；跨列移动的节点 parentNode 已变，由守卫跳过）
+      var snapshot = Array.prototype.slice.call(body.children);
+
+      // 按目标顺序最少移动归位：跨列卡片直接搬运原节点（保留解码位图与事件，杜绝重建闪烁）
+      for (var i = 0; i < desired.length; i++) {
+        var item = desired[i];
+        var sig = itemSig(item);
+        var prev = prevById[item.id];
+        var card;
+        if (prev && prev.card && prev.card.dataset.sig === sig) {
+          card = prev.card;
+        } else {
+          card = buildCard(item);
+          card.dataset.sig = sig;
+          rebuiltCount++;
+          if (prev && prev.card) {
+            // 头像位图移植：地址（忽略查询参数）相同时沿用旧节点已解码的 img，
+            // 避免重建引发的图片重新解码闪烁
+            var oldImg = prev.card.querySelector('img.avatar');
+            var newImg = card.querySelector('img.avatar');
+            if (oldImg && newImg && avatarKey(oldImg.getAttribute('src')) === avatarKey(newImg.getAttribute('src'))) {
+              newImg.parentNode.replaceChild(oldImg, newImg);
+            }
+
+            // 关键：移除被替换的旧节点（无论它在哪一列）——否则同列内容变化会残留副本
+            if (prev.card.parentNode) {
+              prev.card.parentNode.removeChild(prev.card);
+            }
+          }
+        }
+
+        // 位置正确则零操作，否则按位插入（insertBefore 保留节点身份）
+        if (body.children[i] !== card) {
+          movedCount++;
+          body.insertBefore(card, body.children[i] || null);
+        }
+        newById[item.id] = { card: card, category: col.title, item: item };
+      }
+
+      // 收尾清理：本列中不再存在且仍挂在本列的卡片
+      var keptIds = {};
+      desired.forEach(function (it) { keptIds[it.id] = true; });
+      snapshot.forEach(function (cardEl) {
+        if (cardEl.dataset && cardEl.dataset.id && !keptIds[cardEl.dataset.id] && cardEl.parentNode === body) {
+          body.removeChild(cardEl);
+        }
+      });
+    });
+
+    var total = 0;
+    state.columns.forEach(function (c) { total += (c.items || []).length; });
+    document.getElementById('empty').style.display = total === 0 ? 'block' : 'none';
+
+    // 清道夫兜底：全板扫描，同 id 多节点或未注册的孤儿卡片一律移除——
+    // 即使存在未知泄漏路径，用户也绝不会看到重复卡片
+    var seenIds = {};
+    var allCards = boardEl.querySelectorAll('.card');
+    for (var d = 0; d < allCards.length; d++) {
+      var c = allCards[d];
+      var cid = c.dataset && c.dataset.id;
+      if (!cid) continue;
+      var registered = state.byId[cid] && state.byId[cid].card === c;
+      if (seenIds[cid] || !registered) {
+        if (c.parentNode) c.parentNode.removeChild(c);
+      } else {
+        seenIds[cid] = true;
+      }
+    }
+
+    // 渲染统计上报：重建/移动卡数（宿主日志），异常放大一眼可见
+    post({ type: 'renderStats', to: '重建 ' + rebuiltCount + ' / 移动 ' + movedCount + ' / 共 ' + total });
+  }
+
+  function render(payload) {
+    // 拖拽进行中：挂起本轮渲染，dragend 后应用（避免移动节点打断拖拽）
+    if (dragInProgress) {
+      pendingRenderPayload = payload;
+      return;
+    }
+
+    var cols = payload.columns || [];
+    // 首次渲染或列集合变化（新增/减少状态列）才整板重建（原子替换），其余走增量差分
+    if (!state.ready || columnTitlesSig(state.columns) !== columnTitlesSig(cols)) {
+      post({ type: 'renderMode', mode: 'full', reason: state.ready ? 'columns-changed' : 'first' });
+      fullRender(cols);
+      state.ready = true;
+      return;
+    }
+
+    post({ type: 'renderMode', mode: 'incremental', reason: '' });
+    incrementalRender(cols);
   }
 
   function post(msg) {

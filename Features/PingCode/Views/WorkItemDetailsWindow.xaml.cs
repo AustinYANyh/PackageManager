@@ -40,6 +40,306 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
 
     private bool childrenLoaded;
 
+    private string pendingWorkItemId;
+
+    private Func<string, Task<WorkItemDetails>> fetchDetailsAsync;
+
+    /// <summary>共享单例（看板/子项跳转/经典看板共用），关闭时隐藏复用，WebView 控件全程只初始化一次。</summary>
+    private static WorkItemDetailsWindow sharedInstance;
+
+    private static readonly object SharedSync = new object();
+
+    /// <summary>WebView 控件一次性初始化完成信号；后续打开详情仅重新导航，不再创建控件。</summary>
+    private readonly TaskCompletionSource<bool> webViewReadyTcs =
+        new TaskCompletionSource<bool>(System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>等待最终内容页导航完成的信号（每轮导航重建）。</summary>
+    private TaskCompletionSource<bool> navigationCompletedTcs =
+        new TaskCompletionSource<bool>(System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>标记当前导航为最终内容页：其 NavigationCompleted 是撤遮罩/放行注入的唯一时机。</summary>
+    private bool awaitFinalNavigation;
+
+    /// <summary>切换序列号：每次 ShowWorkItemAsync 自增，旧一轮的异步注入回调据此丢弃，防数据串扰。</summary>
+    private int contentSequence;
+
+    private bool forReuse;
+
+    private bool webViewInitSucceeded;
+
+    /// <summary>
+    /// 详情预取缓存（悬停触发，pm:// 跳转复用）：条目 3 分钟过期后自动重拉，失败出缓存可重试。
+    /// </summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Task<WorkItemDetails>> detailPrefetchCache =
+        new System.Collections.Concurrent.ConcurrentDictionary<string, Task<WorkItemDetails>>(StringComparer.OrdinalIgnoreCase);
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> detailPrefetchStamp =
+        new System.Collections.Concurrent.ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 获取共享详情窗口单例：首次调用在屏幕外完成 WebView 一次性初始化后自动隐藏；
+    /// 并发调用共享等待同一次初始化。运行期打开详情不再创建 WebView 控件（规避实测数十秒的控件创建阻塞）。
+    /// </summary>
+    /// <param name="api">PingCode API 服务实例。</param>
+    /// <returns>已就绪的共享详情窗口。</returns>
+    public static async Task<WorkItemDetailsWindow> GetSharedAsync(PingCodeApiService api)
+    {
+        lock (SharedSync)
+        {
+            if (sharedInstance == null)
+            {
+                sharedInstance = new WorkItemDetailsWindow(new WorkItemDetails(), api)
+                {
+                    forReuse = true,
+                    WindowStartupLocation = WindowStartupLocation.Manual,
+                    ShowActivated = false,
+                    ShowInTaskbar = false,
+                };
+                sharedInstance.Left = -32000;
+                sharedInstance.Top = -32000;
+                sharedInstance.Show();
+                // 关键：预热的共享窗先于主窗口创建，会被 WPF 自动认作 Application.MainWindow，
+                // 导致 ShutdownMode=OnMainWindowClose 永不触发（关闭主界面进程残留）。
+                // 归还身份，让随后的启动主窗口重新认领 MainWindow。
+                if (System.Windows.Application.Current?.MainWindow == sharedInstance)
+                {
+                    System.Windows.Application.Current.MainWindow = null;
+                }
+
+                _ = sharedInstance.HideWhenPrewarmAsync();
+            }
+        }
+
+        await sharedInstance.webViewReadyTcs.Task;
+        return sharedInstance;
+    }
+
+    /// <summary>
+    /// 预热形态的自动隐藏：WebView 就绪后若仍停在屏幕外（未被真实使用）则隐藏并复位坐标。
+    /// </summary>
+    private async Task HideWhenPrewarmAsync()
+    {
+        try
+        {
+            await webViewReadyTcs.Task;
+            await Dispatcher.InvokeAsync(() =>
+            {
+                if (forReuse && Visibility == Visibility.Visible && Left < -10000)
+                {
+                    Left = double.NaN;
+                    Top = double.NaN;
+                    Hide();
+                    ShowInTaskbar = true;
+                    ShowActivated = true;
+                    WindowStartupLocation = WindowStartupLocation.CenterOwner;
+                }
+            });
+        }
+        catch
+        {
+        }
+    }
+
+    /// <summary>
+    /// 在共享窗口中展示指定工作项：复用已初始化的 WebView，仅重新导航。
+    /// 手动模态：显示期间禁用宿主窗口，关闭（隐藏）时还原，保留原 ShowDialog 的交互语义。
+    /// </summary>
+    /// <param name="workItemId">工作项唯一标识。</param>
+    /// <param name="summary">看板侧摘要（占位头部），可为 null。</param>
+    /// <param name="fetcher">详情拉取委托（可携带预取缓存），为 null 时直接走 API。</param>
+    public async Task ShowWorkItemAsync(string workItemId, WorkItemInfo summary, Func<string, Task<WorkItemDetails>> fetcher)
+    {
+        if (string.IsNullOrWhiteSpace(workItemId))
+        {
+            return;
+        }
+
+        await webViewReadyTcs.Task;
+
+        var sequence = ++contentSequence;
+        ResetForReuse();
+        Details = BuildPlaceholderDetails(workItemId, summary);
+        pendingWorkItemId = workItemId;
+        fetchDetailsAsync = fetcher;
+
+        // 遮罩先行：不透明白遮住旧内容，杜绝"旧内容→loading→新内容"三段感
+        ShowLoading(true);
+        awaitFinalNavigation = false;
+
+        // 切换第一拍清空旧内容：导航到轻量加载页，旧工作项内容零泄漏
+        try
+        {
+            DetailsWeb.CoreWebView2?.NavigateToString(BuildLoadingHtml());
+        }
+        catch
+        {
+        }
+
+        // 无条件手动居中：预热窗口可能仍处于 Visible 且停在屏幕外，显式计算目标矩形
+        CenterOverOwnerOrScreen();
+
+        if (Visibility != Visibility.Visible)
+        {
+            // 手动模态：禁用宿主，等价于原 ShowDialog 的模态语义
+            if (Owner != null)
+            {
+                Owner.IsEnabled = false;
+            }
+
+            Show();
+        }
+
+        Activate();
+        await InitializeContentAsync(sequence);
+    }
+
+    /// <summary>
+    /// 显式计算窗口位置：宿主可用时居于宿主中央，否则主屏中央；覆盖屏幕外/NaN 坐标。
+    /// </summary>
+    private void CenterOverOwnerOrScreen()
+    {
+        try
+        {
+            var workArea = System.Windows.SystemParameters.WorkArea;
+            double refX, refY, refW, refH;
+            if (Owner != null && Owner.IsLoaded && Owner.WindowState != WindowState.Minimized)
+            {
+                refX = Owner.Left;
+                refY = Owner.Top;
+                refW = Owner.ActualWidth > 0 ? Owner.ActualWidth : Owner.Width;
+                refH = Owner.ActualHeight > 0 ? Owner.ActualHeight : Owner.Height;
+            }
+            else
+            {
+                refX = workArea.X;
+                refY = workArea.Y;
+                refW = workArea.Width;
+                refH = workArea.Height;
+            }
+
+            if (double.IsNaN(refW) || refW <= 0 || double.IsNaN(refH) || refH <= 0)
+            {
+                return;
+            }
+
+            var width = ActualWidth > 0 ? ActualWidth : (double.IsNaN(Width) ? 1300 : Width);
+            var height = ActualHeight > 0 ? ActualHeight : (double.IsNaN(Height) ? 760 : Height);
+            WindowStartupLocation = WindowStartupLocation.Manual;
+            Left = Math.Max(workArea.X, refX + (refW - width) / 2);
+            Top = Math.Max(workArea.Y, refY + (refH - height) / 2);
+        }
+        catch
+        {
+            // 定位失败退回默认，不阻塞展示
+        }
+    }
+
+    /// <summary>
+    /// 手动模态收尾：还原宿主窗口可用并激活（隐藏复用时调用）。
+    /// </summary>
+    private void RestoreOwnerWindow()
+    {
+        var owner = Owner;
+        if (owner != null && !owner.IsEnabled)
+        {
+            owner.IsEnabled = true;
+            try
+            {
+                owner.Activate();
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    /// <summary>
+    /// 用已就绪的详情数据打开共享窗口（经典看板/面包屑跳转等入口）。
+    /// </summary>
+    /// <param name="details">已拉取的详情数据。</param>
+    /// <param name="api">PingCode API 服务实例。</param>
+    /// <param name="owner">宿主窗口，可为 null。</param>
+    public static async Task ShowDetailsAsync(WorkItemDetails details, PingCodeApiService api, Window owner)
+    {
+        if (details == null)
+        {
+            return;
+        }
+
+        var win = await GetSharedAsync(api);
+        if (owner != null && owner.IsLoaded)
+        {
+            win.Owner = owner;
+        }
+
+        var local = details;
+        await win.ShowWorkItemAsync(local.Id, null, _ => Task.FromResult(local));
+    }
+
+    /// <summary>
+    /// 复用前重置窗口内会话状态（附件映射/子项懒加载标记/令牌/可选状态）。
+    /// </summary>
+    private void ResetForReuse()
+    {
+        uploadedAttachmentMap.Clear();
+        childrenLoaded = false;
+        accessToken = null;
+        availableStates = new List<StateDto>();
+    }
+
+    /// <summary>
+    /// 悬停预取的缓存入口：条目 3 分钟过期自动重拉，并发共享同一在途任务。
+    /// </summary>
+    /// <param name="workItemId">工作项唯一标识。</param>
+    /// <returns>详情任务。</returns>
+    private Task<WorkItemDetails> GetDetailsCachedAsync(string workItemId)
+    {
+        if (detailPrefetchStamp.TryGetValue(workItemId, out var stamp) && (DateTime.UtcNow - stamp).TotalMinutes > 3)
+        {
+            detailPrefetchCache.TryRemove(workItemId, out _);
+        }
+
+        detailPrefetchStamp[workItemId] = DateTime.UtcNow;
+        return detailPrefetchCache.GetOrAdd(workItemId, async key =>
+        {
+            try
+            {
+                return await api.GetWorkItemDetailsAsync(key);
+            }
+            catch
+            {
+                detailPrefetchCache.TryRemove(key, out _);
+                throw;
+            }
+        });
+    }
+
+    /// <summary>
+    /// 用看板摘要构建占位详情：仅头部/快速信息字段，完整字段待真实详情到达后替换。
+    /// </summary>
+    /// <param name="workItemId">工作项唯一标识。</param>
+    /// <param name="summary">看板摘要。</param>
+    /// <returns>占位详情。</returns>
+    private static WorkItemDetails BuildPlaceholderDetails(string workItemId, WorkItemInfo summary)
+    {
+        return new WorkItemDetails
+        {
+            Id = string.IsNullOrWhiteSpace(summary?.Id) ? workItemId : summary.Id,
+            Identifier = summary?.Identifier,
+            Title = summary?.Title,
+            AssigneeName = summary?.AssigneeName,
+            StateName = summary?.Status,
+            StateId = summary?.StateId,
+            StartAt = summary?.StartAt,
+            EndAt = summary?.EndAt,
+            ProjectId = summary?.ProjectId,
+            Type = summary?.Type,
+            PriorityName = summary?.Priority,
+            SeverityName = summary?.Severity,
+            StoryPoints = summary?.StoryPoints ?? 0,
+        };
+    }
+
     /// <summary>
     /// 初始化 <see cref="WorkItemDetailsWindow"/> 的新实例。
     /// </summary>
@@ -51,20 +351,44 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         this.api = api ?? new PingCodeApiService();
         InitializeComponent();
         DataContext = this;
-
+        // Loaded 只做一次性 WebView 初始化；内容由 ShowWorkItemAsync 驱动。
         Loaded += async (s, e) =>
         {
+            if (webViewInitSucceeded)
+            {
+                return;
+            }
+
+            var totalWatch = System.Diagnostics.Stopwatch.StartNew();
             try
             {
                 ShowLoading(true);
-                InferPublicImageToken();
-                var core = await InitializeWebViewAsync();
+                var envWatch = System.Diagnostics.Stopwatch.StartNew();
+                var env = await Infrastructure.WebView2EnvironmentService.GetDetailsEnvironmentAsync();
+                envWatch.Stop();
+                LoggingService.LogInfo($"[详情桥接] 专用环境就绪 {envWatch.ElapsedMilliseconds}ms");
+
+                var ensureWatch = System.Diagnostics.Stopwatch.StartNew();
+                await DetailsWeb.EnsureCoreWebView2Async(env);
+                ensureWatch.Stop();
+                LoggingService.LogInfo($"[详情桥接] EnsureCoreWebView2 {ensureWatch.ElapsedMilliseconds}ms");
+
+                var core = DetailsWeb.CoreWebView2;
+                core.Settings.IsWebMessageEnabled = true;
                 await InjectDomReadyBridgeScript(core);
                 RegisterCoreEvents(core);
-                await NavigateAndInitAsync();
+                webViewInitSucceeded = true;
+                LoggingService.LogInfo($"[详情桥接] WebView 一次性初始化完成（累计 {totalWatch.ElapsedMilliseconds}ms）");
+
+                if (string.IsNullOrWhiteSpace(pendingWorkItemId))
+                {
+                    // 启动预热形态：无待展示工作项，仅停在空闲页等待首次使用
+                    core.NavigateToString(BuildLoadingHtml());
+                }
             }
-            catch
+            catch (Exception initEx)
             {
+                LoggingService.LogError(initEx, $"[详情桥接] WebView 初始化失败（累计 {totalWatch.ElapsedMilliseconds}ms）");
                 try
                 {
                     ShowLoading(false);
@@ -73,16 +397,116 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                 {
                 }
             }
+            finally
+            {
+                webViewReadyTcs.TrySetResult(true);
+            }
         };
+    }
+
+    /// <summary>
+    /// 内容初始化：拉取详情（命中预取缓存）→ 导航完整页面 → 状态/成员并行就绪。
+    /// 子项计数只需占位里的 Id，与详情拉取并行。
+    /// </summary>
+    /// <param name="sequence">本轮切换序列号。</param>
+    private async Task InitializeContentAsync(int sequence)
+    {
+        var totalWatch = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            ShowLoading(true);
+            var childCountTask = CountChildrenSafeAsync(Details?.Id);
+
+            if (!string.IsNullOrWhiteSpace(pendingWorkItemId))
+            {
+                var fetchWatch = System.Diagnostics.Stopwatch.StartNew();
+                try
+                {
+                    var fetched = await (fetchDetailsAsync?.Invoke(pendingWorkItemId)
+                                         ?? api.GetWorkItemDetailsAsync(pendingWorkItemId));
+                    fetchWatch.Stop();
+                    LoggingService.LogInfo($"[详情桥接] 详情拉取 {fetchWatch.ElapsedMilliseconds}ms（{(fetched == null ? "null" : "ok")}）");
+                    if (sequence != contentSequence)
+                    {
+                        return;
+                    }
+
+                    if (fetched != null)
+                    {
+                        Details = fetched;
+                    }
+                }
+                catch (Exception fetchEx)
+                {
+                    fetchWatch.Stop();
+                    LoggingService.LogInfo($"[详情桥接] 详情拉取失败 {fetchWatch.ElapsedMilliseconds}ms：{fetchEx.Message}（保留占位继续）");
+                }
+            }
+
+            InferPublicImageToken();
+            await NavigateAndInitAsync(sequence, childCountTask);
+            LoggingService.LogInfo($"[详情桥接] 内容就绪（累计 {totalWatch.ElapsedMilliseconds}ms）");
+        }
+        catch (Exception ex)
+        {
+            LoggingService.LogError(ex, $"[详情桥接] 内容初始化失败（{totalWatch.ElapsedMilliseconds}ms）");
+            try
+            {
+                ShowLoading(false);
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    /// <summary>
+    /// 安全获取子工作项数量：失败返回 null（保持占位）。
+    /// </summary>
+    /// <param name="workItemId">工作项唯一标识。</param>
+    /// <returns>子项数量；失败为 null。</returns>
+    private async Task<int?> CountChildrenSafeAsync(string workItemId)
+    {
+        if (string.IsNullOrWhiteSpace(workItemId))
+        {
+            return null;
+        }
+
+        try
+        {
+            return await api.GetChildWorkItemCountAsync(workItemId);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 共享窗口关闭请求转为隐藏以复用，同时还原手动模态禁用的宿主窗口；非共享实例按常规关闭。
+    /// 应用退出（Dispatcher 关闭中）时不拦截，确保进程能正常结束。
+    /// </summary>
+    /// <param name="e">关闭事件参数。</param>
+    protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+    {
+        if (forReuse && !Dispatcher.HasShutdownStarted)
+        {
+            e.Cancel = true;
+            Hide();
+            RestoreOwnerWindow();
+            return;
+        }
+
+        base.OnClosing(e);
     }
 
     /// <inheritdoc/>
     public event PropertyChangedEventHandler PropertyChanged;
 
     /// <summary>
-    /// 获取当前显示的工作项详情数据。
+    /// 获取当前显示的工作项详情数据（先开窗模式下先为占位、拉取完成后替换为完整数据）。
     /// </summary>
-    public WorkItemDetails Details { get; }
+    public WorkItemDetails Details { get; private set; }
 
     public string AiActionButtonText => new PingCodeWorkItemPromptService().IsFixWorkItem(Details) ? "AI 修复" : "AI 实现";
 
@@ -739,10 +1163,8 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
 
     private async Task<CoreWebView2> InitializeWebViewAsync()
     {
-        var dataService = new DataPersistenceService();
-        var userDataFolder = Path.Combine(dataService.GetDataFolderPath(), "WebView2Cache");
-        Directory.CreateDirectory(userDataFolder);
-        var env = await CoreWebView2Environment.CreateAsync(null, userDataFolder);
+        // 详情专用环境（独立用户数据目录）：与看板 WebView 共存时避免同目录多控件通道排队
+        var env = await Infrastructure.WebView2EnvironmentService.GetDetailsEnvironmentAsync();
         await DetailsWeb.EnsureCoreWebView2Async(env);
         var core = DetailsWeb.CoreWebView2;
         core.Settings.IsWebMessageEnabled = true;
@@ -751,18 +1173,9 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
 
     private string BuildDocBridgeScript()
     {
-        var wi = JsEscape(Details.Id ?? "");
+        // 不烘焙工作项 ID：单例复用时消息不带 id，宿主按当前 Details 兜底，避免陈旧 ID 误更新
         var docJs =
-            "(function(){try{function pv(v){try{var n=parseFloat(v);if(isNaN(n)||n<0){return 0;}return n;}catch(e){return 0;}}function bind(){try{if(window.__pm_bind_done){return;}window.__pm_bind_done=true;var ip=document.getElementById('spInput');if(ip){ip.addEventListener('blur',function(){try{var val=pv(ip.value);if(window.chrome&&window.chrome.webview){window.chrome.webview.postMessage({type:'updateStoryPoints',id:'" +
-            wi +
-            "',value:val});}}catch(e){}});ip.addEventListener('keydown',function(e){if(e.key==='Enter'){try{var val=pv(ip.value);if(window.chrome&&window.chrome.webview){window.chrome.webview.postMessage({type:'updateStoryPoints',id:'" +
-            wi +
-            "',value:val});}}catch(e){}}});}var sel=document.getElementById('stateSelect');if(sel){sel.addEventListener('change',function(){try{var val=sel&&sel.value;if(val&&window.chrome&&window.chrome.webview){window.chrome.webview.postMessage({type:'updateState',id:'" +
-            wi +
-            "',stateId:val});}}catch(e){}});} }catch(e){}}document.addEventListener('DOMContentLoaded',function(){try{bind();var has=document.getElementById('stateSelect')||document.getElementById('spInput');if(has&&window.chrome&&window.chrome.webview){window.chrome.webview.postMessage({type:'ready',id:'" +
-            wi +
-            "'});}}catch(e){}});document.addEventListener('readystatechange',function(){try{if(document.readyState==='interactive'||document.readyState==='complete'){bind();var has=document.getElementById('stateSelect')||document.getElementById('spInput');if(has&&window.chrome&&window.chrome.webview){window.chrome.webview.postMessage({type:'ready',id:'" +
-            wi + "'});}}}catch(e){}});}catch(e){}})();";
+            "(function(){try{function pv(v){try{var n=parseFloat(v);if(isNaN(n)||n<0){return 0;}return n;}catch(e){return 0;}}function bind(){try{if(window.__pm_bind_done){return;}window.__pm_bind_done=true;var ip=document.getElementById('spInput');if(ip){ip.addEventListener('blur',function(){try{var val=pv(ip.value);if(window.chrome&&window.chrome.webview){window.chrome.webview.postMessage({type:'updateStoryPoints',value:val});}}catch(e){}});ip.addEventListener('keydown',function(e){if(e.key==='Enter'){try{var val=pv(ip.value);if(window.chrome&&window.chrome.webview){window.chrome.webview.postMessage({type:'updateStoryPoints',value:val});}}catch(e){}}});}var sel=document.getElementById('stateSelect');if(sel){sel.addEventListener('change',function(){try{var val=sel&&sel.value;if(val&&window.chrome&&window.chrome.webview){window.chrome.webview.postMessage({type:'updateState',stateId:val});}}catch(e){}});} }catch(e){}}document.addEventListener('DOMContentLoaded',function(){try{bind();var has=document.getElementById('stateSelect')||document.getElementById('spInput');if(has&&window.chrome&&window.chrome.webview){window.chrome.webview.postMessage({type:'ready'});}}catch(e){}});document.addEventListener('readystatechange',function(){try{if(document.readyState==='interactive'||document.readyState==='complete'){bind();var has=document.getElementById('stateSelect')||document.getElementById('spInput');if(has&&window.chrome&&window.chrome.webview){window.chrome.webview.postMessage({type:'ready'});}}}catch(e){}});}catch(e){}})();";
         return docJs;
     }
 
@@ -836,6 +1249,18 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                         if (string.Equals(earlyType, "aiDecompose", StringComparison.OrdinalIgnoreCase))
                         {
                             await RunAiDecomposeAsync();
+                            return;
+                        }
+
+                        // 悬停预取：子项行/面包屑父项链接 hover 即后台拉取，点击跳转时命中缓存
+                        if (string.Equals(earlyType, "prefetchDetail", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var prefetchId = aiSource.Value<string>("id");
+                            if (!string.IsNullOrWhiteSpace(prefetchId))
+                            {
+                                _ = GetDetailsCachedAsync(prefetchId);
+                            }
+
                             return;
                         }
                     }
@@ -1035,10 +1460,11 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
 
                 if (handleReady)
                 {
+                    LoggingService.LogInfo("[详情桥接] 收到页面 ready");
+                    // 状态下拉/成员初始化由 NavigateAndInitAsync 统一执行，此处不重复请求
                     try
                     {
-                        await InitializeStateDropdownAsync();
-                        await InitializeProjectMembersAsync();
+                        ShowLoading(false);
                     }
                     catch
                     {
@@ -1224,7 +1650,15 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         {
             try
             {
-                ShowLoading(false);
+                LoggingService.LogInfo($"[详情桥接] NavigationCompleted IsSuccess={args.IsSuccess} Status={args.HttpStatusCode} final={awaitFinalNavigation}");
+                // 只有最终内容页完成才撤遮罩/放行注入；清屏加载页的完成（含被终止时的 IsSuccess=false）一律忽略
+                if (awaitFinalNavigation && args.IsSuccess)
+                {
+                    awaitFinalNavigation = false;
+                    navigationCompletedTcs.TrySetResult(true);
+                    ShowLoading(false);
+                }
+
                 if (!docBridgeInjectedOnDocumentCreated)
                 {
                     try
@@ -1235,9 +1669,6 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                     {
                     }
                 }
-
-                await InitializeStateDropdownAsync();
-                await InitializeProjectMembersAsync();
             }
             catch
             {
@@ -1338,19 +1769,12 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
 
                         if (!string.IsNullOrWhiteSpace(id))
                         {
-                            try
+                            // 推迟到导航事件之外：NavigationStarting 处理器内嵌套发起导航会被运行时丢弃
+                            var localId = id;
+                            Dispatcher.BeginInvoke(new Action(() =>
                             {
-                                var parentDetails = await api.GetWorkItemDetailsAsync(id);
-                                if (parentDetails != null)
-                                {
-                                    var win = new WorkItemDetailsWindow(parentDetails, api);
-                                    win.Owner = this;
-                                    win.ShowDialog();
-                                }
-                            }
-                            catch
-                            {
-                            }
+                                _ = ShowWorkItemAsync(localId, null, GetDetailsCachedAsync);
+                            }));
                         }
                     }
                 }
@@ -1383,26 +1807,55 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         };
     }
 
-    private async Task NavigateAndInitAsync()
+    private async Task NavigateAndInitAsync(int sequence, Task<int?> childCountTask = null)
     {
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         var loadingHtml = BuildLoadingHtml();
         DetailsWeb.CoreWebView2.NavigateToString(loadingHtml);
         accessToken = await api.GetAccessTokenAsync();
+        watch.Stop();
+        LoggingService.LogInfo($"[详情桥接] token 就绪 {watch.ElapsedMilliseconds}ms");
+        var childWatch = System.Diagnostics.Stopwatch.StartNew();
+        var cnt = childCountTask != null ? await childCountTask : await CountChildrenSafeAsync(Details.Id);
+        childWatch.Stop();
+        LoggingService.LogInfo($"[详情桥接] 子项计数 {childWatch.ElapsedMilliseconds}ms（{cnt?.ToString() ?? "失败"}）");
+        if (sequence == contentSequence && cnt.HasValue)
+        {
+            Details.ChildrenCount = cnt.Value;
+        }
+
+        var buildWatch = System.Diagnostics.Stopwatch.StartNew();
+        var html = await Task.Run(() => BuildHtml());
+        buildWatch.Stop();
+        LoggingService.LogInfo($"[详情桥接] HTML 构建 {buildWatch.ElapsedMilliseconds}ms（{html?.Length ?? 0} 字符）");
+        if (sequence != contentSequence)
+        {
+            return;
+        }
+
+        // 真实页面导航前重建完成信号：避免被加载页的 NavigationCompleted 提前置位
+        navigationCompletedTcs = new TaskCompletionSource<bool>(System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
+        awaitFinalNavigation = true;
+        DetailsWeb.CoreWebView2.NavigateToString(html);
+        LoggingService.LogInfo("[详情桥接] 真实页面导航已发出");
+        var initWatch = System.Diagnostics.Stopwatch.StartNew();
         try
         {
-            var cnt = await api.GetChildWorkItemCountAsync(Details.Id);
-            Details.ChildrenCount = cnt;
+            await navigationCompletedTcs.Task;
         }
         catch
         {
         }
-        var html = await Task.Run(() => BuildHtml());
-        DetailsWeb.CoreWebView2.NavigateToString(html);
-        await InitializeStateDropdownAsync();
-        await InitializeProjectMembersAsync();
+
+        await Task.WhenAll(InitializeStateDropdownAsync(sequence), InitializeProjectMembersAsync(sequence));
+        initWatch.Stop();
+        LoggingService.LogInfo($"[详情桥接] 状态/成员并行就绪 {initWatch.ElapsedMilliseconds}ms");
+        // 保险带：最终导航若未按预期完成（异常态），此处确保遮罩撤除
+        awaitFinalNavigation = false;
+        ShowLoading(false);
     }
 
-    private async Task InitializeProjectMembersAsync()
+    private async Task InitializeProjectMembersAsync(int sequence)
     {
         try
         {
@@ -1412,6 +1865,11 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                 return;
             }
             var members = await api.GetProjectMembersAsync(projectId);
+            if (sequence != contentSequence)
+            {
+                return;
+            }
+
             var arr = new Newtonsoft.Json.Linq.JArray();
             foreach (var m in members ?? new List<PackageManager.Services.PingCode.Model.Entity>())
             {
@@ -1714,7 +2172,7 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         return sb.ToString();
     }
 
-    private async Task InitializeStateDropdownAsync()
+    private async Task InitializeStateDropdownAsync(int sequence)
     {
         try
         {
@@ -1733,6 +2191,11 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
             }
 
             var flows = await api.GetWorkItemStateFlowsAsync(plan.Id, Details.StateId);
+            if (sequence != contentSequence)
+            {
+                return;
+            }
+
             availableStates = flows ?? new List<StateDto>();
             await RebuildStateSelectOptionsAsync(Details.StateName, availableStates);
         }
@@ -1873,9 +2336,10 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         }
 
         var actionText = AiActionButtonText;
+        // 与原 WPF 工具栏同语义：任务类型才隐藏拆解按钮（需求/缺陷均可拆解）
         var decomposeButton = IsTaskType(Details?.Type)
-            ? "<button class=\"ai-btn ai-btn-purple\" data-ai=\"decompose\">AI 拆解</button>"
-            : string.Empty;
+            ? string.Empty
+            : "<button class=\"ai-btn ai-btn-purple\" data-ai=\"decompose\">AI 拆解</button>";
         return $"<button class=\"ai-btn ai-btn-primary\" data-ai=\"action\">{HtmlEscape(actionText)}</button>{decomposeButton}";
     }
 

@@ -73,6 +73,10 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
     public ObservableCollection<string> Participants { get; } = new();
 
     /// <summary>获取或设置当前选中的成员筛选。</summary>
+    /// <summary>筛选下拉重建中：成员/参与者集合 Clear+回填会触发选中属性变化，
+    /// 期间抑制自动推送，避免"无筛选全量 → 恢复筛选"的瞬间闪现（实测重建 54 卡的整屏闪烁源）。</summary>
+    private bool rebuildingFilters;
+
     public Entity SelectedMember
     {
         get => selectedMember;
@@ -82,7 +86,10 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
             {
                 selectedMember = value;
                 OnPropertyChanged();
-                _ = PushBoardAsync();
+                if (!rebuildingFilters)
+                {
+                    _ = PushBoardAsync();
+                }
             }
         }
     }
@@ -97,7 +104,10 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
             {
                 selectedParticipant = value;
                 OnPropertyChanged();
-                _ = PushBoardAsync();
+                if (!rebuildingFilters)
+                {
+                    _ = PushBoardAsync();
+                }
             }
         }
     }
@@ -133,9 +143,15 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
 
     private async Task InitializeWebViewAsync()
     {
-        var userDataFolder = Path.Combine(new DataPersistenceService().GetDataFolderPath(), "WebView2Cache");
-        var env = await CoreWebView2Environment.CreateAsync(null, userDataFolder);
+        var envWatch = System.Diagnostics.Stopwatch.StartNew();
+        // 复用应用启动预热的共享环境
+        var env = await Infrastructure.WebView2EnvironmentService.GetEnvironmentAsync();
+        envWatch.Stop();
+        LoggingService.LogInfo($"[看板性能] 共享环境就绪 {envWatch.ElapsedMilliseconds}ms");
+        var ensureWatch = System.Diagnostics.Stopwatch.StartNew();
         await BoardWeb.EnsureCoreWebView2Async(env);
+        ensureWatch.Stop();
+        LoggingService.LogInfo($"[看板性能] EnsureCoreWebView2 {ensureWatch.ElapsedMilliseconds}ms");
         core = BoardWeb.CoreWebView2;
         core.Settings.IsWebMessageEnabled = true;
         core.WebMessageReceived += Core_WebMessageReceived;
@@ -180,11 +196,20 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
                 case "openDetail":
                     await OpenDetailAsync(msg.Id);
                     break;
+                case "prefetchDetail":
+                    _ = PrefetchDetailAsync(msg.Id);
+                    break;
                 case "moveItem":
                     await MoveItemAsync(msg.Id, msg.To);
                     break;
                 case "renderError":
                     LoggingService.LogWarning($"[看板桥接] 页面渲染异常: {msg.To}");
+                    break;
+                case "renderMode":
+                    LoggingService.LogInfo($"[看板桥接] 渲染模式: {msg.Id}（{msg.To}）");
+                    break;
+                case "renderStats":
+                    LoggingService.LogInfo($"[看板桥接] 增量渲染统计: {msg.To}");
                     break;
             }
         }
@@ -264,6 +289,7 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
 
             lastItemsSignature = latestSig;
             allItems = latest;
+            detailPrefetchCache.Clear();
             RebuildMembersFromItems();
             RebuildParticipantsFromItems();
             await PushBoardAsync();
@@ -284,8 +310,11 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
 
     private void RebuildMembersFromItems()
     {
-        var previous = selectedMember;
-        Members.Clear();
+        rebuildingFilters = true;
+        try
+        {
+            var previous = selectedMember;
+            Members.Clear();
         Members.Add(new Entity { Id = "*", Name = "全部" });
         var pointsByPerson = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
         foreach (var it in allItems)
@@ -299,7 +328,8 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
             pointsByPerson[key] = (pointsByPerson.TryGetValue(key, out var v) ? v : 0) + it.StoryPoints;
         }
 
-        foreach (var kv in pointsByPerson.Where(kv => kv.Value > 0.0).OrderBy(kv => kv.Key))
+        // 全部指派人入列（不过滤零故事点）：选中成员不会因故事点归零被静默踢出引发全板突变
+        foreach (var kv in pointsByPerson.OrderBy(kv => kv.Key))
         {
             var one = allItems.FirstOrDefault(i => string.Equals((i.AssigneeId ?? "").Trim(), kv.Key, StringComparison.OrdinalIgnoreCase));
             var id = one?.AssigneeId ?? kv.Key;
@@ -310,11 +340,19 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
         SelectedMember = previous != null && Members.Any(m => string.Equals(m.Id, previous.Id, StringComparison.OrdinalIgnoreCase))
             ? Members.First(m => string.Equals(m.Id, previous.Id, StringComparison.OrdinalIgnoreCase))
             : Members.FirstOrDefault();
+        }
+        finally
+        {
+            rebuildingFilters = false;
+        }
     }
 
     private void RebuildParticipantsFromItems()
     {
-        var previous = selectedParticipant;
+        rebuildingFilters = true;
+        try
+        {
+            var previous = selectedParticipant;
         var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var it in allItems)
         {
@@ -343,6 +381,11 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
         }
 
         SelectedParticipant = previous != null && Participants.Contains(previous) ? previous : Participants.FirstOrDefault();
+        }
+        finally
+        {
+            rebuildingFilters = false;
+        }
     }
 
     private IEnumerable<WorkItemInfo> ApplyCurrentFilter(IEnumerable<WorkItemInfo> items)
@@ -385,15 +428,21 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
         var order = new[] { "未开始", "进行中", "可测试", "测试中", "已完成", "已关闭" };
         var filtered = ApplyCurrentFilter(allItems).ToList();
         var titles = new List<string>(order);
+        // 额外自定义类别排序后追加：推送载荷的列序列跨刷新稳定，杜绝页面侧误判结构变化
         titles.AddRange(filtered.Select(i => (i.StateCategory ?? "").Trim())
                                 .Where(c => !string.IsNullOrEmpty(c) && !titles.Contains(c, StringComparer.OrdinalIgnoreCase))
-                                .Distinct(StringComparer.OrdinalIgnoreCase));
+                                .Distinct(StringComparer.OrdinalIgnoreCase)
+                                .OrderBy(c => c, StringComparer.OrdinalIgnoreCase));
 
         var byCategory = filtered.ToLookup(i => (i.StateCategory ?? "").Trim(), StringComparer.OrdinalIgnoreCase);
         var columns = titles.Select(title => new
         {
             title,
-            items = byCategory[title].Select(ToBoardItem).ToList(),
+            // 列内顺序按编号确定性排序：与 API 返回顺序（updated_at）解耦，
+            // 工作项被更新不再引发列内卡片洗牌（增量渲染零移动）
+            items = byCategory[title].OrderBy(i => i.Identifier ?? i.Id ?? "", WorkItemIdentifierComparer.Instance)
+                                    .Select(ToBoardItem)
+                                    .ToList(),
         }).ToList();
 
         var payload = new
@@ -445,20 +494,53 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
 
         try
         {
-            Mouse.OverrideCursor = Cursors.Wait;
-            var details = await api.GetWorkItemDetailsAsync(itemId);
-            if (details != null)
-            {
-                var win = new WorkItemDetailsWindow(details, api) { Owner = this };
-                win.ShowDialog();
-            }
+            // 共享单例详情窗：WebView 全程只初始化一次（启动预热），打开仅重新导航，瞬时可用
+            var summary = allItems.FirstOrDefault(i => string.Equals(i.Id, itemId, StringComparison.OrdinalIgnoreCase));
+            var win = await WorkItemDetailsWindow.GetSharedAsync(api);
+            win.Owner = this;
+            await win.ShowWorkItemAsync(itemId, summary, GetDetailsCachedAsync);
+        }
+        catch (Exception ex)
+        {
+            LoggingService.LogError(ex, "打开工作项详情失败");
+        }
+    }
+
+    /// <summary>
+    /// 详情预取缓存：悬停 350ms 触发拉取，点击时在途/已完成的任务直接复用，不重复请求。
+    /// 看板数据签名变化（5 秒刷新有更新）时整体清空。
+    /// </summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Task<WorkItemDetails>> detailPrefetchCache =
+        new System.Collections.Concurrent.ConcurrentDictionary<string, Task<WorkItemDetails>>(StringComparer.OrdinalIgnoreCase);
+
+    private Task<WorkItemDetails> GetDetailsCachedAsync(string itemId)
+    {
+        return detailPrefetchCache.GetOrAdd(itemId, FetchDetailForCacheAsync);
+    }
+
+    private async Task<WorkItemDetails> FetchDetailForCacheAsync(string itemId)
+    {
+        try
+        {
+            return await api.GetWorkItemDetailsAsync(itemId);
         }
         catch
         {
+            // 失败不驻留缓存，下次悬停/点击可重试
+            detailPrefetchCache.TryRemove(itemId, out _);
+            throw;
         }
-        finally
+    }
+
+    private async Task PrefetchDetailAsync(string itemId)
+    {
+        try
         {
-            Mouse.OverrideCursor = null;
+            await GetDetailsCachedAsync(itemId);
+        }
+        catch
+        {
+            // 预取失败静默：点击时按需重试
         }
     }
 
@@ -694,5 +776,68 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
 
         /// <summary>获取或设置附加信息：拖拽目标列（moveItem）或错误消息（renderError）。</summary>
         public string To { get; set; }
+    }
+
+    /// <summary>
+    /// 工作项编号比较器：按字母/数字块自然排序（PROJ-9 排在 PROJ-10 之前），
+    /// 为看板列内提供确定性的稳定顺序。
+    /// </summary>
+    public sealed class WorkItemIdentifierComparer : IComparer<string>
+    {
+        /// <summary>获取单例实例。</summary>
+        public static readonly WorkItemIdentifierComparer Instance = new WorkItemIdentifierComparer();
+
+        /// <inheritdoc/>
+        public int Compare(string x, string y)
+        {
+            if (string.Equals(x, y, StringComparison.Ordinal))
+            {
+                return 0;
+            }
+
+            if (string.IsNullOrWhiteSpace(x))
+            {
+                return -1;
+            }
+
+            if (string.IsNullOrWhiteSpace(y))
+            {
+                return 1;
+            }
+
+            int px = 0, py = 0;
+            while (px < x.Length && py < y.Length)
+            {
+                var cx = x[px];
+                var cy = y[py];
+                if (char.IsDigit(cx) && char.IsDigit(cy))
+                {
+                    var sx = px;
+                    var sy = py;
+                    while (px < x.Length && char.IsDigit(x[px])) px++;
+                    while (py < y.Length && char.IsDigit(y[py])) py++;
+                    var nx = x.Substring(sx, px - sx).TrimStart('0');
+                    var ny = y.Substring(sy, py - sy).TrimStart('0');
+                    var cmp = nx.Length != ny.Length ? nx.Length.CompareTo(ny.Length) : string.CompareOrdinal(nx, ny);
+                    if (cmp != 0)
+                    {
+                        return cmp;
+                    }
+                }
+                else
+                {
+                    var cmp = char.ToUpperInvariant(cx).CompareTo(char.ToUpperInvariant(cy));
+                    if (cmp != 0)
+                    {
+                        return cmp;
+                    }
+
+                    px++;
+                    py++;
+                }
+            }
+
+            return (x.Length - px).CompareTo(y.Length - py);
+        }
     }
 }

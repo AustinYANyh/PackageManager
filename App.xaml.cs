@@ -12,6 +12,7 @@ using PackageManager.Features.CodeWorkspace.Services;
 using PackageManager.Features.CommandPalette.Services;
 using System.Runtime.InteropServices;
 using System.IO;
+using PackageManager.Services.PingCode;
 
 namespace PackageManager
 {
@@ -39,6 +40,13 @@ namespace PackageManager
 
             TryEnsureWebView2Loader();
             LoggingService.Initialize();
+
+            // 预热共享 WebView2 环境：浏览器进程在启动期拉起，后续看板/详情窗口直接复用
+            Infrastructure.WebView2EnvironmentService.Prewarm();
+
+            // 预热共享详情窗口：屏幕外完成 WebView 控件一次性初始化后隐藏，
+            // 运行期打开详情只做导航（规避运行中创建 WebView 控件的数十秒阻塞）
+            _ = Views.KanBan.WorkItemDetailsWindow.GetSharedAsync(new PingCodeApiService());
 
             var dataPersistence = new DataPersistenceService();
             ServiceLocator.Register(dataPersistence);

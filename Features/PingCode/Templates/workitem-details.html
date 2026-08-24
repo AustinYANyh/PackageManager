@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <meta name="workitem-details-template-version" content="1.4.1"/>
+  <meta name="workitem-details-template-version" content="1.4.3"/>
   <style>
         html,body{height:100%}
     body{margin:0;background:#F1F5F9;font-family:'Segoe UI','Microsoft YaHei',Arial,sans-serif;color:#0F172A;height:100%}
@@ -241,6 +241,35 @@
           });
         })(aiButtons[k]);
       }
+      // pm:// 链接悬停预取：停留 350ms 才触发（扫过不发请求），点击跳转命中缓存秒开
+      var prefetchedDetailIds = {};
+      var prefetchHoverTimer = null;
+      var prefetchHoverId = null;
+      document.addEventListener('mouseover', function(e){
+        try{
+          var t = e.target;
+          var a = t && t.closest ? t.closest('a[href^="pm://workitem/"]') : null;
+          if(!a) {
+            if (prefetchHoverTimer) { clearTimeout(prefetchHoverTimer); prefetchHoverTimer = null; prefetchHoverId = null; }
+            return;
+          }
+          var m = (a.getAttribute('href')||'').match(/pm:\/\/workitem\/([^?]+)/i);
+          if(!m) return;
+          var pid = decodeURIComponent(m[1]);
+          if (prefetchedDetailIds[pid]) return;
+          if (prefetchHoverId === pid) return;
+          if (prefetchHoverTimer) clearTimeout(prefetchHoverTimer);
+          prefetchHoverId = pid;
+          prefetchHoverTimer = setTimeout(function(){
+            prefetchHoverTimer = null;
+            if (prefetchedDetailIds[pid]) return;
+            prefetchedDetailIds[pid] = true;
+            if(window.chrome && window.chrome.webview){
+              window.chrome.webview.postMessage({type:'prefetchDetail', id:pid});
+            }
+          }, 350);
+        }catch(ex){}
+      });
       activateTab('base');
     }catch(e){}
 

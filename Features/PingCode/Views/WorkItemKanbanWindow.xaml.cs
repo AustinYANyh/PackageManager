@@ -726,11 +726,10 @@ public partial class WorkItemKanbanWindow : Window, INotifyPropertyChanged
 
             Overlay.IsBusy = true;
             var details = await api.GetWorkItemDetailsAsync(item.Id);
+            Overlay.IsBusy = false;
             if (details != null)
             {
-                var win = new WorkItemDetailsWindow(details, api);
-                win.Owner = this;
-                win.ShowDialog();
+                await WorkItemDetailsWindow.ShowDetailsAsync(details, api, this);
             }
         }
         catch
