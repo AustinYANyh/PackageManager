@@ -483,12 +483,14 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
                                  .OrderBy(c => c, StringComparer.OrdinalIgnoreCase));
 
         var byCategory = effective.ToLookup(e => e.Cat, StringComparer.OrdinalIgnoreCase);
-        // 可达列集合：按 (type, StateId) 去重批量取（缓存命中零请求；未就绪返回 null 不限制拖拽）
+        // 可达列集合：按 (projectId|type|StateId) 去重批量取（缓存命中零请求；未就绪返回 null 不限制拖拽）。
+        // 写入成功后 StateId 已同步更新 + WarmReachableAfterMoveAsync 已预热新状态缓存，
+        // 钉住中的卡同样以新状态校验——预校验全程有效，无放行窗口
         var reachableByItem = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
         var reachableKeys = new Dictionary<string, Task<HashSet<string>>>(StringComparer.OrdinalIgnoreCase);
         foreach (var e in effective)
         {
-            var key = $"{e.Item.Type}|{e.Item.StateId}";
+            var key = $"{(e.Item.ProjectId ?? "").Trim()}|{e.Item.Type}|{e.Item.StateId}";
             if (!reachableKeys.ContainsKey(key))
             {
                 reachableKeys[key] = GetReachableCategoriesAsync(e.Item);
@@ -517,7 +519,7 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
 
         foreach (var e in effective)
         {
-            var key = $"{e.Item.Type}|{e.Item.StateId}";
+            var key = $"{(e.Item.ProjectId ?? "").Trim()}|{e.Item.Type}|{e.Item.StateId}";
             reachableByItem[e.Item.Id] = reachableSets.TryGetValue(key, out var arr) ? arr : null;
         }
 
@@ -648,6 +650,7 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
         // 登记意图：携带登记时的源 StateId 指纹（双重执行守卫的比对基准）
         var sourceStateId = allItems.FirstOrDefault(i => string.Equals(i.Id, itemId, StringComparison.OrdinalIgnoreCase))?.StateId ?? "";
         pendingMoves[itemId] = new PendingMove { Target = targetCategory.Trim(), SourceStateId = sourceStateId?.Trim() };
+        LoggingService.LogDebug($"[看板拖拽] 意图登记 {itemId}（源 {sourceStateId}）→ {targetCategory.Trim()}，待写 {pendingMoves.Count} 项");
         UpdateSaveBadge();
         StartDrainPendingMoves();
         return Task.CompletedTask;
@@ -733,6 +736,7 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
             // 净零：目标即当前所在列（含连拖回原位），无需写入
             if (string.Equals(item.StateCategory ?? "", pending.Target, StringComparison.OrdinalIgnoreCase))
             {
+                LoggingService.LogDebug($"[看板拖拽] 净零跳过（已在目标列）{itemId} → {pending.Target}");
                 RemovePendingIfUnchanged(itemId, pending.Target);
                 return;
             }
@@ -791,6 +795,13 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
                     }
                 }
 
+                // 写入成功即以目标状态为基准重建可达缓存并立即补推：
+                // 该卡的下一轮推送（及正在进行的拖拽）立刻按"新状态"的可达集校验，
+                // 杜绝"进行中拖回未开始被旧缓存禁止"的竞态假象
+                LoggingService.LogDebug($"[看板拖拽] 写入成功，以目标状态 {targetStateId.Value.Item1} 预热可达缓存并补推 {itemId}");
+                await WarmReachableAfterMoveAsync(item, targetStateId.Value.Item1);
+                _ = PushBoardAsync();
+
                 // 仅当意图未被更新覆盖时移除（写入期间用户可能再拖该卡，新意图留给下一轮处理）
                 RemovePendingIfUnchanged(itemId, pending.Target);
                 LoggingService.LogDebug($"[看板拖拽] 状态写入成功 {itemId} → {pending.Target}（解析 {resolveWatch.ElapsedMilliseconds}ms）");
@@ -818,6 +829,37 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
         {
             LoggingService.LogError(ex, $"[看板拖拽] 意图处理异常 {itemId}");
             _ = PushBoardAsync();
+        }
+    }
+
+    /// <summary>
+    /// 写入成功后以目标状态为基准预热可达缓存：拉取目标状态的出边流转并写入 reachableCache，
+    /// 使该卡随后的可达校验立即基于新状态（不等下一轮刷新）。
+    /// </summary>
+    /// <param name="item">工作项摘要（项目/类型信息载体）。</param>
+    /// <param name="targetStateId">写入成功的目标状态 Id。</param>
+    private async Task WarmReachableAfterMoveAsync(WorkItemInfo item, string targetStateId)
+    {
+        try
+        {
+            if ((item == null) || string.IsNullOrWhiteSpace(targetStateId))
+            {
+                return;
+            }
+
+            var probe = new WorkItemInfo
+            {
+                Id = item.Id,
+                ProjectId = item.ProjectId,
+                Type = item.Type,
+                StateId = targetStateId,
+                StateCategory = item.StateCategory,
+            };
+            await GetReachableCategoriesAsync(probe);
+        }
+        catch
+        {
+            // 预热失败无害：推送预取兜底（会按新 StateId 正常取集）
         }
     }
 
@@ -950,7 +992,8 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
         return null;
     }
 
-    /// <summary>可达列缓存（type|stateId → 可达分类集合）：状态机配置级数据，会话内不变。</summary>
+    /// <summary>可达列缓存（projectId|type|stateId → 可达分类集合）：状态机配置级数据，会话内不变。
+    /// 键必须含 projectId：不同项目同类型同状态的流转集不同，漏了会跨项目互相污染。</summary>
     private readonly Dictionary<string, HashSet<string>> reachableCache = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
@@ -967,7 +1010,8 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
         }
 
         var type = item.Type.Trim();
-        var cacheKey = $"{type}|{item.StateId}";
+        var projectId = (item.ProjectId ?? "").Trim();
+        var cacheKey = $"{projectId}|{type}|{item.StateId}";
         lock (reachableCache)
         {
             if (reachableCache.TryGetValue(cacheKey, out var cached))
@@ -979,7 +1023,6 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
         // 复用解析链路取流转（含缓存填充）；异常/未知返回 null
         try
         {
-            var projectId = (item.ProjectId ?? "").Trim();
             var planKey = $"{projectId}|{type}";
             if (!planCache.TryGetValue(planKey, out var plan))
             {
@@ -1021,11 +1064,13 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
                 }
             }
 
+            // 空集也缓存：状态机无出边的状态（如已关闭）避免每轮推送重复探测
             lock (reachableCache)
             {
                 reachableCache[cacheKey] = set;
             }
 
+            LoggingService.LogDebug($"[看板拖拽] 可达集计算 {cacheKey} → [{string.Join(",", set)}]");
             return set;
         }
         catch
