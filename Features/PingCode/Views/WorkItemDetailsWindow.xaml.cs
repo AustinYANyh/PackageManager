@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
@@ -471,19 +471,19 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                 var envWatch = System.Diagnostics.Stopwatch.StartNew();
                 var env = await Infrastructure.WebView2EnvironmentService.GetDetailsEnvironmentAsync();
                 envWatch.Stop();
-                LoggingService.LogInfo($"[详情桥接] 专用环境就绪 {envWatch.ElapsedMilliseconds}ms");
+                LoggingService.LogDebug($"[详情桥接] 专用环境就绪 {envWatch.ElapsedMilliseconds}ms");
 
                 var ensureWatch = System.Diagnostics.Stopwatch.StartNew();
                 await DetailsWeb.EnsureCoreWebView2Async(env);
                 ensureWatch.Stop();
-                LoggingService.LogInfo($"[详情桥接] EnsureCoreWebView2 {ensureWatch.ElapsedMilliseconds}ms");
+                LoggingService.LogDebug($"[详情桥接] EnsureCoreWebView2 {ensureWatch.ElapsedMilliseconds}ms");
 
                 var core = DetailsWeb.CoreWebView2;
                 core.Settings.IsWebMessageEnabled = true;
                 await InjectDomReadyBridgeScript(core);
                 RegisterCoreEvents(core);
                 webViewInitSucceeded = true;
-                LoggingService.LogInfo($"[详情桥接] WebView 一次性初始化完成（累计 {totalWatch.ElapsedMilliseconds}ms）");
+                LoggingService.LogDebug($"[详情桥接] WebView 一次性初始化完成（累计 {totalWatch.ElapsedMilliseconds}ms）");
 
                 if (string.IsNullOrWhiteSpace(pendingWorkItemId))
                 {
@@ -529,7 +529,7 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                     var fetched = await (fetchDetailsAsync?.Invoke(pendingWorkItemId)
                                          ?? api.GetWorkItemDetailsAsync(pendingWorkItemId));
                     fetchWatch.Stop();
-                    LoggingService.LogInfo($"[详情桥接] 详情拉取 {fetchWatch.ElapsedMilliseconds}ms（{(fetched == null ? "null" : "ok")}）");
+                    LoggingService.LogDebug($"[详情桥接] 详情拉取 {fetchWatch.ElapsedMilliseconds}ms（{(fetched == null ? "null" : "ok")}）");
                     if (sequence != contentSequence)
                     {
                         return;
@@ -548,13 +548,13 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                 catch (Exception fetchEx)
                 {
                     fetchWatch.Stop();
-                    LoggingService.LogInfo($"[详情桥接] 详情拉取失败 {fetchWatch.ElapsedMilliseconds}ms：{fetchEx.Message}（保留占位继续）");
+                    LoggingService.LogDebug($"[详情桥接] 详情拉取失败 {fetchWatch.ElapsedMilliseconds}ms：{fetchEx.Message}（保留占位继续）");
                 }
             }
 
             InferPublicImageToken();
             await NavigateAndInitAsync(sequence, childCountTask, statesPrefetchTask, membersPrefetchTask);
-            LoggingService.LogInfo($"[详情桥接] 内容就绪（累计 {totalWatch.ElapsedMilliseconds}ms）");
+            LoggingService.LogDebug($"[详情桥接] 内容就绪（累计 {totalWatch.ElapsedMilliseconds}ms）");
         }
         catch (Exception ex)
         {
@@ -1545,7 +1545,7 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
 
                 if (handleReady)
                 {
-                    LoggingService.LogInfo("[详情桥接] 收到页面 ready");
+                    LoggingService.LogDebug("[详情桥接] 收到页面 ready");
                     // 状态下拉/成员初始化由 NavigateAndInitAsync 统一执行，此处不重复请求
                     try
                     {
@@ -1735,7 +1735,7 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         {
             try
             {
-                LoggingService.LogInfo($"[详情桥接] NavigationCompleted IsSuccess={args.IsSuccess} Status={args.HttpStatusCode} final={awaitFinalNavigation}");
+                LoggingService.LogDebug($"[详情桥接] NavigationCompleted IsSuccess={args.IsSuccess} Status={args.HttpStatusCode} final={awaitFinalNavigation}");
                 // 只有最终内容页完成才撤遮罩/放行注入；清屏加载页的完成（含被终止时的 IsSuccess=false）一律忽略
                 if (awaitFinalNavigation && args.IsSuccess)
                 {
@@ -1898,11 +1898,11 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         var watch = System.Diagnostics.Stopwatch.StartNew();
         accessToken = await api.GetAccessTokenAsync();
         watch.Stop();
-        LoggingService.LogInfo($"[详情桥接] token 就绪 {watch.ElapsedMilliseconds}ms");
+        LoggingService.LogDebug($"[详情桥接] token 就绪 {watch.ElapsedMilliseconds}ms");
         var childWatch = System.Diagnostics.Stopwatch.StartNew();
         var cnt = childCountTask != null ? await childCountTask : await CountChildrenSafeAsync(Details.Id);
         childWatch.Stop();
-        LoggingService.LogInfo($"[详情桥接] 子项计数 {childWatch.ElapsedMilliseconds}ms（{cnt?.ToString() ?? "失败"}）");
+        LoggingService.LogDebug($"[详情桥接] 子项计数 {childWatch.ElapsedMilliseconds}ms（{cnt?.ToString() ?? "失败"}）");
         if (sequence == contentSequence && cnt.HasValue)
         {
             Details.ChildrenCount = cnt.Value;
@@ -1911,7 +1911,7 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         var buildWatch = System.Diagnostics.Stopwatch.StartNew();
         var html = await Task.Run(() => BuildHtml());
         buildWatch.Stop();
-        LoggingService.LogInfo($"[详情桥接] HTML 构建 {buildWatch.ElapsedMilliseconds}ms（{html?.Length ?? 0} 字符）");
+        LoggingService.LogDebug($"[详情桥接] HTML 构建 {buildWatch.ElapsedMilliseconds}ms（{html?.Length ?? 0} 字符）");
         if (sequence != contentSequence)
         {
             return;
@@ -1921,7 +1921,7 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         navigationCompletedTcs = new TaskCompletionSource<bool>(System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
         awaitFinalNavigation = true;
         DetailsWeb.CoreWebView2.NavigateToString(html);
-        LoggingService.LogInfo("[详情桥接] 真实页面导航已发出");
+        LoggingService.LogDebug("[详情桥接] 真实页面导航已发出");
         var initWatch = System.Diagnostics.Stopwatch.StartNew();
         try
         {
@@ -1937,7 +1937,7 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
             InjectStateDropdownAsync(sequence, statesTask ?? FetchAvailableStatesAsync()),
             InjectProjectMembersAsync(sequence, membersTask ?? FetchProjectMembersDataAsync()));
         initWatch.Stop();
-        LoggingService.LogInfo($"[详情桥接] 状态/成员注入就绪 {initWatch.ElapsedMilliseconds}ms");
+        LoggingService.LogDebug($"[详情桥接] 状态/成员注入就绪 {initWatch.ElapsedMilliseconds}ms");
         // 保险带：最终导航若未按预期完成（异常态），此处确保遮罩撤除与 WebView 复位
         awaitFinalNavigation = false;
         DetailsWeb.Visibility = Visibility.Visible;

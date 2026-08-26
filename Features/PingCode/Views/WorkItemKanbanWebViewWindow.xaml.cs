@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
@@ -43,9 +43,19 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
     private CoreWebView2 core;
     private bool pageReady;
 
-    /// <summary>待写状态意图（卡片 id → 最新目标列）。连拖同卡覆盖合并（A→B→C 合并为 A→C），
-    /// 拖回当前所在列则净归零跳过写入；支持不限量连续拖拽。</summary>
-    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> pendingMoves =
+    /// <summary>待写状态意图（卡片 id → 目标列 + 登记时的源状态指纹）。
+    /// 连拖同卡覆盖合并（A→B→C 合并为 A→C）；源指纹用于双重执行守卫：
+    /// 处理前校验当前 StateId 仍等于登记时的源——不等说明已被处理过（泵交接缝隙的双跑），静默丢弃。</summary>
+    private sealed class PendingMove
+    {
+        /// <summary>获取目标状态分类。</summary>
+        public string Target { get; set; }
+
+        /// <summary>获取登记时工作项的 StateId（源状态指纹）。</summary>
+        public string SourceStateId { get; set; }
+    }
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, PendingMove> pendingMoves =
         new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>写 API 并发闸（3 路约 3 张/秒排空，高于人工连拖速率）。</summary>
@@ -154,9 +164,9 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
         LoadingOverlay.Visibility = Visibility.Visible;
         try
         {
-            LoggingService.LogInfo($"[看板桥接] 模板加载 {boardHtml?.Length ?? 0} 字符");
+            LoggingService.LogDebug($"[看板桥接] 模板加载 {boardHtml?.Length ?? 0} 字符");
             await InitializeWebViewAsync();
-            LoggingService.LogInfo("[看板桥接] WebView2 初始化完成，开始导航");
+            LoggingService.LogDebug("[看板桥接] WebView2 初始化完成，开始导航");
             await LoadWorkItemsAsync();
             refreshTimer.Start();
         }
@@ -177,16 +187,16 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
         // 复用应用启动预热的共享环境
         var env = await Infrastructure.WebView2EnvironmentService.GetEnvironmentAsync();
         envWatch.Stop();
-        LoggingService.LogInfo($"[看板性能] 共享环境就绪 {envWatch.ElapsedMilliseconds}ms");
+        LoggingService.LogDebug($"[看板性能] 共享环境就绪 {envWatch.ElapsedMilliseconds}ms");
         var ensureWatch = System.Diagnostics.Stopwatch.StartNew();
         await BoardWeb.EnsureCoreWebView2Async(env);
         ensureWatch.Stop();
-        LoggingService.LogInfo($"[看板性能] EnsureCoreWebView2 {ensureWatch.ElapsedMilliseconds}ms");
+        LoggingService.LogDebug($"[看板性能] EnsureCoreWebView2 {ensureWatch.ElapsedMilliseconds}ms");
         core = BoardWeb.CoreWebView2;
         core.Settings.IsWebMessageEnabled = true;
         core.WebMessageReceived += Core_WebMessageReceived;
         core.NavigationCompleted += (s, e) =>
-            LoggingService.LogInfo($"[看板桥接] 页面导航完成 IsSuccess={e.IsSuccess} HttpStatus={e.HttpStatusCode}");
+            LoggingService.LogDebug($"[看板桥接] 页面导航完成 IsSuccess={e.IsSuccess} HttpStatus={e.HttpStatusCode}");
         core.NavigateToString(boardHtml);
     }
 
@@ -202,7 +212,7 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
                 json = e.TryGetWebMessageAsString();
             }
 
-            LoggingService.LogInfo($"[看板桥接] 收到页面消息: {(string.IsNullOrWhiteSpace(json) ? "<空>" : json.Substring(0, Math.Min(120, json.Length)))}");
+            LoggingService.LogDebug($"[看板桥接] 收到页面消息: {(string.IsNullOrWhiteSpace(json) ? "<空>" : json.Substring(0, Math.Min(120, json.Length)))}");
 
             var msg = string.IsNullOrWhiteSpace(json) ? null : JsonConvert.DeserializeObject<BoardWebMessage>(json);
             if (msg == null)
@@ -215,7 +225,7 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
             {
                 case "ready":
                     pageReady = true;
-                    LoggingService.LogInfo($"[看板桥接] 页面就绪，推送首版数据（数据已就绪: {allItems.Count} 项）");
+                    LoggingService.LogDebug($"[看板桥接] 页面就绪，推送首版数据（数据已就绪: {allItems.Count} 项）");
                     if (allItems.Count > 0)
                     {
                         await PushBoardAsync();
@@ -236,10 +246,10 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
                     LoggingService.LogWarning($"[看板桥接] 页面渲染异常: {msg.To}");
                     break;
                 case "renderMode":
-                    LoggingService.LogInfo($"[看板桥接] 渲染模式: {msg.Id}（{msg.To}）");
+                    LoggingService.LogDebug($"[看板桥接] 渲染模式: {msg.Id}（{msg.To}）");
                     break;
                 case "renderStats":
-                    LoggingService.LogInfo($"[看板桥接] 增量渲染统计: {msg.To}");
+                    LoggingService.LogDebug($"[看板桥接] 增量渲染统计: {msg.To}");
                     break;
             }
         }
@@ -254,7 +264,7 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
         try
         {
             allItems = await api.GetIterationWorkItemsAsync(iterationId) ?? new List<WorkItemInfo>();
-            LoggingService.LogInfo($"[看板桥接] 工作项拉取完成: {allItems.Count} 项（pageReady={pageReady}）");
+            LoggingService.LogDebug($"[看板桥接] 工作项拉取完成: {allItems.Count} 项（pageReady={pageReady}）");
             _ = PrefetchProductOptionsAsync();
             RebuildMembersFromItems();
             RebuildParticipantsFromItems();
@@ -461,8 +471,9 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
         // 处理期间任何来源的推送（含陈旧刷新）都不会把在途卡片弹回旧列
         var effective = filtered
             .Select(i => pendingMoves.TryGetValue(i.Id, out var pending)
-                ? (Item: i, Cat: pending.Trim())
+                ? (Item: i, Cat: pending.Target?.Trim())
                 : (Item: i, Cat: (i.StateCategory ?? "").Trim()))
+            .Select(e => string.IsNullOrWhiteSpace(e.Cat) ? (Item: e.Item, Cat: (e.Item.StateCategory ?? "").Trim()) : e)
             .ToList();
         var titles = new List<string>(order);
         // 额外自定义类别排序后追加：推送载荷的列序列跨刷新稳定，杜绝页面侧误判结构变化
@@ -492,7 +503,7 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
         {
             var script = $"window.applyBoard({JsonConvert.SerializeObject(payload, Formatting.None)})";
             await core.ExecuteScriptAsync(script);
-            LoggingService.LogInfo($"[看板桥接] 已推送渲染: {filtered.Count} 项 / {columns.Count} 列");
+            LoggingService.LogDebug($"[看板桥接] 已推送渲染: {filtered.Count} 项 / {columns.Count} 列");
         }
         catch (Exception ex)
         {
@@ -594,7 +605,9 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
             return Task.CompletedTask;
         }
 
-        pendingMoves[itemId] = targetCategory.Trim();
+        // 登记意图：携带登记时的源 StateId 指纹（双重执行守卫的比对基准）
+        var sourceStateId = allItems.FirstOrDefault(i => string.Equals(i.Id, itemId, StringComparison.OrdinalIgnoreCase))?.StateId ?? "";
+        pendingMoves[itemId] = new PendingMove { Target = targetCategory.Trim(), SourceStateId = sourceStateId?.Trim() };
         UpdateSaveBadge();
         StartDrainPendingMoves();
         return Task.CompletedTask;
@@ -655,7 +668,7 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
     {
         try
         {
-            if (!pendingMoves.TryGetValue(itemId, out var target))
+            if (!pendingMoves.TryGetValue(itemId, out var pending))
             {
                 return;
             }
@@ -663,14 +676,24 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
             var item = allItems.FirstOrDefault(i => string.Equals(i.Id, itemId, StringComparison.OrdinalIgnoreCase));
             if (item == null)
             {
-                RemovePendingIfUnchanged(itemId, target);
+                RemovePendingIfUnchanged(itemId, pending.Target);
+                return;
+            }
+
+            // 双重执行守卫：当前源状态与登记时不一致 = 该意图已被处理过（前一次写入已改 StateId）
+            // 或期间被其他路径变更——静默丢弃，绝不能按失败处理（否则弹"未找到目标状态"假错误）
+            if (!string.Equals(item.StateId ?? "", pending.SourceStateId ?? "", StringComparison.OrdinalIgnoreCase)
+                && !string.IsNullOrWhiteSpace(pending.SourceStateId))
+            {
+                RemovePendingIfUnchanged(itemId, pending.Target);
+                LoggingService.LogDebug($"[看板拖拽] 意图源状态已变化，判定为已处理并丢弃 {itemId} → {pending.Target}");
                 return;
             }
 
             // 净零：目标即当前所在列（含连拖回原位），无需写入
-            if (string.Equals(item.StateCategory ?? "", target, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(item.StateCategory ?? "", pending.Target, StringComparison.OrdinalIgnoreCase))
             {
-                RemovePendingIfUnchanged(itemId, target);
+                RemovePendingIfUnchanged(itemId, pending.Target);
                 return;
             }
 
@@ -679,7 +702,7 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
             await resolveGate.WaitAsync();
             try
             {
-                targetStateId = await ResolveTargetStateIdAsync(item, target);
+                targetStateId = await ResolveTargetStateIdAsync(item, pending.Target);
             }
             finally
             {
@@ -687,6 +710,18 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
             }
 
             resolveWatch.Stop();
+
+            // 对账兜底：解析失败时若工作项实际已在目标列（前一次写入已生效的瞬时竞态），
+            // 按成功收尾，不弹错误
+            if ((targetStateId == null) || string.IsNullOrWhiteSpace(targetStateId.Value.Item1))
+            {
+                if (string.Equals(item.StateCategory ?? "", pending.Target, StringComparison.OrdinalIgnoreCase))
+                {
+                    RemovePendingIfUnchanged(itemId, pending.Target);
+                    LoggingService.LogDebug($"[看板拖拽] 解析未命中但已在目标列，按成功收尾 {itemId} → {pending.Target}");
+                    return;
+                }
+            }
 
             var ok = false;
             if ((targetStateId != null) && !string.IsNullOrWhiteSpace(targetStateId.Value.Item1))
@@ -708,7 +743,7 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
                 var current = allItems.FirstOrDefault(i => string.Equals(i.Id, itemId, StringComparison.OrdinalIgnoreCase));
                 if (current != null)
                 {
-                    current.StateCategory = target;
+                    current.StateCategory = pending.Target;
                     current.Status = targetStateId.Value.Item2;
                     if (!string.IsNullOrWhiteSpace(targetStateId.Value.Item1))
                     {
@@ -717,17 +752,26 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
                 }
 
                 // 仅当意图未被更新覆盖时移除（写入期间用户可能再拖该卡，新意图留给下一轮处理）
-                RemovePendingIfUnchanged(itemId, target);
-                LoggingService.LogInfo($"[看板拖拽] 状态写入成功 {itemId} → {target}（解析 {resolveWatch.ElapsedMilliseconds}ms）");
+                RemovePendingIfUnchanged(itemId, pending.Target);
+                LoggingService.LogDebug($"[看板拖拽] 状态写入成功 {itemId} → {pending.Target}（解析 {resolveWatch.ElapsedMilliseconds}ms）");
             }
             else
             {
-                // 写失败/目标不可达：清意图并整板推送，把乐观移动弹回服务端真相
-                RemovePendingIfUnchanged(itemId, target);
-                LoggingService.LogWarning($"[看板拖拽] 状态写入失败 {itemId} → {target}（解析 {resolveWatch.ElapsedMilliseconds}ms）");
+                // 写失败/目标不可达：清意图并整板推送还原；提示改标题徽标（非模态，不打断连拖）
+                RemovePendingIfUnchanged(itemId, pending.Target);
+                LoggingService.LogWarning($"[看板拖拽] 状态写入失败 {itemId} → {pending.Target}（解析 {resolveWatch.ElapsedMilliseconds}ms）");
                 _ = PushBoardAsync();
                 _ = Dispatcher.BeginInvoke(new Action(() =>
-                    MessageBox.Show($"工作项 {item.Identifier} 移动到「{target}」失败：未找到符合状态方案与流转规则的目标状态，已还原。", "迭代看板", MessageBoxButton.OK, MessageBoxImage.Warning)));
+                {
+                    Title = $"迭代看板 · {item.Identifier} 移动失败已还原";
+                    var resetTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(6) };
+                    resetTimer.Tick += (s2, e2) =>
+                    {
+                        resetTimer.Stop();
+                        UpdateSaveBadge();
+                    };
+                    resetTimer.Start();
+                }));
             }
         }
         catch (Exception ex)
@@ -746,7 +790,7 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
     private void RemovePendingIfUnchanged(string itemId, string target)
     {
         if (pendingMoves.TryGetValue(itemId, out var latest) &&
-            string.Equals(latest, target, StringComparison.OrdinalIgnoreCase))
+            string.Equals(latest.Target, target, StringComparison.OrdinalIgnoreCase))
         {
             pendingMoves.TryRemove(itemId, out _);
         }
