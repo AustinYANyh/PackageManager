@@ -73,6 +73,12 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
 
     private bool webViewInitSucceeded;
 
+    /// <summary>一次性初始化互斥：Loaded 可能多次触发，入口即置防止并发 Ensure 同一控件。</summary>
+    private bool webViewInitStarted;
+
+    /// <summary>实例已废弃（浏览器进程死亡后销毁重建）：OnClosing 放行真实关闭，ShowWorkItemAsync 拒绝复用。</summary>
+    private bool abandoned;
+
     /// <summary>
     /// 详情预取缓存（悬停触发，pm:// 跳转复用）：条目 3 分钟过期后自动重拉，失败出缓存可重试。
     /// </summary>
@@ -83,41 +89,112 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         new System.Collections.Concurrent.ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
-    /// 获取共享详情窗口单例：首次调用在屏幕外完成 WebView 一次性初始化后自动隐藏；
-    /// 并发调用共享等待同一次初始化。运行期打开详情不再创建 WebView 控件（规避实测数十秒的控件创建阻塞）。
+    /// 获取共享详情窗口单例：首次调用在屏幕外完成 WebView 一次性初始化后自动隐藏。
+    /// 等待期间实例若因浏览器进程故障被销毁，自动重试创建新实例——僵尸窗口不可能被复用。
     /// </summary>
     /// <param name="api">PingCode API 服务实例。</param>
     /// <returns>已就绪的共享详情窗口。</returns>
     public static async Task<WorkItemDetailsWindow> GetSharedAsync(PingCodeApiService api)
     {
+        while (true)
+        {
+            WorkItemDetailsWindow instance;
+            lock (SharedSync)
+            {
+                if (sharedInstance == null)
+                {
+                    sharedInstance = new WorkItemDetailsWindow(new WorkItemDetails(), api)
+                    {
+                        forReuse = true,
+                        WindowStartupLocation = WindowStartupLocation.Manual,
+                        ShowActivated = false,
+                        ShowInTaskbar = false,
+                    };
+                    sharedInstance.Left = -32000;
+                    sharedInstance.Top = -32000;
+                    sharedInstance.Show();
+                    // 关键：预热的共享窗先于主窗口创建，会被 WPF 自动认作 Application.MainWindow，
+                    // 导致 ShutdownMode=OnMainWindowClose 永不触发（关闭主界面进程残留）。
+                    // 归还身份，让随后的启动主窗口重新认领 MainWindow。
+                    if (System.Windows.Application.Current?.MainWindow == sharedInstance)
+                    {
+                        System.Windows.Application.Current.MainWindow = null;
+                    }
+
+                    _ = sharedInstance.HideWhenPrewarmAsync();
+                }
+
+                instance = sharedInstance;
+            }
+
+            await instance.webViewReadyTcs.Task;
+            lock (SharedSync)
+            {
+                if (ReferenceEquals(sharedInstance, instance))
+                {
+                    return instance;
+                }
+            }
+
+            LoggingService.LogWarning("[详情桥接] 共享窗在等待期间被销毁，重建新实例");
+        }
+    }
+
+    /// <summary>
+    /// 销毁共享单例（浏览器进程死亡等不可恢复故障）：释放等待者、还原宿主、真实关闭窗口；
+    /// 随后立即在屏幕外重建新单例并完成 WebView 初始化——恢复成本由后台承担，
+    /// 用户下次点击时新窗已就绪（秒开），不承担任何重建等待。
+    /// </summary>
+    /// <param name="reason">销毁原因（写入日志）。</param>
+    private static void DestroySharedInstance(string reason)
+    {
+        WorkItemDetailsWindow victim;
         lock (SharedSync)
         {
             if (sharedInstance == null)
             {
-                sharedInstance = new WorkItemDetailsWindow(new WorkItemDetails(), api)
-                {
-                    forReuse = true,
-                    WindowStartupLocation = WindowStartupLocation.Manual,
-                    ShowActivated = false,
-                    ShowInTaskbar = false,
-                };
-                sharedInstance.Left = -32000;
-                sharedInstance.Top = -32000;
-                sharedInstance.Show();
-                // 关键：预热的共享窗先于主窗口创建，会被 WPF 自动认作 Application.MainWindow，
-                // 导致 ShutdownMode=OnMainWindowClose 永不触发（关闭主界面进程残留）。
-                // 归还身份，让随后的启动主窗口重新认领 MainWindow。
-                if (System.Windows.Application.Current?.MainWindow == sharedInstance)
-                {
-                    System.Windows.Application.Current.MainWindow = null;
-                }
-
-                _ = sharedInstance.HideWhenPrewarmAsync();
+                return;
             }
+
+            victim = sharedInstance;
+            sharedInstance = null;
         }
 
-        await sharedInstance.webViewReadyTcs.Task;
-        return sharedInstance;
+        LoggingService.LogWarning($"[详情桥接] 共享详情窗已销毁，后台立即重建：{reason}");
+        victim.abandoned = true;
+        victim.webViewReadyTcs.TrySetResult(true);
+        try
+        {
+            victim.Dispatcher.BeginInvoke(new Action(() =>
+            {
+                try
+                {
+                    victim.RestoreOwnerWindow();
+                    victim.Hide();
+                    victim.Close();
+                }
+                catch
+                {
+                }
+            }));
+        }
+        catch
+        {
+        }
+
+        // 原地重建：屏幕外预热全新实例（Ensure ~600ms 由后台承担），下次点击秒开
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await System.Windows.Application.Current?.Dispatcher.InvokeAsync(() => { });
+                await GetSharedAsync(victim.api);
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, "[详情桥接] 共享详情窗后台重建失败，将在下次打开时重试");
+            }
+        });
     }
 
     /// <summary>
@@ -155,12 +232,16 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
     /// <param name="fetcher">详情拉取委托（可携带预取缓存），为 null 时直接走 API。</param>
     public async Task ShowWorkItemAsync(string workItemId, WorkItemInfo summary, Func<string, Task<WorkItemDetails>> fetcher)
     {
-        if (string.IsNullOrWhiteSpace(workItemId))
+        if (string.IsNullOrWhiteSpace(workItemId) || abandoned)
         {
             return;
         }
 
         await webViewReadyTcs.Task;
+        if (abandoned)
+        {
+            return;
+        }
 
         var sequence = ++contentSequence;
         ResetForReuse();
@@ -168,34 +249,50 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         pendingWorkItemId = workItemId;
         fetchDetailsAsync = fetcher;
 
-        // 上下文遮罩先行 + 收起 WebView：WebView2 是 HWND 空域控件，WPF 遮罩无法覆盖其上，
-        // 必须先隐藏控件让空域洞消失，白遮罩（带目标编号/标题）才真正可见，旧内容零泄漏
-        ShowContextLoading(Details.Identifier, Details.Title);
-        DetailsWeb.Visibility = Visibility.Collapsed;
-        awaitFinalNavigation = false;
-
-        // 无条件手动居中：预热窗口可能仍处于 Visible 且停在屏幕外，显式计算目标矩形
-        CenterOverOwnerOrScreen();
-
-        if (Visibility != Visibility.Visible)
+        try
         {
-            // 手动模态：禁用宿主，等价于原 ShowDialog 的模态语义
-            if (Owner != null)
+            // 上下文遮罩先行 + 收起 WebView：WebView2 是 HWND 空域控件，WPF 遮罩无法覆盖其上，
+            // 必须先隐藏控件让空域洞消失，白遮罩（带目标编号/标题）才真正可见，旧内容零泄漏
+            ShowContextLoading(Details.Identifier, Details.Title);
+            DetailsWeb.Visibility = Visibility.Collapsed;
+            awaitFinalNavigation = false;
+
+            // 无条件手动居中：预热窗口可能仍处于 Visible 且停在屏幕外，显式计算目标矩形
+            CenterOverOwnerOrScreen();
+
+            if (Visibility != Visibility.Visible)
             {
-                Owner.IsEnabled = false;
+                // 手动模态：禁用宿主，等价于原 ShowDialog 的模态语义
+                if (Owner != null)
+                {
+                    Owner.IsEnabled = false;
+                }
+
+                Show();
             }
 
-            Show();
+            Activate();
+
+            // 遮罩真实上屏：等待渲染帧。缓存全命中时后续内容链路可能在同一 UI 帧内完成并撤除遮罩，
+            // 遮罩从未被渲染（表现为"旧内容直接被替换"）。此处强制让出一帧给渲染器。
+            await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Render);
+            await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Background);
+
+            await InitializeContentAsync(sequence);
         }
-
-        Activate();
-
-        // 遮罩真实上屏：等待渲染帧。缓存全命中时后续内容链路可能在同一 UI 帧内完成并撤除遮罩，
-        // 遮罩从未被渲染（表现为"旧内容直接被替换"）。此处强制让出一帧给渲染器。
-        await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Render);
-        await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Background);
-
-        await InitializeContentAsync(sequence);
+        catch (Exception ex)
+        {
+            // 模态还原多路径之一：异常路径必须还原宿主，否则宿主永久灰显（实测残留禁用态）
+            LoggingService.LogError(ex, "[详情桥接] 打开工作项异常，已还原宿主窗口");
+            RestoreOwnerWindow();
+            try
+            {
+                Hide();
+            }
+            catch
+            {
+            }
+        }
     }
 
     /// <summary>
@@ -359,11 +456,14 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         // Loaded 只做一次性 WebView 初始化；内容由 ShowWorkItemAsync 驱动。
         Loaded += async (s, e) =>
         {
-            if (webViewInitSucceeded)
+            // 一次性初始化互斥：Loaded 在初始化完成的数秒窗口内可能再次触发（实测 8 秒期间双触发，
+            // 并发 Ensure 同一控件产出半死浏览器进程），入口即置标志守住重入
+            if (webViewInitStarted || webViewInitSucceeded)
             {
                 return;
             }
 
+            webViewInitStarted = true;
             var totalWatch = System.Diagnostics.Stopwatch.StartNew();
             try
             {
@@ -498,7 +598,7 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
     /// <param name="e">关闭事件参数。</param>
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
-        if (forReuse && !Dispatcher.HasShutdownStarted)
+        if (forReuse && !abandoned && !Dispatcher.HasShutdownStarted)
         {
             e.Cancel = true;
             Hide();
@@ -506,6 +606,7 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
             return;
         }
 
+        RestoreOwnerWindow();
         base.OnClosing(e);
     }
 
@@ -1089,53 +1190,10 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
 
     private static string MapSeverityText(string raw)
     {
-        var s = (raw ?? "").Trim().ToLowerInvariant();
-        if (string.IsNullOrEmpty(s))
-        {
-            return "-";
-        }
-
-        if (s == "5cb7e6e2fda1ce4ca0020004")
-        {
-            return "致命";
-        }
-
-        if (s == "5cb7e6e2fda1ce4ca0020003")
-        {
-            return "严重";
-        }
-
-        if (s == "5cb7e6e2fda1ce4ca0020002")
-        {
-            return "一般";
-        }
-
-        if (s == "5cb7e6e2fda1ce4ca0020001")
-        {
-            return "建议";
-        }
-
-        if (s.Contains("critical") || s.Contains("致命"))
-        {
-            return "致命";
-        }
-
-        if (s.Contains("严重") || s.Contains("major"))
-        {
-            return "严重";
-        }
-
-        if (s.Contains("一般") || s.Contains("normal"))
-        {
-            return "一般";
-        }
-
-        if (s.Contains("建议") || s.Contains("minor") || s.Contains("suggest"))
-        {
-            return "建议";
-        }
-
-        return "-";
+        // 共享映射（PingCodeApiService.MapSeverityText）：看板与详情统一翻译严重程度选项 ID；
+        // 详情侧空值显示"-"
+        var mapped = PackageManager.Services.PingCode.PingCodeApiService.MapSeverityText(raw);
+        return string.IsNullOrWhiteSpace(mapped) ? "-" : mapped;
     }
 
     private static string FormatDate(DateTime? dt)
@@ -1212,6 +1270,24 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
 
     private void RegisterCoreEvents(CoreWebView2 core)
     {
+        // 浏览器进程监护：进程退出后 WebView 控件成僵尸（调用不抛异常、不返回、事件静默），
+        // 任何后续使用都会同步阻塞 UI 线程（实测冻结 10 分钟）。死亡即销毁单例，下次打开全新创建。
+        core.ProcessFailed += (sender, args) =>
+        {
+            try
+            {
+                var kind = args.ProcessFailedKind.ToString();
+                LoggingService.LogWarning($"[详情桥接] WebView 进程故障：{kind}");
+                if (args.ProcessFailedKind == CoreWebView2ProcessFailedKind.BrowserProcessExited)
+                {
+                    DestroySharedInstance($"浏览器进程退出（{kind}）");
+                }
+            }
+            catch
+            {
+            }
+        };
+
         core.WebMessageReceived += async (sender, args) =>
         {
             try

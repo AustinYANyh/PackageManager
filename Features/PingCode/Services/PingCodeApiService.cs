@@ -605,6 +605,56 @@ public partial class PingCodeApiService
     /// </summary>
     /// <param name="dtos">单页工作项 DTO。</param>
     /// <param name="idNameMap">成员 ID 到名称的映射（跨页共享）。</param>
+    /// <summary>
+    /// 将 PingCode 严重程度选项 ID 或中文/英文文本映射为标准显示文本。
+    /// 选项 ID 为 PingCode 内置（不同站点一致且基本不变），看板与详情共用。
+    /// </summary>
+    /// <param name="raw">原始值（选项 ID 或文本）。</param>
+    /// <returns>标准显示文本；无法识别返回原值。</returns>
+    internal static string MapSeverityText(string raw)
+    {
+        var s = (raw ?? "").Trim();
+        if (string.IsNullOrEmpty(s))
+        {
+            return s;
+        }
+
+        switch (s)
+        {
+            case "5cb7e6e2fda1ce4ca0020004":
+                return "致命";
+            case "5cb7e6e2fda1ce4ca0020003":
+                return "严重";
+            case "5cb7e6e2fda1ce4ca0020002":
+                return "一般";
+            case "5cb7e6e2fda1ce4ca0020001":
+                return "建议";
+        }
+
+        var lower = s.ToLowerInvariant();
+        if (lower.Contains("critical") || s.Contains("致命"))
+        {
+            return "致命";
+        }
+
+        if (s.Contains("严重") || lower.Contains("major"))
+        {
+            return "严重";
+        }
+
+        if (s.Contains("一般") || lower.Contains("normal"))
+        {
+            return "一般";
+        }
+
+        if (s.Contains("建议") || lower.Contains("minor") || lower.Contains("suggest"))
+        {
+            return "建议";
+        }
+
+        return s;
+    }
+
     /// <returns>该页的工作项信息列表。</returns>
     private static List<WorkItemInfo> MapWorkItemDtos(List<WorkItemDto> dtos, Dictionary<string, string> idNameMap)
     {
@@ -628,8 +678,7 @@ public partial class PingCodeApiService
             if (d.Properties != null)
             {
                 if (d.Properties.TryGetValue("severity", out sv) && (sv != null))
-                {
-                    severity = sv.ToString();
+                {                    severity = sv.ToString();
                 }
                 else if (d.Properties.TryGetValue("严重程度", out sv) && (sv != null))
                 {
@@ -640,6 +689,9 @@ public partial class PingCodeApiService
                     severity = sv.ToString();
                 }
             }
+
+            // PingCode 将严重程度做成了选项 ID（开放 API 返回原始 ID），此处统一翻译为标准文本
+            severity = MapSeverityText(severity);
 
             var endAt = FromUnixSeconds(d.EndAt);
             var startAt = FromUnixSeconds(d.StartAt);

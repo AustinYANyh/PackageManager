@@ -5,6 +5,7 @@ using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
@@ -35,13 +36,32 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
 
     private List<WorkItemInfo> allItems = new();
     private bool refreshing;
-    private bool handlingMove;
     private DateTime fastRefreshUntil = DateTime.MinValue;
     private string lastItemsSignature;
     private Entity selectedMember;
     private string selectedParticipant;
     private CoreWebView2 core;
     private bool pageReady;
+
+    /// <summary>待写状态意图（卡片 id → 最新目标列）。连拖同卡覆盖合并（A→B→C 合并为 A→C），
+    /// 拖回当前所在列则净归零跳过写入；支持不限量连续拖拽。</summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> pendingMoves =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>写 API 并发闸（3 路约 3 张/秒排空，高于人工连拖速率）。</summary>
+    private readonly SemaphoreSlim writeGate = new SemaphoreSlim(3);
+
+    /// <summary>流转解析串行闸：planCache/flowsCache 非线程安全，解析阶段（缓存命中≈0ms）串行。</summary>
+    private readonly SemaphoreSlim resolveGate = new SemaphoreSlim(1);
+
+    /// <summary>意图排空流水线运行标志（单泵）。</summary>
+    private int drainRunning;
+
+    /// <summary>停手确认刷新防抖（写全部落库后 500ms 拉一次服务端真相）。</summary>
+    private readonly DispatcherTimer confirmRefreshTimer;
+
+    /// <summary>关窗排空完成标志（防 OnClosing 循环）。</summary>
+    private bool closeFlushDone;
 
     /// <summary>
     /// 初始化 <see cref="WorkItemKanbanWebViewWindow"/> 并准备模板与刷新调度。
@@ -60,7 +80,17 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
         Loaded += async (s, e) => await InitializeAsync();
         refreshTimer = new DispatcherTimer { Interval = baseRefreshInterval };
         refreshTimer.Tick += async (s, e) => await RefreshWorkItemsAsync();
-        Closed += (s, e) => refreshTimer.Stop();
+        confirmRefreshTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(500) };
+        confirmRefreshTimer.Tick += async (s, e) =>
+        {
+            confirmRefreshTimer.Stop();
+            await RefreshWorkItemsAsync();
+        };
+        Closed += (s, e) =>
+        {
+            refreshTimer.Stop();
+            confirmRefreshTimer.Stop();
+        };
     }
 
     /// <inheritdoc/>
@@ -427,21 +457,28 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
 
         var order = new[] { "未开始", "进行中", "可测试", "测试中", "已完成", "已关闭" };
         var filtered = ApplyCurrentFilter(allItems).ToList();
+        // pending 钉住：写入在途的卡片按意图目标列呈现（配合 JS 乐观移动），
+        // 处理期间任何来源的推送（含陈旧刷新）都不会把在途卡片弹回旧列
+        var effective = filtered
+            .Select(i => pendingMoves.TryGetValue(i.Id, out var pending)
+                ? (Item: i, Cat: pending.Trim())
+                : (Item: i, Cat: (i.StateCategory ?? "").Trim()))
+            .ToList();
         var titles = new List<string>(order);
         // 额外自定义类别排序后追加：推送载荷的列序列跨刷新稳定，杜绝页面侧误判结构变化
-        titles.AddRange(filtered.Select(i => (i.StateCategory ?? "").Trim())
-                                .Where(c => !string.IsNullOrEmpty(c) && !titles.Contains(c, StringComparer.OrdinalIgnoreCase))
-                                .Distinct(StringComparer.OrdinalIgnoreCase)
-                                .OrderBy(c => c, StringComparer.OrdinalIgnoreCase));
+        titles.AddRange(effective.Select(e => e.Cat)
+                                 .Where(c => !string.IsNullOrEmpty(c) && !titles.Contains(c, StringComparer.OrdinalIgnoreCase))
+                                 .Distinct(StringComparer.OrdinalIgnoreCase)
+                                 .OrderBy(c => c, StringComparer.OrdinalIgnoreCase));
 
-        var byCategory = filtered.ToLookup(i => (i.StateCategory ?? "").Trim(), StringComparer.OrdinalIgnoreCase);
+        var byCategory = effective.ToLookup(e => e.Cat, StringComparer.OrdinalIgnoreCase);
         var columns = titles.Select(title => new
         {
             title,
             // 列内顺序按编号确定性排序：与 API 返回顺序（updated_at）解耦，
             // 工作项被更新不再引发列内卡片洗牌（增量渲染零移动）
-            items = byCategory[title].OrderBy(i => i.Identifier ?? i.Id ?? "", WorkItemIdentifierComparer.Instance)
-                                    .Select(ToBoardItem)
+            items = byCategory[title].OrderBy(e => e.Item.Identifier ?? e.Item.Id ?? "", WorkItemIdentifierComparer.Instance)
+                                    .Select(e => ToBoardItem(e.Item, e.Cat))
                                     .ToList(),
         }).ToList();
 
@@ -463,7 +500,7 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
         }
     }
 
-    private static object ToBoardItem(WorkItemInfo i)
+    private static object ToBoardItem(WorkItemInfo i, string effectiveCategory = null)
     {
         return new
         {
@@ -471,7 +508,7 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
             identifier = i.Identifier,
             title = i.Title,
             status = i.Status,
-            category = (i.StateCategory ?? "").Trim(),
+            category = effectiveCategory ?? (i.StateCategory ?? "").Trim(),
             assignee = i.AssigneeName,
             avatar = i.AssigneeAvatar,
             priority = i.Priority,
@@ -544,58 +581,236 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
         }
     }
 
-    private async Task MoveItemAsync(string itemId, string targetCategory)
+    /// <summary>
+    /// 登记拖拽状态意图并启动写入流水线：JS 乐观移动已把卡片放好，此处只负责落库。
+    /// 同卡再拖覆盖意图（合并）；持续连拖不限量，队列长度 ≤ 不同卡片数。
+    /// </summary>
+    /// <param name="itemId">工作项标识。</param>
+    /// <param name="targetCategory">目标状态分类。</param>
+    private Task MoveItemAsync(string itemId, string targetCategory)
     {
-        if (handlingMove || string.IsNullOrWhiteSpace(itemId) || string.IsNullOrWhiteSpace(targetCategory))
+        if (string.IsNullOrWhiteSpace(itemId) || string.IsNullOrWhiteSpace(targetCategory))
+        {
+            return Task.CompletedTask;
+        }
+
+        pendingMoves[itemId] = targetCategory.Trim();
+        UpdateSaveBadge();
+        StartDrainPendingMoves();
+        return Task.CompletedTask;
+    }
+
+    /// <summary>启动意图排空流水线（单泵：已在运行则由泵自身循环消化新意图）。</summary>
+    private void StartDrainPendingMoves()
+    {
+        if (Interlocked.Exchange(ref drainRunning, 1) == 1)
         {
             return;
         }
 
-        var item = allItems.FirstOrDefault(i => string.Equals(i.Id, itemId, StringComparison.OrdinalIgnoreCase));
-        if (item == null || string.Equals(item.StateCategory ?? "", targetCategory, StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
+        _ = DrainPendingMovesAsync();
+    }
 
+    /// <summary>
+    /// 意图排空流水线：逐张解析（串行，缓存命中≈0）→ 写 API（并发 3）→ 成功后就地更新当前列表。
+    /// 失败仅回弹该卡（整板推送，增量渲染零闪烁）；全部落库后防抖触发一次确认刷新。
+    /// </summary>
+    private async Task DrainPendingMovesAsync()
+    {
         try
         {
-            handlingMove = true;
-            var targetStateId = await ResolveTargetStateIdAsync(item, targetCategory);
+            while (!pendingMoves.IsEmpty)
+            {
+                var entries = pendingMoves.ToArray();
+                var workers = entries.Select(entry => ProcessPendingMoveAsync(entry.Key)).ToList();
+                await Task.WhenAll(workers);
+                UpdateSaveBadge();
+            }
+
+            // 排空：防抖确认刷新（500ms 内再拖会重置）
+            confirmRefreshTimer.Stop();
+            confirmRefreshTimer.Start();
+        }
+        catch (Exception ex)
+        {
+            LoggingService.LogError(ex, "[看板拖拽] 意图流水线异常");
+        }
+        finally
+        {
+            UpdateSaveBadge();
+            Interlocked.Exchange(ref drainRunning, 0);
+            if (!pendingMoves.IsEmpty)
+            {
+                // 竞态兜底：复位瞬间又有新意图到达
+                StartDrainPendingMoves();
+            }
+        }
+    }
+
+    /// <summary>
+    /// 处理单条意图：净零跳过、解析目标状态、写 API、成功后更新当前 allItems 中的项（按 id 重查，防游离）。
+    /// </summary>
+    /// <param name="itemId">工作项标识。</param>
+    private async Task ProcessPendingMoveAsync(string itemId)
+    {
+        try
+        {
+            if (!pendingMoves.TryGetValue(itemId, out var target))
+            {
+                return;
+            }
+
+            var item = allItems.FirstOrDefault(i => string.Equals(i.Id, itemId, StringComparison.OrdinalIgnoreCase));
+            if (item == null)
+            {
+                RemovePendingIfUnchanged(itemId, target);
+                return;
+            }
+
+            // 净零：目标即当前所在列（含连拖回原位），无需写入
+            if (string.Equals(item.StateCategory ?? "", target, StringComparison.OrdinalIgnoreCase))
+            {
+                RemovePendingIfUnchanged(itemId, target);
+                return;
+            }
+
+            var resolveWatch = System.Diagnostics.Stopwatch.StartNew();
+            (string, string)? targetStateId = null;
+            await resolveGate.WaitAsync();
+            try
+            {
+                targetStateId = await ResolveTargetStateIdAsync(item, target);
+            }
+            finally
+            {
+                resolveGate.Release();
+            }
+
+            resolveWatch.Stop();
+
             var ok = false;
             if ((targetStateId != null) && !string.IsNullOrWhiteSpace(targetStateId.Value.Item1))
             {
-                ok = await api.UpdateWorkItemStateByIdAsync(item.Id, targetStateId.Value.Item1);
+                await writeGate.WaitAsync();
+                try
+                {
+                    ok = await api.UpdateWorkItemStateByIdAsync(item.Id, targetStateId.Value.Item1);
+                }
+                finally
+                {
+                    writeGate.Release();
+                }
             }
 
             if (ok)
             {
-                item.StateCategory = targetCategory;
-                item.Status = targetStateId.Value.Item2;
-                if (!string.IsNullOrWhiteSpace(targetStateId.Value.Item1))
+                // 按 id 在当前 allItems 重查（刷新可能已整体换列表），避免改到游离对象
+                var current = allItems.FirstOrDefault(i => string.Equals(i.Id, itemId, StringComparison.OrdinalIgnoreCase));
+                if (current != null)
                 {
-                    item.StateId = targetStateId.Value.Item1;
+                    current.StateCategory = target;
+                    current.Status = targetStateId.Value.Item2;
+                    if (!string.IsNullOrWhiteSpace(targetStateId.Value.Item1))
+                    {
+                        current.StateId = targetStateId.Value.Item1;
+                    }
                 }
 
-                lastItemsSignature = null; // 强制下次刷新重建
-                fastRefreshUntil = DateTime.UtcNow.AddSeconds(30);
-                refreshTimer.Interval = fastRefreshInterval;
-                await PushBoardAsync();
+                // 仅当意图未被更新覆盖时移除（写入期间用户可能再拖该卡，新意图留给下一轮处理）
+                RemovePendingIfUnchanged(itemId, target);
+                LoggingService.LogInfo($"[看板拖拽] 状态写入成功 {itemId} → {target}（解析 {resolveWatch.ElapsedMilliseconds}ms）");
             }
             else
             {
-                MessageBox.Show("更新状态失败：未找到符合状态方案与流转规则的目标状态", "错误", MessageBoxButton.OK, MessageBoxImage.Error);
-                await PushBoardAsync();
+                // 写失败/目标不可达：清意图并整板推送，把乐观移动弹回服务端真相
+                RemovePendingIfUnchanged(itemId, target);
+                LoggingService.LogWarning($"[看板拖拽] 状态写入失败 {itemId} → {target}（解析 {resolveWatch.ElapsedMilliseconds}ms）");
+                _ = PushBoardAsync();
+                _ = Dispatcher.BeginInvoke(new Action(() =>
+                    MessageBox.Show($"工作项 {item.Identifier} 移动到「{target}」失败：未找到符合状态方案与流转规则的目标状态，已还原。", "迭代看板", MessageBoxButton.OK, MessageBoxImage.Warning)));
             }
         }
         catch (Exception ex)
         {
-            MessageBox.Show("更新状态异常：" + ex.Message, "错误", MessageBoxButton.OK, MessageBoxImage.Error);
-            await PushBoardAsync();
+            LoggingService.LogError(ex, $"[看板拖拽] 意图处理异常 {itemId}");
+            _ = PushBoardAsync();
         }
-        finally
+    }
+
+    /// <summary>
+    /// 按值移除意图：仅当当前登记的目标仍是本次处理的目标时才移除，
+    /// 避免误删写入期间用户再拖产生的新意图。
+    /// </summary>
+    /// <param name="itemId">工作项标识。</param>
+    /// <param name="target">本次处理的目标列。</param>
+    private void RemovePendingIfUnchanged(string itemId, string target)
+    {
+        if (pendingMoves.TryGetValue(itemId, out var latest) &&
+            string.Equals(latest, target, StringComparison.OrdinalIgnoreCase))
         {
-            handlingMove = false;
+            pendingMoves.TryRemove(itemId, out _);
         }
+    }
+
+    /// <summary>标题栏保存徽标：pending 数量实时可见。</summary>
+    private void UpdateSaveBadge()
+    {
+        var count = pendingMoves.Count;
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            Title = count > 0 ? $"迭代看板 · 正在保存 {count} 项" : "迭代看板";
+        }));
+    }
+
+    /// <summary>
+    /// 关窗排空：有未落库意图时阻塞等待（最多 10 秒），超时提示强制关闭或取消；绝不静默丢弃用户拖拽。
+    /// </summary>
+    /// <param name="e">关闭事件参数。</param>
+    protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+    {
+        if (!closeFlushDone && !pendingMoves.IsEmpty)
+        {
+            e.Cancel = true;
+            _ = FlushPendingMovesAndCloseAsync();
+            return;
+        }
+
+        base.OnClosing(e);
+    }
+
+    /// <summary>等待意图排空（10 秒上限）后关闭窗口；超时征询用户。</summary>
+    private async Task FlushPendingMovesAndCloseAsync()
+    {
+        var flushed = false;
+        try
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (!pendingMoves.IsEmpty && DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(200);
+            }
+
+            flushed = pendingMoves.IsEmpty;
+        }
+        catch
+        {
+        }
+
+        if (!flushed)
+        {
+            var choice = MessageBox.Show(
+                $"仍有 {pendingMoves.Count} 项状态变更未保存完成，强制关闭将丢弃这些变更。仍要关闭吗？",
+                "迭代看板",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+            if (choice != MessageBoxResult.Yes)
+            {
+                return; // 用户取消关闭，流水线继续
+            }
+        }
+
+        closeFlushDone = true;
+        _ = Dispatcher.BeginInvoke(new Action(Close));
     }
 
     private async Task<(string, string)?> ResolveTargetStateIdAsync(WorkItemInfo item, string targetCategory)
