@@ -17,7 +17,9 @@
     grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 0 14px;
     padding: 0 18px 28px;
-    align-items: start;
+    /* 短列拉伸与最长列等高：列背景/边框延伸到整页深度，空白区也是合法拖放目标，
+       滚动到长列深处时任何一列的横向条带始终完整可投 */
+    align-items: stretch;
     min-height: 100%;
   }
   .col {
@@ -117,12 +119,37 @@
 
   #loading { padding: 80px 0; text-align: center; color: #64748B; font-size: 14px; }
   #empty { padding: 80px 0; text-align: center; color: #94A3B8; font-size: 13px; display: none; }
+
+  /* 拖拽目标快捷条（暂不启用：短列已拉伸等高，任意视口深度均可直接拖到对应列；
+     需要时取消注释并恢复 dragstart/dragend/render 三处调用即可）
+  #dropbar {
+    position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%) translateY(80px);
+    display: flex; gap: 10px; padding: 10px 12px;
+    background: rgba(15, 23, 42, .92); border-radius: 14px;
+    box-shadow: 0 12px 32px rgba(15, 23, 42, .35);
+    opacity: 0; pointer-events: none; z-index: 99;
+    transition: transform .18s ease, opacity .18s ease;
+  }
+  #dropbar.show { transform: translateX(-50%) translateY(0); opacity: 1; pointer-events: auto; }
+  #dropbar .drop-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 9px 16px; border-radius: 10px; cursor: default;
+    background: rgba(255, 255, 255, .08); border: 1px solid rgba(255, 255, 255, .18);
+    color: #E2E8F0; font-size: 13px; font-weight: 600; white-space: nowrap;
+  }
+  #dropbar .drop-pill .d-dot { width: 8px; height: 8px; border-radius: 50%; }
+  #dropbar .drop-pill.drag-over { background: rgba(37, 99, 235, .35); border-color: #60A5FA; color: #fff; }
+  */
 </style>
 </head>
 <body>
   <div id="loading">正在加载看板…</div>
   <div id="empty">当前筛选下没有工作项</div>
   <div id="board"></div>
+
+<!-- 拖拽目标快捷条（暂不启用，需要时取消注释并恢复 JS 三处调用）
+<div id="dropbar"></div>
+-->
 
 <script>
 (function () {
@@ -214,10 +241,12 @@
       e.dataTransfer.setData('text/plain', item.id);
       e.dataTransfer.effectAllowed = 'move';
       card.classList.add('dragging');
+      // showDropbar(); // 快捷条暂不启用（短列等高拉伸后任意位置可直接拖放）
     });
     card.addEventListener('dragend', function () {
       card.classList.remove('dragging');
       dragInProgress = false;
+      // hideDropbar(); // 快捷条暂不启用
       setTimeout(function () { suppressClick = false; }, 50);
       // 拖拽期间挂起的刷新在松手后应用，避免渲染移动节点打断进行中的拖拽
       if (pendingRenderPayload) {
@@ -450,6 +479,7 @@
       post({ type: 'renderMode', mode: 'full', reason: state.ready ? 'columns-changed' : 'first' });
       fullRender(cols);
       state.ready = true;
+      // rebuildDropbar(); // 快捷条暂不启用
       return;
     }
 
@@ -463,6 +493,50 @@
       window.chrome.webview.postMessage(msg);
     }
   }
+
+  /* ===== 拖拽目标快捷条（暂不启用：短列已拉伸等高，任意视口深度均可直接拖到对应列；
+     恢复步骤：取消本段注释 + 恢复 HTML 中的 <div id="dropbar"> + CSS 样式段 +
+     dragstart/dragend/render 三处调用） =====
+  var dropbarEl = document.getElementById('dropbar');
+
+  // 按当前列集合重建胶囊（render 后调用保持同步）
+  function rebuildDropbar() {
+    dropbarEl.innerHTML = '';
+    state.columns.forEach(function (col) {
+      var pill = el('span', 'drop-pill');
+      pill.dataset.category = col.title;
+      var dot = el('span', 'd-dot dot-' + classify(col.title));
+      pill.appendChild(dot);
+      pill.appendChild(document.createTextNode(col.title));
+      pill.addEventListener('dragover', function (e) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        pill.classList.add('drag-over');
+      });
+      pill.addEventListener('dragleave', function () { pill.classList.remove('drag-over'); });
+      pill.addEventListener('drop', function (e) {
+        e.preventDefault();
+        pill.classList.remove('drag-over');
+        var id = e.dataTransfer.getData('text/plain');
+        if (!id) return;
+        var entry = state.byId[id];
+        if (!entry || entry.category === col.title) return;
+        entry.category = col.title;
+        post({ type: 'moveItem', id: id, to: col.title });
+      });
+      dropbarEl.appendChild(pill);
+    });
+  }
+
+  function showDropbar() {
+    if (dropbarEl.childElementCount === 0) rebuildDropbar();
+    dropbarEl.classList.add('show');
+  }
+
+  function hideDropbar() {
+    dropbarEl.classList.remove('show');
+  }
+  */
 
   window.applyBoard = function (data) {
     // 兼容两种入参：宿主 ExecuteScriptAsync 传入的对象字面量，或字符串化 JSON
