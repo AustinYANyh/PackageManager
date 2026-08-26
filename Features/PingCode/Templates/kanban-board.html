@@ -159,6 +159,8 @@
   var prefetched = {};
   var dragInProgress = false;
   var pendingRenderPayload = null;
+  // 拖拽预校验：dragstart 时记录被拖卡片的可达列集合（空数组/未加载 = 不限制）
+  var dragReachable = null;
 
   var CATEGORY_ORDER = ['未开始', '进行中', '可测试', '测试中', '已完成', '已关闭'];
   var SEVERITY_COLORS = { '致命': '#DC2626', '严重': '#DC2626', '主要': '#F59E0B', '一般': '#F59E0B', '次要': '#10B981', '轻微': '#10B981', '建议': '#10B981' };
@@ -238,6 +240,7 @@
     card.addEventListener('dragstart', function (e) {
       suppressClick = true;
       dragInProgress = true;
+      dragReachable = (item.reachable || []).slice();
       e.dataTransfer.setData('text/plain', item.id);
       e.dataTransfer.effectAllowed = 'move';
       card.classList.add('dragging');
@@ -246,6 +249,7 @@
     card.addEventListener('dragend', function () {
       card.classList.remove('dragging');
       dragInProgress = false;
+      dragReachable = null;
       // hideDropbar(); // 快捷条暂不启用
       setTimeout(function () { suppressClick = false; }, 50);
       // 拖拽期间挂起的刷新在松手后应用，避免渲染移动节点打断进行中的拖拽
@@ -304,6 +308,10 @@
     wrap.appendChild(body);
 
     wrap.addEventListener('dragover', function (e) {
+      // 拖拽预校验：目标列不在该卡可达集合（非空时）→ 不接受投放（光标禁止、松手原地不动）
+      if (dragReachable && dragReachable.length > 0 && dragReachable.indexOf(col.title) < 0) {
+        return;
+      }
       e.preventDefault();
       e.dataTransfer.dropEffect = 'move';
       wrap.classList.add('drag-over');
@@ -312,6 +320,10 @@
     wrap.addEventListener('drop', function (e) {
       e.preventDefault();
       wrap.classList.remove('drag-over');
+      // 与 dragover 同步的可达性守卫（防御 drop 绕过）
+      if (dragReachable && dragReachable.length > 0 && dragReachable.indexOf(col.title) < 0) {
+        return;
+      }
       var id = e.dataTransfer.getData('text/plain');
       if (!id) return;
       var entry = state.byId[id];
@@ -337,7 +349,7 @@
   function itemSig(it) {
     return [it.id, it.identifier, it.title, it.status, it.assignee, avatarKey(it.avatar),
             it.priority, it.severity, it.isDefect, it.points, it.startText, it.endText,
-            it.commentCount, (it.tags || []).join(',')].join('~');
+            it.commentCount, (it.tags || []).join(','), (it.reachable || []).join(',')].join('~');
   }
 
   function columnTitlesSig(cols) {

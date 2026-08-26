@@ -483,13 +483,51 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
                                  .OrderBy(c => c, StringComparer.OrdinalIgnoreCase));
 
         var byCategory = effective.ToLookup(e => e.Cat, StringComparer.OrdinalIgnoreCase);
+        // 可达列集合：按 (type, StateId) 去重批量取（缓存命中零请求；未就绪返回 null 不限制拖拽）
+        var reachableByItem = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        var reachableKeys = new Dictionary<string, Task<HashSet<string>>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var e in effective)
+        {
+            var key = $"{e.Item.Type}|{e.Item.StateId}";
+            if (!reachableKeys.ContainsKey(key))
+            {
+                reachableKeys[key] = GetReachableCategoriesAsync(e.Item);
+            }
+        }
+
+        var reachableSets = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        foreach (var kv in reachableKeys)
+        {
+            string[] arr = null;
+            try
+            {
+                var set = await kv.Value;
+                if (set != null)
+                {
+                    arr = set.OrderBy(c => c, StringComparer.OrdinalIgnoreCase).ToArray();
+                }
+            }
+            catch
+            {
+                arr = null;
+            }
+
+            reachableSets[kv.Key] = arr;
+        }
+
+        foreach (var e in effective)
+        {
+            var key = $"{e.Item.Type}|{e.Item.StateId}";
+            reachableByItem[e.Item.Id] = reachableSets.TryGetValue(key, out var arr) ? arr : null;
+        }
+
         var columns = titles.Select(title => new
         {
             title,
             // 列内顺序按编号确定性排序：与 API 返回顺序（updated_at）解耦，
             // 工作项被更新不再引发列内卡片洗牌（增量渲染零移动）
             items = byCategory[title].OrderBy(e => e.Item.Identifier ?? e.Item.Id ?? "", WorkItemIdentifierComparer.Instance)
-                                    .Select(e => ToBoardItem(e.Item, e.Cat))
+                                    .Select(e => ToBoardItem(e.Item, e.Cat, reachableByItem.TryGetValue(e.Item.Id, out var r) ? r : null))
                                     .ToList(),
         }).ToList();
 
@@ -511,7 +549,7 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
         }
     }
 
-    private static object ToBoardItem(WorkItemInfo i, string effectiveCategory = null)
+    private static object ToBoardItem(WorkItemInfo i, string effectiveCategory = null, IReadOnlyCollection<string> reachable = null)
     {
         return new
         {
@@ -530,6 +568,8 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
             endText = i.EndAt?.ToString("yy-MM-dd"),
             commentCount = i.CommentCount,
             tags = i.Tags ?? new List<string>(),
+            // 拖拽预校验：可达列集合（null/空 = 未知不限制）
+            reachable = reachable ?? Array.Empty<string>(),
         };
     }
 
@@ -908,6 +948,90 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
         }
 
         return null;
+    }
+
+    /// <summary>可达列缓存（type|stateId → 可达分类集合）：状态机配置级数据，会话内不变。</summary>
+    private readonly Dictionary<string, HashSet<string>> reachableCache = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 计算指定工作项从当前状态可达的列集合（拖拽预校验用）。
+    /// 复用 planCache/flowsCache 同源数据；解析失败返回 null（未知即不限制，宁可惜失不误杀）。
+    /// </summary>
+    /// <param name="item">工作项摘要。</param>
+    /// <returns>可达列集合；未知返回 null。</returns>
+    private async Task<HashSet<string>> GetReachableCategoriesAsync(WorkItemInfo item)
+    {
+        if ((item == null) || string.IsNullOrWhiteSpace(item.Type) || string.IsNullOrWhiteSpace(item.StateId))
+        {
+            return null;
+        }
+
+        var type = item.Type.Trim();
+        var cacheKey = $"{type}|{item.StateId}";
+        lock (reachableCache)
+        {
+            if (reachableCache.TryGetValue(cacheKey, out var cached))
+            {
+                return cached;
+            }
+        }
+
+        // 复用解析链路取流转（含缓存填充）；异常/未知返回 null
+        try
+        {
+            var projectId = (item.ProjectId ?? "").Trim();
+            var planKey = $"{projectId}|{type}";
+            if (!planCache.TryGetValue(planKey, out var plan))
+            {
+                var plans = await api.GetWorkItemStatePlansAsync(projectId);
+                plan = plans.FirstOrDefault(p => string.Equals((p?.WorkItemType ?? "").Trim(), type, StringComparison.OrdinalIgnoreCase));
+                if ((plan == null) || string.IsNullOrWhiteSpace(plan.Id))
+                {
+                    return null;
+                }
+
+                planCache[planKey] = plan;
+            }
+
+            var flowsKey = $"{plan.Id}|{item.StateId}";
+            if (!flowsCache.TryGetValue(flowsKey, out var flows))
+            {
+                flows = await api.GetWorkItemStateFlowsAsync(plan.Id, item.StateId);
+                flowsCache[flowsKey] = flows ?? new List<StateDto>();
+            }
+
+            if (flows == null)
+            {
+                return null;
+            }
+
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var f in flows)
+            {
+                var name = f?.Name ?? "";
+                if (name.Contains("挂起") || name.Contains("受阻"))
+                {
+                    continue;
+                }
+
+                var cat = MapStateNameToCategory(name);
+                if (!string.IsNullOrWhiteSpace(cat))
+                {
+                    set.Add(cat);
+                }
+            }
+
+            lock (reachableCache)
+            {
+                reachableCache[cacheKey] = set;
+            }
+
+            return set;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static string MapStateNameToCategory(string name)
