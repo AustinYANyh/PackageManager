@@ -90,6 +90,17 @@
     .edit-area{min-height:180px;border:1px solid #CBD5E1;border-radius:6px;padding:8px;background:#fff;overflow:auto}
     .toolbar{display:flex;align-items:center;justify-content:space-between;margin-top:8px}
     .toolbar .tips{color:#64748B;font-size:12px}
+.desc-edit-btn{margin-left:auto;font-size:12px;font-weight:600;color:#2563EB;cursor:pointer;user-select:none;padding:2px 8px;border-radius:6px}
+.desc-edit-btn:hover{background:#EFF6FF}
+.desc-edit-wrap{margin-top:4px}
+.desc-tool-btn{border:1px solid #CBD5E1;border-radius:8px;background:#fff;color:#1E293B;font-size:12.5px;font-weight:600;padding:5px 14px;cursor:pointer}
+.desc-tool-btn:hover{border-color:#94A3B8;background:#F8FAFC}
+.desc-tool-primary{background:#2563EB;border-color:#2563EB;color:#fff}
+.desc-tool-primary:hover{background:#1D4ED8;border-color:#1D4ED8}
+#titleText{cursor:text;border-radius:6px;padding:1px 4px}
+#titleText:hover{background:#F1F5F9}
+.title-input{font-size:18px;font-weight:700;border:1px solid #94A3B8;border-radius:6px;padding:2px 8px;outline:#2563EB solid 1px;min-width:360px}
+#descEdit img{max-width:100%;border-radius:8px;border:1px solid #E2E8F0}
     .actions{display:flex;gap:8px;margin-top:8px}
     .actions button{padding:6px 12px;border:1px solid #CBD5E1;border-radius:6px;background:#fff;cursor:pointer;color:#1E293B}
     .actions button:hover{background:#F1F5F9}
@@ -123,9 +134,9 @@
           <div class="ant-drawer-wrapper-body">
             <div class="ant-drawer-body" style="padding:0;height:100%;overflow:auto">
               <div class="crumb">{{ParentCrumbHtml}}</div>
-              <div class="header"><span class="id">{{Identifier}}</span><span class="title">{{Title}}</span><span class="ai-group">{{AiButtonsHtml}}</span></div>
+              <div class="header"><span class="id">{{Identifier}}</span><span class="title" id="titleText" title="双击编辑标题">{{Title}}</span><span class="ai-group">{{AiButtonsHtml}}</span></div>
               <div class="quick">
-                <div class="item"><div class="label">负责人</div><div class="value">{{AssigneeName}}</div></div>
+                <div class="item"><div class="label">负责人</div><div class="value"><select id="assigneeSelect" class="state-select assignee-select"><option selected value="">{{AssigneeName}}</option></select></div></div>
                     <div class="item"><div class="label">状态</div><div class="value"><select id="stateSelect" class="state-select"><option selected>{{StateName}}</option></select></div></div>
                 <div class="item"><div class="label">开始时间</div><div class="value">{{StartAt}}</div></div>
                 <div class="item"><div class="label">结束时间</div><div class="value">{{EndAt}}</div></div>
@@ -154,8 +165,22 @@
                   <div>{{TagsHtml}}</div>
                 </div>
                 <div class="panel-card">
-                  <div class="section-title"><span class="sec-dot" style="background:#10B981"></span>描述</div>
-                  <div class="desc-card">{{DescriptionHtml}}</div>
+                  <div class="section-title"><span class="sec-dot" style="background:#10B981"></span>描述<span class="desc-edit-btn" id="descEditBtn" title="编辑描述">✎ 编辑</span></div>
+                  <div class="desc-card" id="descView">{{DescriptionHtml}}</div>
+                  <div class="desc-edit-wrap" id="descEditWrap" style="display:none">
+                    <div id="descEdit" class="edit-area" contenteditable="true"></div>
+                    <div class="toolbar">
+                      <span style="display:flex;align-items:center;gap:10px">
+                        <button type="button" class="desc-tool-btn" id="descImgBtn">插入图片</button>
+                        <span class="tips">支持粘贴截图 / 拖入 GIF（动图请拖文件或选文件）</span>
+                      </span>
+                      <span style="display:flex;align-items:center;gap:8px">
+                        <button type="button" id="descSaveBtn" class="desc-tool-btn desc-tool-primary">保存</button>
+                        <button type="button" id="descCancelBtn" class="desc-tool-btn">取消</button>
+                      </span>
+                    </div>
+                    <input type="file" id="descFileInput" accept="image/png,image/jpeg,image/gif,image/bmp,image/webp" multiple style="display:none"/>
+                  </div>
                 </div>
                 <div class="panel-card">
                   <div class="section-title"><span class="sec-dot" style="background:#8B5CF6"></span>示意图</div>
@@ -702,6 +727,203 @@
                   handled=true;
                 }
               }
+            }
+            if(handled){ e.preventDefault(); }
+          }catch(ex){}
+        });
+      }
+    }catch(e){}
+  })();
+  (function(){
+    // ===== 指派人下拉：选项由宿主随成员数据注入，change 即提交 =====
+    try{
+      var asel=document.getElementById('assigneeSelect');
+      if(asel){
+        asel.addEventListener('change',function(){
+          try{
+            var v=asel.value;
+            if(window.chrome&&window.chrome.webview){
+              window.chrome.webview.postMessage({type:'updateAssignee', id:'{{WorkItemId}}', assigneeId: v||''});
+            }
+          }catch(e){}
+        });
+      }
+    }catch(e){}
+    // ===== 标题双击就地编辑：Enter/失焦保存，Esc 取消 =====
+    try{
+      var titleEl=document.getElementById('titleText');
+      function submitTitle(input, restore){
+        try{
+          var nv=(input.value||'').trim();
+          var old=input.getAttribute('data-old')||'';
+          input.parentNode.replaceChild(titleEl, input);
+          if(!restore && nv && nv!==old){
+            titleEl.textContent=nv;
+            if(window.chrome&&window.chrome.webview){
+              window.chrome.webview.postMessage({type:'updateTitle', id:'{{WorkItemId}}', title: nv});
+            }
+          }else{
+            titleEl.textContent=old;
+          }
+        }catch(e){}
+      }
+      if(titleEl){
+        titleEl.addEventListener('dblclick',function(){
+          try{
+            if(document.getElementById('titleInput')){ return; }
+            var cur=titleEl.textContent||'';
+            var input=document.createElement('input');
+            input.id='titleInput';
+            input.className='title-input';
+            input.value=cur;
+            input.setAttribute('data-old',cur);
+            titleEl.parentNode.replaceChild(input,titleEl);
+            input.focus();
+            input.select();
+            var done=false;
+            input.addEventListener('keydown',function(e){
+              if(e.key==='Enter'){ done=true; submitTitle(input,false); }
+              else if(e.key==='Escape'){ done=true; submitTitle(input,true); }
+            });
+            input.addEventListener('blur',function(){ if(!done){ submitTitle(input,false); } });
+          }catch(e){}
+        });
+      }
+    }catch(e){}
+    // ===== 描述编辑：查看/编辑双态，粘贴/拖拽/选文件插图（原图直传保动图） =====
+    try{
+      var dBtn=document.getElementById('descEditBtn');
+      var dView=document.getElementById('descView');
+      var dWrap=document.getElementById('descEditWrap');
+      var dEdit=document.getElementById('descEdit');
+      var dSave=document.getElementById('descSaveBtn');
+      var dCancel=document.getElementById('descCancelBtn');
+      var dImgBtn=document.getElementById('descImgBtn');
+      var dFile=document.getElementById('descFileInput');
+      function enterEditMode(){
+        try{
+          if(!dView||!dWrap||!dEdit){ return; }
+          var html=dView.innerHTML||'';
+          if(html.trim()==='-'||html.trim()===''){ html=''; }
+          dEdit.innerHTML=html;
+          dView.style.display='none';
+          dWrap.style.display='block';
+          dBtn.textContent='✎ 编辑中…';
+        }catch(e){}
+      }
+      function exitEditMode(){
+        try{
+          dEdit.innerHTML='';
+          dView.style.display='block';
+          dWrap.style.display='none';
+          dBtn.textContent='✎ 编辑';
+          if(dFile){ dFile.value=''; }
+        }catch(e){}
+      }
+      function insertDescPlaceholder(dataUrl){
+        try{
+          var img=document.createElement('img');
+          img.src=dataUrl;
+          var lid='dlocal_'+Math.random().toString(36).substr(2,9);
+          img.setAttribute('data-local-id',lid);
+          img.setAttribute('alt','上传中…');
+          dEdit.focus();
+          var sel=window.getSelection();
+          if(sel&&sel.rangeCount>0){
+            var range=sel.getRangeAt(0);
+            range.collapse(false);
+            range.insertNode(img);
+          }else{
+            dEdit.appendChild(img);
+          }
+          return lid;
+        }catch(e){ return null; }
+      }
+      function uploadDescImage(dataUrl, contentType){
+        try{
+          if(!dataUrl){ return; }
+          var lid=insertDescPlaceholder(dataUrl);
+          if(!lid){ return; }
+          if(window.chrome&&window.chrome.webview){
+            window.chrome.webview.postMessage({type:'uploadDescImage', id:'{{WorkItemId}}', localId: lid, dataUrl: dataUrl, contentType: contentType||''});
+          }
+        }catch(e){}
+      }
+      function readImageFile(file){
+        try{
+          if(!file||!file.type||file.type.indexOf('image/')!==0){ return; }
+          var reader=new FileReader();
+          reader.onload=function(evt){
+            try{ uploadDescImage(evt.target.result, file.type); }catch(ex){}
+          };
+          reader.readAsDataURL(file);
+        }catch(e){}
+      }
+      // 宿主上传完成回填：占位 img → 服务端真实地址（src 带 token 供本地显示，data-raw-src 存净地址）
+      window.descImageUploaded=function(localId, rawUrl, displayUrl){
+        try{
+          var im=dEdit?dEdit.querySelector('img[data-local-id="'+localId+'"]'):null;
+          if(!im){ return; }
+          im.removeAttribute('data-local-id');
+          im.removeAttribute('alt');
+          im.setAttribute('data-raw-src', rawUrl||'');
+          im.setAttribute('src', displayUrl||rawUrl||'');
+        }catch(e){}
+      };
+      if(dBtn){ dBtn.addEventListener('click', enterEditMode); }
+      if(dCancel){ dCancel.addEventListener('click', exitEditMode); }
+      if(dSave){
+        dSave.addEventListener('click',function(){
+          try{
+            // 序列化：img 用 data-raw-src 净地址（不带访问令牌），避免把 token 写进服务端
+            var imgs=dEdit.querySelectorAll('img[data-raw-src]');
+            for(var i=0;i<imgs.length;i++){ imgs[i].setAttribute('src', imgs[i].getAttribute('data-raw-src')||''); imgs[i].removeAttribute('data-raw-src'); }
+            var pend=dEdit.querySelectorAll('img[data-local-id]');
+            if(pend.length>0){
+              alert('还有 '+pend.length+' 张图片正在上传，请稍候再保存');
+              return;
+            }
+            var html=dEdit.innerHTML||'';
+            if(window.chrome&&window.chrome.webview){
+              window.chrome.webview.postMessage({type:'saveDescription', id:'{{WorkItemId}}', html: html});
+            }
+            exitEditMode();
+            if(dView){ dView.innerHTML=html; }
+          }catch(e){}
+        });
+      }
+      if(dImgBtn&&dFile){
+        dImgBtn.addEventListener('click',function(){ try{ dFile.click(); }catch(e){} });
+        dFile.addEventListener('change',function(){
+          try{
+            var fs=dFile.files||[];
+            for(var i=0;i<fs.length;i++){ readImageFile(fs[i]); }
+            dFile.value='';
+          }catch(e){}
+        });
+      }
+      if(dEdit){
+        dEdit.addEventListener('paste',function(e){
+          try{
+            var items=(e.clipboardData&&e.clipboardData.items)||[];
+            var handled=false;
+            for(var i=0;i<items.length;i++){
+              var it=items[i];
+              if(it&&it.type&&it.type.indexOf('image/')===0){
+                var f=it.getAsFile();
+                if(f){ readImageFile(f); handled=true; }
+              }
+            }
+            if(handled){ e.preventDefault(); }
+          }catch(ex){}
+        });
+        dEdit.addEventListener('dragover',function(e){ try{ e.preventDefault(); }catch(ex){} });
+        dEdit.addEventListener('drop',function(e){
+          try{
+            var fs=(e.dataTransfer&&e.dataTransfer.files)||[];
+            var handled=false;
+            for(var i=0;i<fs.length;i++){
+              if(fs[i]&&fs[i].type&&fs[i].type.indexOf('image/')===0){ readImageFile(fs[i]); handled=true; }
             }
             if(handled){ e.preventDefault(); }
           }catch(ex){}

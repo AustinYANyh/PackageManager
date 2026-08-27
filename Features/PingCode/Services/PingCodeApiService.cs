@@ -1736,6 +1736,45 @@ public partial class PingCodeApiService
     }
 
     /// <summary>
+    /// 更新工作项指派人（兼容 assignee_id 与 assignee 对象两种写法；空值即取消指派）。
+    /// </summary>
+    /// <param name="workItemId">工作项的唯一标识。</param>
+    /// <param name="assigneeId">目标成员标识；空字符串或 null 表示清空指派。</param>
+    /// <returns>是否更新成功。</returns>
+    public async Task<bool> UpdateWorkItemAssigneeAsync(string workItemId, string assigneeId)
+    {
+        if (string.IsNullOrWhiteSpace(workItemId))
+        {
+            return false;
+        }
+
+        var url = $"https://open.pingcode.com/v1/project/work_items/{Uri.EscapeDataString(workItemId)}";
+        var target = (assigneeId ?? "").Trim();
+        var bodies = string.IsNullOrWhiteSpace(target)
+            ? new JObject[] { new JObject { ["assignee_id"] = "" }, new JObject { ["assignee"] = null } }
+            : new JObject[] { new JObject { ["assignee_id"] = target }, new JObject { ["assignee"] = new JObject { ["id"] = target } } };
+        foreach (var body in bodies)
+        {
+            try
+            {
+                var resp = await PatchJsonAsync(url, body);
+                if (resp != null)
+                {
+                    LoggingService.LogDebug($"指派人写入成功: workItem={workItemId}，payload={body.ToString(Newtonsoft.Json.Formatting.None)}");
+                    return true;
+                }
+            }
+            catch (System.Exception ex)
+            {
+                LoggingService.LogWarning($"指派写入变体失败: payload={body.ToString(Newtonsoft.Json.Formatting.None)}，{ex.Message}");
+            }
+        }
+
+        LoggingService.LogWarning($"指派人写入全部失败: workItem={workItemId}，target='{target}'");
+        return false;
+    }
+
+    /// <summary>
     /// 更新工作项故事点（兼容 story_points/story_point 字段）。
     /// </summary>
     /// <param name="workItemId">工作项的唯一标识。</param>

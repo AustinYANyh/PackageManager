@@ -8,7 +8,6 @@ using System.Threading.Tasks;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using PackageManager.Services.PingCode.Exception;
-
 /// <summary>
 /// PingCode 开放接口客户端的 HTTP 请求部分。
 /// </summary>
@@ -50,6 +49,20 @@ public partial class PingCodeApiService
         req.Content = new StringContent(payload.ToString(Formatting.None), Encoding.UTF8, "application/json");
         using var resp = await http.SendAsync(req);
         var txt = await resp.Content.ReadAsStringAsync();
+        var bodyPreview = payload.ToString(Formatting.None);
+        if (bodyPreview.Length > 300)
+        {
+            bodyPreview = bodyPreview.Substring(0, 300) + "…";
+        }
+
+        if (!resp.IsSuccessStatusCode)
+        {
+            LoggingService.LogWarning($"PATCH 失败: {(int)resp.StatusCode} {resp.StatusCode} url={url} body={bodyPreview} resp={txt.Substring(0, Math.Min(300, txt.Length))}");
+        }
+        else
+        {
+            LoggingService.LogDebug($"PATCH 成功: {(int)resp.StatusCode} url={url} body={bodyPreview}");
+        }
         if (!resp.IsSuccessStatusCode)
         {
             if (resp.StatusCode == HttpStatusCode.Unauthorized)

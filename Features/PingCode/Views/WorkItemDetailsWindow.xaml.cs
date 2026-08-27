@@ -1339,14 +1339,22 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                     return;
                 }
 
-                double val = 0;
-                string id = Details.Id;
-                string type = null;
-                string stateId = null;
-                bool handleSp = false;
-                bool handleState = false;
-                bool handleReady = false;
-                bool handleSubmit = false;
+                LoggingService.LogDebug($"[详情桥接] 收到页面消息: {msg.Substring(0, Math.Min(200, msg.Length))}");
+
+                    double val = 0;
+                    string id = Details.Id;
+                    string type = null;
+                    string stateId = null;
+                    bool handleSp = false;
+                    bool handleState = false;
+                    bool handleReady = false;
+                    bool handleSubmit = false;
+                    bool handleAssignee = false;
+                    bool handleTitle = false;
+                    bool handleDescription = false;
+                    string assigneeUpdate = null;
+                    string titleUpdate = null;
+                    string descriptionUpdate = null;
                 string commentHtml = null;
                 Newtonsoft.Json.Linq.JArray contentPayload = null;
                 string plainText = null;
@@ -1408,6 +1416,36 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                             id = obj.Value<string>("id") ?? Details.Id;
                             stateId = obj.Value<string>("stateId") ?? obj.Value<string>("state_id");
                             handleState = true;
+                        }
+                        else if (string.Equals(type, "updateAssignee", StringComparison.OrdinalIgnoreCase))
+                        {
+                            id = obj.Value<string>("id") ?? Details.Id;
+                            assigneeUpdate = obj.Value<string>("assigneeId") ?? "";
+                            handleAssignee = true;
+                        }
+                        else if (string.Equals(type, "updateTitle", StringComparison.OrdinalIgnoreCase))
+                        {
+                            id = obj.Value<string>("id") ?? Details.Id;
+                            titleUpdate = obj.Value<string>("title");
+                            handleTitle = !string.IsNullOrWhiteSpace(titleUpdate);
+                        }
+                        else if (string.Equals(type, "saveDescription", StringComparison.OrdinalIgnoreCase))
+                        {
+                            id = obj.Value<string>("id") ?? Details.Id;
+                            descriptionUpdate = obj.Value<string>("html");
+                            handleDescription = true;
+                        }
+                        else if (string.Equals(type, "uploadDescImage", StringComparison.OrdinalIgnoreCase))
+                        {
+                            var descLocalId = obj.Value<string>("localId");
+                            var descDataUrl = obj.Value<string>("dataUrl");
+                            var descContentType = obj.Value<string>("contentType");
+                            if (!string.IsNullOrWhiteSpace(descLocalId) && !string.IsNullOrWhiteSpace(descDataUrl))
+                            {
+                                _ = HandleUploadDescImageAsync(descLocalId, descDataUrl, descContentType);
+                            }
+
+                            return;
                         }
                         else if (string.Equals(type, "ready", StringComparison.OrdinalIgnoreCase))
                         {
@@ -1486,6 +1524,40 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                                 id = jobj.Value<string>("id") ?? Details.Id;
                                 stateId = jobj.Value<string>("stateId") ?? jobj.Value<string>("state_id");
                                 handleState = true;
+                            }
+                            else if (string.Equals(type, "updateAssignee", StringComparison.OrdinalIgnoreCase))
+                            {
+                                LoggingService.LogDebug("[详情桥接] 指派消息走字符串包装分支");
+                                id = jobj.Value<string>("id") ?? Details.Id;
+                                assigneeUpdate = jobj.Value<string>("assigneeId") ?? "";
+                                handleAssignee = true;
+                            }
+                            else if (string.Equals(type, "updateTitle", StringComparison.OrdinalIgnoreCase))
+                            {
+                                LoggingService.LogDebug("[详情桥接] 标题消息走字符串包装分支");
+                                id = jobj.Value<string>("id") ?? Details.Id;
+                                titleUpdate = jobj.Value<string>("title");
+                                handleTitle = !string.IsNullOrWhiteSpace(titleUpdate);
+                            }
+                            else if (string.Equals(type, "saveDescription", StringComparison.OrdinalIgnoreCase))
+                            {
+                                LoggingService.LogDebug("[详情桥接] 描述消息走字符串包装分支");
+                                id = jobj.Value<string>("id") ?? Details.Id;
+                                descriptionUpdate = jobj.Value<string>("html");
+                                handleDescription = true;
+                            }
+                            else if (string.Equals(type, "uploadDescImage", StringComparison.OrdinalIgnoreCase))
+                            {
+                                LoggingService.LogDebug("[详情桥接] 描述图片消息走字符串包装分支");
+                                var descLocalId = jobj.Value<string>("localId");
+                                var descDataUrl = jobj.Value<string>("dataUrl");
+                                var descContentType = jobj.Value<string>("contentType");
+                                if (!string.IsNullOrWhiteSpace(descLocalId) && !string.IsNullOrWhiteSpace(descDataUrl))
+                                {
+                                    _ = HandleUploadDescImageAsync(descLocalId, descDataUrl, descContentType);
+                                }
+
+                                return;
                             }
                             else if (string.Equals(type, "ready", StringComparison.OrdinalIgnoreCase))
                             {
@@ -1579,10 +1651,13 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                         return;
                     }
                 }
-                catch
+                catch (Exception parseEx)
                 {
+                    LoggingService.LogWarning($"[详情桥接] 页面消息解析失败，已丢弃: {parseEx.Message} 原文: {msg.Substring(0, Math.Min(200, msg.Length))}");
                     return;
                 }
+
+                LoggingService.LogDebug($"[详情桥接] 消息解析完成: type='{type}' sp={handleSp} state={handleState} assignee={handleAssignee} title={handleTitle} desc={handleDescription} submit={handleSubmit} ready={handleReady} id='{id}'");
 
                 if (handleReady)
                 {
@@ -1659,6 +1734,21 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                     catch
                     {
                     }
+                }
+                else if (handleAssignee)
+                {
+                    LoggingService.LogDebug($"[详情桥接] 分发→指派人处理（id={id}）");
+                    await HandleUpdateAssigneeAsync(id, assigneeUpdate ?? "");
+                }
+                else if (handleTitle)
+                {
+                    LoggingService.LogDebug($"[详情桥接] 分发→标题处理（id={id}）");
+                    await HandleUpdateTitleAsync(id, titleUpdate);
+                }
+                else if (handleDescription)
+                {
+                    LoggingService.LogDebug($"[详情桥接] 分发→描述处理（id={id}）");
+                    await HandleSaveDescriptionAsync(id, descriptionUpdate);
                 }
                 else if (string.Equals(type, "loadChildren", StringComparison.OrdinalIgnoreCase))
                 {
@@ -1768,8 +1858,9 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                     }
                 }
             }
-            catch
+            catch (Exception msgEx)
             {
+                LoggingService.LogError(msgEx, "[详情桥接] 页面消息处理异常");
             }
         };
         core.NavigationCompleted += async (sender, args) =>
@@ -1784,6 +1875,16 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                     navigationCompletedTcs.TrySetResult(true);
                     DetailsWeb.Visibility = Visibility.Visible;
                     ShowLoading(false);
+                    try
+                    {
+                        var probe = await DetailsWeb.CoreWebView2.ExecuteScriptAsync(
+                            "(function(){try{return JSON.stringify({descBtn:!!document.getElementById('descEditBtn'),assigneeSel:!!document.getElementById('assigneeSelect'),title:!!document.getElementById('titleText'),bridge:!!(window.chrome&&window.chrome.webview&&window.chrome.webview.postMessage),ver:(document.querySelector('meta[name=workitem-details-template-version]')||{}).content||''});}catch(e){return 'ERR:'+e.message;}})()");
+                        LoggingService.LogDebug($"[详情桥接] 页面探针: {probe}");
+                    }
+                    catch (Exception probeEx)
+                    {
+                        LoggingService.LogWarning($"[详情桥接] 页面探针失败: {probeEx.Message}");
+                    }
                 }
 
                 if (!docBridgeInjectedOnDocumentCreated)
@@ -2021,6 +2122,9 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
             {
                 return;
             }
+
+            lastMembersSnapshot = members ?? new List<Entity>();
+            await RebuildAssigneeSelectAsync(lastMembersSnapshot);
 
             var arr = new Newtonsoft.Json.Linq.JArray();
             foreach (var m in members ?? new List<Entity>())
@@ -2377,9 +2481,289 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         }
     }
 
-    private async Task RefreshAvailableStatesAndUpdateDropdownAsync()
+    /// <summary>
+    /// 处理指派人变更：API 写入（多变体），成功更新本地详情；失败还原下拉显示。
+    /// </summary>
+    /// <param name="workItemId">工作项标识。</param>
+    /// <param name="assigneeId">目标成员标识（空 = 取消指派）。</param>
+    private async Task HandleUpdateAssigneeAsync(string workItemId, string assigneeId)
     {
         try
+        {
+            LoggingService.LogDebug($"[详情桥接] 指派人变更请求: item={workItemId} → assigneeId='{assigneeId ?? ""}'");
+            if (string.IsNullOrWhiteSpace(workItemId))
+            {
+                workItemId = Details.Id;
+            }
+
+            var ok = await api.UpdateWorkItemAssigneeAsync(workItemId, assigneeId ?? "");
+            if (ok)
+            {
+                var named = string.IsNullOrWhiteSpace(assigneeId)
+                    ? null
+                    : TryResolveMemberName(assigneeId);
+                Details.AssigneeId = string.IsNullOrWhiteSpace(assigneeId) ? null : assigneeId;
+                Details.AssigneeName = named;
+                LoggingService.LogDebug($"[详情桥接] 指派人已更新: {(string.IsNullOrWhiteSpace(assigneeId) ? "未指派" : (named ?? assigneeId))}");
+            }
+            else
+            {
+                await RebuildAssigneeSelectAsync(lastMembersSnapshot);
+                LoggingService.LogWarning("[详情桥接] 指派人更新失败，已还原下拉");
+            }
+        }
+        catch (Exception ex)
+        {
+            LoggingService.LogError(ex, "[详情桥接] 指派人更新异常");
+            try
+            {
+                await RebuildAssigneeSelectAsync(lastMembersSnapshot);
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    /// <summary>最近一次注入页面的成员快照（指派人下拉重建/失败还原复用）。</summary>
+    private List<Entity> lastMembersSnapshot = new();
+
+    private string TryResolveMemberName(string memberId)
+    {
+        try
+        {
+            var m = lastMembersSnapshot?.FirstOrDefault(x => string.Equals((x?.Id ?? "").Trim(), (memberId ?? "").Trim(), StringComparison.OrdinalIgnoreCase));
+            return m?.Name;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 处理标题变更：PATCH title，成功后就地更新页头标题文本。
+    /// </summary>
+    /// <param name="workItemId">工作项标识。</param>
+    /// <param name="title">新标题。</param>
+    private async Task HandleUpdateTitleAsync(string workItemId, string title)
+    {
+        try
+        {
+            LoggingService.LogDebug($"[详情桥接] 标题变更请求: item={workItemId} → '{(title ?? "").Substring(0, Math.Min(50, (title ?? "").Length))}'");
+            if (string.IsNullOrWhiteSpace(workItemId))
+            {
+                workItemId = Details.Id;
+            }
+
+            var ok = await api.UpdateWorkItemAsync(workItemId, new Newtonsoft.Json.Linq.JObject { ["title"] = title });
+            if (ok)
+            {
+                Details.Title = title;
+                var script = "try{var t=document.getElementById('titleText');if(t){t.textContent='" + JsEscape(title) + "';}}catch(e){}";
+                await DetailsWeb.CoreWebView2.ExecuteScriptAsync(script);
+                LoggingService.LogDebug("[详情桥接] 标题已更新");
+            }
+            else
+            {
+                LoggingService.LogWarning("[详情桥接] 标题更新失败（API 返回失败），已还原标题显示");
+                await RestoreTitleOnPageAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            LoggingService.LogError(ex, "[详情桥接] 标题更新异常");
+            await RestoreTitleOnPageAsync();
+        }
+    }
+
+    private async Task RestoreTitleOnPageAsync()
+    {
+        try
+        {
+            var script = "try{var t=document.getElementById('titleText');if(t){t.textContent='" + JsEscape(Details.Title) + "';}}catch(e){}";
+            await DetailsWeb.CoreWebView2.ExecuteScriptAsync(script);
+        }
+        catch
+        {
+        }
+    }
+
+    /// <summary>
+    /// 处理描述保存：剥除访问令牌参数后整体写入 description，成功更新本地详情。
+    /// </summary>
+    /// <param name="workItemId">工作项标识。</param>
+    /// <param name="html">编辑器序列化的描述 HTML。</param>
+    private async Task HandleSaveDescriptionAsync(string workItemId, string html)
+    {
+        try
+        {
+            LoggingService.LogDebug($"[详情桥接] 描述保存请求: item={workItemId}，{(html ?? "").Length} 字符");
+            if (string.IsNullOrWhiteSpace(workItemId))
+            {
+                workItemId = Details.Id;
+            }
+
+            var cleaned = StripAccessTokenFromHtml(html ?? "");
+            var ok = await api.UpdateWorkItemAsync(workItemId, new Newtonsoft.Json.Linq.JObject { ["description"] = cleaned });
+            if (ok)
+            {
+                Details.DescriptionHtml = cleaned;
+                LoggingService.LogDebug($"[详情桥接] 描述已更新（{cleaned.Length} 字符）");
+            }
+            else
+            {
+                LoggingService.LogWarning("[详情桥接] 描述保存失败");
+                await RestoreDescriptionOnPageAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            LoggingService.LogError(ex, "[详情桥接] 描述保存异常");
+            await RestoreDescriptionOnPageAsync();
+        }
+    }
+
+    private async Task RestoreDescriptionOnPageAsync()
+    {
+        try
+        {
+            var html = NormalizeImages(Details.DescriptionHtml);
+            var script = "try{var v=document.getElementById('descView');if(v){v.innerHTML='" + JsEscape(html) + "';}}catch(e){}";
+            await DetailsWeb.CoreWebView2.ExecuteScriptAsync(script);
+        }
+        catch
+        {
+        }
+    }
+
+    /// <summary>
+    /// 从 HTML 中的 PingCode 图片地址剥除 access_token/token 查询参数（访问令牌仅本地显示用，不得写入服务端）。
+    /// </summary>
+    /// <param name="html">描述 HTML。</param>
+    /// <returns>剥除令牌后的 HTML。</returns>
+    private static string StripAccessTokenFromHtml(string html)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(html))
+            {
+                return html ?? "";
+            }
+
+            return Regex.Replace(html, "([?&])(access_token|token)=[^&\"'\\s<>]+", m => m.Groups[1].Value == "?" ? "" : "",
+                                 RegexOptions.IgnoreCase);
+        }
+        catch
+        {
+            return html ?? "";
+        }
+    }
+
+    /// <summary>
+    /// 处理描述图片上传：base64 解码 → 工作项级附件上传 → 回填服务端地址（src 带令牌显示、data-raw-src 存净地址）。
+    /// </summary>
+    /// <param name="localId">页面占位 img 的本地标识。</param>
+    /// <param name="dataUrl">图片 base64 数据。</param>
+    /// <param name="contentType">MIME 类型。</param>
+    private async Task HandleUploadDescImageAsync(string localId, string dataUrl, string contentType)
+    {
+        try
+        {
+            LoggingService.LogDebug($"[详情桥接] 描述图片上传请求: localId={localId}，{(dataUrl ?? "").Length} 字符，type={contentType}");
+            string mime;
+            byte[] bytes;
+            if (!TryParseDataUrl(dataUrl, out mime, out bytes) || (bytes == null) || (bytes.Length == 0))
+            {
+                await MarkDescImageFailedAsync(localId);
+                return;
+            }
+
+            var ct = (mime ?? contentType ?? "").ToLowerInvariant();
+            var ext = "png";
+            if (ct.Contains("jpeg") || ct.Contains("jpg")) ext = "jpg";
+            else if (ct.Contains("gif")) ext = "gif";
+            else if (ct.Contains("bmp")) ext = "bmp";
+            else if (ct.Contains("webp")) ext = "webp";
+            else if (ct.Contains("svg")) ext = "svg";
+            var name = $"desc_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.{ext}";
+            // 不传 principal：图片不挂入工作项附件列表，仅取公开 URL 内联嵌入描述 HTML
+            var uploaded = await api.UploadAttachmentViaApiAsync(bytes, name, mime ?? contentType);
+            var raw = uploaded?.Value<string>("download_url") ?? uploaded?.Value<string>("url");
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                await MarkDescImageFailedAsync(localId);
+                return;
+            }
+
+            RememberUploadedAttachment(uploaded);
+            var display = AppendAccessTokenQueryIfNeeded(raw, accessToken);
+            var script = "try{if(window.descImageUploaded){window.descImageUploaded('" + JsEscape(localId) + "','" + JsEscape(raw) + "','" + JsEscape(display) + "');}}catch(e){}";
+            await DetailsWeb.CoreWebView2.ExecuteScriptAsync(script);
+        }
+        catch (Exception ex)
+        {
+            LoggingService.LogError(ex, "[详情桥接] 描述图片上传失败");
+            await MarkDescImageFailedAsync(localId);
+        }
+    }
+
+    private async Task MarkDescImageFailedAsync(string localId)
+    {
+        try
+        {
+            var script = "try{var im=document.querySelector('#descEdit img[data-local-id=\"" + JsEscape(localId) + "\"]');if(im){im.remove();}}catch(e){}";
+            await DetailsWeb.CoreWebView2.ExecuteScriptAsync(script);
+        }
+        catch
+        {
+        }
+    }
+
+    /// <summary>
+    /// 重建指派人下拉选项：未指派 + 项目成员；按当前 Details.AssigneeId 选中。
+    /// </summary>
+    /// <param name="members">项目成员列表。</param>
+    private async Task RebuildAssigneeSelectAsync(List<Entity> members)
+    {
+        try
+        {
+            var js = new StringBuilder();
+            var currentId = (Details?.AssigneeId ?? "").Trim();
+            js.Append("try{var sel=document.getElementById('assigneeSelect');if(sel){sel.innerHTML='';");
+            js.Append("var o0=document.createElement('option');o0.value='';o0.textContent='未指派';sel.appendChild(o0);");
+            foreach (var m in members ?? new List<Entity>())
+            {
+                var mid = JsEscape((m?.Id ?? "").Trim());
+                var mname = JsEscape((m?.Name ?? "").Trim());
+                if (string.IsNullOrWhiteSpace(mid) || string.IsNullOrWhiteSpace(mname))
+                {
+                    continue;
+                }
+
+                js.Append("var o=document.createElement('option');o.value='").Append(mid).Append("';o.textContent='").Append(mname).Append("';sel.appendChild(o);");
+            }
+
+            if (!string.IsNullOrWhiteSpace(currentId))
+            {
+                js.Append("sel.value='").Append(JsEscape(currentId)).Append("';");
+                js.Append("if(sel.selectedIndex<0){sel.selectedIndex=0;}");
+            }
+            else
+            {
+                js.Append("sel.selectedIndex=0;");
+            }
+
+            js.Append("}}catch(e){}");
+            await DetailsWeb.CoreWebView2.ExecuteScriptAsync(js.ToString());
+        }
+        catch
+        {
+        }
+    }
+
+    private async Task RefreshAvailableStatesAndUpdateDropdownAsync()
+    {        try
         {
             var projectId = (Details?.ProjectId ?? "").Trim();
             var type = (Details?.Type ?? "").Trim();
@@ -2470,7 +2854,7 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
             ["{{Identifier}}"] = HtmlEscape(Details.Identifier),
             ["{{Title}}"] = HtmlEscape(Details.Title),
             ["{{ParentCrumbHtml}}"] = BuildCrumbHtml() ?? "",
-            ["{{AssigneeName}}"] = DashText(Details.AssigneeName),
+            ["{{AssigneeName}}"] = string.IsNullOrWhiteSpace(Details.AssigneeName) ? "未指派" : HtmlEscape(Details.AssigneeName),
             ["{{StateClass}}"] = stateCls,
             ["{{StateName}}"] = HtmlEscape(Details.StateName),
             ["{{StartAt}}"] = startText,
