@@ -266,6 +266,9 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
             allItems = await api.GetIterationWorkItemsAsync(iterationId) ?? new List<WorkItemInfo>();
             LoggingService.LogDebug($"[看板桥接] 工作项拉取完成: {allItems.Count} 项（pageReady={pageReady}）");
             _ = PrefetchProductOptionsAsync();
+            // 可达集打开期全量预热：按 (projectId|type|StateId) 去重后台拉齐，
+            // 完成后补推一次让所有卡带上精确可达集——用户拖到哪张卡都是就绪数据
+            _ = PrefetchReachableSetsAsync();
             RebuildMembersFromItems();
             RebuildParticipantsFromItems();
             await PushBoardAsync();
@@ -653,7 +656,104 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
         LoggingService.LogDebug($"[看板拖拽] 意图登记 {itemId}（源 {sourceStateId}）→ {targetCategory.Trim()}，待写 {pendingMoves.Count} 项");
         UpdateSaveBadge();
         StartDrainPendingMoves();
+        // 数据即时性：drop 瞬间即向页面应答"目标状态"的可达集（配置缓存，毫秒级），
+        // 二次拖拽不等整板补推就拿最新集合
+        _ = PushReachableForTargetAsync(itemId, targetCategory.Trim());
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// 看板打开期可达集全量预热：对全部工作项的 (projectId|type|StateId) 组合去重拉齐，
+    /// 完成后补推一次整板（首推时可达集可能未就绪为 null，此处让所有卡就位精确集合）。
+    /// </summary>
+    private async Task PrefetchReachableSetsAsync()
+    {
+        try
+        {
+            var snapshot = allItems.ToList();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var item in snapshot)
+            {
+                var key = $"{(item.ProjectId ?? "").Trim()}|{item.Type}|{item.StateId}";
+                if (string.IsNullOrWhiteSpace(item.Type) || string.IsNullOrWhiteSpace(item.StateId) || !seen.Add(key))
+                {
+                    continue;
+                }
+
+                await GetReachableCategoriesAsync(item);
+            }
+
+            if (seen.Count > 0 && pageReady)
+            {
+                await PushBoardAsync();
+                LoggingService.LogDebug($"[看板拖拽] 可达集预热完成（{seen.Count} 组状态）并已补推");
+            }
+        }
+        catch (Exception ex)
+        {
+            LoggingService.LogError(ex, "[看板拖拽] 可达集预热失败");
+        }
+    }
+
+    /// <summary>
+    /// drop 瞬间向页面应答目标状态的可达集：解析目标状态（缓存命中≈0ms）→ 计算其出边集合
+    /// → 单卡直达脚本更新（不走整板推送管道），二次拖拽即时拿最新集合。
+    /// </summary>
+    /// <param name="itemId">工作项标识。</param>
+    /// <param name="targetCategory">目标列。</param>
+    private async Task PushReachableForTargetAsync(string itemId, string targetCategory)
+    {
+        try
+        {
+            if (core == null || !pageReady)
+            {
+                return;
+            }
+
+            var item = allItems.FirstOrDefault(i => string.Equals(i.Id, itemId, StringComparison.OrdinalIgnoreCase));
+            if (item == null)
+            {
+                return;
+            }
+
+            (string, string)? targetStateId;
+            await resolveGate.WaitAsync();
+            try
+            {
+                targetStateId = await ResolveTargetStateIdAsync(item, targetCategory);
+            }
+            finally
+            {
+                resolveGate.Release();
+            }
+
+            if ((targetStateId == null) || string.IsNullOrWhiteSpace(targetStateId.Value.Item1))
+            {
+                return;
+            }
+
+            var probe = new WorkItemInfo
+            {
+                Id = item.Id,
+                ProjectId = item.ProjectId,
+                Type = item.Type,
+                StateId = targetStateId.Value.Item1,
+            };
+            var set = await GetReachableCategoriesAsync(probe);
+            if (set == null)
+            {
+                return;
+            }
+
+            var arr = set.OrderBy(c => c, StringComparer.OrdinalIgnoreCase).ToArray();
+            var script = $"window.applyReachable({JsonConvert.SerializeObject(itemId)}, {JsonConvert.SerializeObject(arr)})";
+            await core.ExecuteScriptAsync(script);
+            LoggingService.LogDebug($"[看板拖拽] 已应答可达集 {itemId}@{targetCategory} → [{string.Join(",", arr)}]");
+        }
+        catch (Exception ex)
+        {
+            LoggingService.LogError(ex, $"[看板拖拽] 可达集应答失败 {itemId}");
+        }
     }
 
     /// <summary>启动意图排空流水线（单泵：已在运行则由泵自身循环消化新意图）。</summary>
@@ -1020,58 +1120,67 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
             }
         }
 
-        // 复用解析链路取流转（含缓存填充）；异常/未知返回 null
+        // 复用解析链路取流转（含缓存填充）；异常/未知返回 null。
+        // planCache/flowsCache 非线程安全：预热/应答/推送预取与拖拽解析并发访问，统一过 resolveGate 互斥
         try
         {
-            var planKey = $"{projectId}|{type}";
-            if (!planCache.TryGetValue(planKey, out var plan))
+            await resolveGate.WaitAsync();
+            try
             {
-                var plans = await api.GetWorkItemStatePlansAsync(projectId);
-                plan = plans.FirstOrDefault(p => string.Equals((p?.WorkItemType ?? "").Trim(), type, StringComparison.OrdinalIgnoreCase));
-                if ((plan == null) || string.IsNullOrWhiteSpace(plan.Id))
+                var planKey = $"{projectId}|{type}";
+                if (!planCache.TryGetValue(planKey, out var plan))
+                {
+                    var plans = await api.GetWorkItemStatePlansAsync(projectId);
+                    plan = plans.FirstOrDefault(p => string.Equals((p?.WorkItemType ?? "").Trim(), type, StringComparison.OrdinalIgnoreCase));
+                    if ((plan == null) || string.IsNullOrWhiteSpace(plan.Id))
+                    {
+                        return null;
+                    }
+
+                    planCache[planKey] = plan;
+                }
+
+                var flowsKey = $"{plan.Id}|{item.StateId}";
+                if (!flowsCache.TryGetValue(flowsKey, out var flows))
+                {
+                    flows = await api.GetWorkItemStateFlowsAsync(plan.Id, item.StateId);
+                    flowsCache[flowsKey] = flows ?? new List<StateDto>();
+                }
+
+                if (flows == null)
                 {
                     return null;
                 }
 
-                planCache[planKey] = plan;
-            }
-
-            var flowsKey = $"{plan.Id}|{item.StateId}";
-            if (!flowsCache.TryGetValue(flowsKey, out var flows))
-            {
-                flows = await api.GetWorkItemStateFlowsAsync(plan.Id, item.StateId);
-                flowsCache[flowsKey] = flows ?? new List<StateDto>();
-            }
-
-            if (flows == null)
-            {
-                return null;
-            }
-
-            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var f in flows)
-            {
-                var name = f?.Name ?? "";
-                if (name.Contains("挂起") || name.Contains("受阻"))
+                var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var f in flows)
                 {
-                    continue;
+                    var name = f?.Name ?? "";
+                    if (name.Contains("挂起") || name.Contains("受阻"))
+                    {
+                        continue;
+                    }
+
+                    var cat = MapStateNameToCategory(name);
+                    if (!string.IsNullOrWhiteSpace(cat))
+                    {
+                        set.Add(cat);
+                    }
                 }
 
-                var cat = MapStateNameToCategory(name);
-                if (!string.IsNullOrWhiteSpace(cat))
+                // 空集也缓存：状态机无出边的状态（如已关闭）避免每轮推送重复探测
+                lock (reachableCache)
                 {
-                    set.Add(cat);
+                    reachableCache[cacheKey] = set;
                 }
-            }
 
-            // 空集也缓存：状态机无出边的状态（如已关闭）避免每轮推送重复探测
-            lock (reachableCache)
+                LoggingService.LogDebug($"[看板拖拽] 可达集计算 {cacheKey} → [{string.Join(",", set)}]");
+                return set;
+            }
+            finally
             {
-                reachableCache[cacheKey] = set;
+                resolveGate.Release();
             }
-
-            LoggingService.LogDebug($"[看板拖拽] 可达集计算 {cacheKey} → [{string.Join(",", set)}]");
-            return set;
         }
         catch
         {
@@ -1134,7 +1243,7 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
         var list = new List<string>();
         foreach (var it in items ?? Enumerable.Empty<WorkItemInfo>())
         {
-            list.Add($"{it?.Id}|{it?.StateCategory}|{it?.Status}|{it?.AssigneeId}|{it?.StoryPoints ?? 0}|{it?.ParticipantNames?.Count ?? 0}|{it?.WatcherNames?.Count ?? 0}");
+            list.Add($"{it?.Id}|{it?.StateCategory}|{it?.Status}|{it?.AssigneeId}|{it?.StoryPoints ?? 0}|{it?.ParticipantNames?.Count ?? 0}|{it?.WatcherNames?.Count ?? 0}|{it?.UpdatedAt?.Ticks ?? 0}");
         }
 
         list.Sort(StringComparer.OrdinalIgnoreCase);

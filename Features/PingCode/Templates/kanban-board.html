@@ -562,6 +562,21 @@
     }
   };
 
+  // 宿主 drop 即时应答：直改该卡数据对象与节点签名（不走整板渲染管道），
+  // dragstart 闭包引用同一 item 对象 → 二次拖拽立即拿最新可达集
+  window.applyReachable = function (id, arr) {
+    try {
+      var entry = state.byId[id];
+      if (!entry || !entry.item) return;
+      entry.item.reachable = arr || [];
+      if (entry.card && entry.card.dataset) {
+        entry.card.dataset.sig = itemSig(entry.item);
+      }
+    } catch (e) {
+      post({ type: 'renderError', message: 'applyReachable: ' + String(e && e.message || e) });
+    }
+  };
+
   window.addEventListener('message', function (e) {
     if (e.data && e.data.type === 'render') render(e.data.payload);
   });

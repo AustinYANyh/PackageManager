@@ -230,7 +230,7 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
     /// <param name="workItemId">工作项唯一标识。</param>
     /// <param name="summary">看板侧摘要（占位头部），可为 null。</param>
     /// <param name="fetcher">详情拉取委托（可携带预取缓存），为 null 时直接走 API。</param>
-    public async Task ShowWorkItemAsync(string workItemId, WorkItemInfo summary, Func<string, Task<WorkItemDetails>> fetcher)
+    public async Task ShowWorkItemAsync(string workItemId, WorkItemInfo summary, Func<string, Task<WorkItemDetails>> fetcher, bool retrying = false)
     {
         if (string.IsNullOrWhiteSpace(workItemId) || abandoned)
         {
@@ -244,6 +244,7 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         }
 
         var sequence = ++contentSequence;
+        var ownerSnapshot = Owner;
         ResetForReuse();
         Details = BuildPlaceholderDetails(workItemId, summary);
         pendingWorkItemId = workItemId;
@@ -279,6 +280,29 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
             await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.Background);
 
             await InitializeContentAsync(sequence);
+        }
+        catch (InvalidOperationException ex) when (!retrying)
+        {
+            // 僵尸单例自愈：窗口已被真关闭（如宿主级联关闭）但缓存仍将其复用，Show 必抛。
+            // 销毁重建后以新实例重试一次，本次点击仍然打开成功，不再依赖用户重启应用
+            LoggingService.LogError(ex, "[详情桥接] 共享详情窗已失效（疑似被宿主级联关闭），销毁重建并重试");
+            RestoreOwnerWindow();
+            try
+            {
+                Hide();
+            }
+            catch
+            {
+            }
+
+            DestroySharedInstance("Show 失败：共享详情窗已被关闭");
+            var fresh = await GetSharedAsync(api);
+            if ((fresh.Owner == null) && (ownerSnapshot != null) && ownerSnapshot.IsLoaded)
+            {
+                fresh.Owner = ownerSnapshot;
+            }
+
+            await fresh.ShowWorkItemAsync(workItemId, summary, fetcher, retrying: true);
         }
         catch (Exception ex)
         {
@@ -453,6 +477,19 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         this.api = api ?? new PingCodeApiService();
         InitializeComponent();
         DataContext = this;
+        // 单例被意外真关闭时踢掉静态缓存：宿主窗口关闭时 WPF 会级联关闭其 owned 窗口，
+        // 该级联不经过 OnClosing 的取消逻辑，会把隐藏复用中的共享单例真关闭。
+        // 此处兜底清引用，让下次 GetSharedAsync 重建新实例，杜绝"僵尸单例"永久无法打开详情
+        Closed += (s, e) =>
+        {
+            lock (SharedSync)
+            {
+                if (ReferenceEquals(sharedInstance, this))
+                {
+                    sharedInstance = null;
+                }
+            }
+        };
         // Loaded 只做一次性 WebView 初始化；内容由 ShowWorkItemAsync 驱动。
         Loaded += async (s, e) =>
         {
@@ -603,6 +640,10 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
             e.Cancel = true;
             Hide();
             RestoreOwnerWindow();
+            // 解除所有权：隐藏复用期间不挂在任何宿主名下，宿主窗口关闭时
+            // WPF 不再级联关闭本窗（级联不走 OnClosing 取消，会把复用单例真关闭毒化）；
+            // 下次打开时调用方会重新设置 Owner
+            Owner = null;
             return;
         }
 
