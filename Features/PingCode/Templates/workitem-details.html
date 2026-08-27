@@ -820,13 +820,12 @@
           if(dFile){ dFile.value=''; }
         }catch(e){}
       }
-      function insertDescPlaceholder(dataUrl){
+      // 图片以 data:URL 内联直存描述（自包含、永不过期、双端可渲染、不产生附件记录）
+      function insertDescImage(dataUrl){
         try{
+          if(!dataUrl){ return; }
           var img=document.createElement('img');
           img.src=dataUrl;
-          var lid='dlocal_'+Math.random().toString(36).substr(2,9);
-          img.setAttribute('data-local-id',lid);
-          img.setAttribute('alt','上传中…');
           dEdit.focus();
           var sel=window.getSelection();
           if(sel&&sel.rangeCount>0){
@@ -836,17 +835,6 @@
           }else{
             dEdit.appendChild(img);
           }
-          return lid;
-        }catch(e){ return null; }
-      }
-      function uploadDescImage(dataUrl, contentType){
-        try{
-          if(!dataUrl){ return; }
-          var lid=insertDescPlaceholder(dataUrl);
-          if(!lid){ return; }
-          if(window.chrome&&window.chrome.webview){
-            window.chrome.webview.postMessage({type:'uploadDescImage', id:'{{WorkItemId}}', localId: lid, dataUrl: dataUrl, contentType: contentType||''});
-          }
         }catch(e){}
       }
       function readImageFile(file){
@@ -854,35 +842,16 @@
           if(!file||!file.type||file.type.indexOf('image/')!==0){ return; }
           var reader=new FileReader();
           reader.onload=function(evt){
-            try{ uploadDescImage(evt.target.result, file.type); }catch(ex){}
+            try{ insertDescImage(evt.target.result); }catch(ex){}
           };
           reader.readAsDataURL(file);
         }catch(e){}
       }
-      // 宿主上传完成回填：占位 img → 服务端真实地址（src 带 token 供本地显示，data-raw-src 存净地址）
-      window.descImageUploaded=function(localId, rawUrl, displayUrl){
-        try{
-          var im=dEdit?dEdit.querySelector('img[data-local-id="'+localId+'"]'):null;
-          if(!im){ return; }
-          im.removeAttribute('data-local-id');
-          im.removeAttribute('alt');
-          im.setAttribute('data-raw-src', rawUrl||'');
-          im.setAttribute('src', displayUrl||rawUrl||'');
-        }catch(e){}
-      };
       if(dBtn){ dBtn.addEventListener('click', enterEditMode); }
       if(dCancel){ dCancel.addEventListener('click', exitEditMode); }
       if(dSave){
         dSave.addEventListener('click',function(){
           try{
-            // 序列化：img 用 data-raw-src 净地址（不带访问令牌），避免把 token 写进服务端
-            var imgs=dEdit.querySelectorAll('img[data-raw-src]');
-            for(var i=0;i<imgs.length;i++){ imgs[i].setAttribute('src', imgs[i].getAttribute('data-raw-src')||''); imgs[i].removeAttribute('data-raw-src'); }
-            var pend=dEdit.querySelectorAll('img[data-local-id]');
-            if(pend.length>0){
-              alert('还有 '+pend.length+' 张图片正在上传，请稍候再保存');
-              return;
-            }
             var html=dEdit.innerHTML||'';
             if(window.chrome&&window.chrome.webview){
               window.chrome.webview.postMessage({type:'saveDescription', id:'{{WorkItemId}}', html: html});

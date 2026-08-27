@@ -1435,18 +1435,6 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                             descriptionUpdate = obj.Value<string>("html");
                             handleDescription = true;
                         }
-                        else if (string.Equals(type, "uploadDescImage", StringComparison.OrdinalIgnoreCase))
-                        {
-                            var descLocalId = obj.Value<string>("localId");
-                            var descDataUrl = obj.Value<string>("dataUrl");
-                            var descContentType = obj.Value<string>("contentType");
-                            if (!string.IsNullOrWhiteSpace(descLocalId) && !string.IsNullOrWhiteSpace(descDataUrl))
-                            {
-                                _ = HandleUploadDescImageAsync(descLocalId, descDataUrl, descContentType);
-                            }
-
-                            return;
-                        }
                         else if (string.Equals(type, "ready", StringComparison.OrdinalIgnoreCase))
                         {
                             handleReady = true;
@@ -1545,19 +1533,6 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                                 id = jobj.Value<string>("id") ?? Details.Id;
                                 descriptionUpdate = jobj.Value<string>("html");
                                 handleDescription = true;
-                            }
-                            else if (string.Equals(type, "uploadDescImage", StringComparison.OrdinalIgnoreCase))
-                            {
-                                LoggingService.LogDebug("[详情桥接] 描述图片消息走字符串包装分支");
-                                var descLocalId = jobj.Value<string>("localId");
-                                var descDataUrl = jobj.Value<string>("dataUrl");
-                                var descContentType = jobj.Value<string>("contentType");
-                                if (!string.IsNullOrWhiteSpace(descLocalId) && !string.IsNullOrWhiteSpace(descDataUrl))
-                                {
-                                    _ = HandleUploadDescImageAsync(descLocalId, descDataUrl, descContentType);
-                                }
-
-                                return;
                             }
                             else if (string.Equals(type, "ready", StringComparison.OrdinalIgnoreCase))
                             {
@@ -2657,66 +2632,6 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         catch
         {
             return html ?? "";
-        }
-    }
-
-    /// <summary>
-    /// 处理描述图片上传：base64 解码 → 工作项级附件上传 → 回填服务端地址（src 带令牌显示、data-raw-src 存净地址）。
-    /// </summary>
-    /// <param name="localId">页面占位 img 的本地标识。</param>
-    /// <param name="dataUrl">图片 base64 数据。</param>
-    /// <param name="contentType">MIME 类型。</param>
-    private async Task HandleUploadDescImageAsync(string localId, string dataUrl, string contentType)
-    {
-        try
-        {
-            LoggingService.LogDebug($"[详情桥接] 描述图片上传请求: localId={localId}，{(dataUrl ?? "").Length} 字符，type={contentType}");
-            string mime;
-            byte[] bytes;
-            if (!TryParseDataUrl(dataUrl, out mime, out bytes) || (bytes == null) || (bytes.Length == 0))
-            {
-                await MarkDescImageFailedAsync(localId);
-                return;
-            }
-
-            var ct = (mime ?? contentType ?? "").ToLowerInvariant();
-            var ext = "png";
-            if (ct.Contains("jpeg") || ct.Contains("jpg")) ext = "jpg";
-            else if (ct.Contains("gif")) ext = "gif";
-            else if (ct.Contains("bmp")) ext = "bmp";
-            else if (ct.Contains("webp")) ext = "webp";
-            else if (ct.Contains("svg")) ext = "svg";
-            var name = $"desc_{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.{ext}";
-            // 不传 principal：图片不挂入工作项附件列表，仅取公开 URL 内联嵌入描述 HTML
-            var uploaded = await api.UploadAttachmentViaApiAsync(bytes, name, mime ?? contentType);
-            var raw = uploaded?.Value<string>("download_url") ?? uploaded?.Value<string>("url");
-            if (string.IsNullOrWhiteSpace(raw))
-            {
-                await MarkDescImageFailedAsync(localId);
-                return;
-            }
-
-            RememberUploadedAttachment(uploaded);
-            var display = AppendAccessTokenQueryIfNeeded(raw, accessToken);
-            var script = "try{if(window.descImageUploaded){window.descImageUploaded('" + JsEscape(localId) + "','" + JsEscape(raw) + "','" + JsEscape(display) + "');}}catch(e){}";
-            await DetailsWeb.CoreWebView2.ExecuteScriptAsync(script);
-        }
-        catch (Exception ex)
-        {
-            LoggingService.LogError(ex, "[详情桥接] 描述图片上传失败");
-            await MarkDescImageFailedAsync(localId);
-        }
-    }
-
-    private async Task MarkDescImageFailedAsync(string localId)
-    {
-        try
-        {
-            var script = "try{var im=document.querySelector('#descEdit img[data-local-id=\"" + JsEscape(localId) + "\"]');if(im){im.remove();}}catch(e){}";
-            await DetailsWeb.CoreWebView2.ExecuteScriptAsync(script);
-        }
-        catch
-        {
         }
     }
 
