@@ -821,9 +821,23 @@
         }catch(e){}
       }
       // 图片以 data:URL 内联直存描述（自包含、永不过期、双端可渲染、不产生附件记录）
+      // 服务端实测上限：描述内 base64 累计约 64 万字符（约 470KB 图片总量），预留余量按 60 万拦截
+      var DESC_IMG_BUDGET = 600000;
+      function descDataUrlTotal(){
+        try{
+          var t=0;
+          var imgs=dEdit?dEdit.querySelectorAll('img[src^="data:image/"]'):[];
+          for(var i=0;i<imgs.length;i++){ t+=(imgs[i].getAttribute('src')||'').length; }
+          return t;
+        }catch(e){ return 0; }
+      }
       function insertDescImage(dataUrl){
         try{
           if(!dataUrl){ return; }
+          if(descDataUrlTotal()+dataUrl.length>DESC_IMG_BUDGET){
+            alert('图片总量超出描述存储上限（约 450KB）：\n当前已用 '+Math.round(descDataUrlTotal()/1024)+'KB，本张 '+Math.round(dataUrl.length/1024)+'KB。\n请减少图片数量或压缩/缩小图片后再试。');
+            return;
+          }
           var img=document.createElement('img');
           img.src=dataUrl;
           dEdit.focus();
@@ -832,6 +846,11 @@
             var range=sel.getRangeAt(0);
             range.collapse(false);
             range.insertNode(img);
+            // 折叠光标到图片之后：避免插入后图片呈选中高亮状态
+            range.setStartAfter(img);
+            range.collapse(true);
+            sel.removeAllRanges();
+            sel.addRange(range);
           }else{
             dEdit.appendChild(img);
           }
