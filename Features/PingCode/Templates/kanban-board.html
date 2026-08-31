@@ -53,6 +53,9 @@
   .col-meta { font-size: 12px; color: #64748B; margin-top: 5px; letter-spacing: .2px; }
   .col-body { padding: 2px; min-height: 60px; }
   .col.drag-over { background: #EFF6FF; border-color: #60A5FA; }
+/* 拖起卡片时的可达列预亮（弱高亮）：虚线描边示意"能放"，悬停强高亮仍由 drag-over 表达 */
+.col.can-drop { border-style: dashed; border-color: #93C5FD; background: #F8FBFF; }
+.col.can-drop.drag-over { border-style: solid; background: #EFF6FF; border-color: #60A5FA; }
 
   /* 卡片 */
   .card {
@@ -161,6 +164,25 @@
   var pendingRenderPayload = null;
   // 拖拽预校验：dragstart 时记录被拖卡片的可达列集合（空数组/未加载 = 不限制）
   var dragReachable = null;
+  var dragId = null;
+  // 拖起即预亮可达列：数据在 dragstart 已就绪，无需等悬停。空可达集=不限制→全列亮（与 drop 守卫语义一致）
+  function highlightReachableColumns(reach) {
+    try {
+      var cols = document.querySelectorAll('.col[data-category]');
+      var allowAll = !reach || reach.length === 0;
+      for (var i = 0; i < cols.length; i++) {
+        if (allowAll || reach.indexOf(cols[i].dataset.category) >= 0) {
+          cols[i].classList.add('can-drop');
+        }
+      }
+    } catch (e) { }
+  }
+  function clearReachableHighlight() {
+    try {
+      var cols = document.querySelectorAll('.col.can-drop');
+      for (var i = 0; i < cols.length; i++) cols[i].classList.remove('can-drop');
+    } catch (e) { }
+  }
 
   var CATEGORY_ORDER = ['未开始', '进行中', '可测试', '测试中', '已完成', '已关闭'];
   var SEVERITY_COLORS = { '致命': '#DC2626', '严重': '#DC2626', '主要': '#F59E0B', '一般': '#F59E0B', '次要': '#10B981', '轻微': '#10B981', '建议': '#10B981' };
@@ -241,15 +263,19 @@
       suppressClick = true;
       dragInProgress = true;
       dragReachable = (item.reachable || []).slice();
+      dragId = item.id;
       e.dataTransfer.setData('text/plain', item.id);
       e.dataTransfer.effectAllowed = 'move';
       card.classList.add('dragging');
+      highlightReachableColumns(dragReachable);
       // showDropbar(); // 快捷条暂不启用（短列等高拉伸后任意位置可直接拖放）
     });
     card.addEventListener('dragend', function () {
       card.classList.remove('dragging');
       dragInProgress = false;
       dragReachable = null;
+      dragId = null;
+      clearReachableHighlight();
       // hideDropbar(); // 快捷条暂不启用
       setTimeout(function () { suppressClick = false; }, 50);
       // 拖拽期间挂起的刷新在松手后应用，避免渲染移动节点打断进行中的拖拽
@@ -571,6 +597,12 @@
       entry.item.reachable = arr || [];
       if (entry.card && entry.card.dataset) {
         entry.card.dataset.sig = itemSig(entry.item);
+      }
+      // 正拖拽中的这张卡收到宿主可达集应答 → 实时收窄列预亮（覆盖冷启动预热未完就开拖的场景）
+      if (dragInProgress && dragId === id) {
+        dragReachable = (arr || []).slice();
+        clearReachableHighlight();
+        highlightReachableColumns(dragReachable);
       }
     } catch (e) {
       post({ type: 'renderError', message: 'applyReachable: ' + String(e && e.message || e) });
