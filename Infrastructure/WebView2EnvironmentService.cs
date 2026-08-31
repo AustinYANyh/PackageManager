@@ -51,11 +51,18 @@ namespace PackageManager.Infrastructure
         _ = GetDetailsEnvironmentAsync();
     }
 
-    private static async Task<CoreWebView2Environment> CreateAsync(string folderName)
-    {
-        var userDataFolder = Path.Combine(new DataPersistenceService().GetDataFolderPath(), folderName);
-        Directory.CreateDirectory(userDataFolder);
-        return await CoreWebView2Environment.CreateAsync(null, userDataFolder);
-    }
+        private static async Task<CoreWebView2Environment> CreateAsync(string folderName)
+        {
+            var userDataFolder = Path.Combine(new DataPersistenceService().GetDataFolderPath(), folderName);
+            Directory.CreateDirectory(userDataFolder);
+            // 禁用 Chromium 窗口遮挡检测与后台化：看板 WebView2 被详情窗完全遮挡数秒后，
+            // 合成器会被挂起省资源，弹窗关闭恢复渲染的瞬间产生整屏闪烁（GPU 合成层，与 DOM 渲染无关）。
+            // 代价是被遮挡期间不省渲染资源（轻微 CPU），换取关窗零闪。
+            var options = new CoreWebView2EnvironmentOptions
+            {
+                AdditionalBrowserArguments = "--disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-features=CalculateNativeWinOcclusion",
+            };
+            return await CoreWebView2Environment.CreateAsync(null, userDataFolder, options);
+        }
 }
 }

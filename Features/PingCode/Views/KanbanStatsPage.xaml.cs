@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Linq;
@@ -6,6 +7,7 @@ using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using PackageManager.Features.DailyLog.Services;
 using PackageManager.Models;
 using PackageManager.Services;
 using PackageManager.Services.PingCode;
@@ -19,6 +21,9 @@ namespace PackageManager.Views.KanBan;
 public partial class KanbanStatsPage : Page, ICentralPage, INotifyPropertyChanged
 {
     private readonly PingCodeApiService api;
+
+    /// <summary>迭代手选记忆（与工作日报逻辑同源、存储独立：kanban-stats 目录，两边手选互不干扰）。</summary>
+    private readonly DailyLogIterationStore iterationStore = new("kanban-stats");
 
     private bool loading;
 
@@ -117,7 +122,7 @@ public partial class KanbanStatsPage : Page, ICentralPage, INotifyPropertyChange
     }
 
     /// <summary>
-    /// 获取或设置当前选中的迭代。
+    /// 获取或设置当前选中的迭代。变化时持久化手选（独立存储；恢复默认时同样落盘——推荐即记忆）。
     /// </summary>
     public Entity SelectedIteration
     {
@@ -129,8 +134,29 @@ public partial class KanbanStatsPage : Page, ICentralPage, INotifyPropertyChange
             {
                 selectedIteration = value;
                 OnPropertyChanged();
+                PersistIterationSelection();
             }
         }
+    }
+
+    /// <summary>
+    /// 持久化当前迭代选择（含项目标识，供下次打开时按项目校验恢复）。
+    /// </summary>
+    private void PersistIterationSelection()
+    {
+        var iter = selectedIteration;
+        var proj = SelectedProject;
+        if ((iter == null) || string.IsNullOrWhiteSpace(iter.Id) || string.IsNullOrWhiteSpace(proj?.Id))
+        {
+            return;
+        }
+
+        iterationStore.Save(new DailyLogIterationSelection
+        {
+            ProjectId = proj.Id,
+            IterationId = iter.Id,
+            IterationName = iter.Name,
+        });
     }
 
     /// <summary>
@@ -345,12 +371,35 @@ public partial class KanbanStatsPage : Page, ICentralPage, INotifyPropertyChange
             // var iters = await api.GetOngoingIterationsByProjectAsync(proj.Id);
             var iters = await api.GetNotCompletedIterationsByProjectAsync(proj.Id);
             Iterations.Clear();
-            foreach (var it in iters.GroupBy(x => x.Id).Select(g => g.First()).OrderBy(x => x.Name ?? x.Id))
+            // 列表顺序与工作日报一致：最近开始在前（StartAt 降序），同级按名称
+            var ordered = (iters ?? new List<Entity>())
+                .Where(x => (x != null) && !string.IsNullOrWhiteSpace(x.Id))
+                .GroupBy(x => x.Id, StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.First())
+                .OrderByDescending(x => x.StartAt ?? long.MinValue)
+                .ThenBy(x => x.Name ?? x.Id, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            foreach (var it in ordered)
             {
                 Iterations.Add(it);
             }
 
-            SelectedIteration = Iterations.FirstOrDefault();
+            // 默认迭代与工作日报同源：上次手选（同项目才恢复）→ 今天落在起止区间 → 结束日最近的未来迭代 → 最近开始
+            var stored = iterationStore.Load();
+            var storedId = ((stored != null) && string.Equals(stored.ProjectId, SelectedProject?.Id, StringComparison.OrdinalIgnoreCase))
+                ? stored.IterationId
+                : null;
+            var recommended = PingCodeTodoService.SelectRecommendedIteration(ordered, storedId, DateTime.Today, out var storedMissing);
+            if (recommended != null)
+            {
+                SelectedIteration = recommended;
+            }
+
+            if (storedMissing && (recommended != null))
+            {
+                ResultTextContent = $"上次选择的迭代已结束，已切换为「{recommended.Name}」";
+            }
+
             StatsRows = new ObservableCollection<MemberStatsItem>();
         }
         catch (Exception ex)

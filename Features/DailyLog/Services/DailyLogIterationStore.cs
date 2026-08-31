@@ -5,7 +5,8 @@ using Newtonsoft.Json;
 namespace PackageManager.Features.DailyLog.Services
 {
     /// <summary>
-    /// 工作日报迭代选择存储，保存用户手选的项目与迭代，用于下次打开日报时恢复默认迭代。
+    /// 工作日报迭代选择存储，保存用户手选的项目与迭代，用于下次打开时恢复默认迭代。
+    /// 其他页面（如看板统计）可通过 <paramref name="storeKey"/> 指定独立存储目录，实现记忆互不干扰。
     /// </summary>
     public sealed class DailyLogIterationStore
     {
@@ -14,10 +15,12 @@ namespace PackageManager.Features.DailyLog.Services
         /// <summary>
         /// 初始化 <see cref="DailyLogIterationStore"/>。
         /// </summary>
-        public DailyLogIterationStore()
+        /// <param name="storeKey">存储目录名（%AppData%/PackageManager 下），默认 daily-log；传不同值即得独立记忆。</param>
+        public DailyLogIterationStore(string storeKey = "daily-log")
         {
             var appDataPath = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-            var appFolder = Path.Combine(appDataPath, "PackageManager", "daily-log");
+            var folderName = string.IsNullOrWhiteSpace(storeKey) ? "daily-log" : storeKey;
+            var appFolder = Path.Combine(appDataPath, "PackageManager", folderName);
             Directory.CreateDirectory(appFolder);
             selectionFilePath = Path.Combine(appFolder, "iteration.json");
         }

@@ -260,7 +260,8 @@ namespace PackageManager.Features.SubmitDefect.Views
                 Overlay.IsBusy = false;
             }
 
-            // 后台无感续期 PingCode cookie（不阻塞、不弹窗；失败时提交流程还有兜底续期）
+            // 后台无感续期 PingCode cookie（不阻塞、不弹窗；失败时提交流程还有兜底续期）。
+            // 探测结果同时校准登录按钮：有效=切换账号（cookie 活着）；失效=登录PingCode（一眼看出需重新登录）
             if (new PingCodeCookieManager().HasStoredCookies())
             {
                 _ = Task.Run(async () =>
@@ -268,16 +269,21 @@ namespace PackageManager.Features.SubmitDefect.Views
                     try
                     {
                         var fresh = await new PingCodeSessionService().EnsureFreshCookieAsync();
-                        if (string.IsNullOrWhiteSpace(fresh))
+                        await Dispatcher.InvokeAsync(new Action(() =>
                         {
-                            await Dispatcher.InvokeAsync(new Action(() =>
+                            if (string.IsNullOrWhiteSpace(fresh))
                             {
+                                LoginButtonText = "登录PingCode";
                                 if (StatusText == "就绪：粘贴内容后点提交")
                                 {
                                     StatusText = "PingCode 示意图登录态已过期，提交时将自动尝试续期";
                                 }
-                            }));
-                        }
+                            }
+                            else
+                            {
+                                LoginButtonText = "切换账号";
+                            }
+                        }));
                     }
                     catch (Exception ex)
                     {
