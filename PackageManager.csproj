@@ -238,6 +238,7 @@
         <Compile Include="Features\SubmitDefect\Services\PingCodeWorkItemCreatorService.cs" />
         <Compile Include="Features\SubmitDefect\Services\PingCodeCookieManager.cs" />
         <Compile Include="Features\SubmitDefect\Services\PingCodeAtlasUploader.cs" />
+        <Compile Include="Features\SubmitDefect\Services\PingCodeSessionService.cs" />
         <Page Include="Features\SubmitDefect\Views\PingCodeLoginWindow.xaml" />
         <Compile Include="Features\SubmitDefect\Views\PingCodeLoginWindow.xaml.cs" />
         <Page Include="Features\PingCode\Views\PingCodeAiExecutionWindow.xaml">

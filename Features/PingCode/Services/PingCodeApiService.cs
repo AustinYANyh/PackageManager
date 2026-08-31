@@ -1143,6 +1143,62 @@ public partial class PingCodeApiService
     }
 
     /// <summary>
+    /// 查询项目内「任务」工作项类型的真实 type_id。
+    /// 创建任务时 POST body 的 type_id 不能用 "task" 短名（AI 拆解实测 PingCode 不接受），须用项目内类型 ID；
+    /// 匹配规则与 AI 拆解指南一致：name 为「任务」或包含「任务」、display_name 为 task，精确匹配优先。
+    /// </summary>
+    /// <param name="projectId">项目唯一标识。</param>
+    /// <returns>「任务」类型 ID；未找到返回 null（调用方可回退 "task" 短名）。查询失败抛异常。</returns>
+    public async Task<string> GetTaskTypeIdAsync(string projectId)
+    {
+        if (string.IsNullOrWhiteSpace(projectId))
+        {
+            return null;
+        }
+
+        string exact = null;
+        string contains = null;
+        var pageIndex = 0;
+        while (true)
+        {
+            var url = $"https://open.pingcode.com/v1/project/work_item_types?project_id={Uri.EscapeDataString(projectId)}&page_size=100&page_index={pageIndex}";
+            var json = await GetJsonAsync(url);
+            var values = json?["values"] as JArray;
+            if (values != null)
+            {
+                foreach (var item in values.OfType<JObject>())
+                {
+                    var id = item.Value<string>("id");
+                    if (string.IsNullOrWhiteSpace(id))
+                    {
+                        continue;
+                    }
+
+                    var name = (item.Value<string>("name") ?? string.Empty).Trim();
+                    var displayName = (item.Value<string>("display_name") ?? string.Empty).Trim();
+                    if ((name == "任务") || string.Equals(displayName, "task", StringComparison.OrdinalIgnoreCase))
+                    {
+                        exact ??= id;
+                    }
+                    else if (name.Contains("任务") || (displayName.IndexOf("task", StringComparison.OrdinalIgnoreCase) >= 0))
+                    {
+                        contains ??= id;
+                    }
+                }
+            }
+
+            var total = json?.Value<int?>("total") ?? 0;
+            pageIndex++;
+            if ((pageIndex * 100) >= total || values == null)
+            {
+                break;
+            }
+        }
+
+        return exact ?? contains;
+    }
+
+    /// <summary>
     /// 获取工作项的完整详细信息（兼容多个端点，包含评论与图片令牌）。
     /// </summary>
     /// <param name="workItemId">工作项的唯一标识。</param>

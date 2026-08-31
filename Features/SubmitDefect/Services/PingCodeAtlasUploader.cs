@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Threading.Tasks;
@@ -39,6 +40,112 @@ namespace PackageManager.Features.SubmitDefect.Services
         public bool IsReady => !string.IsNullOrWhiteSpace(_cookie);
 
         /// <summary>
+        /// 探测 Cookie 是否有效（调 upload-token 轻量请求，size=1 不产生真实上传）。
+        /// 有效时返回最新的 rawCookie（含服务端响应 Set-Cookie 换发的新 session 值），无效返回 null。
+        /// </summary>
+        public async Task<string> ProbeCookieAsync()
+        {
+            if (!IsReady)
+            {
+                return null;
+            }
+
+            try
+            {
+                var container = new System.Net.CookieContainer();
+                var request = BuildTokenRequest(1, container);
+                using (var resp = await Task.Factory.FromAsync(request.BeginGetResponse, request.EndGetResponse, null))
+                {
+                    var httpResp = (System.Net.HttpWebResponse)resp;
+                    var txt = new System.IO.StreamReader(resp.GetResponseStream()).ReadToEnd();
+                    if (httpResp.StatusCode != System.Net.HttpStatusCode.OK)
+                    {
+                        LoggingService.LogInfo($"[AtlasUploader] Cookie 探测失败 HTTP {(int)httpResp.StatusCode}");
+                        return null;
+                    }
+
+                    var jobj = string.IsNullOrWhiteSpace(txt) ? null : JObject.Parse(txt);
+                    if (string.IsNullOrWhiteSpace(jobj?["data"]?.Value<string>("value")))
+                    {
+                        LoggingService.LogInfo("[AtlasUploader] Cookie 探测失败：响应未含 data.value");
+                        return null;
+                    }
+
+                    // 探测请求本身会触发服务端会话续期/换发；从容器提取 s- 开头 session cookie（含换发新值）
+                    return ExtractSessionCookie(container) ?? _cookie;
+                }
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, "[AtlasUploader] Cookie 探测异常");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// 从 CookieContainer 提取 pingcode 域下 s- 开头的 session cookie（rawCookie 形式）；无则 null。
+        /// </summary>
+        private static string ExtractSessionCookie(System.Net.CookieContainer container)
+        {
+            string raw = null;
+            foreach (var c in container.GetCookies(new Uri("https://hongwa.pingcode.com/")).Cast<System.Net.Cookie>())
+            {
+                if (!string.IsNullOrEmpty(c?.Name) && c.Name.StartsWith("s-", StringComparison.Ordinal))
+                {
+                    raw = (raw == null) ? $"{c.Name}={c.Value}" : raw + "; " + $"{c.Name}={c.Value}";
+                }
+            }
+
+            return raw;
+        }
+
+        /// <summary>
+        /// 构建 upload-token 请求（Cookie 由 container 统一管理，响应 Set-Cookie 自动回收到容器）。
+        /// </summary>
+        private System.Net.HttpWebRequest BuildTokenRequest(long size, System.Net.CookieContainer container)
+        {
+            var t = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            var url = $"{UploadTokenUrl}?scope=3&size={size}&t={t}";
+
+            // 用 HttpWebRequest + CookieContainer.Add（不用手动 Cookie header——.NET FW 4.7 的 HttpWebRequest
+            // 手动 Cookie header 会被拦截，curl 能传 C# 传不了，导致 code=401 token not found）
+            var request = (System.Net.HttpWebRequest)System.Net.WebRequest.Create(url);
+            request.Method = "GET";
+            request.Accept = "application/json, text/plain, */*";
+            request.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
+            request.Referer = "https://hongwa.pingcode.com/";
+            request.CookieContainer = container ?? new System.Net.CookieContainer();
+
+            if (!string.IsNullOrWhiteSpace(_cookie))
+            {
+                var added = 0;
+                foreach (var part in _cookie.Split(';'))
+                {
+                    var trimmed = part.Trim();
+                    var eq = trimmed.IndexOf('=');
+                    if (eq > 0)
+                    {
+                        var name = trimmed.Substring(0, eq).Trim();
+                        var value = trimmed.Substring(eq + 1).Trim();
+                        try
+                        {
+                            request.CookieContainer.Add(new Uri(url), new System.Net.Cookie(name, value));
+                            added++;
+                        }
+                        catch (Exception cex)
+                        {
+                            LoggingService.LogInfo($"[AtlasUploader] cookie 添加失败 name={name}: {cex.Message}");
+                        }
+                    }
+                }
+
+                LoggingService.LogInfo($"[AtlasUploader] CookieContainer 添加 {added} 个 cookie");
+            }
+
+            return request;
+        }
+
+        /// <summary>
         /// 上传图片字节，返回 atlas 永久公开 URL。
         /// </summary>
         /// <param name="data">图片字节。</param>
@@ -77,43 +184,7 @@ namespace PackageManager.Features.SubmitDefect.Services
             try
             {
                 LoggingService.LogInfo($"[AtlasUploader] upload-token 请求：cookie长度={_cookie?.Length ?? 0}, size={size}");
-                var t = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                var url = $"{UploadTokenUrl}?scope=3&size={size}&t={t}";
-
-                // 用 HttpWebRequest + CookieContainer.Add（不用手动 Cookie header——.NET FW 4.7 的 HttpWebRequest
-                // 手动 Cookie header 会被拦截，curl 能传 C# 传不了，导致 code=401 token not found）
-                var request = (System.Net.HttpWebRequest)System.Net.WebRequest.Create(url);
-                request.Method = "GET";
-                request.Accept = "application/json, text/plain, */*";
-                request.UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
-                request.Referer = "https://hongwa.pingcode.com/";
-
-                // 用 CookieContainer 管理 cookie（标准方式，确保 cookie 发出）
-                request.CookieContainer = new System.Net.CookieContainer();
-                if (!string.IsNullOrWhiteSpace(_cookie))
-                {
-                    var added = 0;
-                    foreach (var part in _cookie.Split(';'))
-                    {
-                        var trimmed = part.Trim();
-                        var eq = trimmed.IndexOf('=');
-                        if (eq > 0)
-                        {
-                            var name = trimmed.Substring(0, eq).Trim();
-                            var value = trimmed.Substring(eq + 1).Trim();
-                            try
-                            {
-                                request.CookieContainer.Add(new Uri(url), new System.Net.Cookie(name, value));
-                                added++;
-                            }
-                            catch (Exception cex)
-                            {
-                                LoggingService.LogInfo($"[AtlasUploader] cookie 添加失败 name={name}: {cex.Message}");
-                            }
-                        }
-                    }
-                    LoggingService.LogInfo($"[AtlasUploader] CookieContainer 添加 {added} 个 cookie");
-                }
+                var request = BuildTokenRequest(size, null);
 
                 using (var resp = await Task.Factory.FromAsync(request.BeginGetResponse, request.EndGetResponse, null))
                 {

@@ -23,7 +23,7 @@ namespace PackageManager.Features.SubmitDefect.Views
 {
     /// <summary>
     /// 提交工作项页面：粘贴群聊内容（文字+图片+视频+任意文件），程序自动提取文字→描述、图/动图→示意图、
-    /// 视频/文件→附件，一键提交到当前项目（建模组）的进行中迭代。
+    /// 视频/文件→附件，一键提交到当前项目（建模组）的进行中迭代。任务类型无示意图字段，图片/动图改追加到描述。
     /// </summary>
     public partial class SubmitDefectPage : Page, INotifyPropertyChanged
     {
@@ -48,7 +48,7 @@ namespace PackageManager.Features.SubmitDefect.Views
         {
             InitializeComponent();
             creator = new PingCodeWorkItemCreatorService(api);
-            TypeNames = new ObservableCollection<string> { "缺陷", "故事" };
+            TypeNames = new ObservableCollection<string> { "缺陷", "故事", "任务" };
             selectedTypeName = "缺陷";
             LoginButtonText = new PingCodeCookieManager().HasStoredCookies() ? "切换账号" : "登录PingCode";
             DataContext = this;
@@ -69,7 +69,7 @@ namespace PackageManager.Features.SubmitDefect.Views
         /// <summary>工作项类型可选项。</summary>
         public ObservableCollection<string> TypeNames { get; }
 
-        /// <summary>当前选中的工作项类型名称（缺陷/故事）。</summary>
+        /// <summary>当前选中的工作项类型名称（缺陷/故事/任务）。</summary>
         public string SelectedTypeName
         {
             get => selectedTypeName;
@@ -79,9 +79,18 @@ namespace PackageManager.Features.SubmitDefect.Views
                 {
                     selectedTypeName = value;
                     OnPropertyChanged();
+                    OnPropertyChanged(nameof(ImagesSectionTitle));
                 }
             }
         }
+
+        /// <summary>当前是否选中「任务」类型（无示意图字段，图片提交时追加到描述）。</summary>
+        private bool IsTaskSelected => string.Equals(selectedTypeName, "任务", StringComparison.Ordinal);
+
+        /// <summary>示意图区标题：任务类型时提示图片将追加到描述，其余类型保持原文。</summary>
+        public string ImagesSectionTitle => IsTaskSelected
+            ? "示意图（图 / 动图，任务将追加到描述）"
+            : "示意图（图 / 动图）";
 
         /// <summary>当前选中的项目。</summary>
         public Entity SelectedProject
@@ -249,6 +258,32 @@ namespace PackageManager.Features.SubmitDefect.Views
             {
                 loading = false;
                 Overlay.IsBusy = false;
+            }
+
+            // 后台无感续期 PingCode cookie（不阻塞、不弹窗；失败时提交流程还有兜底续期）
+            if (new PingCodeCookieManager().HasStoredCookies())
+            {
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        var fresh = await new PingCodeSessionService().EnsureFreshCookieAsync();
+                        if (string.IsNullOrWhiteSpace(fresh))
+                        {
+                            await Dispatcher.InvokeAsync(new Action(() =>
+                            {
+                                if (StatusText == "就绪：粘贴内容后点提交")
+                                {
+                                    StatusText = "PingCode 示意图登录态已过期，提交时将自动尝试续期";
+                                }
+                            }));
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        LoggingService.LogError(ex, "PingCode cookie 后台续期异常");
+                    }
+                });
             }
         }
 
@@ -514,7 +549,9 @@ namespace PackageManager.Features.SubmitDefect.Views
                     var msg = "已创建 " + result.Identifier;
                     if ((Images.Count > 0) && !result.ShiyituWritten)
                     {
-                        msg += "\n（示意图字段未写入，图片已作为附件关联到工作项）";
+                        msg += string.Equals(typeName, "任务", StringComparison.Ordinal)
+                            ? "\n（图片未追加到任务描述，详见明细）"
+                            : "\n（示意图字段未写入，图片已作为附件关联到工作项）";
                     }
 
                     var problems = result.Steps.Where(s => s.Contains("失败") || s.Contains("异常") || s.Contains("未取到")).ToList();

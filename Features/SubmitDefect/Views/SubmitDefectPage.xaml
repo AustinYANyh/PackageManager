@@ -69,7 +69,7 @@
 
                         <!-- 示意图（图/动图）-->
                         <StackPanel Margin="0,12,0,0">
-                            <controls:CTextBlock Text="示意图（图 / 动图）" Foreground="#888" />
+                            <controls:CTextBlock Text="{Binding ImagesSectionTitle}" Foreground="#888" />
                             <ItemsControl ItemsSource="{Binding Images}" Margin="0,4,0,0">
                                 <ItemsControl.ItemsPanel>
                                     <ItemsPanelTemplate>

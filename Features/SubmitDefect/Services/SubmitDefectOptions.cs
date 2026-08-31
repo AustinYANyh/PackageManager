@@ -14,7 +14,7 @@ namespace PackageManager.Features.SubmitDefect.Services
         /// <summary>迭代（冲刺）标识。</summary>
         public string IterationId { get; set; }
 
-        /// <summary>工作项类型名称：缺陷 或 故事。</summary>
+        /// <summary>工作项类型名称：缺陷、故事 或 任务。</summary>
         public string WorkItemType { get; set; }
 
         /// <summary>标题。</summary>

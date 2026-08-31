@@ -12,26 +12,31 @@ using PackageManager.Services.PingCode;
 namespace PackageManager.Features.SubmitDefect.Services
 {
     /// <summary>
-    /// PingCode 工作项（缺陷/故事）创建编排服务：创建工作项 → 上传图片并关联 → 写入示意图字段。
+    /// PingCode 工作项（缺陷/故事/任务）创建编排服务：创建工作项 → 上传图片并关联 → 缺陷/故事写示意图字段、任务把图片追加到描述。
     /// </summary>
     /// <remarks>
     /// 图片以 base64 编码嵌入 shiyitu（img 的 data URL），永久显示、不依赖外部 URL（实测 PingCode 网页端正常渲染）；
     /// 视频/任意文件仍走 /v1/attachments 附件关联。流程：创建工作项 → 写 shiyitu（图片 base64）→ 上传附件（视频/文件）。
+    /// 任务类型没有示意图（shiyitu）字段，图片 atlas 上传后以 HTML 追加到描述末尾。
     /// </remarks>
     public class PingCodeWorkItemCreatorService
     {
         private const string DefaultDescription = "<p>-</p>";
 
         /// <summary>
-        /// 工作项类型名称到 PingCode 系统类型标识的映射（系统类型 id 稳定，无需查端点）。
+        /// 工作项类型名称到 PingCode 系统类型标识的映射。
+        /// 缺陷/故事用系统类型 id（稳定，无需查端点）；任务的 type_id 不能用 "task" 短名，
+        /// 须在 CreateAsync 里查项目内真实类型 ID（见 <see cref="PingCodeApiService.GetTaskTypeIdAsync"/>）。
         /// </summary>
         private static readonly Dictionary<string, string> WorkItemTypeIds =
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             {
                 { "缺陷", "bug" },
                 { "故事", "story" },
+                { "任务", "task" },
                 { "bug", "bug" },
                 { "story", "story" },
+                { "task", "task" },
             };
 
         private readonly PingCodeApiService api;
@@ -81,6 +86,30 @@ namespace PackageManager.Features.SubmitDefect.Services
                     typeId = "bug";
                 }
 
+                var isTask = string.Equals(typeId, "task", StringComparison.OrdinalIgnoreCase);
+
+                // 任务类型的 type_id 不能用 "task" 短名（AI 拆解实测 PingCode 不接受），
+                // 须查项目内「任务」类型的真实 ID；查询失败/未命中时回退 "task" 并在步骤明细中提示
+                if (isTask)
+                {
+                    try
+                    {
+                        var taskTypeId = await api.GetTaskTypeIdAsync(options.ProjectId);
+                        if (!string.IsNullOrWhiteSpace(taskTypeId))
+                        {
+                            typeId = taskTypeId;
+                        }
+                        else
+                        {
+                            res.Steps.Add("项目内未查到「任务」类型，回退 type_id=task（可能创建失败）");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        res.Steps.Add($"查询「任务」类型失败，回退 type_id=task：{ex.Message}");
+                    }
+                }
+
                 Report("正在创建工作项…");
                 var body = new JObject
                 {
@@ -110,6 +139,7 @@ namespace PackageManager.Features.SubmitDefect.Services
                 var cookieManager = new PingCodeCookieManager();
                 var cookie = await cookieManager.LoadCookiesAsync();
                 var atlasUploader = new PingCodeAtlasUploader(cookie);
+                var sessionRefreshed = false; // 整次提交只静默续期一次（避免每张图重复起 WebView2）
 
                 if (atlasUploader.IsReady)
                 {
@@ -121,6 +151,24 @@ namespace PackageManager.Features.SubmitDefect.Services
                         try
                         {
                             var atlasUrl = await atlasUploader.UploadAsync(img.Data, img.FileName, img.ContentType);
+
+                            // 上传失败可能是 cookie 过期：静默续期（探测+隐藏 WebView2）后自动重试一次，用户无感
+                            if (string.IsNullOrWhiteSpace(atlasUrl) && !sessionRefreshed)
+                            {
+                                sessionRefreshed = true;
+                                Report("示意图上传未成功，正在自动续期 PingCode 会话…");
+                                var fresh = await new PingCodeSessionService().EnsureFreshCookieAsync(force: true);
+                                if (!string.IsNullOrWhiteSpace(fresh))
+                                {
+                                    atlasUploader = new PingCodeAtlasUploader(fresh);
+                                    atlasUrl = await atlasUploader.UploadAsync(img.Data, img.FileName, img.ContentType);
+                                    if (!string.IsNullOrWhiteSpace(atlasUrl))
+                                    {
+                                        res.Steps.Add("Cookie 已自动续期，重试上传成功");
+                                    }
+                                }
+                            }
+
                             if (!string.IsNullOrWhiteSpace(atlasUrl))
                             {
                                 img.PublicUrl = atlasUrl;
@@ -142,23 +190,35 @@ namespace PackageManager.Features.SubmitDefect.Services
                     }
                 }
 
-                var shiyitu = BuildShiyituHtml(images);
-                if (!string.IsNullOrWhiteSpace(shiyitu))
+                var imageHtml = isTask ? BuildDescriptionImageHtml(images) : BuildShiyituHtml(images);
+                if (!string.IsNullOrWhiteSpace(imageHtml))
                 {
-                    Report("正在写入示意图…");
+                    Report(isTask ? "正在把图片追加到描述…" : "正在写入示意图…");
                     try
                     {
-                        await api.UpdateWorkItemAsync(res.WorkItemId,
-                            new JObject { ["properties"] = new JObject { ["shiyitu"] = shiyitu } });
-                        res.ShiyituWritten = true;
-                        res.Steps.Add(atlasUploader.IsReady
-                            ? "示意图已写入（atlas 永久 URL）"
-                            : "示意图已写入（base64 内嵌，未登录 PingCode；大图可能超字段上限，请在提交工作项页登录 PingCode 走 atlas）");
+                        if (isTask)
+                        {
+                            // 任务无示意图字段（shiyitu），图片 HTML 追加到描述末尾
+                            var baseDesc = string.IsNullOrWhiteSpace(options.DescriptionHtml) ? DefaultDescription : options.DescriptionHtml;
+                            await api.UpdateWorkItemAsync(res.WorkItemId,
+                                new JObject { ["description"] = baseDesc + imageHtml });
+                            res.ShiyituWritten = true;
+                            res.Steps.Add("图片已追加到任务描述（atlas 永久 URL）");
+                        }
+                        else
+                        {
+                            await api.UpdateWorkItemAsync(res.WorkItemId,
+                                new JObject { ["properties"] = new JObject { ["shiyitu"] = imageHtml } });
+                            res.ShiyituWritten = true;
+                            res.Steps.Add(atlasUploader.IsReady
+                                ? "示意图已写入（atlas 永久 URL）"
+                                : "示意图已写入（base64 内嵌，未登录 PingCode；大图可能超字段上限，请在提交工作项页登录 PingCode 走 atlas）");
+                        }
                     }
                     catch (Exception ex)
                     {
                         res.ShiyituWritten = false;
-                        res.Steps.Add($"示意图写入失败：{ex.Message}");
+                        res.Steps.Add(isTask ? $"图片追加到描述失败：{ex.Message}" : $"示意图写入失败：{ex.Message}");
                     }
                 }
 
@@ -234,6 +294,36 @@ namespace PackageManager.Features.SubmitDefect.Services
                 //    var b64 = Convert.ToBase64String(img.Data);
                 //    sb.Append($"<div class=\"sketch-image\"><img src=\"data:{mime};base64,{b64}\" alt=\"{encodedAlt}\""/></div>");
                 //}
+            }
+
+            return sb.Length == 0 ? null : sb.ToString();
+        }
+
+        /// <summary>
+        /// 构建任务描述用的图片 HTML：1:1 复刻 PingCode 网页编辑器插图的标签结构——
+        /// src + originUrl（{url}/origin-url 原图端点）+ alt + size + style，无外层包装。
+        /// 缺 originUrl/size 或带 div 包装时，网页端点开预览会得到透明占位图，
+        /// 富文本编辑器解析失败还可能在交互保存时把描述整个抹空（实测 JD_GROUP-7216）。
+        /// </summary>
+        private static string BuildDescriptionImageHtml(IList<PastedImage> images)
+        {
+            if ((images == null) || (images.Count == 0))
+            {
+                return null;
+            }
+
+            var sb = new StringBuilder();
+            foreach (var img in images)
+            {
+                if ((img == null) || string.IsNullOrWhiteSpace(img.PublicUrl))
+                {
+                    continue;
+                }
+
+                var encodedUrl = WebUtility.HtmlEncode(img.PublicUrl);
+                var encodedAlt = WebUtility.HtmlEncode(string.IsNullOrWhiteSpace(img.FileName) ? "示意图" : img.FileName);
+                var size = (img.Data == null) ? 0 : img.Data.Length;
+                sb.Append($"<img src=\"{encodedUrl}\" originUrl=\"{encodedUrl}/origin-url\" alt=\"{encodedAlt}\" size=\"{size}\" style=\"text-align: center;\" />");
             }
 
             return sb.Length == 0 ? null : sb.ToString();
