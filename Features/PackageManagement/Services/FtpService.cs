@@ -30,8 +30,13 @@ namespace PackageManager.Services
         /// <returns>文件夹名称列表</returns>
         public async Task<List<string>> GetDirectoriesAsync(string serverUrl, string username = null, string password = null)
         {
-            ResolveDefaultCredentials(ref username, ref password);
-            return await Task.Run(() => GetDirectories(serverUrl, username, password));
+            // 凭证解析（内部会读设置文件）一并放入后台：同步段留在 UI 上下文会在调用方
+            //（版本监控/更新检查等周期任务）抢占 UI 线程，实测造成其他窗口渲染排队秒级
+            return await Task.Run(() =>
+            {
+                ResolveDefaultCredentials(ref username, ref password);
+                return GetDirectories(serverUrl, username, password);
+            });
         }
 
         /// <summary>
@@ -43,8 +48,11 @@ namespace PackageManager.Services
         /// <returns>文件名称列表（按时间排序）</returns>
         public async Task<List<string>> GetFilesAsync(string serverUrl, string username = null, string password = null)
         {
-            ResolveDefaultCredentials(ref username, ref password);
-            return await Task.Run(() => GetFiles(serverUrl, username, password));
+            return await Task.Run(() =>
+            {
+                ResolveDefaultCredentials(ref username, ref password);
+                return GetFiles(serverUrl, username, password);
+            });
         }
 
         private static void ResolveDefaultCredentials(ref string username, ref string password)

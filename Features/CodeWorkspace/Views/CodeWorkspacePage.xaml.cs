@@ -1554,21 +1554,38 @@ Set-Location -LiteralPath {PsQuote(repo.Path)}
                 "-c core.quotepath=false diff --name-only --diff-filter=U",
                 workingDirectory,
                 TimeSpan.FromSeconds(30));
-            foreach (var path in SplitCommandLines(unmergedResult.Output))
+            var unmergedFiles = SplitCommandLines(unmergedResult.Output);
+            foreach (var path in unmergedFiles)
             {
                 AddGitConflict(result, stepResult, $"{label}: {path}");
             }
 
-            var markerResult = await RunCommandAsync(
-                "git",
-                "-c core.quotepath=false grep -n \"^<<<<<<< \" -- .",
-                workingDirectory,
-                TimeSpan.FromSeconds(30));
-            if (markerResult.ExitCode == 0)
+            if (unmergedFiles.Count > 0)
             {
-                foreach (var marker in ParseGitGrepPaths(markerResult.Output))
+                // 仅对未合并文件扫冲突标记：干净仓库零开销（原实现对全仓受跟踪文件无条件全树扫描，
+                // 万文件级仓库每次拉取附加数秒至数十秒）；未合并文件过多时防命令行超限，回退原全树行为
+                string markerArgs;
+                if (unmergedFiles.Count <= 100)
                 {
-                    AddMarkerConflict(result, stepResult, $"{label}: {marker}");
+                    var quoted = string.Join(" ", unmergedFiles.Select(p => "\"" + p + "\""));
+                    markerArgs = "-c core.quotepath=false grep -n \"^<<<<<<< \" -- " + quoted;
+                }
+                else
+                {
+                    markerArgs = "-c core.quotepath=false grep -n \"^<<<<<<< \" -- .";
+                }
+
+                var markerResult = await RunCommandAsync(
+                    "git",
+                    markerArgs,
+                    workingDirectory,
+                    TimeSpan.FromSeconds(30));
+                if (markerResult.ExitCode == 0)
+                {
+                    foreach (var marker in ParseGitGrepPaths(markerResult.Output))
+                    {
+                        AddMarkerConflict(result, stepResult, $"{label}: {marker}");
+                    }
                 }
             }
         }

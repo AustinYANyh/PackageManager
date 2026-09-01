@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Media;
@@ -31,50 +32,28 @@ namespace PackageManager.Features.CodeWorkspace.Services
             {
                 var totalStopwatch = Stopwatch.StartNew();
                 var oldReadStopwatch = Stopwatch.StartNew();
-                string oldText;
-                string newText;
-                if (file.VcsType == VcsType.Git)
+                var workingReadStopwatch = Stopwatch.StartNew();
+                // 新旧文本来源互相独立（git show/svn cat 子进程 vs 本地文件读取），并行取回省一半等待
+                var oldTask = LoadOldTextWithCacheAsync(file);
+                var newTask = Task.Run(() => LoadWorkingText(file, isOldSide: false));
+                await Task.WhenAll(oldTask, newTask);
+                var oldText = oldTask.Result;
+                var newText = newTask.Result;
+                oldReadStopwatch.Stop();
+                workingReadStopwatch.Stop();
+                var diffStopwatch = Stopwatch.StartNew();
+                // 换行标准化后再比较：git 对象库输出为 LF，Windows 工作区文件多为 CRLF，
+                // 若不统一，行级比较会把每一行都判为变更（diff 全红绿、仅差异视图退化为全量渲染、秒级卡顿）
+                var diffRows = BuildDiffRows(NormalizeLineEndings(oldText), NormalizeLineEndings(newText));
+                diffStopwatch.Stop();
+                totalStopwatch.Stop();
+                return DiffContentResult.Ok(oldText ?? string.Empty, newText ?? string.Empty, diffRows, new DiffTiming
                 {
-                    oldText = await LoadGitOldTextAsync(file);
-                    oldReadStopwatch.Stop();
-                    var workingReadStopwatch = Stopwatch.StartNew();
-                    newText = LoadWorkingText(file, isOldSide: false);
-                    workingReadStopwatch.Stop();
-                    var diffStopwatch = Stopwatch.StartNew();
-                    var diffRows = BuildDiffRows(oldText, newText);
-                    diffStopwatch.Stop();
-                    totalStopwatch.Stop();
-                    return DiffContentResult.Ok(oldText ?? string.Empty, newText ?? string.Empty, diffRows, new DiffTiming
-                    {
-                        OldReadMs = oldReadStopwatch.ElapsedMilliseconds,
-                        WorkingReadMs = workingReadStopwatch.ElapsedMilliseconds,
-                        DiffBuildMs = diffStopwatch.ElapsedMilliseconds,
-                        TotalLoadMs = totalStopwatch.ElapsedMilliseconds,
-                    });
-                }
-                else if (file.VcsType == VcsType.Svn)
-                {
-                    oldText = await LoadSvnOldTextAsync(file);
-                    oldReadStopwatch.Stop();
-                    var workingReadStopwatch = Stopwatch.StartNew();
-                    newText = LoadWorkingText(file, isOldSide: false);
-                    workingReadStopwatch.Stop();
-                    var diffStopwatch = Stopwatch.StartNew();
-                    var diffRows = BuildDiffRows(oldText, newText);
-                    diffStopwatch.Stop();
-                    totalStopwatch.Stop();
-                    return DiffContentResult.Ok(oldText ?? string.Empty, newText ?? string.Empty, diffRows, new DiffTiming
-                    {
-                        OldReadMs = oldReadStopwatch.ElapsedMilliseconds,
-                        WorkingReadMs = workingReadStopwatch.ElapsedMilliseconds,
-                        DiffBuildMs = diffStopwatch.ElapsedMilliseconds,
-                        TotalLoadMs = totalStopwatch.ElapsedMilliseconds,
-                    });
-                }
-                else
-                {
-                    return DiffContentResult.Error("不支持的版本控制类型。");
-                }
+                    OldReadMs = oldReadStopwatch.ElapsedMilliseconds,
+                    WorkingReadMs = workingReadStopwatch.ElapsedMilliseconds,
+                    DiffBuildMs = diffStopwatch.ElapsedMilliseconds,
+                    TotalLoadMs = totalStopwatch.ElapsedMilliseconds,
+                });
             }
             catch (BinaryFileException)
             {
@@ -88,6 +67,89 @@ namespace PackageManager.Features.CodeWorkspace.Services
             {
                 return DiffContentResult.Error(ex.Message);
             }
+        }
+
+        /// <summary>旧文本窗口级缓存容量上限：典型源码文件数十 KB，300 条内存约 10MB 级，防极端变更列表失控。</summary>
+        private const int OldTextCacheCapacity = 300;
+
+        /// <summary>旧文本缓存（key: vcs|工作目录|相对路径）：同窗口内重复查看同一文件不再重跑 git show/svn cat
+        ///（子进程取旧文本是 diff 打开耗时的主体，尤以冷启动为甚）。仅窗口实例内有效，重开窗口自然重新拉取。</summary>
+        private readonly Dictionary<string, string> _oldTextCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        private static string BuildOldTextCacheKey(VcsChangedFile file)
+        {
+            return $"{file.VcsType}|{file.WorkingDirectory ?? string.Empty}|{(file.OriginalRelativePath ?? file.RelativePath ?? string.Empty).Replace('\\', '/')}";
+        }
+
+        /// <summary>
+        /// 带缓存的旧文本加载：命中直接返回；未命中跑子进程取回并写缓存。
+        /// 子进程失败（exit != 0）返回空串且不写缓存，保留下次重试能力。
+        /// </summary>
+        private async Task<string> LoadOldTextWithCacheAsync(VcsChangedFile file)
+        {
+            var key = BuildOldTextCacheKey(file);
+            if (_oldTextCache.TryGetValue(key, out var cached))
+            {
+                return cached;
+            }
+
+            var text = file.VcsType == VcsType.Git
+                ? await LoadGitOldTextAsync(file)
+                : await LoadSvnOldTextAsync(file);
+            if ((text != null) && (_oldTextCache.Count < OldTextCacheCapacity))
+            {
+                _oldTextCache[key] = text;
+            }
+
+            return text ?? string.Empty;
+        }
+
+        /// <summary>
+        /// 并行预取一批变更文件的旧文本填充缓存（SemaphoreSlim(4) 限流）：差异窗口打开后后台调用，
+        /// 用户点击文件时旧文本已就绪，读取段接近 0ms。预取失败无害——点击时仍按原路径加载。
+        /// </summary>
+        /// <param name="files">变更文件列表。</param>
+        public async Task PrefetchOldTextsAsync(IEnumerable<VcsChangedFile> files)
+        {
+            var pending = (files ?? Enumerable.Empty<VcsChangedFile>())
+                .Where(f => (f != null) && ((f.VcsType == VcsType.Git) || (f.VcsType == VcsType.Svn)))
+                .Take(OldTextCacheCapacity)
+                .ToList();
+            if (pending.Count == 0)
+            {
+                return;
+            }
+
+            var gate = new SemaphoreSlim(4);
+            await Task.WhenAll(pending.Select(async file =>
+            {
+                await gate.WaitAsync();
+                try
+                {
+                    await LoadOldTextWithCacheAsync(file);
+                }
+                catch
+                {
+                    // 预取失败无害
+                }
+                finally
+                {
+                    gate.Release();
+                }
+            }));
+        }
+
+        /// <summary>
+        /// 统一换行符为 \n（git 对象库输出 LF，Windows 工作区文件多为 CRLF，混合输入会干扰行级比较）。
+        /// </summary>
+        private static string NormalizeLineEndings(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return text;
+            }
+
+            return text.Replace("\r\n", "\n").Replace('\r', '\n');
         }
 
         private static async Task<string> LoadGitOldTextAsync(VcsChangedFile file)
@@ -104,7 +166,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
             }
 
             var result = await RunCommandAsync("git", $"show HEAD:{QuoteArgument(relativePath)}", file.WorkingDirectory);
-            return result.ExitCode == 0 ? ValidateLoadedText(result.Output) : string.Empty;
+            return result.ExitCode == 0 ? ValidateLoadedText(result.Output) : null;
         }
 
         private static async Task<string> LoadSvnOldTextAsync(VcsChangedFile file)
@@ -118,7 +180,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
                 ? file.AbsolutePath
                 : Path.Combine(file.WorkingDirectory ?? string.Empty, file.RelativePath ?? string.Empty);
             var result = await RunCommandAsync("svn", $"cat -r BASE {QuoteArgument(target)}", file.WorkingDirectory);
-            return result.ExitCode == 0 ? ValidateLoadedText(result.Output) : string.Empty;
+            return result.ExitCode == 0 ? ValidateLoadedText(result.Output) : null;
         }
 
         private static string LoadWorkingText(VcsChangedFile file, bool isOldSide)

@@ -421,47 +421,20 @@ namespace PackageManager.Features.CodeWorkspace.Services
         private static async Task<GitStatusInfo> ReadGitStatusAsync(string repoPath, string groupName, CancellationToken ct, bool includeRemoteStatus)
         {
             var info = new GitStatusInfo();
-            var branchResult = await RunCommandAsync("git", "branch --show-current", repoPath, ct);
-            if (branchResult.ExitCode == 0)
-            {
-                info.Branch = branchResult.Output.Trim();
-                if (string.IsNullOrWhiteSpace(info.Branch))
-                {
-                    var headResult = await RunCommandAsync("git", "rev-parse --short HEAD", repoPath, ct);
-                    info.Branch = headResult.ExitCode == 0 ? $"({headResult.Output.Trim()})" : "(detached)";
-                }
-            }
-            else
-            {
-                var fallbackBranchResult = await RunCommandAsync("git", "rev-parse --abbrev-ref HEAD", repoPath, ct);
-                if (fallbackBranchResult.ExitCode == 0)
-                {
-                    var branch = fallbackBranchResult.Output.Trim();
-                    info.Branch = string.Equals(branch, "HEAD", StringComparison.OrdinalIgnoreCase)
-                        ? null
-                        : branch;
-                }
-            }
 
             if (includeRemoteStatus)
             {
-                await RefreshGitRemoteTrackingAsync(repoPath, ct);
+                // 先 fetch 使 ahead/behind 反映最新远端；fetch 与后续解析保持原有先后依赖
+                await RunCommandAsync("git", "fetch --prune --quiet", repoPath, ct);
             }
 
-            var abResult = await RunCommandAsync("git", "rev-list --left-right --count HEAD...@{upstream}", repoPath, ct);
-            if (abResult.ExitCode == 0)
-            {
-                var parts = abResult.Output.Trim().Split(new[] { '\t', ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length >= 2)
-                {
-                    int.TryParse(parts[0], out var ahead);
-                    int.TryParse(parts[1], out var behind);
-                    info.AheadCount = ahead;
-                    info.BehindCount = behind;
-                }
-            }
-
-            var statusResult = await RunCommandAsync("git", "-c core.quotepath=false status --porcelain --untracked-files=no", repoPath, ct);
+            // 单命令合并：分支 + ahead/behind + 变更清单一次取回
+            // （原实现为 branch/rev-list/status 3-4 个串行进程，每轮轮询每仓库都要重复付出进程启动开销）
+            var statusResult = await RunCommandAsync(
+                "git",
+                "-c core.quotepath=false status --porcelain --branch --untracked-files=no",
+                repoPath,
+                ct);
             if (statusResult.ExitCode != 0)
             {
                 info.HasError = true;
@@ -469,13 +442,16 @@ namespace PackageManager.Features.CodeWorkspace.Services
             }
 
             var lines = SplitLines(statusResult.Output);
+            var firstLine = lines.FirstOrDefault() ?? string.Empty;
+            await ParsePorcelainBranchHeaderAsync(firstLine, repoPath, info, ct);
+
             var added = 0;
             var modified = 0;
             var deleted = 0;
             var staged = 0;
             var hasConflict = false;
 
-            foreach (var line in lines)
+            foreach (var line in lines.Skip(1))
             {
                 if (line.Length < 2)
                 {
@@ -521,15 +497,63 @@ namespace PackageManager.Features.CodeWorkspace.Services
             return info;
         }
 
-        private static async Task RefreshGitRemoteTrackingAsync(string repoPath, CancellationToken ct)
+        /// <summary>
+        /// 解析 `status --porcelain --branch` 首行，填充分支名与 ahead/behind。
+        /// 形态：`## main`（无 upstream）、`## main...origin/main`、`## main...origin/main [ahead 2, behind 1]`、`## HEAD (no branch)`（detached）。
+        /// 解析失败（如异常输出）回退为单独探分支，语义与旧实现等价。
+        /// </summary>
+        private static async Task ParsePorcelainBranchHeaderAsync(string firstLine, string repoPath, GitStatusInfo info, CancellationToken ct)
         {
-            var upstreamResult = await RunCommandAsync("git", "rev-parse --abbrev-ref --symbolic-full-name @{upstream}", repoPath, ct);
-            if (upstreamResult.ExitCode != 0)
+            if (!firstLine.StartsWith("## ", StringComparison.Ordinal))
             {
+                var branchResult = await RunCommandAsync("git", "branch --show-current", repoPath, ct);
+                if (branchResult.ExitCode == 0)
+                {
+                    info.Branch = branchResult.Output.Trim();
+                }
+
                 return;
             }
 
-            await RunCommandAsync("git", "fetch --prune --quiet", repoPath, ct);
+            var rest = firstLine.Substring(3);
+            var bracket = rest.IndexOf('[');
+            var tracking = (bracket >= 0 ? rest.Substring(0, bracket) : rest).Trim();
+
+            if (bracket >= 0)
+            {
+                // `[ahead 2, behind 1]` / `[ahead 2]` / `[behind 1]` / `[gone]`：逐段解析数字
+                var markers = rest.Substring(bracket).Trim('[', ']').Split(',');
+                foreach (var marker in markers)
+                {
+                    var m = marker.Trim();
+                    if (m.StartsWith("ahead ", StringComparison.OrdinalIgnoreCase) && int.TryParse(m.Substring(6), out var ahead))
+                    {
+                        info.AheadCount = ahead;
+                    }
+                    else if (m.StartsWith("behind ", StringComparison.OrdinalIgnoreCase) && int.TryParse(m.Substring(7), out var behind))
+                    {
+                        info.BehindCount = behind;
+                    }
+                }
+            }
+
+            var localName = tracking;
+            var dots = tracking.IndexOf("...", StringComparison.Ordinal);
+            if (dots >= 0)
+            {
+                localName = tracking.Substring(0, dots);
+            }
+
+            if (string.Equals(localName, "HEAD", StringComparison.OrdinalIgnoreCase))
+            {
+                // detached：保持旧实现的 `(短哈希)` 展示行为
+                var headResult = await RunCommandAsync("git", "rev-parse --short HEAD", repoPath, ct);
+                info.Branch = headResult.ExitCode == 0 ? $"({headResult.Output.Trim()})" : "(detached)";
+            }
+            else
+            {
+                info.Branch = localName;
+            }
         }
 
         private static async Task RefreshSvnStatusAsync(RepositoryVcsSnapshot snapshot, string svnPath, CancellationToken ct, bool includeRemoteStatus)

@@ -365,6 +365,9 @@
                                 </DataTemplate>
                             </ListView.ItemTemplate>
                         </ListView>
+                        <!-- 水平条恒显（Maximum=0 时呈禁用态）：原 Visibility 折叠与 Auto 行高构成
+                             布局反馈环——条出现/消失→列表高度变→垂直条出现/消失→宽度变→SizeChanged
+                             →重测宽→条再切换……实测风暴可达百余帧（每次渲染等待秒级） -->
                         <ScrollBar Grid.Row="2"
                                    Grid.ColumnSpan="3"
                                    Height="18"
@@ -374,8 +377,7 @@
                                    ViewportSize="{Binding HorizontalScrollViewport}"
                                    LargeChange="120"
                                    SmallChange="16"
-                                   Value="{Binding HorizontalScrollOffset, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                   Visibility="{Binding HorizontalScrollVisibility}"/>
+                                   Value="{Binding HorizontalScrollOffset, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"/>
                     </Grid>
                     <Border Background="#FAFBFC"
                             Visibility="{Binding MessageVisibility}">

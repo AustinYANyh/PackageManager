@@ -2,10 +2,12 @@ namespace PackageManager.Services.PingCode;
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;
 
@@ -14,6 +16,26 @@ using Newtonsoft.Json.Linq;
 /// </summary>
 public partial class PingCodeApiService
 {
+    private sealed class AttachmentInfo
+    {
+        public string Url;
+
+        public string Title;
+
+        public string Type;
+
+        public string TypeLower;
+
+        public bool ExtImg;
+
+        public bool IsOpenAttachment;
+    }
+
+    /// <summary>
+    /// 构建评论附件 HTML：先解析附件元信息，开放 API 附件的 meta（file_type/download_url）以
+    /// SemaphoreSlim(4) 并发获取（原逐条串行，N 张附图 = N 次串行往返，是详情打开耗时的主要来源之一），
+    /// 解析完成后按原顺序构建图片/链接标签，行为与原实现等价。
+    /// </summary>
     private async Task<string> BuildAttachmentsHtmlAsync(JToken v)
     {
         try
@@ -24,7 +46,7 @@ public partial class PingCodeApiService
                 return null;
             }
 
-            var sb = new StringBuilder();
+            var parsed = new List<AttachmentInfo>(arr.Count);
             foreach (var a in arr)
             {
                 var url = ExtractString(a?["url"]);
@@ -35,17 +57,13 @@ public partial class PingCodeApiService
                     continue;
                 }
 
-                var tt = string.IsNullOrWhiteSpace(title) ? url : title;
-                var typeLower = (type ?? "").Trim().ToLowerInvariant();
-                var nameLower = (tt ?? "").Trim().ToLowerInvariant();
+                var displayName = string.IsNullOrWhiteSpace(title) ? url : title;
+                var nameLower = (displayName ?? "").Trim().ToLowerInvariant();
                 var extImg = nameLower.EndsWith(".png") || nameLower.EndsWith(".jpg") || nameLower.EndsWith(".jpeg") || nameLower.EndsWith(".gif") ||
                              nameLower.EndsWith(".bmp") || nameLower.EndsWith(".webp") || nameLower.EndsWith(".svg") || nameLower.EndsWith(".tif") ||
                              nameLower.EndsWith(".tiff") || nameLower.EndsWith(".avif");
 
                 var isOpenAttachment = false;
-                string finalUrl = null;
-                bool isImg = false;
-
                 try
                 {
                     var uri = new Uri(url);
@@ -57,29 +75,66 @@ public partial class PingCodeApiService
                 {
                 }
 
-                if (isOpenAttachment)
+                parsed.Add(new AttachmentInfo
                 {
-                    try
+                    Url = url,
+                    Title = title,
+                    Type = type,
+                    TypeLower = (type ?? "").Trim().ToLowerInvariant(),
+                    ExtImg = extImg,
+                    IsOpenAttachment = isOpenAttachment,
+                });
+            }
+
+            var gate = new SemaphoreSlim(4);
+            var metaTasks = parsed.Select(async p =>
+            {
+                if (!p.IsOpenAttachment)
+                {
+                    return new { FileType = (string)null, DownloadUrl = (string)null };
+                }
+
+                await gate.WaitAsync().ConfigureAwait(false);
+                try
+                {
+                    var meta = await GetJsonAsync(AppendAccessTokenIfNeeded(p.Url)).ConfigureAwait(false);
+                    return new { FileType = meta?.Value<string>("file_type"), DownloadUrl = meta?.Value<string>("download_url") };
+                }
+                catch
+                {
+                    return new { FileType = (string)null, DownloadUrl = (string)null };
+                }
+                finally
+                {
+                    gate.Release();
+                }
+            }).ToArray();
+            var metas = await Task.WhenAll(metaTasks).ConfigureAwait(false);
+
+            var sb = new StringBuilder();
+            for (var i = 0; i < parsed.Count; i++)
+            {
+                var p = parsed[i];
+                var tt = string.IsNullOrWhiteSpace(p.Title) ? p.Url : p.Title;
+                var isImg = false;
+                string finalUrl = null;
+
+                if (p.IsOpenAttachment)
+                {
+                    var fileType = FirstNonEmpty(metas[i].FileType, p.Type);
+                    var dl = metas[i].DownloadUrl;
+                    var ftLower = (fileType ?? "").Trim().ToLowerInvariant();
+                    isImg = (ftLower == "image") || ftLower.StartsWith("image/");
+                    if (isImg && !string.IsNullOrWhiteSpace(dl))
                     {
-                        var meta = await GetJsonAsync(AppendAccessTokenIfNeeded(url));
-                        var fileType = FirstNonEmpty(meta.Value<string>("file_type"), type);
-                        var dl = meta.Value<string>("download_url");
-                        var ftLower = (fileType ?? "").Trim().ToLowerInvariant();
-                        isImg = (ftLower == "image") || ftLower.StartsWith("image/");
-                        if (isImg && !string.IsNullOrWhiteSpace(dl))
-                        {
-                            finalUrl = dl;
-                        }
-                    }
-                    catch
-                    {
+                        finalUrl = dl;
                     }
                 }
 
                 if (string.IsNullOrWhiteSpace(finalUrl))
                 {
-                    var u = AppendAccessTokenIfNeeded(url);
-                    isImg = (!string.IsNullOrWhiteSpace(typeLower) && typeLower.StartsWith("image/")) || extImg || LooksLikeImageUrl(u);
+                    var u = AppendAccessTokenIfNeeded(p.Url);
+                    isImg = (!string.IsNullOrWhiteSpace(p.TypeLower) && p.TypeLower.StartsWith("image/")) || p.ExtImg || LooksLikeImageUrl(u);
                     finalUrl = u;
                 }
 

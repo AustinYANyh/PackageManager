@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
@@ -42,6 +43,32 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
     private string selectedParticipant;
     private CoreWebView2 core;
     private bool pageReady;
+
+    /// <summary>性能埋点：窗口构造起的打开全链路计时器（构造→WebView→导航就绪→首拉→首推）。</summary>
+    private readonly System.Diagnostics.Stopwatch openWatch = System.Diagnostics.Stopwatch.StartNew();
+
+    /// <summary>性能埋点：打开链路分段耗时（模板/WebView/首拉/首推），首推完成时汇总输出。</summary>
+    private readonly Dictionary<string, long> openSegments = new(StringComparer.OrdinalIgnoreCase);
+
+    private void RecordOpenSegment(string name, long ms)
+    {
+        if (!openSegments.ContainsKey(name))
+        {
+            openSegments[name] = ms;
+        }
+    }
+
+    /// <summary>性能埋点：首次推送完成标志（自动化测试用它判定"看板打开完成"）。</summary>
+    internal bool PerfFirstPushDone { get; private set; }
+
+    /// <summary>性能埋点：首次推送完成事件（自动化测试等待用）。</summary>
+    internal event Action PerfFirstPushCompleted;
+
+    /// <summary>性能埋点：打开全链路总耗时（构造至今，自动化测试读取）。</summary>
+    internal long PerfOpenTotalMs => openWatch.ElapsedMilliseconds;
+
+    /// <summary>性能埋点：打开链路分段耗时快照（自动化测试读取）。</summary>
+    internal IReadOnlyDictionary<string, long> PerfOpenSegments => openSegments;
 
     /// <summary>待写状态意图（卡片 id → 目标列 + 登记时的源状态指纹）。
     /// 连拖同卡覆盖合并（A→B→C 合并为 A→C）；源指纹用于双重执行守卫：
@@ -165,9 +192,17 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
         try
         {
             LoggingService.LogDebug($"[看板桥接] 模板加载 {boardHtml?.Length ?? 0} 字符");
+            RecordOpenSegment("模板", openWatch.ElapsedMilliseconds);
             await InitializeWebViewAsync();
+            RecordOpenSegment("WebView", openWatch.ElapsedMilliseconds);
             LoggingService.LogDebug("[看板桥接] WebView2 初始化完成，开始导航");
+            var fetchWatch = System.Diagnostics.Stopwatch.StartNew();
             await LoadWorkItemsAsync();
+            fetchWatch.Stop();
+            RecordOpenSegment("首拉+首推", fetchWatch.ElapsedMilliseconds);
+            RecordOpenSegment("打开总计", openWatch.ElapsedMilliseconds);
+            LoggingService.LogDebug(
+                $"[看板性能] 打开全链路 {openWatch.ElapsedMilliseconds}ms（{string.Join(" | ", openSegments.Select(kv => $"{kv.Key}={kv.Value}ms"))}）");
             refreshTimer.Start();
         }
         catch (Exception ex)
@@ -251,6 +286,9 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
                 case "renderStats":
                     LoggingService.LogDebug($"[看板桥接] 增量渲染统计: {msg.To}");
                     break;
+                case "renderStats2":
+                    LoggingService.LogDebug($"[看板性能] 页面渲染: {msg.To}");
+                    break;
             }
         }
         catch (Exception ex)
@@ -318,10 +356,13 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
         refreshing = true;
         try
         {
+            var fetchWatch = System.Diagnostics.Stopwatch.StartNew();
             var latest = await api.GetIterationWorkItemsAsync(iterationId) ?? new List<WorkItemInfo>();
+            fetchWatch.Stop();
             var latestSig = ComputeItemsSignature(latest);
             if (string.Equals(latestSig, lastItemsSignature, StringComparison.Ordinal))
             {
+                LoggingService.LogDebug($"[看板性能] 数据拉取 {fetchWatch.ElapsedMilliseconds}ms {latest.Count} 项（签名未变，跳过推送）");
                 if (DateTime.UtcNow > fastRefreshUntil)
                 {
                     refreshTimer.Interval = baseRefreshInterval;
@@ -330,6 +371,7 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
                 return;
             }
 
+            LoggingService.LogDebug($"[看板性能] 数据拉取 {fetchWatch.ElapsedMilliseconds}ms {latest.Count} 项（签名变化，触发推送）");
             lastItemsSignature = latestSig;
             allItems = latest;
             detailPrefetchCache.Clear();
@@ -468,6 +510,7 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
             return;
         }
 
+        var buildWatch = System.Diagnostics.Stopwatch.StartNew();
         var order = new[] { "未开始", "进行中", "可测试", "测试中", "已完成", "已关闭" };
         var filtered = ApplyCurrentFilter(allItems).ToList();
         // pending 钉住：写入在途的卡片按意图目标列呈现（配合 JS 乐观移动），
@@ -542,11 +585,23 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
             columns,
         };
 
+        buildWatch.Stop();
         try
         {
+            var serWatch = System.Diagnostics.Stopwatch.StartNew();
             var script = $"window.applyBoard({JsonConvert.SerializeObject(payload, Formatting.None)})";
+            serWatch.Stop();
+            var injectWatch = System.Diagnostics.Stopwatch.StartNew();
             await core.ExecuteScriptAsync(script);
+            injectWatch.Stop();
+            LoggingService.LogDebug($"[看板性能] 推送 构建{buildWatch.ElapsedMilliseconds}ms 序列化{serWatch.ElapsedMilliseconds}ms({script.Length}字符) 注入{injectWatch.ElapsedMilliseconds}ms");
             LoggingService.LogDebug($"[看板桥接] 已推送渲染: {filtered.Count} 项 / {columns.Count} 列");
+            if (!PerfFirstPushDone)
+            {
+                PerfFirstPushDone = true;
+                RecordOpenSegment("首推", openWatch.ElapsedMilliseconds);
+                PerfFirstPushCompleted?.Invoke();
+            }
         }
         catch (Exception ex)
         {
@@ -663,36 +718,184 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
     }
 
     /// <summary>
-    /// 看板打开期可达集全量预热：对全部工作项的 (projectId|type|StateId) 组合去重拉齐，
-    /// 完成后补推一次整板（首推时可达集可能未就绪为 null，此处让所有卡就位精确集合）。
+    /// 看板打开期可达集全量预热：按 (projectId|type) 分组并行预热——每组对所属方案
+    /// 一次拉取全量状态流转（开放 API 流转为 pair 形态，可按源状态分组），替代原逐状态串行探测；
+    /// 方案级流转拉取经 planFlowsTasks 去重（并发只发一次请求），完成后补推一次整板
+    /// （首推时可达集可能未就绪为 null，此处让所有卡就位精确集合）。
     /// </summary>
     private async Task PrefetchReachableSetsAsync()
     {
         try
         {
+            var warmWatch = System.Diagnostics.Stopwatch.StartNew();
             var snapshot = allItems.ToList();
-            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var item in snapshot)
+            var groups = snapshot
+                .Where(item => !string.IsNullOrWhiteSpace(item.Type) && !string.IsNullOrWhiteSpace(item.StateId))
+                .GroupBy(item => $"{(item.ProjectId ?? "").Trim()}|{item.Type}", StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (groups.Count == 0)
             {
-                var key = $"{(item.ProjectId ?? "").Trim()}|{item.Type}|{item.StateId}";
-                if (string.IsNullOrWhiteSpace(item.Type) || string.IsNullOrWhiteSpace(item.StateId) || !seen.Add(key))
-                {
-                    continue;
-                }
-
-                await GetReachableCategoriesAsync(item);
+                return;
             }
 
-            if (seen.Count > 0 && pageReady)
+            var stateCount = groups.Sum(g => g.Select(item => item.StateId).Distinct(StringComparer.OrdinalIgnoreCase).Count());
+            var gate = new SemaphoreSlim(2);
+            var tasks = groups.Select(async g =>
+            {
+                await gate.WaitAsync();
+                try
+                {
+                    await PrewarmPlanAsync(g.Key);
+                }
+                catch (Exception ex)
+                {
+                    LoggingService.LogError(ex, $"[看板拖拽] 可达集方案预热失败 {g.Key}");
+                }
+                finally
+                {
+                    gate.Release();
+                }
+            }).ToArray();
+            await Task.WhenAll(tasks);
+
+            if ((stateCount > 0) && pageReady)
             {
                 await PushBoardAsync();
-                LoggingService.LogDebug($"[看板拖拽] 可达集预热完成（{seen.Count} 组状态）并已补推");
+                warmWatch.Stop();
+                LoggingService.LogDebug($"[看板性能] 可达集预热 {warmWatch.ElapsedMilliseconds}ms（{groups.Count} 个方案 / {stateCount} 组状态，并行）并已补推");
+            }
+            else
+            {
+                warmWatch.Stop();
+                LoggingService.LogDebug($"[看板性能] 可达集预热 {warmWatch.ElapsedMilliseconds}ms（{groups.Count} 个方案 / {stateCount} 组状态，并行；页面未就绪未补推）");
             }
         }
         catch (Exception ex)
         {
             LoggingService.LogError(ex, "[看板拖拽] 可达集预热失败");
         }
+    }
+
+    /// <summary>按方案预热的方案级流转拉取任务去重表（planId → 拉取任务）：并发预热同一方案只发一次请求。</summary>
+    private readonly ConcurrentDictionary<string, Task<Dictionary<string, List<StateDto>>>> planFlowsTasks = new();
+
+    /// <summary>
+    /// 预热单个 (projectId|type) 组：解析方案（缓存命中≈0ms）→ 一次拉全量流转（按源状态分组）→
+    /// 批量回填 flowsCache 并为方案内【全部】源状态计算可达集写入 reachableCache。
+    /// 失败（方案不存在/流转拉取失败）不写缓存，后续访问走单状态路径兜底。
+    /// 无 items 参数：单卡 miss 触发的预热也能覆盖方案内全部状态。
+    /// </summary>
+    /// <param name="planKey">组合键：projectId|type。</param>
+    /// <returns>预热成功（且缓存已填充）返回 true；失败返回 false。</returns>
+    private async Task<bool> PrewarmPlanAsync(string planKey)
+    {
+        var sep = planKey.IndexOf('|');
+        if (sep <= 0)
+        {
+            return false;
+        }
+
+        var projectId = planKey.Substring(0, sep);
+        var type = planKey.Substring(sep + 1);
+
+        StatePlanInfo plan;
+        await resolveGate.WaitAsync();
+        try
+        {
+            planCache.TryGetValue(planKey, out plan);
+        }
+        finally
+        {
+            resolveGate.Release();
+        }
+
+        if (plan == null)
+        {
+            var plans = await api.GetWorkItemStatePlansAsync(projectId);
+            plan = plans.FirstOrDefault(p => string.Equals((p?.WorkItemType ?? "").Trim(), type, StringComparison.OrdinalIgnoreCase));
+            if ((plan == null) || string.IsNullOrWhiteSpace(plan.Id))
+            {
+                return false;
+            }
+
+            await resolveGate.WaitAsync();
+            try
+            {
+                planCache[planKey] = plan;
+            }
+            finally
+            {
+                resolveGate.Release();
+            }
+        }
+
+        var planId = plan.Id;
+        var flowsTask = planFlowsTasks.GetOrAdd(planId, _ => api.GetWorkItemStateFlowsByPlanGroupedAsync(planId));
+        var grouped = await flowsTask;
+        if (grouped == null)
+        {
+            // 拉取失败：移除去重记录，保留单状态路径的兜底探测能力
+            planFlowsTasks.TryRemove(planId, out _);
+            return false;
+        }
+
+        var stateCount = 0;
+        await resolveGate.WaitAsync();
+        try
+        {
+            foreach (var kv in grouped)
+            {
+                var fkey = $"{planId}|{kv.Key}";
+                if (!flowsCache.ContainsKey(fkey))
+                {
+                    flowsCache[fkey] = kv.Value ?? new List<StateDto>();
+                }
+
+                // 方案内全部源状态直接建缓存：单卡 miss 触发的预热同样一步到位
+                var set = ComputeReachableSet(kv.Value ?? new List<StateDto>());
+                lock (reachableCache)
+                {
+                    reachableCache[$"{projectId}|{type}|{kv.Key}"] = set;
+                }
+
+                stateCount++;
+            }
+        }
+        finally
+        {
+            resolveGate.Release();
+        }
+
+        if (stateCount > 0)
+        {
+            LoggingService.LogDebug($"[看板拖拽] 可达集方案预热 {planKey}：{stateCount} 组状态（全量一次请求）");
+        }
+
+        return stateCount > 0;
+    }
+
+    /// <summary>
+    /// 由状态流转列表计算可达列集合（过滤挂起/受阻，映射状态名到列分类）。
+    /// </summary>
+    private static HashSet<string> ComputeReachableSet(IEnumerable<StateDto> flows)
+    {
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var f in flows)
+        {
+            var name = f?.Name ?? "";
+            if (name.Contains("挂起") || name.Contains("受阻"))
+            {
+                continue;
+            }
+
+            var cat = MapStateNameToCategory(name);
+            if (!string.IsNullOrWhiteSpace(cat))
+            {
+                set.Add(cat);
+            }
+        }
+
+        return set;
     }
 
     /// <summary>
@@ -1120,8 +1323,36 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
             }
         }
 
-        // 复用解析链路取流转（含缓存填充）；异常/未知返回 null。
-        // planCache/flowsCache 非线程安全：预热/应答/推送预取与拖拽解析并发访问，统一过 resolveGate 互斥
+        // miss 时优先走方案级全量预热（一次请求覆盖方案内全部状态；方案级去重并发）。
+        // 原实现逐状态串行探测——首推打开期实测阻塞 ~7 秒（每状态 1 次 API + resolveGate 串行）。
+        try
+        {
+            if (await PrewarmPlanAsync($"{projectId}|{type}"))
+            {
+                lock (reachableCache)
+                {
+                    if (reachableCache.TryGetValue(cacheKey, out var prewarmed))
+                    {
+                        return prewarmed;
+                    }
+                }
+
+                // 预热成功但该状态不在流转表内（无出边）→ 空集
+                var empty = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                lock (reachableCache)
+                {
+                    reachableCache[cacheKey] = empty;
+                }
+
+                return empty;
+            }
+        }
+        catch
+        {
+            // 预热异常继续走单状态兜底
+        }
+
+        // 兜底：单状态串行路径（预热失败/方案不存在时；planCache/flowsCache 非线程安全，统一过 resolveGate）
         try
         {
             await resolveGate.WaitAsync();
@@ -1152,21 +1383,7 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
                     return null;
                 }
 
-                var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var f in flows)
-                {
-                    var name = f?.Name ?? "";
-                    if (name.Contains("挂起") || name.Contains("受阻"))
-                    {
-                        continue;
-                    }
-
-                    var cat = MapStateNameToCategory(name);
-                    if (!string.IsNullOrWhiteSpace(cat))
-                    {
-                        set.Add(cat);
-                    }
-                }
+                var set = ComputeReachableSet(flows);
 
                 // 空集也缓存：状态机无出边的状态（如已关闭）避免每轮推送重复探测
                 lock (reachableCache)
@@ -1174,7 +1391,7 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
                     reachableCache[cacheKey] = set;
                 }
 
-                LoggingService.LogDebug($"[看板拖拽] 可达集计算 {cacheKey} → [{string.Join(",", set)}]");
+                LoggingService.LogDebug($"[看板拖拽] 可达集计算（兜底） {cacheKey} → [{string.Join(",", set)}]");
                 return set;
             }
             finally

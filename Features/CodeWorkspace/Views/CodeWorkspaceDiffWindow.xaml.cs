@@ -7,6 +7,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
@@ -59,6 +60,9 @@ namespace PackageManager.Features.CodeWorkspace.Views
             ChangedFileView.Filter = FilterChangedFile;
             DataContext = this;
             MessageText = ChangedFiles.Count == 0 ? "当前范围没有可查看的变更文件。" : "请选择左侧文件查看差异。";
+            // 窗口就绪后后台并行预取全部变更文件的旧文本（限流 4）：用户点击任一文件时
+            // git show/svn cat 结果已在窗口级缓存就绪，读取段接近 0ms
+            Loaded += (s, e) => { _ = _diffService.PrefetchOldTextsAsync(ChangedFiles); };
             SelectedFile = ChangedFiles.FirstOrDefault();
         }
 
@@ -215,12 +219,25 @@ namespace PackageManager.Features.CodeWorkspace.Views
                 _diffOnlyRows = result.DiffOnlyRows ?? new List<DiffLineRow>();
                 _firstChangedRowIndex = result.FirstChangedRowIndex;
                 _currentTiming = result.Timing ?? new DiffTiming();
+                var probe = Stopwatch.StartNew();
                 ApplyCurrentViewRows();
+                probe.Stop();
+                var applyMs = probe.ElapsedMilliseconds;
+                probe.Restart();
                 SetDiffViewerVisible(true);
-                await ScrollToFirstChangeAsync(_firstChangedRowIndex);
-                await MeasureRenderAsync();
-                UpdateTimingText();
+                // 遮罩先撤、内容先见：渲染计时改为等待真实渲染帧（MeasureRenderAsync），
+                // 不再把"隐藏加载提示"押在一个会被常驻动画持续插队的空闲优先级上
                 SetMessage(null);
+                await ScrollToFirstChangeAsync(_firstChangedRowIndex);
+                probe.Stop();
+                var scrollMs = probe.ElapsedMilliseconds;
+                var loadedWait = ScrollToFirstChangeLoadedWaitMs;
+                probe.Restart();
+                await MeasureRenderAsync();
+                probe.Stop();
+                LoggingService.LogDebug(
+                    $"[Diff 渲染诊断] 行数={DiffRows.Count}(全量 {_fullRows.Count}) 应用={applyMs}ms 滚动={scrollMs}ms(其中Loaded等待={loadedWait}ms) 渲染帧等待={probe.ElapsedMilliseconds}ms 文件={file.DisplayPath}");
+                UpdateTimingText();
             }
             else
             {
@@ -323,6 +340,9 @@ namespace PackageManager.Features.CodeWorkspace.Views
             UpdateHorizontalScrollMetrics();
         }
 
+        /// <summary>最近一次滚动定位中等待 Dispatcher Loaded 优先级的时长（渲染诊断用）。</summary>
+        private int ScrollToFirstChangeLoadedWaitMs;
+
         private async Task ScrollToFirstChangeAsync(int fullRowIndex)
         {
             if (fullRowIndex < 0 || DiffRows.Count == 0)
@@ -330,7 +350,10 @@ namespace PackageManager.Features.CodeWorkspace.Views
                 return;
             }
 
-            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Loaded);
+            // 原实现先等 Dispatcher Loaded 优先级再滚动——同属"会被常驻动画插队"的等待
+            //（实测 55~355ms 纯排队）；ScrollIntoView/ScrollToVerticalOffset 在 Item 滚动模式下
+            // 自带定位能力，直接执行即可
+            ScrollToFirstChangeLoadedWaitMs = 0;
             var target = IgnoreUnchanged
                 ? DiffRows.FirstOrDefault(row => row.IsChanged && !row.IsSeparator)
                 : fullRowIndex < DiffRows.Count ? DiffRows[fullRowIndex] : null;
@@ -380,12 +403,139 @@ namespace PackageManager.Features.CodeWorkspace.Views
                 return;
             }
 
+            // 等待 2 个真实渲染帧作为"渲染完成"信号（500ms 超时兜底）。
+            // 原实现等 ContextIdle（空闲优先级）——程序存在常驻动画/高频消息流时该优先级被
+            // 持续插队（实测可拖到数百 ms~秒级），计时严重虚高且曾连带延迟加载遮罩的隐藏。
+            // timing 取局部快照：await 让出期间用户切文件会触发 ClearDiffText 置空 _currentTiming
+            var timing = _currentTiming;
+            if (timing == null)
+            {
+                return;
+            }
+
             var stopwatch = Stopwatch.StartNew();
-            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ContextIdle);
+            var framesSeen = 0;
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            EventHandler onFrame = (s, e) =>
+            {
+                if (Interlocked.Increment(ref framesSeen) >= 2)
+                {
+                    tcs.TrySetResult(true);
+                }
+            };
+            CompositionTarget.Rendering += onFrame;
+            try
+            {
+                await Task.WhenAny(tcs.Task, Task.Delay(500));
+            }
+            finally
+            {
+                CompositionTarget.Rendering -= onFrame;
+            }
+
             stopwatch.Stop();
-            _currentTiming.RenderBindMs = stopwatch.ElapsedMilliseconds;
+            timing.RenderBindMs = stopwatch.ElapsedMilliseconds;
         }
 
+        // ========================= 渲染性能诊断插桩（已破案，默认停用）=========================
+        // 破案结论（2026-09-01）：diff 渲染本身健康（真实成本几十~300ms），秒级卡顿的元凶是
+        //   FtpService.GetDirectoriesAsync/GetFilesAsync 的同步段在 UI 线程执行
+        //   ResolveDefaultCredentials → LoadSettings → File.ReadAllText 读盘（版本监控周期任务），
+        //   Dispatcher 队列被占导致 ContextIdle 等待虚高。已修：LoadSettings mtime 缓存 + 凭证解析入 Task.Run。
+        // 若未来再出现"渲染段"莫名变慢：把本段整体解注释并在 MeasureRenderAsync 中改为调用本方法即可。
+        // 诊断能力：①分级等待（定位堵在哪一级优先级）②GC 计数（证伪/证实 GC 假设）
+        // ③UI 线程调用栈采样（Thread.Suspend + StackTrace，具名元凶——本次破案的终局手段）
+        // ========================= 以下为诊断方法本体，停用 =========================
+        /*
+        private async Task MeasureRenderDiagnosticsAsync()
+        {
+            if (_currentTiming == null)
+            {
+                return;
+            }
+
+            var stopwatch = Stopwatch.StartNew();
+            var t0 = stopwatch.ElapsedMilliseconds;
+            var uiThread = Dispatcher.Thread;
+            var samples = new System.Collections.Concurrent.ConcurrentBag<string>();
+            var gc0Before = GC.CollectionCount(0);
+            var gc1Before = GC.CollectionCount(1);
+            var gc2Before = GC.CollectionCount(2);
+            var memBefore = GC.GetTotalMemory(false);
+            var samplerCts = new System.Threading.CancellationTokenSource();
+            var sampler = Task.Run(async () =>
+            {
+                while (!samplerCts.Token.IsCancellationRequested)
+                {
+                    try
+                    {
+#pragma warning disable CS0618 // Thread.Suspend 仅为诊断采样使用
+                        uiThread.Suspend();
+                        try
+                        {
+                            var trace = new StackTrace(uiThread, false);
+                            var frames = trace.GetFrames();
+                            if (frames != null)
+                            {
+                                samples.Add(string.Join(" <- ", frames.Take(14).Select(f => (f?.GetMethod()?.DeclaringType?.Name ?? "?") + "." + (f?.GetMethod()?.Name ?? "?"))));
+                            }
+                        }
+                        finally
+                        {
+                            uiThread.Resume();
+                        }
+#pragma warning restore CS0618
+                    }
+                    catch (Exception ex)
+                    {
+                        samples.Add("ERR " + ex.GetType().Name + ": " + ex.Message);
+                    }
+
+                    try
+                    {
+                        await Task.Delay(60, samplerCts.Token);
+                    }
+                    catch
+                    {
+                        break;
+                    }
+                }
+            });
+            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Background);
+            samplerCts.Cancel();
+            var tBackground = stopwatch.ElapsedMilliseconds - t0;
+            if (tBackground > 300)
+            {
+                var gcInfo = $"GC0={GC.CollectionCount(0) - gc0Before} GC1={GC.CollectionCount(1) - gc1Before} GC2={GC.CollectionCount(2) - gc2Before} 内存增量={(GC.GetTotalMemory(false) - memBefore) / 1024}KB";
+                var sampleText = samples.IsEmpty ? "(无样本)" : string.Join(" ||| ", samples.Take(5));
+                LoggingService.LogDebug($"[Diff 渲染诊断3] Background等待={tBackground}ms {gcInfo} 样本={samples.Count} 栈样本: {sampleText}");
+            }
+            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Input);
+            var tInput = stopwatch.ElapsedMilliseconds - t0;
+            await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Loaded);
+            var tLoaded = stopwatch.ElapsedMilliseconds - t0;
+            var frames = 0;
+            EventHandler onFrame = (s, e) => frames++;
+            CompositionTarget.Rendering += onFrame;
+            try
+            {
+                await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.Render);
+                var tRender = stopwatch.ElapsedMilliseconds - t0;
+                await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.DataBind);
+                var tDataBind = stopwatch.ElapsedMilliseconds - t0;
+                await Dispatcher.InvokeAsync(() => { }, DispatcherPriority.ContextIdle);
+                stopwatch.Stop();
+                _currentTiming.RenderBindMs = stopwatch.ElapsedMilliseconds;
+                LoggingService.LogDebug(
+                    $"[Diff 渲染诊断2] Background={tBackground}ms Input增量={tInput - tBackground}ms Loaded增量={tLoaded - tInput}ms Render增量={tRender - tLoaded}ms DataBind增量={tDataBind - tRender}ms ContextIdle增量={_currentTiming.RenderBindMs - tDataBind}ms 渲染帧数={frames}");
+            }
+            finally
+            {
+                CompositionTarget.Rendering -= onFrame;
+            }
+        }
+        */
+        // ========================= 诊断插桩结束 =========================
         private void UpdateTimingText()
         {
             if (_currentTiming == null)
@@ -408,7 +558,25 @@ namespace PackageManager.Features.CodeWorkspace.Views
             UpdateHorizontalScrollMetrics();
         }
 
+        /// <summary>测宽去抖标志：加载序列（清空→应用→尺寸变化）会在同一轮触发多次全量测宽，合并为一次。</summary>
+        private bool _metricsUpdateQueued;
+
         private void UpdateHorizontalScrollMetrics()
+        {
+            if (_metricsUpdateQueued)
+            {
+                return;
+            }
+
+            _metricsUpdateQueued = true;
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                _metricsUpdateQueued = false;
+                UpdateHorizontalScrollMetricsCore();
+            }), DispatcherPriority.Background);
+        }
+
+        private void UpdateHorizontalScrollMetricsCore()
         {
             var sideTextViewport = Math.Max(0, (DiffRowsList.ActualWidth - 4 - 18) / 2 - 54 - 24 - 12);
             HorizontalScrollViewport = sideTextViewport;
@@ -470,21 +638,34 @@ namespace PackageManager.Features.CodeWorkspace.Views
             return Math.Max(maxWidth, fallbackWidth) + 24;
         }
 
-        // 等宽字符宽度缓存：Consolas 的 ASCII 全同宽，CJK/全角各自测一次后复用，
-        // 将 FormattedText 排版次数从 O(行数) 降到 O(不同字符数)（一次性几十次）
-        private static readonly object CharWidthSync = new object();
-        private static readonly Dictionary<char, double> CharWidthCache = new Dictionary<char, double>();
+        // 等宽字体宽度解析计算：Consolas 的 ASCII 全同宽、CJK/全角统一按双宽处理，
+        // 只需一次性测量两个基准字符。取代原"逐字符查缓存（未命中构建 FormattedText）"方案——
+        // 大文件（数千行 × 双侧）全量测宽时旧方案在 UI 线程产生数百 ms 到秒级开销（渲染段耗时主体之一）
+        private static readonly object MonospaceMeasureSync = new object();
+        private static double _monospaceAsciiWidth = double.NaN;
+        private static double _monospaceCjkWidth = double.NaN;
 
-        private static double GetCharWidth(char c, Typeface typeface)
+        private static void EnsureMonospaceMetrics(Typeface typeface)
         {
-            lock (CharWidthSync)
+            if (!double.IsNaN(_monospaceAsciiWidth))
             {
-                if (CharWidthCache.TryGetValue(c, out var cached))
-                {
-                    return cached;
-                }
+                return;
             }
 
+            lock (MonospaceMeasureSync)
+            {
+                if (!double.IsNaN(_monospaceAsciiWidth))
+                {
+                    return;
+                }
+
+                _monospaceAsciiWidth = MeasureSingleCharWidth('M', typeface);
+                _monospaceCjkWidth = Math.Max(_monospaceAsciiWidth * 2, MeasureSingleCharWidth('中', typeface));
+            }
+        }
+
+        private static double MeasureSingleCharWidth(char c, Typeface typeface)
+        {
             var formattedText = new FormattedText(
                 c.ToString(),
                 CultureInfo.CurrentUICulture,
@@ -493,18 +674,12 @@ namespace PackageManager.Features.CodeWorkspace.Views
                 13,
                 Brushes.Black,
                 1.0);
-            var width = formattedText.WidthIncludingTrailingWhitespace;
-
-            lock (CharWidthSync)
-            {
-                CharWidthCache[c] = width;
-            }
-
-            return width;
+            return formattedText.WidthIncludingTrailingWhitespace;
         }
 
         private static double MeasureRunWidth(IEnumerable<DiffTextRun> runs, Typeface typeface)
         {
+            EnsureMonospaceMetrics(typeface);
             double total = 0;
             foreach (var run in runs ?? Enumerable.Empty<DiffTextRun>())
             {
@@ -516,7 +691,7 @@ namespace PackageManager.Features.CodeWorkspace.Views
 
                 foreach (var c in text)
                 {
-                    total += GetCharWidth(c, typeface);
+                    total += c > 127 ? _monospaceCjkWidth : _monospaceAsciiWidth;
                 }
             }
 

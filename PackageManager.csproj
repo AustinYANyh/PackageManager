@@ -263,6 +263,7 @@
           <Generator>MSBuild:Compile</Generator>
           <SubType>Designer</SubType>
         </Page>
+        <Compile Include="Features\PingCode\Perf\KanbanPerfTestRunner.cs" />
         <Compile Include="Features\PingCode\Views\WorkItemKanbanWebViewWindow.xaml.cs">
           <DependentUpon>WorkItemKanbanWebViewWindow.xaml</DependentUpon>
           <SubType>Code</SubType>

@@ -88,10 +88,13 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> detailPrefetchStamp =
         new System.Collections.Concurrent.ConcurrentDictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>
-    /// 获取共享详情窗口单例：首次调用在屏幕外完成 WebView 一次性初始化后自动隐藏。
-    /// 等待期间实例若因浏览器进程故障被销毁，自动重试创建新实例——僵尸窗口不可能被复用。
-    /// </summary>
+        /// <summary>性能埋点：详情内容就绪事件（携带打开累计耗时 ms，自动化测试等待用）。</summary>
+        internal event Action<long> PerfDetailsReady;
+
+        /// <summary>
+        /// 获取共享详情窗口单例：首次调用在屏幕外完成 WebView 一次性初始化后自动隐藏。
+        /// 等待期间实例若因浏览器进程故障被销毁，自动重试创建新实例——僵尸窗口不可能被复用。
+        /// </summary>
     /// <param name="api">PingCode API 服务实例。</param>
     /// <returns>已就绪的共享详情窗口。</returns>
     public static async Task<WorkItemDetailsWindow> GetSharedAsync(PingCodeApiService api)
@@ -592,6 +595,14 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
             InferPublicImageToken();
             await NavigateAndInitAsync(sequence, childCountTask, statesPrefetchTask, membersPrefetchTask);
             LoggingService.LogDebug($"[详情桥接] 内容就绪（累计 {totalWatch.ElapsedMilliseconds}ms）");
+            try
+            {
+                PerfDetailsReady?.Invoke(totalWatch.ElapsedMilliseconds);
+            }
+            catch
+            {
+                // 性能事件异常不影响主流程
+            }
         }
         catch (Exception ex)
         {

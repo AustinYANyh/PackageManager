@@ -749,8 +749,15 @@ namespace PackageManager.Services
             }
         }
 
+        /// <summary>设置缓存与文件时间戳：高频调用方（FTP 凭证解析等每次网络操作都读设置）
+        /// 在 UI 线程同步读盘+反序列化会造成可感知卡顿；以 mtime 校验实现零风险缓存（文件变了自动失效）。</summary>
+        private static AppSettings _cachedSettings;
+        private static DateTime _cachedSettingsStampUtc;
+        private static readonly object SettingsCacheGate = new object();
+
         /// <summary>
-        /// 加载应用程序设置
+        /// 加载应用程序设置。带文件时间戳校验的进程级缓存：文件未变更时直接返回缓存实例，
+        /// 调用方仅作只读使用；保存设置会更新文件时间戳从而自动失效。
         /// </summary>
         /// <returns>设置对象，如果加载失败则返回默认设置</returns>
         public AppSettings LoadSettings()
@@ -762,6 +769,15 @@ namespace PackageManager.Services
                     return new AppSettings();
                 }
 
+                var stampUtc = File.GetLastWriteTimeUtc(_settingsFilePath);
+                lock (SettingsCacheGate)
+                {
+                    if ((_cachedSettings != null) && (_cachedSettingsStampUtc == stampUtc))
+                    {
+                        return _cachedSettings;
+                    }
+                }
+
                 var json = File.ReadAllText(_settingsFilePath);
                 var settings = JsonConvert.DeserializeObject<AppSettings>(json, _jsonSettings);
                 settings ??= new AppSettings();
@@ -770,6 +786,12 @@ namespace PackageManager.Services
                 settings.CommonStartupItems = startupSettings.CommonStartupItems ?? new List<CommonStartupItem>();
                 settings.CommonStartupGroups = startupSettings.CommonStartupGroups ?? new List<CommonStartupGroup>();
                 settings.CodeRepositories ??= new List<CodeRepository>();
+                lock (SettingsCacheGate)
+                {
+                    _cachedSettings = settings;
+                    _cachedSettingsStampUtc = stampUtc;
+                }
+
                 return settings;
             }
             catch (Exception ex)

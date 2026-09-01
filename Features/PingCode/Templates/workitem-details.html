@@ -16,9 +16,9 @@
     .crumb-sep{color:#64748B}
     .header{padding:18px 28px;border-bottom:1px solid #E2E8F0;background:#FFFFFF;display:flex;align-items:center;gap:10px}
     .id{color:#64748B;font-weight:600;letter-spacing:.3px}
-    .title{font-size:18px;font-weight:700;color:#0F172A}
-    .header .ai-group{margin-left:auto;display:flex;gap:8px}
-    .ai-btn{padding:7px 16px;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;border:1px solid transparent;color:#fff}
+.title{font-size:18px;font-weight:700;color:#0F172A;flex:1 1 auto;min-width:0;word-break:break-word}
+.header .ai-group{margin-left:auto;display:flex;gap:8px;flex-shrink:0}
+.ai-btn{padding:7px 16px;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;border:1px solid transparent;color:#fff;white-space:nowrap}
     .ai-btn-primary{background:#2563EB;border-color:#1D4ED8}
     .ai-btn-primary:hover{background:#1D4ED8}
     .ai-btn-purple{background:#7C3AED;border-color:#6D28D9}
@@ -99,7 +99,7 @@
 .desc-tool-primary:hover{background:#1D4ED8;border-color:#1D4ED8}
 #titleText{cursor:text;border-radius:6px;padding:1px 4px}
 #titleText:hover{background:#F1F5F9}
-.title-input{font-size:18px;font-weight:700;border:1px solid #94A3B8;border-radius:6px;padding:2px 8px;outline:#2563EB solid 1px;min-width:360px}
+.title-input{font-size:18px;font-weight:700;border:1px solid #94A3B8;border-radius:6px;padding:2px 8px;outline:#2563EB solid 1px;flex:1 1 auto;min-width:200px;width:100%}
 #descEdit img{max-width:100%;border-radius:8px;border:1px solid #E2E8F0}
     .actions{display:flex;gap:8px;margin-top:8px}
     .actions button{padding:6px 12px;border:1px solid #CBD5E1;border-radius:6px;background:#fff;cursor:pointer;color:#1E293B}

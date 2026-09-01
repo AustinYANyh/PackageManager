@@ -2147,6 +2147,84 @@ public partial class PingCodeApiService
     }
 
     /// <summary>
+    /// 一次拉取指定方案内的全部状态流转并按源状态分组（from_state_id → 目标状态列表）。
+    /// 开放 API 流转记录为 pair 形态（from_state/to_state），无 from_state_id 参数时返回全方案流转，
+    /// 因此看板打开期对单一方案只需一次请求即可取齐全部状态的可达数据（替代逐状态串行探测）。
+    /// </summary>
+    /// <param name="statePlanId">状态方案的唯一标识。</param>
+    /// <returns>源状态 Id → 目标状态列表；全部端点均失败时返回 null（与“方案真无流转”的空字典区分）。</returns>
+    public async Task<Dictionary<string, List<StateDto>>> GetWorkItemStateFlowsByPlanGroupedAsync(string statePlanId)
+    {
+        if (string.IsNullOrWhiteSpace(statePlanId))
+        {
+            return null;
+        }
+
+        var result = new Dictionary<string, List<StateDto>>(StringComparer.OrdinalIgnoreCase);
+        var endpoints = new[]
+        {
+            $"https://open.pingcode.com/v1/project/work_item_state_plans/{Uri.EscapeDataString(statePlanId)}/work_item_state_flows",
+            $"https://open.pingcode.com/v1/project/work_item/state_plans/{Uri.EscapeDataString(statePlanId)}/work_item_state_flows",
+            $"https://open.pingcode.com/v1/project/work_items/state_plans/{Uri.EscapeDataString(statePlanId)}/work_item_state_flows",
+        };
+        foreach (var ep in endpoints)
+        {
+            var url = $"{ep}?page_size=100";
+            try
+            {
+                var json = await GetJsonAsync(url);
+                var values = GetValuesArray(json);
+                if ((values == null) || (values.Count == 0))
+                {
+                    // 空响应区分“方案确实无流转”与“端点不存在”：前者不再继续试，后者继续下一候选
+                    continue;
+                }
+
+                foreach (var v in values)
+                {
+                    try
+                    {
+                        var fromObj = v["from_state"] ?? v["from"] ?? v["source"];
+                        var toObj = v["to_state"] ?? v["to"] ?? v["target"] ?? v["state"];
+                        var fromId = fromObj?.Value<string>("id") ?? "";
+                        if ((toObj == null) || string.IsNullOrWhiteSpace(fromId))
+                        {
+                            continue;
+                        }
+
+                        var dto = toObj.ToObject<StateDto>();
+                        if ((dto == null) || string.IsNullOrWhiteSpace(dto.Id))
+                        {
+                            continue;
+                        }
+
+                        if (!result.TryGetValue(fromId, out var list))
+                        {
+                            list = new List<StateDto>();
+                            result[fromId] = list;
+                        }
+
+                        list.Add(dto);
+                    }
+                    catch
+                    {
+                    }
+                }
+
+                if (result.Count > 0)
+                {
+                    return result;
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// 计算用户在迭代内的故事点总和（迭代/冲刺 + 指派过滤）。
     /// </summary>
     /// <param name="iterationOrSprintId">迭代或冲刺的唯一标识。</param>

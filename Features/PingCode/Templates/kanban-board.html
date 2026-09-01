@@ -511,6 +511,8 @@
       return;
     }
 
+    // 渲染耗时上报（宿主日志做性能对比基线）
+    var renderMs0 = performance.now();
     var cols = payload.columns || [];
     // 首次渲染或列集合变化（新增/减少状态列）才整板重建（原子替换），其余走增量差分
     if (!state.ready || columnTitlesSig(state.columns) !== columnTitlesSig(cols)) {
@@ -518,11 +520,13 @@
       fullRender(cols);
       state.ready = true;
       // rebuildDropbar(); // 快捷条暂不启用
+      post({ type: 'renderStats', to: 'full 渲染耗时 ' + Math.round(performance.now() - renderMs0) + 'ms' });
       return;
     }
 
     post({ type: 'renderMode', mode: 'incremental', reason: '' });
     incrementalRender(cols);
+    post({ type: 'renderStats2', to: 'incremental 渲染耗时 ' + Math.round(performance.now() - renderMs0) + 'ms' });
   }
 
   function post(msg) {

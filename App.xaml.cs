@@ -74,9 +74,22 @@ namespace PackageManager
                 return;
             }
 
+            // 看板性能自动化测试：--kanban-perf-test（不进主界面，跑完即退；退出码 0=达标）
+            if ((e.Args != null) && e.Args.Any(a => string.Equals(a, "--kanban-perf-test", StringComparison.OrdinalIgnoreCase)))
+            {
+                ShutdownMode = ShutdownMode.OnExplicitShutdown;
+                LoggingService.LogDebug("[看板性能测试] 启动参数命中，开始执行");
+                _ = RunKanbanPerfTestAsync();
+                return;
+            }
+
             InitializeCommonStartupHotkey();
             codeWorkspaceVcsCache.StartWarmup();
             StartAiCommitEnvironmentWarmup();
+
+            // StartupUri 已从 XAML 移除（性能测试分支不能设 null——setter 抛 ArgumentNullException），
+            // 正常路径在全部初始化完成后手动创建主窗口（与原 StartupUri 行为等价，ShutdownMode=OnMainWindowClose 不变）
+            new MainWindow().Show();
         }
 
         private static void StartAiCommitEnvironmentWarmup()
@@ -177,6 +190,23 @@ namespace PackageManager
             }
             catch
             {
+            }
+        }
+
+        /// <summary>
+        /// 执行看板性能测试并在结束后退出应用（异常也保证退出，退出码 2）。
+        /// </summary>
+        private static async Task RunKanbanPerfTestAsync()
+        {
+            try
+            {
+                var code = await Features.PingCode.Perf.KanbanPerfTestRunner.RunAsync();
+                Current.Shutdown(code);
+            }
+            catch (Exception ex)
+            {
+                LoggingService.LogError(ex, "[看板性能测试] 顶层异常");
+                Current.Shutdown(2);
             }
         }
 
