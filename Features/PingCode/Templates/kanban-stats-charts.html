@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>看板统计图表</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: "Segoe UI", "Microsoft YaHei", sans-serif; background: #F1F5F9; color: #0F172A; padding: 16px; }
+  #empty { padding: 40px; text-align: center; color: #64748B; font-size: 14px; }
+  #wrap.hidden { display: none; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .card { background: #fff; border: 1px solid #E2E8F0; border-radius: 10px; padding: 14px; }
+  .card.full { grid-column: 1 / -1; }
+  .card h2 { font-size: 14px; margin-bottom: 4px; }
+  .card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .card .desc { font-size: 12px; color: #64748B; margin-bottom: 8px; }
+  canvas { width: 100%; display: block; }
+  select { padding: 4px 8px; border: 1px solid #CBD5E1; border-radius: 6px; font-size: 13px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: #334155; margin-top: 6px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+</style>
+</head>
+<body>
+<div id="empty">查询数据后此处展示统计图</div>
+<div id="wrap" class="hidden">
+  <div class="grid">
+    <div class="card full"><h2>1. 堆叠柱状图 — 成员负载与状态构成</h2><div class="desc">柱高=总故事点（含已关闭），分段=四状态。</div><canvas id="c1"></canvas><div class="legend" id="l1"></div></div>
+    <div class="card"><h2>2. 100% 堆叠横条 — 成员完成率结构</h2><div class="desc">每行归一化为 100%，对比已完成+已关闭占比。</div><canvas id="c2"></canvas><div class="legend" id="l2"></div></div>
+    <div class="card"><h2>3. 帕累托图 — 负载集中度</h2><div class="desc">总故事点降序柱 + 累计百分比折线。</div><canvas id="c3"></canvas></div>
+    <div class="card"><h2>4. 环形图 — 迭代状态占比</h2><div class="desc">全迭代四状态故事点合计占比。</div><canvas id="c4"></canvas><div class="legend" id="l4"></div></div>
+    <div class="card"><h2>5. 环形图 — 优先级占比</h2><div class="desc">最高/较高/其他优先级故事点占比。</div><canvas id="c5"></canvas><div class="legend" id="l5"></div></div>
+    <div class="card"><h2>6. 分组柱状图 — 成员 × 优先级故事点</h2><div class="desc">三级优先级并排对比。</div><canvas id="c6"></canvas><div class="legend" id="l6"></div></div>
+    <div class="card"><div class="card-head"><h2>7. 雷达图 — <span id="radarTitle">成员</span> 多维画像</h2><select id="radarMember"></select></div><div class="desc">六维（四状态+最高/较高优先级点），虚线为全队均值。</div><canvas id="c7"></canvas><div class="legend" id="l7"></div></div>
+    <div class="card"><h2>8. 进度仪表盘 — 迭代完成率</h2><div class="desc">(已完成+已关闭) / 总计故事点。</div><canvas id="c8"></canvas></div>
+    <div class="card"><h2>9. 气泡散点 — 负载 × 产出 × 高优</h2><div class="desc">x=总故事点，y=已完成+已关闭，气泡大小=最高优先级点。</div><canvas id="c9"></canvas></div>
+  </div>
+</div>
+
+<script>
+var DATA = [];
+var COLORS = { ns: "#94A3B8", ip: "#2563EB", done: "#10B981", closed: "#6366F1", hi: "#DC2626", hr: "#F59E0B", ot: "#94A3B8" };
+
+// 宿主入口：applyStats({ rows: [...] })
+window.applyStats = function (payload) {
+  DATA = (payload && payload.rows) || [];
+  DATA.forEach(function (d) { d.total = d.ns + d.ip + d.done + d.closed; });
+  var empty = document.getElementById("empty");
+  var wrap = document.getElementById("wrap");
+  if (!DATA.length) {
+    wrap.classList.add("hidden");
+    empty.style.display = "block";
+    empty.textContent = "当前迭代暂无统计故事点";
+    return;
+  }
+  empty.style.display = "none";
+  wrap.classList.remove("hidden");
+  var sel = document.getElementById("radarMember");
+  var keep = sel.value;
+  sel.innerHTML = "";
+  DATA.forEach(function (d, i) { var o = document.createElement("option"); o.value = i; o.textContent = d.name; sel.appendChild(o); });
+  if (keep && +keep < DATA.length) { sel.value = keep; }
+  renderAll();
+};
+
+function setup(id, h) {
+  var cv = document.getElementById(id);
+  var w = cv.parentElement.clientWidth - 28;
+  var dpr = window.devicePixelRatio || 1;
+  cv.width = w * dpr; cv.height = h * dpr;
+  cv.style.height = h + "px";
+  var ctx = cv.getContext("2d");
+  ctx.scale(dpr, dpr);
+  return { ctx: ctx, w: w, h: h };
+}
+function legend(el, items) {
+  el.innerHTML = items.map(function (it) { return "<span><i style=\"background:" + it[1] + "\"></i>" + it[0] + "</span>"; }).join("");
+}
+function roundRect(ctx, x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
+}
+
+function renderAll() {
+  if (!DATA.length) { return; }
+
+  // 1. 堆叠柱状图
+  (function () {
+    var s = setup("c1", 300), ctx = s.ctx;
+    var L = 40, R = 10, T = 14, B = 26, gw = s.w - L - R, gh = s.h - T - B;
+    var max = 0; DATA.forEach(function (d) { max = Math.max(max, d.total); });
+    if (max <= 0) { max = 1; }
+    // 轴顶 = 最大值分 4 格向上取整 ×4：保证轴顶 ≥ 最大值，柱不溢出画布
+    var yv = Math.ceil(max / 4) * 4 || 4;
+    ctx.font = "11px sans-serif"; ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    for (var i = 0; i <= 4; i++) {
+      var yy = T + gh - gh * i / 4;
+      ctx.strokeStyle = "#E2E8F0"; ctx.beginPath(); ctx.moveTo(L, yy); ctx.lineTo(L + gw, yy); ctx.stroke();
+      ctx.fillStyle = "#64748B"; ctx.fillText(fmt(yv * i / 4), L - 6, yy);
+    }
+    var bw = gw / DATA.length;
+    DATA.forEach(function (d, i) {
+      var x = L + bw * i + bw * 0.18, w2 = bw * 0.64, y = T + gh;
+      [["ns", d.ns], ["ip", d.ip], ["done", d.done], ["closed", d.closed]].forEach(function (seg) {
+        if (seg[1] <= 0) return;
+        var hh = gh * seg[1] / yv;
+        y -= hh; ctx.fillStyle = COLORS[seg[0]]; roundRect(ctx, x, y, w2, hh, 2); ctx.fill();
+      });
+      ctx.fillStyle = "#334155"; ctx.textAlign = "center";
+      ctx.fillText(d.name, x + w2 / 2, T + gh + 13);
+    });
+    legend(document.getElementById("l1"), [["未开始", COLORS.ns], ["进行中", COLORS.ip], ["已完成", COLORS.done], ["已关闭", COLORS.closed]]);
+  })();
+
+  // 2. 100% 堆叠横条
+  (function () {
+    var s = setup("c2", DATA.length * 34 + 30), ctx = s.ctx;
+    var L = 64, R = 34, gw = s.w - L - R;
+    DATA.forEach(function (d, i) {
+      var y = 14 + i * 34, bh = 20;
+      ctx.fillStyle = "#334155"; ctx.font = "12px sans-serif"; ctx.textAlign = "right"; ctx.textBaseline = "middle";
+      ctx.fillText(d.name, L - 8, y + bh / 2);
+      var x = L, segs = [["closed", d.closed], ["done", d.done], ["ip", d.ip], ["ns", d.ns]];
+      segs.forEach(function (seg) {
+        var w2 = gw * seg[1] / d.total;
+        ctx.fillStyle = COLORS[seg[0]]; roundRect(ctx, x, y, w2, bh, 3); ctx.fill();
+        x += w2;
+      });
+      var fin = Math.round((d.done + d.closed) / d.total * 100);
+      ctx.fillStyle = fin >= 60 ? "#059669" : fin >= 35 ? "#D97706" : "#DC2626";
+      ctx.textAlign = "left"; ctx.fillText(fin + "%", x + 8, y + bh / 2);
+    });
+    legend(document.getElementById("l2"), [["已关闭", COLORS.closed], ["已完成", COLORS.done], ["进行中", COLORS.ip], ["未开始", COLORS.ns]]);
+  })();
+
+  // 3. 帕累托图
+  (function () {
+    var s = setup("c3", 240), ctx = s.ctx;
+    var sorted = DATA.slice().sort(function (a, b) { return b.total - a.total; });
+    var grand = sorted.reduce(function (a, d) { return a + d.total; }, 0) || 1;
+    var L = 34, R = 34, T = 14, B = 26, gw = s.w - L - R, gh = s.h - T - B;
+    var yv = Math.ceil(sorted[0].total / 4) * 4 || 4;
+    ctx.font = "11px sans-serif"; ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    for (var i = 0; i <= 4; i++) {
+      var yy = T + gh - gh * i / 4;
+      ctx.strokeStyle = "#E2E8F0"; ctx.beginPath(); ctx.moveTo(L, yy); ctx.lineTo(L + gw, yy); ctx.stroke();
+      ctx.fillStyle = "#64748B"; ctx.fillText(fmt(yv * i / 4), L - 6, yy);
+      ctx.textAlign = "left"; ctx.fillText(Math.round(100 * i / 4) + "%", L + gw + 6, yy); ctx.textAlign = "right";
+    }
+    var bw = gw / sorted.length, cum = 0, pts = [];
+    sorted.forEach(function (d, i) {
+      var x = L + bw * i + bw * 0.2, w2 = bw * 0.6, hh = gh * d.total / yv;
+      ctx.fillStyle = "#2563EB"; roundRect(ctx, x, T + gh - hh, w2, hh, 2); ctx.fill();
+      cum += d.total;
+      pts.push([x + w2 / 2, T + gh - gh * (cum / grand)]);
+      ctx.fillStyle = "#334155"; ctx.textAlign = "center"; ctx.fillText(d.name, x + w2 / 2, T + gh + 13);
+    });
+    ctx.strokeStyle = "#DC2626"; ctx.lineWidth = 1.5; ctx.beginPath();
+    pts.forEach(function (p, i) { i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]); });
+    ctx.stroke();
+    pts.forEach(function (p) { ctx.fillStyle = "#DC2626"; ctx.beginPath(); ctx.arc(p[0], p[1], 2.5, 0, 7); ctx.fill(); });
+  })();
+
+  // 4 / 5. 环形图
+  function donut(id, items, centerTop) {
+    var s = setup(id, 240), ctx = s.ctx;
+    var total = items.reduce(function (a, it) { return a + it[1]; }, 0);
+    var cx = s.w / 2, cy = s.h / 2, r = Math.min(s.w, s.h) / 2 - 18, ir = r * 0.62;
+    if (total > 0) {
+      var a0 = -Math.PI / 2;
+      items.forEach(function (it) {
+        if (it[1] <= 0) return;
+        var a1 = a0 + Math.PI * 2 * it[1] / total;
+        ctx.beginPath(); ctx.arc(cx, cy, r, a0, a1); ctx.arc(cx, cy, ir, a1, a0, true); ctx.closePath();
+        ctx.fillStyle = it[2]; ctx.fill();
+        var mid = (a0 + a1) / 2, pr = (r + ir) / 2;
+        if (it[1] / total > 0.06) {
+          ctx.fillStyle = "#fff"; ctx.font = "bold 11px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+          ctx.fillText(Math.round(100 * it[1] / total) + "%", cx + pr * Math.cos(mid), cy + pr * Math.sin(mid));
+        }
+        a0 = a1;
+      });
+    }
+    ctx.fillStyle = "#334155"; ctx.font = "11px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(centerTop, cx, cy - 12);
+    ctx.fillStyle = "#0F172A"; ctx.font = "bold 20px sans-serif"; ctx.fillText(fmt(total), cx, cy + 10);
+  }
+  function sum(k) { return DATA.reduce(function (a, d) { return a + d[k]; }, 0); }
+  donut("c4", [["ns", sum("ns"), COLORS.ns], ["ip", sum("ip"), COLORS.ip], ["done", sum("done"), COLORS.done], ["closed", sum("closed"), COLORS.closed]], "总故事点");
+  legend(document.getElementById("l4"), [["未开始", COLORS.ns], ["进行中", COLORS.ip], ["已完成", COLORS.done], ["已关闭", COLORS.closed]]);
+  donut("c5", [["hi", sum("hi"), COLORS.hi], ["hr", sum("hr"), COLORS.hr], ["ot", sum("ot"), COLORS.ot]], "优先级点数");
+  legend(document.getElementById("l5"), [["最高优先级", COLORS.hi], ["较高优先级", COLORS.hr], ["其他优先级", COLORS.ot]]);
+
+  // 6. 分组柱状图（优先级）
+  (function () {
+    var s = setup("c6", 240), ctx = s.ctx;
+    var L = 34, R = 10, T = 14, B = 26, gw = s.w - L - R, gh = s.h - T - B;
+    var max = 0; DATA.forEach(function (d) { max = Math.max(max, d.hi, d.hr, d.ot); });
+    var yv = Math.ceil(max / 4) * 4 || 4;
+    ctx.font = "11px sans-serif"; ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    for (var i = 0; i <= 4; i++) {
+      var yy = T + gh - gh * i / 4;
+      ctx.strokeStyle = "#E2E8F0"; ctx.beginPath(); ctx.moveTo(L, yy); ctx.lineTo(L + gw, yy); ctx.stroke();
+      ctx.fillStyle = "#64748B"; ctx.fillText(fmt(yv * i / 4), L - 6, yy);
+    }
+    var gw2 = gw / DATA.length;
+    DATA.forEach(function (d, i) {
+      var x0 = L + gw2 * i + gw2 * 0.12, bw2 = gw2 * 0.76 / 3;
+      [["hi", d.hi], ["hr", d.hr], ["ot", d.ot]].forEach(function (seg, j) {
+        var hh = gh * seg[1] / yv;
+        ctx.fillStyle = COLORS[seg[0]]; roundRect(ctx, x0 + bw2 * j, T + gh - hh, bw2 - 2, hh, 2); ctx.fill();
+      });
+      ctx.fillStyle = "#334155"; ctx.textAlign = "center"; ctx.fillText(d.name, x0 + gw2 * 0.38, T + gh + 13);
+    });
+    legend(document.getElementById("l6"), [["最高", COLORS.hi], ["较高", COLORS.hr], ["其他", COLORS.ot]]);
+  })();
+
+  // 7. 雷达图
+  (function () {
+    var s = setup("c7", 320), ctx = s.ctx;
+    var sel = document.getElementById("radarMember");
+    var member = DATA[sel.value | 0] || DATA[0];
+    document.getElementById("radarTitle").textContent = member ? member.name : "成员";
+    var dims = [["未开始", "ns"], ["进行中", "ip"], ["已完成", "done"], ["已关闭", "closed"], ["最高优点", "hi"], ["较高优点", "hr"]];
+    var mx = dims.map(function (dm) { return Math.max.apply(null, DATA.map(function (d) { return d[dm[1]]; })) || 1; });
+    var avg = dims.map(function (dm) { return DATA.reduce(function (a, d) { return a + d[dm[1]]; }, 0) / DATA.length; });
+    var cx = s.w / 2, cy = s.h / 2 + 6, r = Math.min(s.w, s.h) / 2 - 42, n = dims.length;
+    for (var g = 1; g <= 4; g++) {
+      ctx.beginPath();
+      for (var i = 0; i <= n; i++) {
+        var ang = -Math.PI / 2 + Math.PI * 2 * (i % n) / n, rr = r * g / 4;
+        i ? ctx.lineTo(cx + rr * Math.cos(ang), cy + rr * Math.sin(ang)) : ctx.moveTo(cx + rr * Math.cos(ang), cy + rr * Math.sin(ang));
+      }
+      ctx.strokeStyle = "#E2E8F0"; ctx.stroke();
+    }
+    dims.forEach(function (dm, i) {
+      var ang = -Math.PI / 2 + Math.PI * 2 * i / n;
+      ctx.strokeStyle = "#CBD5E1"; ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(cx + r * Math.cos(ang), cy + r * Math.sin(ang)); ctx.stroke();
+      ctx.fillStyle = "#64748B"; ctx.font = "11px sans-serif";
+      var lx = cx + (r + 16) * Math.cos(ang), ly = cy + (r + 16) * Math.sin(ang);
+      ctx.textAlign = Math.abs(Math.cos(ang)) < 0.3 ? "center" : (Math.cos(ang) > 0 ? "left" : "right");
+      ctx.textBaseline = Math.abs(Math.sin(ang)) < 0.3 ? "middle" : (Math.sin(ang) > 0 ? "top" : "bottom");
+      ctx.fillText(dm[0], lx, ly);
+    });
+    function poly(vals, stroke, fill, dash) {
+      ctx.setLineDash(dash || []);
+      ctx.beginPath();
+      vals.forEach(function (v, i) {
+        var ang = -Math.PI / 2 + Math.PI * 2 * i / n, rr = r * (v / mx[i]);
+        i ? ctx.lineTo(cx + rr * Math.cos(ang), cy + rr * Math.sin(ang)) : ctx.moveTo(cx + rr * Math.cos(ang), cy + rr * Math.sin(ang));
+      });
+      ctx.closePath(); ctx.fillStyle = fill; ctx.fill();
+      ctx.strokeStyle = stroke; ctx.lineWidth = 1.6; ctx.stroke(); ctx.setLineDash([]);
+    }
+    poly(avg, "#94A3B8", "rgba(148,163,184,0.10)", [4, 3]);
+    poly(dims.map(function (dm) { return DATA[sel.value | 0][dm[1]]; }), "#2563EB", "rgba(37,99,235,0.18)");
+    // 中心成员名标签：一眼看出当前画像对象
+    if (member) {
+      ctx.font = "bold 12px sans-serif";
+      var tw = ctx.measureText(member.name).width + 18;
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      roundRect(ctx, cx - tw / 2, cy - 11, tw, 22, 11); ctx.fill();
+      ctx.strokeStyle = "#CBD5E1"; ctx.lineWidth = 1; ctx.stroke();
+      ctx.fillStyle = "#0F172A"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText(member.name, cx, cy);
+    }
+    legend(document.getElementById("l7"), [["选定成员", "#2563EB"], ["全队均值", "#94A3B8"]]);
+  })();
+
+  // 8. 仪表盘
+  (function () {
+    var s = setup("c8", 240), ctx = s.ctx;
+    var doneAll = sum("done") + sum("closed"), totalAll = doneAll + sum("ns") + sum("ip");
+    var pct = totalAll > 0 ? doneAll / totalAll : 0;
+    var cx = s.w / 2, cy = s.h * 0.82, r = Math.min(s.w * 0.42, s.h * 0.66);
+    ctx.lineWidth = 16; ctx.lineCap = "round";
+    ctx.strokeStyle = "#E2E8F0"; ctx.beginPath(); ctx.arc(cx, cy, r, Math.PI, 0); ctx.stroke();
+    var grd = ctx.createLinearGradient(cx - r, 0, cx + r, 0);
+    grd.addColorStop(0, "#DC2626"); grd.addColorStop(0.5, "#F59E0B"); grd.addColorStop(1, "#10B981");
+    ctx.strokeStyle = grd; ctx.beginPath(); ctx.arc(cx, cy, r, Math.PI, Math.PI + Math.PI * pct); ctx.stroke();
+    ctx.fillStyle = "#0F172A"; ctx.font = "bold 26px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(Math.round(pct * 100) + "%", cx, cy - 12);
+    ctx.fillStyle = "#64748B"; ctx.font = "11px sans-serif"; ctx.fillText("迭代完成率（已完成+已关闭）", cx, cy + 12);
+  })();
+
+  // 9. 气泡散点
+  (function () {
+    var s = setup("c9", 240), ctx = s.ctx;
+    var L = 38, R = 40, T = 14, B = 44, gw = s.w - L - R, gh = s.h - T - B;
+    var maxT = Math.max.apply(null, DATA.map(function (d) { return d.total; })) || 1;
+    var maxF = Math.max.apply(null, DATA.map(function (d) { return d.done + d.closed; })) || 1;
+    var maxH = Math.max.apply(null, DATA.map(function (d) { return d.hi; }));
+    ctx.font = "11px sans-serif"; ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    for (var i = 0; i <= 4; i++) {
+      var yy = T + gh - gh * i / 4;
+      ctx.strokeStyle = "#E2E8F0"; ctx.beginPath(); ctx.moveTo(L, yy); ctx.lineTo(L + gw, yy); ctx.stroke();
+      ctx.fillStyle = "#64748B"; ctx.fillText(fmt(maxF * i / 4), L - 6, yy);
+    }
+    ctx.textAlign = "center";
+    for (var i = 0; i <= 4; i++) {
+      var xx = L + gw * i / 4;
+      ctx.fillStyle = "#64748B"; ctx.fillText(fmt(maxT * i / 4), xx, T + gh + 13);
+    }
+    ctx.fillText("总故事点 →", L + gw / 2, T + gh + 26);
+    DATA.forEach(function (d) {
+      var x = L + gw * d.total / maxT, y = T + gh - gh * (d.done + d.closed) / maxF;
+      var rr = 5 + 14 * (maxH ? d.hi / maxH : 0);
+      ctx.fillStyle = "rgba(220,38,38,0.35)"; ctx.strokeStyle = "#DC2626";
+      ctx.beginPath(); ctx.arc(x, y, rr, 0, 7); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = "#334155"; ctx.textAlign = "center"; ctx.textBaseline = "bottom";
+      ctx.fillText(d.name, x, y - rr - 2); ctx.textBaseline = "middle";
+    });
+  })();
+}
+
+function fmt(v) {
+  var r = Math.round(v * 10) / 10;
+  return Math.abs(r % 1) < 1e-9 ? String(Math.round(r)) : r.toFixed(1);
+}
+
+document.getElementById("radarMember").addEventListener("change", function () {
+  try { renderAll(); } catch (e) { console.error(e); }
+});
+
+var resizeTimer = null;
+window.addEventListener("resize", function () {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(function () {
+    try { renderAll(); } catch (e) { console.error(e); }
+  }, 150);
+});
+</script>
+</body>
+</html>

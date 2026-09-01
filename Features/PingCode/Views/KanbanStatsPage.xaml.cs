@@ -2,11 +2,14 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using Microsoft.Web.WebView2.Core;
+using Newtonsoft.Json;
 using PackageManager.Features.DailyLog.Services;
 using PackageManager.Models;
 using PackageManager.Services;
@@ -36,6 +39,25 @@ public partial class KanbanStatsPage : Page, ICentralPage, INotifyPropertyChange
     private Entity selectedIteration;
 
     private string resultTextContent;
+
+    /// <summary>图表 WebView 的核心对象（初始化完成后可用）。</summary>
+    private CoreWebView2 chartsCore;
+
+    /// <summary>图表 WebView 实例：在 CLoadingOverlay 的 name scope 内无法 XAML 命名，由代码动态创建挂载。</summary>
+    private readonly Microsoft.Web.WebView2.Wpf.WebView2 chartsWebView = new()
+    {
+        HorizontalAlignment = HorizontalAlignment.Stretch,
+        VerticalAlignment = VerticalAlignment.Stretch,
+    };
+
+    /// <summary>图表页面导航完成标志：数据推送前必须为 true。</summary>
+    private bool chartsReady;
+
+    /// <summary>图表 WebView 初始化启动标志（页面可能重复触发 Loaded，只初始化一次）。</summary>
+    private bool chartsInitStarted;
+
+    /// <summary>图表页面就绪前缓存的统计数据载荷：导航完成后立即补推。</summary>
+    private string pendingChartsPayload;
 
     /// <summary>
     /// 初始化 <see cref="KanbanStatsPage"/> 的新实例。
@@ -195,6 +217,7 @@ public partial class KanbanStatsPage : Page, ICentralPage, INotifyPropertyChange
         loading = true;
         try
         {
+            _ = InitializeChartsWebViewAsync();
             Projects.Clear();
             Iterations.Clear();
 
@@ -239,6 +262,9 @@ public partial class KanbanStatsPage : Page, ICentralPage, INotifyPropertyChange
         try
         {
             Overlay.IsBusy = true;
+            // WebView2 为独立渲染层（airspace），WPF 遮罩无法覆盖：查询期间隐藏图表，
+            // 遮罩淡出后再恢复显示，视觉上与表格遮罩衔接。
+            chartsWebView.Visibility = Visibility.Collapsed;
             if (Iterations.Count == 0)
             {
                 return;
@@ -294,6 +320,7 @@ public partial class KanbanStatsPage : Page, ICentralPage, INotifyPropertyChange
 
             StatsRows = rows;
             ResultTextContent = $"统计完成：{rows.Count} 人员，故事点总数：{total}";
+            await PushChartsAsync(rows);
         }
         catch (Exception ex)
         {
@@ -305,7 +332,163 @@ public partial class KanbanStatsPage : Page, ICentralPage, INotifyPropertyChange
         finally
         {
             Overlay.IsBusy = false;
+            await Task.Delay(250);
+            chartsWebView.Visibility = Visibility.Visible;
         }
+    }
+
+    /// <summary>
+    /// 初始化图表 WebView：加载内嵌统计图表模板并等待导航完成。
+    /// 导航完成后若已有待推数据（先查询后就绪的场景）立即补推。
+    /// </summary>
+    private async Task InitializeChartsWebViewAsync()
+    {
+        if (chartsInitStarted)
+        {
+            return;
+        }
+
+        chartsInitStarted = true;
+        try
+        {
+            var html = LoadChartsTemplate();
+            LoggingService.LogDebug($"[统计图表] 模板加载 {html?.Length ?? 0} 字符");
+            var chartsHost = BuildChartsHost();
+            chartsHost.Children.Add(chartsWebView);
+            var environment = await Infrastructure.WebView2EnvironmentService.GetEnvironmentAsync();
+            await chartsWebView.EnsureCoreWebView2Async(environment);
+            chartsCore = chartsWebView.CoreWebView2;
+            chartsCore.Settings.AreDefaultContextMenusEnabled = false;
+            chartsCore.Settings.IsZoomControlEnabled = false;
+            chartsCore.Settings.IsStatusBarEnabled = false;
+            chartsCore.NavigationCompleted += (s, e) =>
+            {
+                chartsReady = e.IsSuccess;
+                LoggingService.LogDebug($"[统计图表] 页面导航完成 IsSuccess={e.IsSuccess}");
+                if (chartsReady && !string.IsNullOrEmpty(pendingChartsPayload))
+                {
+                    var payload = pendingChartsPayload;
+                    pendingChartsPayload = null;
+                    _ = ExecuteChartsPushAsync(payload);
+                }
+            };
+            chartsCore.NavigateToString(html);
+        }
+        catch (Exception ex)
+        {
+            LoggingService.LogError(ex, "[统计图表] WebView 初始化失败");
+        }
+    }
+
+    /// <summary>
+    /// 将统计行推送至图表页面；页面未就绪时缓存载荷，导航完成后补推。
+    /// </summary>
+    /// <param name="rows">当前查询的成员统计行。</param>
+    private async Task PushChartsAsync(IEnumerable<MemberStatsItem> rows)
+    {
+        try
+        {
+            var payload = JsonConvert.SerializeObject(new
+            {
+                rows = (rows ?? Array.Empty<MemberStatsItem>()).Select(r => new
+                {
+                    name = r.MemberName,
+                    ns = r.NotStarted,
+                    ip = r.InProgress,
+                    done = r.Done,
+                    closed = r.Closed,
+                    hiN = r.HighestPriorityCount,
+                    hi = r.HighestPriorityPoints,
+                    hrN = r.HigherPriorityCount,
+                    hr = r.HigherPriorityPoints,
+                    otN = r.OtherPriorityCount,
+                    ot = r.OtherPriorityPoints,
+                }),
+            });
+
+            if (!chartsReady || (chartsCore == null))
+            {
+                pendingChartsPayload = payload;
+                return;
+            }
+
+            pendingChartsPayload = null;
+            await ExecuteChartsPushAsync(payload);
+        }
+        catch (Exception ex)
+        {
+            LoggingService.LogError(ex, "[统计图表] 数据推送失败");
+        }
+    }
+
+    /// <summary>
+    /// 在图表页面执行数据注入脚本。
+    /// </summary>
+    /// <param name="payloadJson">统计数据 JSON。</param>
+    private async Task ExecuteChartsPushAsync(string payloadJson)
+    {
+        try
+        {
+            await chartsCore.ExecuteScriptAsync($"window.applyStats({payloadJson})");
+            LoggingService.LogDebug("[统计图表] 已推送渲染");
+        }
+        catch (Exception ex)
+        {
+            LoggingService.LogError(ex, "[统计图表] 注入脚本执行失败");
+        }
+    }
+
+    /// <summary>
+    /// 构建图表宿主容器并挂到统计区第 3 行（表格下方）。
+    /// CLoadingOverlay 的 name scope 不允许对内容元素 XAML 命名，故整棵子树由代码创建。
+    /// </summary>
+    /// <returns>已挂载到视觉树的图表宿主 Grid。</returns>
+    private Grid BuildChartsHost()
+    {
+        var content = (Grid)Overlay.MainContent;
+        var statsGrid = (Grid)content.Children[1];
+        var host = new Grid { Margin = new Thickness(0, 12, 0, 0) };
+        Grid.SetRow(host, 2);
+        statsGrid.Children.Add(host);
+        return host;
+    }
+
+    /// <summary>
+    /// 加载统计图表模板：优先读取嵌入资源，失败时回退磁盘文件。
+    /// </summary>
+    /// <returns>模板 HTML 文本。</returns>
+    private static string LoadChartsTemplate()
+    {
+        try
+        {
+            var asm = System.Reflection.Assembly.GetExecutingAssembly();
+            var name = asm.GetManifestResourceNames()
+                          .FirstOrDefault(n => n.EndsWith("kanban-stats-charts.html", StringComparison.OrdinalIgnoreCase));
+            if (!string.IsNullOrEmpty(name))
+            {
+                using var s = asm.GetManifestResourceStream(name);
+                using var reader = new StreamReader(s, System.Text.Encoding.UTF8, true);
+                return reader.ReadToEnd();
+            }
+        }
+        catch
+        {
+        }
+
+        var baseDir = AppDomain.CurrentDomain.BaseDirectory;
+        var dir = new DirectoryInfo(baseDir);
+        for (var i = 0; i < 6 && dir != null; i++)
+        {
+            var p = Path.Combine(dir.FullName, "Features", "PingCode", "Templates", "kanban-stats-charts.html");
+            if (File.Exists(p))
+            {
+                return File.ReadAllText(p, System.Text.Encoding.UTF8);
+            }
+
+            dir = dir.Parent;
+        }
+
+        return "<html><body style=\"font-family:sans-serif;color:#64748B\">统计图表模板缺失</body></html>";
     }
 
     private async void UserCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)

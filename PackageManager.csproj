@@ -678,6 +678,7 @@
       <EmbeddedResource Include="CHANGELOG.md" />
         <EmbeddedResource Include="Features\PingCode\Templates\workitem-details.html" />
         <EmbeddedResource Include="Features\PingCode\Templates\kanban-board.html" />
+        <EmbeddedResource Include="Features\PingCode\Templates\kanban-stats-charts.html" />
         <EmbeddedResource Include=".claude\skills\git_svn_commitlog_generator\SKILL.md">
           <LogicalName>PackageManager.AiCommitSkill.SKILL.md</LogicalName>
         </EmbeddedResource>
