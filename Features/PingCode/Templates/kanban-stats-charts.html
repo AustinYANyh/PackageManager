@@ -9,7 +9,7 @@
   #empty { padding: 40px; text-align: center; color: #64748B; font-size: 14px; }
   #wrap.hidden { display: none; }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-  .card { background: #fff; border: 1px solid #E2E8F0; border-radius: 10px; padding: 14px; }
+  .card { background: #fff; border: 1px solid #E2E8F0; border-radius: 10px; padding: 14px; display: flex; flex-direction: column; }
   .card.full { grid-column: 1 / -1; }
   .card h2 { font-size: 14px; margin-bottom: 4px; }
   .card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -18,21 +18,24 @@
   select { padding: 4px 8px; border: 1px solid #CBD5E1; border-radius: 6px; font-size: 13px; }
   .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: #334155; margin-top: 6px; }
   .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+  .concl { margin-top: auto; padding: 8px 10px; background: #F8FAFC; border-left: 3px solid #2563EB; border-radius: 4px; font-size: 12px; color: #334155; line-height: 1.6; }
+  .concl .cl { color: #2563EB; font-weight: 600; margin-right: 6px; }
+  .concl b { color: #0F172A; }
 </style>
 </head>
 <body>
 <div id="empty">查询数据后此处展示统计图</div>
 <div id="wrap" class="hidden">
   <div class="grid">
-    <div class="card full"><h2>1. 堆叠柱状图 — 成员负载与状态构成</h2><div class="desc">柱高=总故事点（含已关闭），分段=四状态。</div><canvas id="c1"></canvas><div class="legend" id="l1"></div></div>
-    <div class="card"><h2>2. 100% 堆叠横条 — 成员完成率结构</h2><div class="desc">每行归一化为 100%，对比已完成+已关闭占比。</div><canvas id="c2"></canvas><div class="legend" id="l2"></div></div>
-    <div class="card"><h2>3. 帕累托图 — 负载集中度</h2><div class="desc">总故事点降序柱 + 累计百分比折线。</div><canvas id="c3"></canvas></div>
-    <div class="card"><h2>4. 环形图 — 迭代状态占比</h2><div class="desc">全迭代四状态故事点合计占比。</div><canvas id="c4"></canvas><div class="legend" id="l4"></div></div>
-    <div class="card"><h2>5. 环形图 — 优先级占比</h2><div class="desc">最高/较高/其他优先级故事点占比。</div><canvas id="c5"></canvas><div class="legend" id="l5"></div></div>
-    <div class="card"><h2>6. 分组柱状图 — 成员 × 优先级故事点</h2><div class="desc">三级优先级并排对比。</div><canvas id="c6"></canvas><div class="legend" id="l6"></div></div>
-    <div class="card"><div class="card-head"><h2>7. 雷达图 — <span id="radarTitle">成员</span> 多维画像</h2><select id="radarMember"></select></div><div class="desc">六维（四状态+最高/较高优先级点），虚线为全队均值。</div><canvas id="c7"></canvas><div class="legend" id="l7"></div></div>
-    <div class="card"><h2>8. 进度仪表盘 — 迭代完成率</h2><div class="desc">(已完成+已关闭) / 总计故事点。</div><canvas id="c8"></canvas></div>
-    <div class="card"><h2>9. 气泡散点 — 负载 × 产出 × 高优</h2><div class="desc">x=总故事点，y=已完成+已关闭，气泡大小=最高优先级点。</div><canvas id="c9"></canvas></div>
+    <div class="card full"><h2>1. 堆叠柱状图 — 成员负载与状态构成</h2><div class="desc">柱高=总故事点（含已关闭），分段=四状态。</div><canvas id="c1"></canvas><div class="legend" id="l1"></div><div class="concl" id="k1"></div></div>
+    <div class="card"><h2>2. 100% 堆叠横条 — 成员完成率结构</h2><div class="desc">每行归一化为 100%，对比已完成+已关闭占比。</div><canvas id="c2"></canvas><div class="legend" id="l2"></div><div class="concl" id="k2"></div></div>
+    <div class="card"><h2>3. 帕累托图 — 负载集中度</h2><div class="desc">总故事点降序柱 + 累计百分比折线。</div><canvas id="c3"></canvas><div class="concl" id="k3"></div></div>
+    <div class="card"><h2>4. 环形图 — 迭代状态占比</h2><div class="desc">全迭代四状态故事点合计占比。</div><canvas id="c4"></canvas><div class="legend" id="l4"></div><div class="concl" id="k4"></div></div>
+    <div class="card"><h2>5. 环形图 — 优先级占比</h2><div class="desc">最高/较高/其他优先级故事点占比。</div><canvas id="c5"></canvas><div class="legend" id="l5"></div><div class="concl" id="k5"></div></div>
+    <div class="card"><h2>6. 分组柱状图 — 成员 × 优先级故事点</h2><div class="desc">三级优先级并排对比。</div><canvas id="c6"></canvas><div class="legend" id="l6"></div><div class="concl" id="k6"></div></div>
+    <div class="card"><div class="card-head"><h2>7. 雷达图 — <span id="radarTitle">成员</span> 多维画像</h2><select id="radarMember"></select></div><div class="desc">六维（四状态+最高/较高优先级点），虚线为全队均值。</div><canvas id="c7"></canvas><div class="legend" id="l7"></div><div class="concl" id="k7"></div></div>
+    <div class="card"><h2>8. 进度仪表盘 — 迭代完成率</h2><div class="desc">(已完成+已关闭) / 总计故事点。</div><canvas id="c8"></canvas><div class="concl" id="k8"></div></div>
+    <div class="card"><h2>9. 气泡散点 — 负载 × 产出 × 高优</h2><div class="desc">x=总故事点，y=已完成+已关闭，气泡大小=最高优先级点。</div><canvas id="c9"></canvas><div class="concl" id="k9"></div></div>
   </div>
 </div>
 
@@ -50,7 +53,7 @@ window.applyStats = function (payload) {
     wrap.classList.add("hidden");
     empty.style.display = "block";
     empty.textContent = "当前迭代暂无统计故事点";
-    return;
+    return "empty";
   }
   empty.style.display = "none";
   wrap.classList.remove("hidden");
@@ -60,6 +63,7 @@ window.applyStats = function (payload) {
   DATA.forEach(function (d, i) { var o = document.createElement("option"); o.value = i; o.textContent = d.name; sel.appendChild(o); });
   if (keep && +keep < DATA.length) { sel.value = keep; }
   renderAll();
+  return "ok:" + DATA.length;
 };
 
 function setup(id, h) {
@@ -75,6 +79,21 @@ function setup(id, h) {
 function legend(el, items) {
   el.innerHTML = items.map(function (it) { return "<span><i style=\"background:" + it[1] + "\"></i>" + it[0] + "</span>"; }).join("");
 }
+function setConcl(id, html) {
+  var el = document.getElementById(id);
+  if (el) { el.innerHTML = "<span class=\"cl\">结论</span>" + html; }
+}
+function esc(s) {
+  return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+}
+function mid(arr) {
+  var a = arr.slice().sort(function (x, y) { return x - y; }), n = a.length;
+  if (!n) { return 0; }
+  return n % 2 ? a[(n - 1) / 2] : (a[n / 2 - 1] + a[n / 2]) / 2;
+}
+function conclNA() {
+  for (var i = 1; i <= 9; i++) { setConcl("k" + i, "当前数据不足以生成结论"); }
+}
 function roundRect(ctx, x, y, w, h, r) {
   r = Math.min(r, w / 2, h / 2);
   ctx.beginPath();
@@ -84,6 +103,7 @@ function roundRect(ctx, x, y, w, h, r) {
 
 function renderAll() {
   if (!DATA.length) { return; }
+  if (DATA.every(function (d) { return d.total <= 0; })) { conclNA(); return; }
 
   // 1. 堆叠柱状图
   (function () {
@@ -111,6 +131,19 @@ function renderAll() {
       ctx.fillText(d.name, x + w2 / 2, T + gh + 13);
     });
     legend(document.getElementById("l1"), [["未开始", COLORS.ns], ["进行中", COLORS.ip], ["已完成", COLORS.done], ["已关闭", COLORS.closed]]);
+    (function () {
+      var byTotal = DATA.slice().sort(function (a, b) { return b.total - a.total; });
+      var top = byTotal[0], low = byTotal[byTotal.length - 1];
+      var parts = ["负载最重的是<b>" + esc(top.name) + "</b>（" + fmt(top.total) + " 点）"];
+      if (byTotal.length > 1 && low.total > 0) {
+        parts.push("约为最低者" + esc(low.name) + "（" + fmt(low.total) + " 点）的 " + (Math.round(top.total / low.total * 10) / 10) + " 倍");
+      }
+      var maxIp = DATA.slice().sort(function (a, b) { return b.ip - a.ip; })[0];
+      if (maxIp && maxIp.ip > 0) {
+        parts.push("<b>" + esc(maxIp.name) + "</b>在制品最多（进行中 " + fmt(maxIp.ip) + " 点），注意收敛并行任务");
+      }
+      setConcl("k1", parts.join("；") + "。");
+    })();
   })();
 
   // 2. 100% 堆叠横条
@@ -131,7 +164,19 @@ function renderAll() {
       ctx.fillStyle = fin >= 60 ? "#059669" : fin >= 35 ? "#D97706" : "#DC2626";
       ctx.textAlign = "left"; ctx.fillText(fin + "%", x + 8, y + bh / 2);
     });
-    legend(document.getElementById("l2"), [["已关闭", COLORS.closed], ["已完成", COLORS.done], ["进行中", COLORS.ip], ["未开始", COLORS.ns]]);
+    legend(document.getElementById("l2"), [["未开始", COLORS.ns], ["进行中", COLORS.ip], ["已完成", COLORS.done], ["已关闭", COLORS.closed]]);
+    (function () {
+      var rates = DATA.filter(function (d) { return d.total > 0; }).map(function (d) { return { name: d.name, r: (d.done + d.closed) / d.total }; });
+      if (!rates.length) { setConcl("k2", "当前数据不足以生成结论"); return; }
+      var m = mid(rates.map(function (x) { return x.r; }));
+      var sorted = rates.slice().sort(function (a, b) { return b.r - a.r; });
+      var hi = sorted[0], lo = sorted[sorted.length - 1];
+      var behind = rates.filter(function (x) { return x.r < 0.35; }).map(function (x) { return esc(x.name); });
+      var s = "整体完成率中位 <b>" + Math.round(m * 100) + "%</b>；" + esc(hi.name) + " 领先（" + Math.round(hi.r * 100) + "%）" +
+              (sorted.length > 1 ? "，" + esc(lo.name) + " 落后（" + Math.round(lo.r * 100) + "%）" : "");
+      if (behind.length) { s += "——" + behind.join("、") + " 低于 35%，建议排查阻塞项"; }
+      setConcl("k2", s + "。");
+    })();
   })();
 
   // 3. 帕累托图
@@ -160,6 +205,15 @@ function renderAll() {
     pts.forEach(function (p, i) { i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]); });
     ctx.stroke();
     pts.forEach(function (p) { ctx.fillStyle = "#DC2626"; ctx.beginPath(); ctx.arc(p[0], p[1], 2.5, 0, 7); ctx.fill(); });
+    (function () {
+      var n3 = Math.min(3, sorted.length);
+      var acc = sorted.slice(0, n3).reduce(function (a, d) { return a + d.total; }, 0) / grand;
+      var s = "前 " + n3 + " 人承担 <b>" + Math.round(acc * 100) + "%</b> 的故事点";
+      if (acc >= 0.8) { s += "，超过 80%，负载高度集中，存在单点风险"; }
+      else if (acc >= 0.6) { s += "，负载较为集中，注意任务均衡"; }
+      else { s += "，负载分布相对均衡"; }
+      setConcl("k3", s + "。");
+    })();
   })();
 
   // 4 / 5. 环形图
@@ -189,8 +243,24 @@ function renderAll() {
   function sum(k) { return DATA.reduce(function (a, d) { return a + d[k]; }, 0); }
   donut("c4", [["ns", sum("ns"), COLORS.ns], ["ip", sum("ip"), COLORS.ip], ["done", sum("done"), COLORS.done], ["closed", sum("closed"), COLORS.closed]], "总故事点");
   legend(document.getElementById("l4"), [["未开始", COLORS.ns], ["进行中", COLORS.ip], ["已完成", COLORS.done], ["已关闭", COLORS.closed]]);
+  (function () {
+    var t = (sum("ns") + sum("ip") + sum("done") + sum("closed")) || 1;
+    var fin = (sum("done") + sum("closed")) / t;
+    var s = "已完成+已关闭合计 <b>" + Math.round(fin * 100) + "%</b>";
+    if (sum("ns") > 0) { s += "；未开始仍有 " + fmt(sum("ns")) + " 点（" + Math.round(sum("ns") / t * 100) + "%），是剩余主要工作量"; }
+    setConcl("k4", s + "。");
+  })();
   donut("c5", [["hi", sum("hi"), COLORS.hi], ["hr", sum("hr"), COLORS.hr], ["ot", sum("ot"), COLORS.ot]], "优先级点数");
   legend(document.getElementById("l5"), [["最高优先级", COLORS.hi], ["较高优先级", COLORS.hr], ["其他优先级", COLORS.ot]]);
+  (function () {
+    var t = (sum("hi") + sum("hr") + sum("ot")) || 1;
+    var hiP = (sum("hi") + sum("hr")) / t;
+    var s = "最高+较高优先级合计占 <b>" + Math.round(hiP * 100) + "%</b>";
+    if (hiP >= 0.5) { s += "，高优浓度高，建议优先保障投入"; }
+    else if (hiP >= 0.3) { s += "，高优比例适中"; }
+    else { s += "，以常规任务为主"; }
+    setConcl("k5", s + "。");
+  })();
 
   // 6. 分组柱状图（优先级）
   (function () {
@@ -214,6 +284,15 @@ function renderAll() {
       ctx.fillStyle = "#334155"; ctx.textAlign = "center"; ctx.fillText(d.name, x0 + gw2 * 0.38, T + gh + 13);
     });
     legend(document.getElementById("l6"), [["最高", COLORS.hi], ["较高", COLORS.hr], ["其他", COLORS.ot]]);
+    (function () {
+      var hiTop = DATA.slice().sort(function (a, b) { return b.hi - a.hi; }).filter(function (d) { return d.hi > 0; }).slice(0, 2);
+      var s = hiTop.length
+        ? ("最高优先级点集中在" + hiTop.map(function (d) { return "<b>" + esc(d.name) + "</b>（" + fmt(d.hi) + " 点）"; }).join("与"))
+        : "当前无最高优先级任务";
+      var noHi = DATA.filter(function (d) { return d.hi <= 0; }).map(function (d) { return esc(d.name); });
+      if (noHi.length && noHi.length < DATA.length) { s += "；" + noHi.join("、") + " 无高优任务"; }
+      setConcl("k6", s + "。");
+    })();
   })();
 
   // 7. 雷达图
@@ -266,6 +345,17 @@ function renderAll() {
       ctx.fillText(member.name, cx, cy);
     }
     legend(document.getElementById("l7"), [["选定成员", "#2563EB"], ["全队均值", "#94A3B8"]]);
+    (function () {
+      var diffs = dims.map(function (dm, i) { return { name: dm[0], dv: member[dm[1]] - avg[i] }; });
+      var up = diffs.slice().sort(function (a, b) { return b.dv - a.dv; })[0];
+      var dn = diffs.slice().sort(function (a, b) { return a.dv - b.dv; })[0];
+      var s = "<b>" + esc(member.name) + "</b> 对比全队均值：";
+      var seg = [];
+      if (up && up.dv > 0.5) { seg.push(up.name + "高出 " + fmt(up.dv) + " 点"); }
+      if (dn && dn.dv < -0.5) { seg.push(dn.name + "低 " + fmt(-dn.dv) + " 点"); }
+      s += seg.length ? seg.join("，") : "各维度均接近均值";
+      setConcl("k7", s + "。");
+    })();
   })();
 
   // 8. 仪表盘
@@ -282,6 +372,8 @@ function renderAll() {
     ctx.fillStyle = "#0F172A"; ctx.font = "bold 26px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.fillText(Math.round(pct * 100) + "%", cx, cy - 12);
     ctx.fillStyle = "#64748B"; ctx.font = "11px sans-serif"; ctx.fillText("迭代完成率（已完成+已关闭）", cx, cy + 12);
+    setConcl("k8", "迭代完成率 <b>" + Math.round(pct * 100) + "%</b>" +
+      (pct >= 0.7 ? "，进度良好" : (pct >= 0.4 ? "，进度中等，建议对照迭代剩余时间评估" : "，进度滞后，建议尽快排查阻塞")) + "。");
   })();
 
   // 9. 气泡散点
@@ -311,6 +403,17 @@ function renderAll() {
       ctx.fillStyle = "#334155"; ctx.textAlign = "center"; ctx.textBaseline = "bottom";
       ctx.fillText(d.name, x, y - rr - 2); ctx.textBaseline = "middle";
     });
+    (function () {
+      var mT = mid(DATA.map(function (d) { return d.total; }));
+      var mR = mid(DATA.map(function (d) { return (d.done + d.closed) / (d.total || 1); }));
+      var risks = DATA.filter(function (d) { return d.total > mT && (d.done + d.closed) / (d.total || 1) < mR; });
+      var s = risks.length
+        ? ("风险关注：" + risks.map(function (d) { return "<b>" + esc(d.name) + "</b>（负载 " + fmt(d.total) + " 点、完成率 " + Math.round((d.done + d.closed) / (d.total || 1) * 100) + "%）"; }).join("、") + "，负载高于中位但完成率偏低")
+        : "未发现高负载低产出成员";
+      var best = DATA.slice().sort(function (a, b) { return (b.done + b.closed) - (a.done + a.closed); })[0];
+      if (best && (best.done + best.closed) > 0) { s += "；" + esc(best.name) + " 产出最高（" + fmt(best.done + best.closed) + " 点）"; }
+      setConcl("k9", s + "。");
+    })();
   })();
 }
 

@@ -43,11 +43,12 @@ public partial class KanbanStatsPage : Page, ICentralPage, INotifyPropertyChange
     /// <summary>图表 WebView 的核心对象（初始化完成后可用）。</summary>
     private CoreWebView2 chartsCore;
 
-    /// <summary>图表 WebView 实例：在 CLoadingOverlay 的 name scope 内无法 XAML 命名，由代码动态创建挂载。</summary>
+    /// <summary>图表 WebView 实例：在 CLoadingOverlay 的 name scope 内无法 XAML 命名，由代码动态创建挂载。初始折叠，首次查询推送数据后才显示。</summary>
     private readonly Microsoft.Web.WebView2.Wpf.WebView2 chartsWebView = new()
     {
         HorizontalAlignment = HorizontalAlignment.Stretch,
         VerticalAlignment = VerticalAlignment.Stretch,
+        Visibility = Visibility.Collapsed,
     };
 
     /// <summary>图表页面导航完成标志：数据推送前必须为 true。</summary>
@@ -429,8 +430,9 @@ public partial class KanbanStatsPage : Page, ICentralPage, INotifyPropertyChange
     {
         try
         {
-            await chartsCore.ExecuteScriptAsync($"window.applyStats({payloadJson})");
-            LoggingService.LogDebug("[统计图表] 已推送渲染");
+            // applyStats 返回 "ok:行数"，用于确认脚本真正执行成功（JS 异常时返回异常信息）
+            var ret = await chartsCore.ExecuteScriptAsync($"window.applyStats ? window.applyStats({payloadJson}) : 'no-entry'");
+            LoggingService.LogDebug($"[统计图表] 推送返回 {ret}");
         }
         catch (Exception ex)
         {
