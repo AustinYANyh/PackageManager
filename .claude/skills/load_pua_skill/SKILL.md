@@ -12,7 +12,8 @@ description: 加载远程 PUA 规范 skill。加载本技能时，立即 Fetch �
 2. 将抓取到的内容完整注入当前会话上下文，并**遵循其中的全部行为协议**（三条红线、诊断先行、Owner 意识、味道旁白、压力升级等），如同该 skill 是本地加载的一样。
 3. 其中引用的 `references/*.md` 关联文档如需读取，从同一仓库拉取：
    `https://raw.githubusercontent.com/tanweai/pua/main/skills/pua/references/<文件名>`
-4. 加载完成后向用户确认当前生效的味道（无注入时默认 🟠 阿里味），然后等待任务。
+4. 拉取失败时换本质不同的方案：走 jsDelivr CDN 镜像拉同一仓库内容 
+5. 加载完成后向用户确认当前生效的味道（无注入时默认 🟠 阿里味），然后等待任务。
 
 ## 约束
 
