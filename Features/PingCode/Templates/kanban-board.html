@@ -87,6 +87,11 @@
   .bar-testable { background: #3B82F6; }
   .bar-testing  { background: #8B5CF6; }
   .bar-default  { background: #CBD5E1; }
+  /* 终态列（已完成/已关闭）：内容降不透明度+轻去色对齐 PingCode 灰化观感（左色条除外），标题删除线 */
+  .col[data-category="已完成"] .card > :not(.bar),
+  .col[data-category="已关闭"] .card > :not(.bar) { filter: grayscale(.25); opacity: .6; }
+  .col[data-category="已完成"] .card-title,
+  .col[data-category="已关闭"] .card-title { text-decoration: line-through; }
 
   .card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .card-id { font-size: 12px; color: #64748B; font-weight: 600; letter-spacing: .3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
