@@ -1714,6 +1714,9 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
                             Details.StateName = newName;
                             Details.StateType = newType;
                             Details.StateId = stateId;
+                            var titleTerminal = IsTerminalStateForTitle(newType, newName) ? "true" : "false";
+                            var titleScript = "try{var t=document.getElementById('titleText');if(t){t.classList.toggle('title-terminal'," + titleTerminal + ");}}catch(e){}";
+                            await DetailsWeb.CoreWebView2.ExecuteScriptAsync(titleScript);
                             await RefreshAvailableStatesAndUpdateDropdownAsync();
                         }
                     }
@@ -2738,6 +2741,13 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         await DetailsWeb.CoreWebView2.ExecuteScriptAsync(js.ToString());
     }
 
+    private static bool IsTerminalStateForTitle(string stateType, string stateName)
+    {
+        var t = (stateType ?? "").Trim().ToLowerInvariant();
+        var n = (stateName ?? "").Trim().ToLowerInvariant();
+        return t.Contains("done") || t.Contains("clos") || n.Contains("完成") || n.Contains("关闭") || n.Contains("拒绝");
+    }
+
     private string BuildHtmlFromTemplate(string tpl)
     {
         var stateType = (Details.StateType ?? "").Trim().ToLowerInvariant();
@@ -2760,11 +2770,12 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
             stateCls = "state-testing";
         }
         else if (stateType.Contains("progress") || stateType.Contains("in_progress") || stateNameRaw.Contains("进行中") ||
-                 stateNameRaw.Contains("开发中") || stateNameRaw.Contains("处理中"))
+                 stateNameRaw.Contains("开发中") ||                  stateNameRaw.Contains("处理中"))
         {
             stateCls = "state-inprogress";
         }
 
+        var titleCls = (stateCls == "state-done" || stateCls == "state-closed") ? "title-terminal" : "";
         var startText = FormatDate(Details.StartAt);
         var endText = FormatDate(Details.EndAt);
         var severityZh = MapSeverityText(Details.SeverityName);
@@ -2782,6 +2793,7 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
             ["{{ParentCrumbHtml}}"] = BuildCrumbHtml() ?? "",
             ["{{AssigneeName}}"] = string.IsNullOrWhiteSpace(Details.AssigneeName) ? "未指派" : HtmlEscape(Details.AssigneeName),
             ["{{StateClass}}"] = stateCls,
+            ["{{TitleClass}}"] = titleCls,
             ["{{StateName}}"] = HtmlEscape(Details.StateName),
             ["{{StartAt}}"] = startText,
             ["{{EndAt}}"] = endText,

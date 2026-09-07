@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <meta name="workitem-details-template-version" content="1.4.3"/>
+  <meta name="workitem-details-template-version" content="1.5.2"/>
   <style>
         html,body{height:100%}
     body{margin:0;background:#F1F5F9;font-family:'Segoe UI','Microsoft YaHei',Arial,sans-serif;color:#0F172A;height:100%}
@@ -15,8 +15,8 @@
     .crumb-current{color:#0F172A;font-weight:600}
     .crumb-sep{color:#64748B}
     .header{padding:18px 28px;border-bottom:1px solid #E2E8F0;background:#FFFFFF;display:flex;align-items:center;gap:10px}
-    .id{color:#64748B;font-weight:600;letter-spacing:.3px}
-.title{font-size:18px;font-weight:700;color:#0F172A;flex:1 1 auto;min-width:0;word-break:break-word}
+    .id{color:#64748B;font-weight:600;letter-spacing:.3px;white-space:nowrap;flex:none}
+.title{font-size:18px;font-weight:400;color:#0F172A;flex:1 1 auto;min-width:0;word-break:break-word}
 .header .ai-group{margin-left:auto;display:flex;gap:8px;flex-shrink:0}
 .ai-btn{padding:7px 16px;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;border:1px solid transparent;color:#fff;white-space:nowrap}
     .ai-btn-primary{background:#2563EB;border-color:#1D4ED8}
@@ -97,9 +97,10 @@
 .desc-tool-btn:hover{border-color:#94A3B8;background:#F8FAFC}
 .desc-tool-primary{background:#2563EB;border-color:#2563EB;color:#fff}
 .desc-tool-primary:hover{background:#1D4ED8;border-color:#1D4ED8}
-#titleText{cursor:text;border-radius:6px;padding:1px 4px}
+#titleText{cursor:text;border-radius:6px;border:1px solid transparent;padding:1px 3px}
 #titleText:hover{background:#F1F5F9}
-.title-input{font-size:18px;font-weight:700;border:1px solid #94A3B8;border-radius:6px;padding:2px 8px;outline:#2563EB solid 1px;flex:1 1 auto;min-width:200px;width:100%}
+#titleText.title-terminal{color:#94A3B8;font-weight:400;text-decoration:line-through;text-decoration-color:#9AA5B1;text-decoration-thickness:1px}
+#titleText.title-editing{border-color:#94A3B8;background:#FFFFFF;outline:#2563EB solid 1px;text-decoration:none}
 #descEdit img{max-width:100%;border-radius:8px;border:1px solid #E2E8F0}
     .actions{display:flex;gap:8px;margin-top:8px}
     .actions button{padding:6px 12px;border:1px solid #CBD5E1;border-radius:6px;background:#fff;cursor:pointer;color:#1E293B}
@@ -134,7 +135,7 @@
           <div class="ant-drawer-wrapper-body">
             <div class="ant-drawer-body" style="padding:0;height:100%;overflow:auto">
               <div class="crumb">{{ParentCrumbHtml}}</div>
-              <div class="header"><span class="id">{{Identifier}}</span><span class="title" id="titleText" title="双击编辑标题">{{Title}}</span><span class="ai-group">{{AiButtonsHtml}}</span></div>
+              <div class="header"><span class="id">{{Identifier}}</span><span class="title {{TitleClass}}" id="titleText" title="点击编辑标题">{{Title}}</span><span class="ai-group">{{AiButtonsHtml}}</span></div>
               <div class="quick">
                 <div class="item"><div class="label">负责人</div><div class="value"><select id="assigneeSelect" class="state-select assignee-select"><option selected value="">{{AssigneeName}}</option></select></div></div>
                     <div class="item"><div class="label">状态</div><div class="value"><select id="stateSelect" class="state-select"><option selected>{{StateName}}</option></select></div></div>
@@ -749,43 +750,51 @@
         });
       }
     }catch(e){}
-    // ===== 标题双击就地编辑：Enter/失焦保存，Esc 取消 =====
+    // ===== 标题单击就地编辑：原元素 contenteditable，零位移零字体变化；Enter/失焦保存，Esc 取消 =====
     try{
       var titleEl=document.getElementById('titleText');
-      function submitTitle(input, restore){
-        try{
-          var nv=(input.value||'').trim();
-          var old=input.getAttribute('data-old')||'';
-          input.parentNode.replaceChild(titleEl, input);
-          if(!restore && nv && nv!==old){
-            titleEl.textContent=nv;
-            if(window.chrome&&window.chrome.webview){
-              window.chrome.webview.postMessage({type:'updateTitle', id:'{{WorkItemId}}', title: nv});
-            }
-          }else{
-            titleEl.textContent=old;
+      var titleEditing=false;
+      var titleOriginal='';
+      function commitTitle(){
+        if(!titleEditing){ return; }
+        titleEditing=false;
+        titleEl.removeAttribute('contenteditable');
+        titleEl.classList.remove('title-editing');
+        var nv=(titleEl.innerText||'').replace(/\u00A0/g,' ').trim();
+        var old=(titleOriginal||'').trim();
+        if(nv && nv!==old){
+          titleEl.textContent=nv;
+          if(window.chrome&&window.chrome.webview){
+            window.chrome.webview.postMessage({type:'updateTitle', id:'{{WorkItemId}}', title: nv});
           }
-        }catch(e){}
+        }else{
+          titleEl.textContent=titleOriginal;
+        }
       }
       if(titleEl){
-        titleEl.addEventListener('dblclick',function(){
+        titleEl.addEventListener('click',function(e){
           try{
-            if(document.getElementById('titleInput')){ return; }
-            var cur=titleEl.textContent||'';
-            var input=document.createElement('input');
-            input.id='titleInput';
-            input.className='title-input';
-            input.value=cur;
-            input.setAttribute('data-old',cur);
-            titleEl.parentNode.replaceChild(input,titleEl);
-            input.focus();
-            input.select();
-            var done=false;
-            input.addEventListener('keydown',function(e){
-              if(e.key==='Enter'){ done=true; submitTitle(input,false); }
-              else if(e.key==='Escape'){ done=true; submitTitle(input,true); }
-            });
-            input.addEventListener('blur',function(){ if(!done){ submitTitle(input,false); } });
+            if(titleEditing){ return; }
+            titleEditing=true;
+            titleOriginal=titleEl.textContent||'';
+            titleEl.setAttribute('contenteditable','plaintext-only');
+            titleEl.setAttribute('spellcheck','false');
+            titleEl.classList.add('title-editing');
+            titleEl.focus();
+            try{
+              var r=document.caretRangeFromPoint(e.clientX,e.clientY);
+              if(r){
+                var sel=window.getSelection();
+                if(sel){ sel.removeAllRanges(); sel.addRange(r); }
+              }
+            }catch(ex){}
+          }catch(e){}
+        });
+        titleEl.addEventListener('blur',function(){ try{ commitTitle(); }catch(e){} });
+        titleEl.addEventListener('keydown',function(e){
+          try{
+            if(e.key==='Enter'){ e.preventDefault(); titleEl.blur(); }
+            else if(e.key==='Escape'){ titleEl.textContent=titleOriginal; titleEl.blur(); }
           }catch(e){}
         });
       }
