@@ -113,6 +113,10 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
         this.iterationId = iterationId;
         WindowState = WindowState.Maximized;
         DataContext = this;
+        // 经典视图兜底入口与 AI 拆解/AI 实现同一权限门控（Austin 受限功能）
+        ClassicViewButton.Visibility = UserFeatureAccessService.CanUseAustinOnlyFeatures
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         boardHtml = LoadBoardTemplate();
         Loaded += async (s, e) => await InitializeAsync();
         refreshTimer = new DispatcherTimer { Interval = baseRefreshInterval };
@@ -229,6 +233,10 @@ public partial class WorkItemKanbanWebViewWindow : Window, INotifyPropertyChange
         LoggingService.LogDebug($"[看板性能] EnsureCoreWebView2 {ensureWatch.ElapsedMilliseconds}ms");
         core = BoardWeb.CoreWebView2;
         core.Settings.IsWebMessageEnabled = true;
+        // 去浏览器化：默认右键菜单、F12 开发者工具、浏览器快捷键（Ctrl+F/R/P 等）全部关闭
+        core.Settings.AreDefaultContextMenusEnabled = false;
+        core.Settings.AreDevToolsEnabled = false;
+        core.Settings.AreBrowserAcceleratorKeysEnabled = false;
         core.WebMessageReceived += Core_WebMessageReceived;
         core.NavigationCompleted += (s, e) =>
             LoggingService.LogDebug($"[看板桥接] 页面导航完成 IsSuccess={e.IsSuccess} HttpStatus={e.HttpStatusCode}");

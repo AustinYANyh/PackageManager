@@ -28,7 +28,7 @@
                                     ItemsSource="{Binding Participants}"
                                     SelectedValue="{Binding SelectedParticipant, Mode=TwoWay}" />
             </StackPanel>
-            <button:CButton Width="92" Height="35" Margin="16,0,0,0" Content="经典视图"
+            <button:CButton x:Name="ClassicViewButton" Width="92" Height="35" Margin="16,0,0,0" Content="经典视图"
                             Click="ClassicViewButton_Click" ToolTip="切换到 WPF 经典看板（兜底）"/>
         </StackPanel>
 
