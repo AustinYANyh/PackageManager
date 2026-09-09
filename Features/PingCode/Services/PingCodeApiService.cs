@@ -1544,6 +1544,7 @@ public partial class PingCodeApiService
                             HtmlUrl = d.HtmlUrl,
                             StartAt = ReadDateTimeFromSeconds(d.StartAt),
                             EndAt = ReadDateTimeFromSeconds(d.EndAt),
+                            StoryPoints = d.StoryPoints ?? 0,
                         };
                         result.Add(wi);
                     }

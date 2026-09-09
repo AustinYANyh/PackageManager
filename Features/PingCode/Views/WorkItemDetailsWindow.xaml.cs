@@ -2159,29 +2159,39 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
             return "<div class=\"children-empty\">无子工作项</div>";
         }
 
-        // 统计条：数量 / 已完成 / 故事点合计 + 三色进度（绿=已完成 橙=进行中 灰=未开始）
+        // 统计条：数量 / 已完成 / 已关闭 / 故事点合计 + 四色进度，口径对齐看板统计表格
+        //（GetIterationStoryPointsBreakdownByAssigneeAsync 四桶：已关闭含拒绝优先判定，已完成含发布，进行中含可测试/测试中/已修复/挂起）
         var total = items.Count;
+        var closed = items.Count(c =>
+        {
+            var s = (c?.Status ?? "").Trim().ToLowerInvariant();
+            return s.Contains("closed") || s.Contains("关闭") || s.Contains("已关闭") || s.Contains("已拒绝");
+        });
         var done = items.Count(c =>
         {
-            var s = (c?.Status ?? "").Trim();
-            return s.Contains("完成") || s.Contains("关闭");
+            var s = (c?.Status ?? "").Trim().ToLowerInvariant();
+            return s.Contains("done") || s.Contains("完成") || s.Contains("resolved") || s.Contains("已完成");
         });
         var inProgress = items.Count(c =>
         {
-            var s = (c?.Status ?? "").Trim();
-            return s.Contains("进行中") || s.Contains("开发中") || s.Contains("处理中") || s.Contains("测试中") || s.Contains("可测试");
+            var s = (c?.Status ?? "").Trim().ToLowerInvariant();
+            return s.Contains("progress") || s.Contains("进行中") || s.Contains("doing") || s.Contains("开发中") || s.Contains("处理中") ||
+                   s.Contains("in_progress") || s.Contains("可测试") || s.Contains("测试中") || s.Contains("已修复") || s.Contains("挂起");
         });
         var pointsSum = items.Sum(c => c?.StoryPoints ?? 0);
         var donePct = Math.Round(done * 100.0 / Math.Max(1, total));
+        var closedPct = Math.Round(closed * 100.0 / Math.Max(1, total));
         var inProgPct = Math.Round(inProgress * 100.0 / Math.Max(1, total));
 
         var sb = new StringBuilder();
         sb.Append("<div class=\"children-toolbar\">");
         sb.Append($"<span class=\"child-stat\">共 <b>{total}</b> 项</span>");
         sb.Append($"<span class=\"child-stat\">已完成 <b>{done}</b></span>");
+        sb.Append($"<span class=\"child-stat\">已关闭 <b>{closed}</b></span>");
         sb.Append($"<span class=\"child-stat\">故事点合计 <b>{pointsSum:0.##}</b></span>");
         sb.Append("<div class=\"child-bar-track\">");
         sb.Append($"<div class=\"child-bar-done\" style=\"width:{donePct:0.##}%\"></div>");
+        sb.Append($"<div class=\"child-bar-closed\" style=\"width:{closedPct:0.##}%\"></div>");
         sb.Append($"<div class=\"child-bar-inprogress\" style=\"width:{inProgPct:0.##}%\"></div>");
         sb.Append("</div></div>");
 
@@ -2207,9 +2217,10 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
             var s = (c?.Status ?? "").Trim().ToLowerInvariant();
             var cls = "state-pending";
             if (s.Contains("完成")) { cls = "state-done"; }
-            else if (s.Contains("关闭")) { cls = "state-closed"; }
+            else if (s.Contains("关闭") || s.Contains("拒绝")) { cls = "state-closed"; }
             else if (s.Contains("测试中")) { cls = "state-testing"; }
-            else if (s.Contains("可测试")) { cls = "state-testable"; }
+            else if (s.Contains("可测试") || s.Contains("修复")) { cls = "state-testable"; }
+            else if (s.Contains("新提交") || s.Contains("打开") || s.Contains("未开始") || s.Contains("新建") || s.Contains("待处理") || s.Contains("todo")) { cls = "state-new"; }
             else if (s.Contains("进行中") || s.Contains("开发中") || s.Contains("处理中") || s.Contains("progress") || s.Contains("in_progress")) { cls = "state-inprogress"; }
             var sub = string.IsNullOrWhiteSpace(range) ? "" : $"<span class=\"child-sub\">{range}</span>";
             sb.Append("<tr>");
@@ -2292,6 +2303,7 @@ public partial class WorkItemDetailsWindow : Window, INotifyPropertyChanged
         sb.AppendLine(".state-badge.state-inprogress{background:#F59E0B;color:#fff;border-color:#FDBA74}");
         sb.AppendLine(".state-badge.state-testable{background:#3B82F6;color:#fff;border-color:#93C5FD}");
         sb.AppendLine(".state-badge.state-testing{background:#A855F7;color:#fff;border-color:#C4B5FD}");
+        sb.AppendLine(".state-badge.state-new{background:#0EA5E9;color:#fff;border-color:#7DD3FC}");
         sb.AppendLine(".state-badge.state-done{background:#10B981;color:#fff;border-color:#6EE7B7}");
         sb.AppendLine(".state-badge.state-closed{background:#9CA3AF;color:#fff;border-color:#D1D5DB}");
         sb.AppendLine(".state-badge.state-pending{background:#E5E7EB;color:#374151;border-color:#D1D5DB}");
