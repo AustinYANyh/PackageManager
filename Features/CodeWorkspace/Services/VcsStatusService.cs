@@ -8,6 +8,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using PackageManager.Features.CodeWorkspace.Models;
+using PackageManager.Services;
 
 namespace PackageManager.Features.CodeWorkspace.Services
 {
@@ -425,7 +426,11 @@ namespace PackageManager.Features.CodeWorkspace.Services
             if (includeRemoteStatus)
             {
                 // 先 fetch 使 ahead/behind 反映最新远端；fetch 与后续解析保持原有先后依赖
-                await RunCommandAsync("git", "fetch --prune --quiet", repoPath, ct);
+                var fetchResult = await RunCommandAsync("git", "fetch --prune --quiet", repoPath, ct);
+                if (fetchResult.ExitCode != 0)
+                {
+                    LoggingService.LogWarning($"[VCS状态检测] {groupName} git fetch 失败(远端领先/落后数可能失真): 路径={repoPath}, ExitCode={fetchResult.ExitCode}, 错误={FormatCommandError(fetchResult)}");
+                }
             }
 
             // 单命令合并：分支 + ahead/behind + 变更清单一次取回
@@ -437,6 +442,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
                 ct);
             if (statusResult.ExitCode != 0)
             {
+                LoggingService.LogWarning($"[VCS状态检测] {groupName} git status 检测失败: 路径={repoPath}, ExitCode={statusResult.ExitCode}, 错误={FormatCommandError(statusResult)}");
                 info.HasError = true;
                 return info;
             }
@@ -572,6 +578,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
             var statusResult = await RunCommandAsync("svn", "status", svnPath, ct);
             if (statusResult.ExitCode != 0)
             {
+                LoggingService.LogWarning($"[VCS状态检测] SVN 根仓库 svn status 检测失败: 路径={svnPath}, ExitCode={statusResult.ExitCode}, 错误={FormatCommandError(statusResult)}");
                 snapshot.VcsStatus = VcsStatus.Error;
                 return;
             }
@@ -731,6 +738,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
                     }
                     else
                     {
+                        LoggingService.LogWarning($"[VCS状态检测] SVN 子仓库/{subRepo.RelativePath} svn status 检测失败: 路径={svnDir}, ExitCode={statusResult.ExitCode}, 错误={FormatCommandError(statusResult)}");
                         subRepo.Status = VcsStatus.Error;
                         subRepo.StatusSummary = "检测失败";
                     }
@@ -765,6 +773,7 @@ namespace PackageManager.Features.CodeWorkspace.Services
             var statusResult = await RunCommandAsync("svn", "status -u", svnPath, ct);
             if (statusResult.ExitCode != 0)
             {
+                LoggingService.LogWarning($"[VCS状态检测] SVN svn status -u 远端检测失败(远端更新数按 0 处理): 路径={svnPath}, ExitCode={statusResult.ExitCode}, 错误={FormatCommandError(statusResult)}");
                 return 0;
             }
 
@@ -1062,6 +1071,17 @@ namespace PackageManager.Features.CodeWorkspace.Services
             {
                 return new CommandResult { ExitCode = -1, Output = string.Empty, Error = ex.Message };
             }
+        }
+
+        private static string FormatCommandError(CommandResult result)
+        {
+            if (string.IsNullOrWhiteSpace(result.Error))
+            {
+                return "<无错误输出>";
+            }
+
+            var singleLine = result.Error.Trim().Replace("\r", " ").Replace("\n", " ");
+            return singleLine.Length <= 500 ? singleLine : singleLine.Substring(0, 500) + "...";
         }
 
         private static void TryKill(Process process)

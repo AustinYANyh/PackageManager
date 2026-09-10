@@ -1261,6 +1261,16 @@ namespace
             const auto duplicatePathCount = DeduplicateSearchRowsByPath(rows);
             const auto physicalMatched = totalMatched;
             const auto uniqueMatched = std::max(0, totalMatched - duplicatePathCount);
+            if (rows.size() > 0 && rows.size() <= 20)
+            {
+                for (std::size_t i = 0; i < rows.size(); ++i)
+                {
+                    NativeLogWrite(
+                        "[NATIVE SEARCH PATH] index=" + std::to_string(i)
+                        + " dir=" + std::string(rows[i].isDirectory ? "true" : "false")
+                        + " path=" + WideToUtf8(rows[i].fullPath));
+                }
+            }
             const auto resolveMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - resolveStart).count();
 
@@ -6839,6 +6849,11 @@ namespace
             }
 
             overlayDeletedKeys_.erase(key);
+            if (record.frn > volume.maxFrn)
+            {
+                volume.maxFrn = record.frn;
+            }
+
             if (record.frn <= volume.maxFrn)
             {
                 SetOverlaySuppressedRecordId_NoLock(key, true);
@@ -6877,53 +6892,53 @@ namespace
             }
 
             std::uint32_t recordId = 0;
+            bool foundInBase = true;
             if (change.frn > volume.maxFrn)
             {
-                const auto overlayIt = overlayIndexByKey_.find(key);
-                if (overlayIt != overlayIndexByKey_.end())
-                {
-                    overlayIndexByKey_.erase(overlayIt);
-                    overlayDeletedKeys_.erase(key);
-                    if (!volume.pathCache.empty())
-                    {
-                        volume.pathCache.erase(change.frn);
-                    }
-
-                    return true;
-                }
-
-                return false;
+                foundInBase = false;
             }
-
-            if (!TryGetRecordIdByKey_NoLock(key, recordId))
+            else if (!TryGetRecordIdByKey_NoLock(key, recordId))
             {
-                if (!volume.pathCache.empty())
-                {
-                    volume.pathCache.erase(change.frn);
-                }
-
-                return false;
+                foundInBase = false;
             }
 
             std::wstring removedLowerName;
             std::wstring fullPath;
             bool removedIsDirectory = false;
-            if (payload != nullptr)
+            if (foundInBase && payload != nullptr)
             {
                 removedLowerName = std::wstring(GetLowerNameView_NoLock(recordId));
                 removedIsDirectory = IsDirectoryRecord_NoLock(recordId);
                 fullPath = ResolveFullPathById_NoLock(recordId);
             }
 
-            overlayIndexByKey_.erase(key);
-            overlayDeletedKeys_.insert(key);
-            SetOverlaySuppressedRecordId_NoLock(key, true);
+            const auto overlayIt = overlayIndexByKey_.find(key);
+            const bool hadOverlayRecord = overlayIt != overlayIndexByKey_.end();
+            if (hadOverlayRecord)
+            {
+                overlayIndexByKey_.erase(overlayIt);
+            }
+
+            // 墓碑无条件插入：frn>maxFrn 的记录可能经 overlay 吸收进快照而 maxFrn 未推进，
+            // 此时按旧判断丢弃会让删除事件蒸发、幽灵记录复活。墓碑按 key 匹配抑制，
+            // 多余墓碑在 compaction 吸收时自然消亡，无副作用。
+            const auto tombstoneResult = overlayDeletedKeys_.insert(key);
+            if (foundInBase)
+            {
+                SetOverlaySuppressedRecordId_NoLock(key, true);
+            }
+
             if (!volume.pathCache.empty())
             {
                 volume.pathCache.erase(change.frn);
             }
 
-            if (payload != nullptr)
+            if (!foundInBase && !hadOverlayRecord)
+            {
+                LogOutdatedDeleteChange_NoLock(volume, change, tombstoneResult.second);
+            }
+
+            if (payload != nullptr && foundInBase)
             {
                 *payload = BuildChangeJson(
                     "Deleted",
@@ -6935,7 +6950,45 @@ namespace
                     removedIsDirectory);
             }
 
-            return true;
+            return hadOverlayRecord || tombstoneResult.second;
+        }
+
+        void LogOutdatedDeleteChange_NoLock(const VolumeState& volume, const NativeChange& change, bool newTombstone)
+        {
+            static std::atomic<long long> lastLogTickMs{ 0 };
+            static std::atomic<unsigned long long> suppressedCount{ 0 };
+            constexpr long long OutdatedDeleteLogIntervalMs = 60000;
+
+            const auto nowTick = SteadyClockMilliseconds();
+            auto lastTick = lastLogTickMs.load(std::memory_order_acquire);
+            if (lastTick != 0 && nowTick - lastTick < OutdatedDeleteLogIntervalMs)
+            {
+                suppressedCount.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+
+            if (!lastLogTickMs.compare_exchange_strong(lastTick, nowTick, std::memory_order_acq_rel))
+            {
+                suppressedCount.fetch_add(1, std::memory_order_relaxed);
+                return;
+            }
+
+            const auto suppressed = suppressedCount.exchange(0, std::memory_order_relaxed);
+            NativeLogWrite(
+                "[NATIVE WATCH APPLY] outdated-delete tombstoneInserted="
+                + std::string(newTombstone ? "true" : "false")
+                + " drive=" + std::string(1, static_cast<char>(volume.driveLetter))
+                + " frn=0x" + ToHex(static_cast<std::uint64_t>(change.frn))
+                + " maxFrn=0x" + ToHex(volume.maxFrn)
+                + " suppressedSinceLastLog=" + std::to_string(suppressed)
+                + " name=" + WideToUtf8(change.originalName));
+        }
+
+        static std::string ToHex(std::uint64_t value)
+        {
+            std::ostringstream ss;
+            ss << std::hex << value;
+            return ss.str();
         }
 
         bool ApplyRename_NoLock(VolumeState& volume, NativeChange& change, std::string* payload, std::uint32_t* changedOverlayIndex)
@@ -10612,6 +10665,9 @@ namespace
             records_.clear();
             records_.shrink_to_fit();
             volumes_ = std::move(mappedVolumes);
+            ReleaseDuplicateFrnNameStorage_NoLock();
+            ClearPathScopeRecordIdsCache_NoLock();
+            generationId_.fetch_add(1, std::memory_order_relaxed);
             RebuildFrnRecordIndexFromMapped_NoLock();
             if (!TryLoadV2PostingsSnapshot_NoLock()
                 || !TryLoadV2RuntimeSnapshot_NoLock()
@@ -10653,6 +10709,9 @@ namespace
             records_.clear();
             records_.shrink_to_fit();
             volumes_ = std::move(mappedVolumes);
+            ReleaseDuplicateFrnNameStorage_NoLock();
+            ClearPathScopeRecordIdsCache_NoLock();
+            generationId_.fetch_add(1, std::memory_order_relaxed);
             RebuildFrnRecordIndexFromMapped_NoLock();
             NativeLogWrite(
                 "[NATIVE RECORDS REMAP] success elapsedMs="
